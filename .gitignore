@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Per-developer Claude Code state: holds the active model profile and any
+# credentials. The shared foundry set lives in .claude/settings.json and IS
+# committed; this file deliberately is not.
+.claude/settings.local.json
+
+# Scratch space for harness runs.
+/tmp/
+*.log

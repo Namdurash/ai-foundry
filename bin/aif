@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# aif — AI Foundry.
+# Scaffolds an AI SDLC setup into an existing project.
+#
+# Targets bash 3.2 (what stock macOS ships), so: no associative arrays, no
+# mapfile/readarray, no ${var,,} case conversion, no negative array indices.
+# Under `set -u`, bash 3.2 also errors on "$@" when there are no positional
+# parameters — hence the ${1+"$@"} guards below.
+
+set -euo pipefail
+
+AIF_VERSION="0.1.0"
+
+# Resolve the install root through any symlinks. Homebrew links bin/aif into
+# libexec, and `readlink -f` does not exist on BSD, so walk the chain by hand.
+_aif_src="${BASH_SOURCE[0]}"
+while [ -L "$_aif_src" ]; do
+  _aif_dir="$(cd -P "$(dirname "$_aif_src")" && pwd)"
+  _aif_src="$(readlink "$_aif_src")"
+  case "$_aif_src" in
+    /*) ;;
+    *) _aif_src="$_aif_dir/$_aif_src" ;;
+  esac
+done
+AIF_ROOT="$(cd -P "$(dirname "$_aif_src")/.." && pwd)"
+unset _aif_src _aif_dir
+
+readonly AIF_VERSION AIF_ROOT
+
+# shellcheck source=lib/common.sh
+. "$AIF_ROOT/lib/common.sh"
+# shellcheck source=lib/detect.sh
+. "$AIF_ROOT/lib/detect.sh"
+
+aif_usage() {
+  cat <<EOF
+${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
+
+usage: aif <command> [options]
+
+commands:
+  doctor      Report what is installed and what aif can drive
+  version     Print the version
+  help        Print this message
+
+Not built yet — see the roadmap in README.md:
+  profiles, init, start, test
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  if [ $# -gt 0 ]; then
+    shift
+  fi
+
+  case "$cmd" in
+    doctor)
+      # shellcheck source=lib/doctor.sh
+      . "$AIF_ROOT/lib/doctor.sh"
+      aif_doctor ${1+"$@"}
+      ;;
+    help | -h | --help)
+      aif_usage
+      ;;
+    version | -V | --version)
+      printf 'aif %s\n' "$AIF_VERSION"
+      ;;
+    *)
+      aif_err "unknown command: $cmd"
+      printf '\n' >&2
+      aif_usage >&2
+      exit 64 # EX_USAGE
+      ;;
+  esac
+}
+
+main ${1+"$@"}

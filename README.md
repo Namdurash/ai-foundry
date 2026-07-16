@@ -4,8 +4,8 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early.** The CLI skeleton and `aif doctor` work. `init`, `start`,
-> `test` and the foundry content itself are not built yet. See the roadmap.
+> **Status: early.** `aif doctor`, `aif profiles` and `aif test` work. `init`,
+> `start` and the foundry content itself are not built yet. See the roadmap.
 
 ## What it is
 
@@ -48,14 +48,28 @@ harness is for.
 
 ## Testing
 
-`aif test` is an eval, not a unit test. It runs a fixture repo through the real
-agent set against a real model and checks a deterministic oracle. Models are
-non-deterministic, so it reports a pass rate over N runs rather than a single
-verdict.
+```sh
+aif test L0-smoke --profile glm --runs 3
+```
+
+`aif test` is an eval, not a unit test. It runs a fixture through the real runner
+against a real model and checks a deterministic oracle. Models are not
+deterministic, so a single run means nothing — it reports a pass rate with a
+Wilson interval over N runs:
+
+```
+  3/3 · 100% [44-100%] · median 2 turns · total $0.0104
+```
+
+That interval is the honest part. 3 out of 3 does not mean "it works"; it means
+"you have not proven much yet". A naive implementation would print 100% ± 0%.
 
 The level-0 smoke fixture needs no agents at all — it only proves the wiring
 (base URL, auth, tool-calling). That is deliberate: the harness has to exist
 before the content, or there is no way to tell whether the content works.
+
+**Run evals from a plain terminal.** A child `claude` spawned inside an agent
+session cannot authenticate and every run will 401 — see `docs/FINDINGS.md`.
 
 ## Requirements
 
@@ -79,11 +93,11 @@ newer bash on `PATH` cannot mask an incompatibility.
 ## Roadmap
 
 - [x] CLI skeleton, `aif doctor`
-- [ ] Profiles + level-0 smoke harness — answers "does GLM actually work?" with
-      zero agents written
-- [ ] `aif init` — profile picker, `CLAUDE.md` merge, manifest
+- [x] Profiles — `anthropic` and `glm`, user-extensible
+- [x] Eval harness + L0 smoke, with pass rates and cost tracking
+- [ ] `aif init` — profile picker, `CLAUDE.md` merge, ownership manifest
 - [ ] `aif start`
-- [ ] Fixture-level evals + cost tracking
+- [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] Homebrew formula and tap
 - [ ] The foundry content itself: which agents implement the AI SDLC
 - [ ] `sets/codex/`

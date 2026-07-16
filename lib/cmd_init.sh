@@ -212,12 +212,23 @@ $(_aif_set_files "$set_dir")
 EOF
 
   # The set's settings fragment, if it ships one. Model routing never goes here.
+  local fragment entries
   if [ -f "$set_dir/settings.fragment.json" ]; then
+    fragment="$(cat "$set_dir/settings.fragment.json")"
+
+    # Flatten the fragment to leaf paths and the values we are about to write.
+    # Recording the value, not just the key, is what lets uninstall remove a key
+    # only while it still holds what we put there — and leave it alone once the
+    # user has changed it to something of their own.
+    entries="$(printf '%s' "$fragment" |
+      jq -c '[paths(scalars) as $p | { path: $p, value: getpath($p) }]')" ||
+      aif_die "set fragment is not valid JSON: $set_dir/settings.fragment.json"
+
     printf '  %smerge%s     .claude/settings.json\n' "$AIF_C_GREEN" "$AIF_C_RESET"
     if [ "$AIF_DRY_RUN" -eq 0 ]; then
-      aif_json_merge "$root/.claude/settings.json" "$(cat "$set_dir/settings.fragment.json")"
+      aif_json_merge "$root/.claude/settings.json" "$fragment"
     fi
-    printf '%s\t%s\n' ".claude/settings.json" "json_merge" >>"$edits_tsv"
+    printf '%s\t%s\t%s\n' ".claude/settings.json" "json_merge" "$entries" >>"$edits_tsv"
   fi
 
   # One line into CLAUDE.md, and only if the set actually has always-on content.
@@ -227,13 +238,15 @@ EOF
       aif_block_inject "$root/CLAUDE.md" \
         "$AIF_MARK_BEGIN_MD" "$AIF_MARK_END_MD" "@.aif/foundry.md"
     fi
-    printf '%s\t%s\n' "CLAUDE.md" "marker_block" >>"$edits_tsv"
+    # The kind names the marker style, so uninstall never has to guess it from
+    # the filename.
+    printf '%s\t%s\n' "CLAUDE.md" "marker_block_md" >>"$edits_tsv"
   fi
 
   # Record every edit BEFORE the manifest is written — anything appended after
   # aif_manifest_write has already read these files is silently lost, and an
   # untracked edit is one uninstall will never revert.
-  printf '%s\t%s\n' ".gitignore" "marker_block" >>"$edits_tsv"
+  printf '%s\t%s\n' ".gitignore" "marker_block_hash" >>"$edits_tsv"
 
   if [ "$AIF_DRY_RUN" -eq 0 ]; then
     aif_gitignore_ensure "$root" "$AIF_PROFILE_STATE" \

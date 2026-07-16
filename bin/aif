@@ -47,6 +47,7 @@ usage: aif <command> [options]
 
 commands:
   init        Install a foundry set into this project
+  uninstall   Remove it again, reverting only what aif installed
   start       Run the foundry against this project's profile
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
@@ -71,6 +72,15 @@ main() {
       # shellcheck source=lib/cmd_init.sh
       . "$AIF_ROOT/lib/cmd_init.sh"
       aif_cmd_init ${1+"$@"}
+      ;;
+    uninstall)
+      # shellcheck source=lib/merge.sh
+      . "$AIF_ROOT/lib/merge.sh"
+      # shellcheck source=lib/manifest.sh
+      . "$AIF_ROOT/lib/manifest.sh"
+      # shellcheck source=lib/cmd_uninstall.sh
+      . "$AIF_ROOT/lib/cmd_uninstall.sh"
+      aif_cmd_uninstall ${1+"$@"}
       ;;
     start)
       # shellcheck source=lib/manifest.sh

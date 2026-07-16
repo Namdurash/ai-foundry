@@ -45,7 +45,12 @@ aif_manifest_file_hash() {
 # aif_manifest_write <root> <profile> <set> <set_version> <files-tsv> <edits-tsv>
 #
 # files-tsv: "relpath<TAB>sha256" per line.
-# edits-tsv: "relpath<TAB>kind" per line.
+# edits-tsv: "relpath<TAB>kind[<TAB>entries-json]" per line.
+#
+# The optional third column is what makes a json_merge reversible: it records
+# not just which keys we merged but the values we wrote, so uninstall can remove
+# a key only while it still holds what we put there, and leave it alone once the
+# user has changed it.
 aif_manifest_write() {
   local root="$1" profile="$2" set_name="$3" set_version="$4"
   local files_tsv="$5" edits_tsv="$6"
@@ -66,11 +71,8 @@ aif_manifest_write() {
     --rawfile files_raw "$files_tsv" \
     --rawfile edits_raw "$edits_tsv" \
     '
-    def rows($raw; $keys):
-      $raw
-      | split("\n")
-      | map(select(length > 0) | split("\t"))
-      | map(. as $r | reduce range(0; $keys | length) as $i ({}; .[$keys[$i]] = $r[$i]));
+    def split_rows($raw):
+      $raw | split("\n") | map(select(length > 0) | split("\t"));
 
     {
       schema:       $schema,
@@ -79,8 +81,11 @@ aif_manifest_write() {
       set:          $set_name,
       set_version:  $set_version,
       installed_at: $stamp,
-      files:        rows($files_raw; ["path", "sha256"]),
-      edits:        rows($edits_raw; ["path", "kind"])
+      files:        (split_rows($files_raw) | map({ path: .[0], sha256: .[1] })),
+      edits:        (split_rows($edits_raw) | map(
+                       { path: .[0], kind: .[1] }
+                       + (if (.[2] // "") == "" then {} else { entries: (.[2] | fromjson) } end)
+                     ))
     }
     ' >"$dest.tmp" || aif_die "failed to build manifest"
 

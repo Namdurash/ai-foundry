@@ -55,16 +55,32 @@ aif_block_inject() {
 }
 
 # aif_block_remove <file> <begin> <end> — drop our block, leave the rest.
+#
+# Also takes back the single blank line that aif_block_inject puts in front of
+# an appended block. Without that, uninstall leaves the file one line longer
+# than it found it, `git diff` is not empty after an install/uninstall round
+# trip, and "we reverted our change" is not quite true.
+#
+# Blank lines are therefore buffered rather than printed as they arrive: when
+# the begin marker turns up, one held blank is dropped and the rest are emitted.
 aif_block_remove() {
   local file="$1" begin="$2" end="$3"
   local tmp
+
   [ -f "$file" ] || return 0
   grep -qF "$begin" "$file" || return 0
+
   tmp="$(aif_tmpfile "$file")"
   awk -v b="$begin" -v e="$end" '
-    index($0, b) { skip = 1; next }
-    index($0, e) { skip = 0; next }
-    !skip        { print }
+    function flush(n,   i) { for (i = 0; i < n; i++) print "" }
+    {
+      if (skip)          { if (index($0, e)) skip = 0; next }
+      if (index($0, b))  { if (blanks > 0) blanks--; flush(blanks); blanks = 0; skip = 1; next }
+      if ($0 == "")      { blanks++; next }
+      flush(blanks); blanks = 0
+      print
+    }
+    END { flush(blanks) }
   ' "$file" >"$tmp" && mv "$tmp" "$file"
 }
 
@@ -97,6 +113,43 @@ aif_json_merge() {
   if ! jq -e . "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp"
     aif_die "merge produced invalid JSON — $target left untouched"
+  fi
+
+  mv "$tmp" "$target"
+}
+
+# aif_json_unmerge <target> <entries-json>
+#
+# Remove the keys we merged in — but only those still holding the value we
+# wrote. A key the user has since changed is theirs now, and stays.
+#
+# Deleting by key alone would be the classic uninstaller sin: you put
+# "model": "opus" there, the user changed it to something they wanted, and
+# uninstall silently takes it away because the key name matches.
+#
+# The walk afterwards prunes objects left empty, so removing our only entry
+# under `env` does not leave `"env": {}` behind as litter.
+aif_json_unmerge() {
+  local target="$1" entries="$2"
+  local tmp
+
+  [ -f "$target" ] || return 0
+
+  tmp="$(aif_tmpfile "$target")"
+  if ! jq --argjson entries "$entries" '
+        reduce $entries[] as $e (.;
+          if (getpath($e.path) == $e.value) then delpaths([$e.path]) else . end)
+        | walk(if type == "object" then with_entries(select(.value != {})) else . end)
+      ' "$target" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    aif_warn "could not revert $target — left untouched"
+    return 1
+  fi
+
+  if ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    aif_warn "reverting $target would produce invalid JSON — left untouched"
+    return 1
   fi
 
   mv "$tmp" "$target"

@@ -40,6 +40,7 @@ tests/fixtures/   evals: fixture repo + task + deterministic oracle
 aif init            # pick a profile from a list
 aif init glm        # or name it, for CI
 aif init --dry-run  # or just look
+aif uninstall       # and take it all back
 ```
 
 | Path | Committed | Why |
@@ -60,6 +61,12 @@ edited it" from "this was here before us". The first is overwritten silently;
 the other two are reported as conflicts and skipped unless you pass `--force`,
 which keeps a backup. Your `CLAUDE.md` is only ever appended to, inside a marked
 block, and re-running rewrites just that block.
+
+**`aif uninstall` reverses it exactly.** An install/uninstall round trip leaves
+`git status` empty. Files are removed only while they still hash to what we
+recorded — edit one and it is yours, kept and reported. Settings keys are
+removed only while they still hold the value we wrote, because deleting by key
+name alone is how an uninstaller takes away the setting you actually wanted.
 
 Model routing is deliberately absent from every file above — it is exported at
 `aif start` time instead. See `docs/FINDINGS.md`.
@@ -133,7 +140,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
 - [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
 - [x] `aif start` — profile export, interactive and headless
-- [ ] `aif uninstall` — reverse the manifest
+- [x] `aif uninstall` — reverse the manifest, value-guarded
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook
 - [ ] Homebrew formula and tap

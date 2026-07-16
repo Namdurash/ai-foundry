@@ -18,6 +18,29 @@ aif_runner_claude_version() {
   claude --version 2>/dev/null | head -1 | tr -d '\r\n'
 }
 
+# aif_runner_claude_start <headless> <task>
+#
+# Hands the terminal over to claude. The caller has already exported the
+# profile's environment, so the child inherits the right routing.
+#
+# exec, not a plain call: the wrapper has nothing left to do, and replacing it
+# means signals, job control and the TTY all reach claude directly rather than
+# through a bash process that would swallow them.
+aif_runner_claude_start() {
+  local headless="$1" task="$2"
+
+  if [ "$headless" -eq 1 ]; then
+    [ -n "$task" ] || aif_die "--headless needs a task"
+    exec claude -p "$task"
+  fi
+
+  if [ -n "$task" ]; then
+    exec claude "$task"
+  fi
+
+  exec claude
+}
+
 # aif_runner_claude_eval <workdir> <prompt> <max_turns> <budget_usd> <out> <err>
 #
 # One headless run inside a disposable working directory. The caller has already

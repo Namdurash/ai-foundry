@@ -6,10 +6,6 @@
 AIF_DRY_RUN=0
 AIF_FORCE=0
 
-# Where the active profile is recorded. Ours, not Claude Code's, and gitignored:
-# the set is a shared team asset, the model choice is per-developer.
-AIF_PROFILE_STATE=".aif/profile.local"
-
 _aif_init_usage() {
   cat <<EOF
 usage: aif init [profile] [--force] [--dry-run]

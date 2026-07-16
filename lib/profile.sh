@@ -124,14 +124,42 @@ aif_profile_secret() {
   eval "printf '%s' \"\${$AIF_PROFILE_SECRET_VAR:-}\""
 }
 
+# Variables that decide which model answers. A profile owns all of them, and
+# they are cleared before one is applied.
+#
+# Without the clear, a profile only *adds* to whatever is already exported, so a
+# leftover ANTHROPIC_BASE_URL from another profile — or just sitting in the
+# user's shell — silently wins, and `aif start --profile anthropic` quietly runs
+# on something else. A profile has to mean the same thing on every machine or it
+# means nothing.
+#
+# Auth is deliberately absent from this list. The asymmetry is the reason: a
+# wrong base URL fails *silently*, by answering from a different model, while a
+# wrong token fails loudly with a 401. And the anthropic profile relies on
+# ambient credentials by design.
+AIF_ROUTING_VARS="ANTHROPIC_BASE_URL
+ANTHROPIC_MODEL
+ANTHROPIC_DEFAULT_OPUS_MODEL
+ANTHROPIC_DEFAULT_SONNET_MODEL
+ANTHROPIC_DEFAULT_HAIKU_MODEL
+ANTHROPIC_SMALL_FAST_MODEL
+CLAUDE_CODE_AUTO_COMPACT_WINDOW
+API_TIMEOUT_MS"
+
 # aif_profile_export_env — apply the loaded profile to this shell's environment.
 #
-# Exporting is the only mechanism that actually reroutes the API: an env block
-# in a settings file is silently ignored for ANTHROPIC_BASE_URL. See
-# docs/FINDINGS.md #1. It is also the one mechanism that works identically for
-# every runner.
+# Exporting is how routing is applied: it is the one mechanism that works on
+# every version and for every runner, and a settings file cannot be relied on
+# for it. See docs/FINDINGS.md #1.
 aif_profile_export_env() {
-  local line key value secret
+  local line key value secret var
+
+  while IFS= read -r var; do
+    [ -n "$var" ] || continue
+    unset "$var" 2>/dev/null || true
+  done <<EOF
+$AIF_ROUTING_VARS
+EOF
 
   # A here-doc, not a pipe. In bash 3.2 a piped `while read` runs in a subshell,
   # so every export below would be discarded and the profile would silently do

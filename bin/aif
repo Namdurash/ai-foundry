@@ -47,14 +47,12 @@ usage: aif <command> [options]
 
 commands:
   init        Install a foundry set into this project
+  start       Run the foundry against this project's profile
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
   test        Run the evals against a profile and report a pass rate
   version     Print the version
   help        Print this message
-
-Not built yet — see the roadmap in README.md:
-  start
 EOF
 }
 
@@ -73,6 +71,13 @@ main() {
       # shellcheck source=lib/cmd_init.sh
       . "$AIF_ROOT/lib/cmd_init.sh"
       aif_cmd_init ${1+"$@"}
+      ;;
+    start)
+      # shellcheck source=lib/manifest.sh
+      . "$AIF_ROOT/lib/manifest.sh"
+      # shellcheck source=lib/cmd_start.sh
+      . "$AIF_ROOT/lib/cmd_start.sh"
+      aif_cmd_start ${1+"$@"}
       ;;
     doctor)
       # shellcheck source=lib/doctor.sh

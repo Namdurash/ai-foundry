@@ -1,7 +1,25 @@
 #!/usr/bin/env bash
 #
-# Locating the project we are operating on.
+# Locating the project we are operating on, and the paths aif owns.
 # Sourced by bin/aif; not meant to be executed directly.
+
+# Where the active profile is recorded, relative to the project root. Ours, not
+# Claude Code's, and gitignored: the set is a shared team asset, the model choice
+# is per-developer.
+#
+# Read by cmd_init and cmd_start, which a linter reading this file alone cannot
+# see.
+# shellcheck disable=SC2034
+AIF_PROFILE_STATE=".aif/profile.local"
+
+# aif_runner_config_dir <profile> — an isolated runner config root for a profile.
+#
+# Deliberately outside the project. This becomes CLAUDE_CONFIG_DIR, which holds
+# sessions and credentials; that is per-user state, and putting credentials
+# inside a repository is how they get committed.
+aif_runner_config_dir() {
+  printf '%s/aif/runners/%s' "${XDG_DATA_HOME:-$HOME/.local/share}" "$1"
+}
 
 # aif_project_root — nearest ancestor containing .git, rc 1 if none.
 #

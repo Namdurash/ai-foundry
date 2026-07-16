@@ -28,10 +28,14 @@ unset _aif_src _aif_dir
 
 readonly AIF_VERSION AIF_ROOT
 
+# Sourced explicitly and in order, never by globbing lib/*.sh: a stray file in a
+# clone or a brew cellar should not become executable code.
 # shellcheck source=lib/common.sh
 . "$AIF_ROOT/lib/common.sh"
 # shellcheck source=lib/detect.sh
 . "$AIF_ROOT/lib/detect.sh"
+# shellcheck source=lib/profile.sh
+. "$AIF_ROOT/lib/profile.sh"
 
 aif_usage() {
   cat <<EOF
@@ -41,11 +45,12 @@ usage: aif <command> [options]
 
 commands:
   doctor      Report what is installed and what aif can drive
+  profiles    List the available (set, runner, model) profiles
   version     Print the version
   help        Print this message
 
 Not built yet — see the roadmap in README.md:
-  profiles, init, start, test
+  init, start, test
 EOF
 }
 
@@ -60,6 +65,11 @@ main() {
       # shellcheck source=lib/doctor.sh
       . "$AIF_ROOT/lib/doctor.sh"
       aif_doctor ${1+"$@"}
+      ;;
+    profiles)
+      # shellcheck source=lib/cmd_profiles.sh
+      . "$AIF_ROOT/lib/cmd_profiles.sh"
+      aif_cmd_profiles ${1+"$@"}
       ;;
     help | -h | --help)
       aif_usage

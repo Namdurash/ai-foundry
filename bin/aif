@@ -36,6 +36,8 @@ readonly AIF_VERSION AIF_ROOT
 . "$AIF_ROOT/lib/detect.sh"
 # shellcheck source=lib/profile.sh
 . "$AIF_ROOT/lib/profile.sh"
+# shellcheck source=lib/paths.sh
+. "$AIF_ROOT/lib/paths.sh"
 
 aif_usage() {
   cat <<EOF
@@ -44,6 +46,7 @@ ${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
 usage: aif <command> [options]
 
 commands:
+  init        Install a foundry set into this project
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
   test        Run the evals against a profile and report a pass rate
@@ -51,7 +54,7 @@ commands:
   help        Print this message
 
 Not built yet — see the roadmap in README.md:
-  init, start
+  start
 EOF
 }
 
@@ -62,6 +65,15 @@ main() {
   fi
 
   case "$cmd" in
+    init)
+      # shellcheck source=lib/merge.sh
+      . "$AIF_ROOT/lib/merge.sh"
+      # shellcheck source=lib/manifest.sh
+      . "$AIF_ROOT/lib/manifest.sh"
+      # shellcheck source=lib/cmd_init.sh
+      . "$AIF_ROOT/lib/cmd_init.sh"
+      aif_cmd_init ${1+"$@"}
+      ;;
     doctor)
       # shellcheck source=lib/doctor.sh
       . "$AIF_ROOT/lib/doctor.sh"

@@ -11,19 +11,6 @@
 
 AIF_EVAL_DIR="tests/evals"
 
-# Read one KEY=VALUE out of eval.meta. Parsed, never sourced — evals are the
-# thing you eventually accept from contributors.
-_aif_eval_meta() {
-  local file="$1" key="$2" default="${3:-}"
-  local line
-  line="$(grep -E "^${key}=" "$file" 2>/dev/null | head -1)" || true
-  if [ -z "$line" ]; then
-    printf '%s' "$default"
-    return 0
-  fi
-  printf '%s' "${line#*=}"
-}
-
 _aif_eval_list() {
   local dir
   for dir in "$AIF_ROOT/$AIF_EVAL_DIR"/*/; do
@@ -123,10 +110,10 @@ _aif_eval_one() {
   [ -f "$meta" ] || aif_die "no such eval: $name"
 
   local desc runs max_turns budget
-  desc="$(_aif_eval_meta "$meta" DESC "$name")"
-  runs="${runs_override:-$(_aif_eval_meta "$meta" RUNS 3)}"
-  max_turns="$(_aif_eval_meta "$meta" MAX_TURNS 10)"
-  budget="$(_aif_eval_meta "$meta" MAX_BUDGET_USD 0.50)"
+  desc="$(aif_meta_get "$meta" DESC "$name")"
+  runs="${runs_override:-$(aif_meta_get "$meta" RUNS 3)}"
+  max_turns="$(aif_meta_get "$meta" MAX_TURNS 10)"
+  budget="$(aif_meta_get "$meta" MAX_BUDGET_USD 0.50)"
 
   AIF_EVAL_PROMPT="$(cat "$eval_dir/task.md")"
 

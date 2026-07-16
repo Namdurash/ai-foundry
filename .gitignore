@@ -1,10 +1,13 @@
 # macOS
 .DS_Store
 
-# Per-developer Claude Code state: holds the active model profile and any
-# credentials. The shared foundry set lives in .claude/settings.json and IS
-# committed; this file deliberately is not.
+# Per-developer Claude Code state.
 .claude/settings.local.json
+
+# The active profile. aif writes this into projects it initialises and ignores
+# it there for the same reason: the foundry set is a shared team asset and is
+# committed, the model choice belongs to the developer.
+.aif/profile.local
 
 # Scratch space for harness runs.
 /tmp/

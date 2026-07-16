@@ -4,8 +4,8 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early.** `aif doctor`, `aif profiles` and `aif test` work. `init`,
-> `start` and the foundry content itself are not built yet. See the roadmap.
+> **Status: early.** `aif init`, `doctor`, `profiles` and `test` work. `aif start`
+> and the foundry content itself are not built yet. See the roadmap.
 
 ## What it is
 
@@ -35,16 +35,33 @@ tests/fixtures/   evals: fixture repo + task + deterministic oracle
 
 ### What lands in your repo, and what does not
 
+```sh
+aif init            # pick a profile from a list
+aif init glm        # or name it, for CI
+aif init --dry-run  # or just look
+```
+
 | Path | Committed | Why |
 |---|---|---|
 | `.claude/skills/`, `.claude/agents/` | yes | the shared foundry — the team's asset |
-| `.aif/foundry.md` | yes | our context content, imported by `CLAUDE.md` |
-| `CLAUDE.md` | yes | yours; `aif` only injects one `@.aif/foundry.md` line |
-| `.claude/settings.local.json` | **no** | your model choice and credentials |
+| `.aif/foundry.md` | yes | our context, imported by `CLAUDE.md` |
+| `.aif/manifest.json` | yes | the ledger of what we installed and changed |
+| `CLAUDE.md` | yes | **yours**; `aif` only appends one `@.aif/foundry.md` line |
+| `.aif/profile.local` | **no** | your model choice |
 
 So a team shares one foundry while one developer runs it on Opus and another on
 GLM. Whether that actually holds is an empirical claim — which is what the
 harness is for.
+
+**`aif init` never clobbers.** The manifest records the digest of every file it
+writes, so a re-run can tell "we wrote this and nobody touched it" from "you
+edited it" from "this was here before us". The first is overwritten silently;
+the other two are reported as conflicts and skipped unless you pass `--force`,
+which keeps a backup. Your `CLAUDE.md` is only ever appended to, inside a marked
+block, and re-running rewrites just that block.
+
+Model routing is deliberately absent from every file above — it is exported at
+`aif start` time instead. See `docs/FINDINGS.md`.
 
 ## Testing
 
@@ -95,9 +112,11 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] CLI skeleton, `aif doctor`
 - [x] Profiles — `anthropic` and `glm`, user-extensible
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
-- [ ] `aif init` — profile picker, `CLAUDE.md` merge, ownership manifest
+- [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
 - [ ] `aif start`
+- [ ] `aif uninstall` — reverse the manifest
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
+- [ ] `local` profile via `llama-server`, plus a profile preflight hook
 - [ ] Homebrew formula and tap
 - [ ] The foundry content itself: which agents implement the AI SDLC
 - [ ] `sets/codex/`

@@ -43,6 +43,21 @@ aif_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# aif_meta_get <file> <key> [default] — read one KEY=VALUE line.
+#
+# Parsed, never sourced. Sets and evals are the things you eventually accept
+# from other people, and sourcing one executes it.
+aif_meta_get() {
+  local file="$1" key="$2" default="${3:-}"
+  local line
+  line="$(grep -E "^${key}=" "$file" 2>/dev/null | head -1)" || true
+  if [ -z "$line" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  printf '%s' "${line#*=}"
+}
+
 # aif_ok <label> / aif_no <label> — status markers for report output.
 # The marker carries the colour so that %-Ns padding elsewhere stays aligned;
 # escape sequences inside a padded field would break the column width.

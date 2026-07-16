@@ -4,8 +4,9 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early.** `aif init`, `doctor`, `profiles` and `test` work. `aif start`
-> and the foundry content itself are not built yet. See the roadmap.
+> **Status: early.** The machine works — `init`, `start`, `doctor`, `profiles`,
+> `test`. What it pours does not exist yet: the set ships a placeholder while the
+> AI SDLC content is decided. See the roadmap.
 
 ## What it is
 
@@ -63,6 +64,24 @@ block, and re-running rewrites just that block.
 Model routing is deliberately absent from every file above — it is exported at
 `aif start` time instead. See `docs/FINDINGS.md`.
 
+### Running it
+
+```sh
+aif start                    # interactive
+aif start "add validation"   # interactive, opening with that task
+aif start --headless "..."   # one-shot, for CI
+```
+
+`aif start` is the entry point for anything other than your default provider.
+Routing is applied by exporting into the child process, so **a bare `claude` in
+the project is not on the profile's model** — it uses whatever the project
+already had. That is deliberate: the alternative is a routing setting that might
+be ignored, which puts you on a model you did not choose without telling you.
+
+Each profile clears routing before applying its own, so a leftover `ANTHROPIC_*`
+in your shell cannot redirect a run. A profile means the same thing on every
+machine, or it means nothing.
+
 ## Testing
 
 ```sh
@@ -113,7 +132,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] Profiles — `anthropic` and `glm`, user-extensible
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
 - [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
-- [ ] `aif start`
+- [x] `aif start` — profile export, interactive and headless
 - [ ] `aif uninstall` — reverse the manifest
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

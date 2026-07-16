@@ -1,0 +1,10 @@
+# KEY=VALUE, parsed rather than sourced. Evals are the thing you eventually
+# accept from contributors, and sourcing one would execute it.
+DESC=Wiring only: environment, base URL, auth, tool-calling
+RUNS=3
+MAX_TURNS=6
+MAX_BUDGET_USD=0.25
+
+# This eval deliberately needs no foundry set. It exists so the harness can
+# answer "does this profile actually work" before a single agent is written.
+REQUIRES_SET=0

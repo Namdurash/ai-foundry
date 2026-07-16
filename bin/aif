@@ -46,11 +46,12 @@ usage: aif <command> [options]
 commands:
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
+  test        Run the evals against a profile and report a pass rate
   version     Print the version
   help        Print this message
 
 Not built yet — see the roadmap in README.md:
-  init, start, test
+  init, start
 EOF
 }
 
@@ -70,6 +71,11 @@ main() {
       # shellcheck source=lib/cmd_profiles.sh
       . "$AIF_ROOT/lib/cmd_profiles.sh"
       aif_cmd_profiles ${1+"$@"}
+      ;;
+    test)
+      # shellcheck source=lib/cmd_test.sh
+      . "$AIF_ROOT/lib/cmd_test.sh"
+      aif_cmd_test ${1+"$@"}
       ;;
     help | -h | --help)
       aif_usage

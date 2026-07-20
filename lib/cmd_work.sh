@@ -129,7 +129,19 @@ _aif_work_status() {
       _aif_stage "plan" "$(aif_no)" "plan-form: $(printf '%s' "$out" | head -1)"
       [ -z "$next" ] && next="fix plan.md"
     else
-      _aif_stage "plan" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
+      rc=0
+      out="$(_aif_gate "$root" "plan-judge" "$work")" || rc=$?
+      if [ "$rc" -eq 127 ]; then rc=0; fi
+      if [ "$rc" -ne 0 ]; then
+        _aif_stage "plan" "$(aif_no)" "judge: $(printf '%s' "$out" | head -1)"
+        case "$(printf '%s' "$out" | head -1)" in
+          *"not judged"* | *"different plan"*)
+            [ -z "$next" ] && next="aif station run plan-judge $ticket" ;;
+          *) [ -z "$next" ] && next="fix plan.md (implementer would guess)" ;;
+        esac
+      else
+        _aif_stage "plan" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
+      fi
     fi
   fi
 

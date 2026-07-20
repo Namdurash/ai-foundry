@@ -72,6 +72,27 @@ _aif_station_run() {
   [ -n "$model" ] || aif_die "project.json has no tier mapping for '$tier'"
   max_turns="$(jq -r '.limits.station_max_turns // 30' "$project")"
 
+  local tools
+  tools="$(printf '%s' "$meta" | jq -r '.tools // "Read Write Edit"')"
+
+  # Preconditions: the state machine, enforced before a token is spent. A
+  # station may run only if every gate on its upstream boundaries passes against
+  # current bytes — "passes now", not "passed once". Editing an upstream artifact
+  # invalidates its gates on its own, so this needs no separate "go back".
+  local gate gp pout prc
+  while IFS= read -r gate; do
+    [ -n "$gate" ] || continue
+    gp="$root/.aif/gates/$gate.sh"
+    [ -f "$gp" ] || continue # gate from a later milestone; skip
+    prc=0
+    pout="$(/bin/bash "$gp" "$work" 2>&1)" || prc=$?
+    if [ "$prc" -ne 0 ]; then
+      aif_die "precondition not met for '$station': $gate — $(printf '%s' "$pout" | head -1). Resolve the upstream artifact first."
+    fi
+  done <<EOF
+$(printf '%s' "$meta" | jq -r '.requires[]? // empty')
+EOF
+
   # The user prompt names the ticket and the target; the station's system prompt
   # (its file body) says what to read and how. A judge additionally gets the hash
   # of the artifact it judges, to record as the verdict's binding.
@@ -102,7 +123,7 @@ _aif_station_run() {
   # envelope — so the outcome is read from the envelope (is_error), not the exit
   # code. `|| true` keeps set -e from killing us before we can read it.
   "aif_runner_${AIF_PROFILE_RUNNER}_station" \
-    "$root" "$sys_prompt" "$user_prompt" "$model" "$max_turns" "Read Write Edit" \
+    "$root" "$sys_prompt" "$user_prompt" "$model" "$max_turns" "$tools" \
     "$out" "$err" || true
 
   rm -f "$sys_prompt"

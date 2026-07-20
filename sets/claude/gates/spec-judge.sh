@@ -40,26 +40,30 @@ spec_hash="$(aif_g_sha256 "$spec")"
 spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
 spec_ids="$(printf '%s' "$spec_meta" | jq -c '[.acceptance[]?.id]')"
 
-# --- envelope: reject a stale or malformed verdict --------------------------
-envelope="$(
+# exit 1 (act on the boundary): a stale verdict means re-run the judge. The spec
+# is not wrong, the verdict is old.
+if [ "$(jq -r '.subject_sha256 // ""' "$verdict")" != "$spec_hash" ]; then
+  aif_g_reject "verdict is for a different spec — it changed since it was judged; re-run the judge"
+fi
+
+# exit 3 (the judge malfunctioned): a verdict that is malformed, or that points
+# at an AC the spec does not have, or quotes text not in the spec, is unusable.
+# Re-running the judge is the fix, not editing the spec — so this must not read
+# as a spec defect and send the author in circles.
+malformed="$(
   jq -r \
-    --arg spec_hash "$spec_hash" \
     --argjson spec_ids "$spec_ids" '
     [
-      (if .subject != "spec.md" then "verdict.subject is not spec.md" else empty end),
-      (if .subject_sha256 != $spec_hash
-        then "verdict is for a different spec — it changed since it was judged; re-run the judge"
-        else empty end),
-      (if (.pass | type) != "boolean" then "verdict.pass must be a boolean" else empty end),
+      (if .subject != "spec.md" then "subject is not spec.md" else empty end),
+      (if (.pass | type) != "boolean" then "pass is not a boolean" else empty end),
       (if (.pass == false) and ((.findings // []) | length) == 0
-        then "verdict fails but lists no findings" else empty end),
+        then "fails but lists no findings" else empty end),
       ( (.findings // [])
         | to_entries[]
         | .key as $i | .value as $f
         | (
           (if ($f.severity // "") != "blocker"
-            then "findings[" + ($i|tostring) + "].severity must be blocker (the judge reports blockers only)"
-            else empty end),
+            then "findings[" + ($i|tostring) + "].severity must be blocker" else empty end),
           (if ($f.ac != null) and (($spec_ids | index($f.ac)) == null)
             then "findings[" + ($i|tostring) + "].ac \"" + ($f.ac|tostring) + "\" is not an AC in spec.md"
             else empty end),
@@ -69,25 +73,27 @@ envelope="$(
       )
     ] | .[]
   ' "$verdict" 2>&1
-)" || aif_g_error "spec-judge: jq failed — $envelope"
+)" || aif_g_error "spec-judge: jq failed — $malformed"
 
-aif_g_report "$envelope" "verdict-spec.json"
-
-# --- every quote must be locatable in spec.md -------------------------------
-# A quote the judge could not have copied is a malfunction, not a spec defect:
-# exit 3 so the loop reruns the judge rather than sending the author in circles.
+# Every quote must be locatable verbatim; one that is not is a hallucination.
 while IFS= read -r q; do
   [ -n "$q" ] || continue
   if ! grep -qF -- "$q" "$spec"; then
-    aif_g_error "judge quoted text not found in spec.md: \"$q\" — rerun the judge"
+    malformed="$malformed
+quoted text not found in spec.md: \"$q\""
   fi
 done <<EOF
 $(jq -r '.findings[]?.quote // empty' "$verdict")
 EOF
 
-# --- the verdict itself -----------------------------------------------------
-# Fail on pass:false OR any blocker, so a self-contradictory pass-with-blocker
-# verdict still gates closed.
+if [ -n "$(printf '%s' "$malformed" | grep -v '^$' || true)" ]; then
+  printf 'ERROR  the judge produced an unusable verdict — rerun it:\n' >&2
+  printf '%s\n' "$malformed" | grep -v '^$' | sed 's/^/  - /' >&2
+  exit "$AIF_G_ERROR"
+fi
+
+# exit 1 (fix the artifact): a well-formed verdict with a blocker means the spec
+# has a defect. Also fail a self-contradictory pass-with-blocker verdict.
 blockers="$(jq '[.findings[]? | select(.severity == "blocker")] | length' "$verdict")"
 passed="$(jq -r '.pass' "$verdict")"
 

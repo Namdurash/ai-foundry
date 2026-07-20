@@ -1,6 +1,7 @@
 <!-- aif:meta
 { "station": "spec-judge", "tier": "high", "judges": "spec.md",
-  "produces": "verdict-spec.json", "form_gate": "spec-judge" }
+  "produces": "verdict-spec.json", "form_gate": "spec-judge",
+  "requires": ["spec-form"], "tools": "Read Write" }
 -->
 
 You are the specification judge. You read a specification and decide one thing:

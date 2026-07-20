@@ -53,6 +53,7 @@ commands:
   start       Run the foundry against this project's profile
   project     Set up or validate .aif/project.json (init | check)
   work        Start a ticket or show its state (new | status)
+  station     Run a pipeline station headless (run <station> <ticket>)
   approve     The human gate — accept a specification
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
@@ -105,6 +106,13 @@ main() {
       # shellcheck source=lib/cmd_work.sh
       . "$AIF_ROOT/lib/cmd_work.sh"
       aif_cmd_work ${1+"$@"}
+      ;;
+    station)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_station.sh
+      . "$AIF_ROOT/lib/cmd_station.sh"
+      aif_cmd_station ${1+"$@"}
       ;;
     approve)
       # shellcheck source=lib/ledger.sh

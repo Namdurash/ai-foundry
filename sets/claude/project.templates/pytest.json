@@ -33,7 +33,8 @@
     "plan_files_max": 12,
     "diff_lines_max": 400,
     "attempts_max": 3,
-    "revisions_max": 5
+    "revisions_max": 5,
+    "station_max_turns": 30
   },
 
   "risk_rules": [

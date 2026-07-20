@@ -69,6 +69,45 @@ aif_runner_claude_eval() {
   )
 }
 
+# aif_runner_claude_station <workdir> <sys-prompt-file> <user-prompt> <model>
+#                           <max-turns> <allowed-tools> <out> <err>
+#
+# One headless station run. This is the instrumented path: because aif invokes
+# claude -p itself, the JSON envelope carries the usage the ledger needs — an
+# in-session subagent would report none. The caller has already exported the
+# profile's environment, so --model opus resolves to whatever the profile maps
+# opus to (glm-5.2 on the glm profile). That remap is what keeps a set
+# model-agnostic while a station still declares its tier.
+aif_runner_claude_station() {
+  local workdir="$1" sys="$2" prompt="$3" model="$4"
+  local max_turns="$5" tools="$6" out="$7" err="$8"
+
+  (
+    cd "$workdir" || exit 70
+    claude -p "$prompt" \
+      --append-system-prompt "$(cat "$sys")" \
+      --model "$model" \
+      --allowedTools "$tools" \
+      --output-format json \
+      --max-turns "$max_turns" \
+      --permission-mode acceptEdits \
+      --setting-sources project,local \
+      >"$out" 2>"$err" </dev/null
+  )
+}
+
+# aif_runner_claude_result_usage <result.json> — the token counts as a JSON
+# object. Tokens, not dollars: total_cost_usd is 0 under subscription auth
+# (FINDINGS #2), so tokens are the durable datum and cost is derived later.
+aif_runner_claude_result_usage() {
+  jq -c '{
+    input_tokens: (.usage.input_tokens // 0),
+    output_tokens: (.usage.output_tokens // 0),
+    cache_read_input_tokens: (.usage.cache_read_input_tokens // 0),
+    cache_creation_input_tokens: (.usage.cache_creation_input_tokens // 0)
+  }' "$1" 2>/dev/null || printf '{}'
+}
+
 # aif_runner_claude_result_ok <result.json>
 #
 # Gate on is_error and nothing else. The envelope reports subtype:"success"

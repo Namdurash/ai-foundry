@@ -45,16 +45,20 @@ aif_g_sha256() {
   fi
 }
 
-# aif_g_meta <file> — the JSON out of the aif:meta HTML comment.
+# aif_g_meta <file> — the JSON out of the FIRST aif:meta HTML comment.
 #
 # The metadata lives inside the markdown rather than beside it so that one
 # artifact has exactly one hash. An HTML comment keeps it invisible wherever
 # markdown is rendered.
+#
+# Only the first block: an artifact body may quote the format, and matching
+# every block would concatenate them into invalid JSON. Kept identical to
+# aif_meta_json in lib/common.sh.
 aif_g_meta() {
   awk '
-    /^<!-- aif:meta$/ { inblock = 1; next }
-    /^-->$/           { inblock = 0 }
-    inblock           { print }
+    /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
+    inblock && /^-->$/         { inblock = 0; next }
+    inblock                    { print }
   ' "$1"
 }
 

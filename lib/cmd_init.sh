@@ -54,6 +54,15 @@ _aif_set_files() {
       printf '%s\t%s\n' "$file" ".aif/gates/$rel"
     done
   fi
+
+  # Station system prompts. Installed into the project so a run is reproducible
+  # from the committed tree and versioned alongside the artifacts it produced.
+  if [ -d "$set_dir/stations" ]; then
+    find "$set_dir/stations" -type f -print 2>/dev/null | while IFS= read -r file; do
+      rel="${file#"$set_dir/stations/"}"
+      printf '%s\t%s\n' "$file" ".aif/stations/$rel"
+    done
+  fi
 }
 
 # The three-way rule. Echoes create | update | conflict.

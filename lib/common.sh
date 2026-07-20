@@ -43,17 +43,29 @@ aif_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
-# aif_meta_json <file> — the JSON out of the aif:meta HTML comment, or empty.
+# aif_meta_json <file> — the JSON out of the FIRST aif:meta HTML comment.
+#
+# Only the first: a station prompt legitimately contains an example aif:meta
+# block in its body, and a model's output may echo the format. Matching every
+# block would concatenate them into invalid JSON.
 #
 # The same block the gates read (their copy lives in .aif/gates/_lib.sh, which
 # cannot source this file — it runs in CI without aif). Keep the two awk
 # programs identical.
 aif_meta_json() {
   awk '
-    /^<!-- aif:meta$/ { inblock = 1; next }
-    /^-->$/           { inblock = 0 }
-    inblock           { print }
+    /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
+    inblock && /^-->$/         { inblock = 0; next }
+    inblock                    { print }
   ' "$1"
+}
+
+# aif_meta_body <file> — everything after the aif:meta comment closes.
+#
+# For station files, the meta block carries the config and the body is the
+# system prompt.
+aif_meta_body() {
+  awk 'body { print } /^-->$/ { body = 1 }' "$1"
 }
 
 # aif_meta_get <file> <key> [default] — read one KEY=VALUE line.

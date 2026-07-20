@@ -112,8 +112,8 @@ aif_cmd_uninstall() {
 $(jq -r '.files[]? | [.path, .sha256] | @tsv' "$manifest")
 EOF
 
-  local kind entries
-  while IFS="$(printf '\t')" read -r rel kind entries; do
+  local kind fragment pre_existed
+  while IFS="$(printf '\t')" read -r rel kind fragment pre_existed; do
     [ -n "$rel" ] || continue
     [ -f "$root/$rel" ] || continue
 
@@ -135,7 +135,19 @@ EOF
       json_merge)
         printf '  %srevert%s    %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$rel"
         if [ "$AIF_DRY_RUN" -eq 0 ]; then
-          aif_json_unmerge "$root/$rel" "${entries:-[]}" || true
+          # A separate default: "${fragment:-{}}" mis-parses in bash — the
+          # default's own "}" closes the expansion and a stray "}" is appended.
+          local frag="$fragment"
+          [ -n "$frag" ] || frag='{}'
+          aif_json_unmerge "$root/$rel" "$frag" || true
+          # If we created this file and reverting our keys emptied it, remove it —
+          # a file we made and left holding nothing is our litter, not the user's.
+          if [ "$pre_existed" = "false" ] && [ -f "$root/$rel" ] &&
+            jq -e '. == {}' "$root/$rel" >/dev/null 2>&1; then
+            rm -f "$root/$rel"
+            _aif_drop_if_empty "$root/$rel"
+            _aif_prune_empty "$root" "$rel"
+          fi
         fi
         ;;
       *)
@@ -145,7 +157,7 @@ EOF
         ;;
     esac
   done <<EOF
-$(jq -r '.edits[]? | [.path, .kind, ((.entries // []) | tojson)] | @tsv' "$manifest")
+$(jq -r '.edits[]? | [.path, .kind, ((.fragment // {}) | tojson), (.pre_existed | tostring)] | @tsv' "$manifest")
 EOF
 
   if [ "$AIF_DRY_RUN" -eq 0 ]; then

@@ -244,23 +244,39 @@ $(_aif_set_files "$set_dir")
 EOF
 
   # The set's settings fragment, if it ships one. Model routing never goes here.
-  local fragment entries
+  local fragment settings_dest pre_existed clobbers
+  settings_dest="$root/.claude/settings.json"
   if [ -f "$set_dir/settings.fragment.json" ]; then
     fragment="$(cat "$set_dir/settings.fragment.json")"
 
-    # Flatten the fragment to leaf paths and the values we are about to write.
-    # Recording the value, not just the key, is what lets uninstall remove a key
-    # only while it still holds what we put there — and leave it alone once the
-    # user has changed it to something of their own.
-    entries="$(printf '%s' "$fragment" |
-      jq -c '[paths(scalars) as $p | { path: $p, value: getpath($p) }]')" ||
-      aif_die "set fragment is not valid JSON: $set_dir/settings.fragment.json"
-
-    printf '  %smerge%s     .claude/settings.json\n' "$AIF_C_GREEN" "$AIF_C_RESET"
-    if [ "$AIF_DRY_RUN" -eq 0 ]; then
-      aif_json_merge "$root/.claude/settings.json" "$fragment"
+    # A `*` merge REPLACES arrays rather than appending, so merging our hook into
+    # a settings.json that already has PreToolUse hooks would drop the user's.
+    # Refuse in that case rather than clobber — the guard hook is defence in
+    # depth (green's hash-lock is the real arbiter), so skipping it is safe.
+    clobbers=no
+    if [ -f "$settings_dest" ]; then
+      printf '%s' "$fragment" | jq -e '.hooks.PreToolUse' >/dev/null 2>&1 &&
+        jq -e '.hooks.PreToolUse' "$settings_dest" >/dev/null 2>&1 && clobbers=yes
     fi
-    printf '%s\t%s\t%s\n' ".claude/settings.json" "json_merge" "$entries" >>"$edits_tsv"
+
+    if [ "$clobbers" = "yes" ]; then
+      aif_warn "you already have PreToolUse hooks — skipping the guard hook so yours are not replaced"
+      aif_warn "  register it yourself from .aif/hooks/guard.sh if you want the test/impl guard"
+    else
+      # Whether the file existed decides uninstall's cleanup: a file we created
+      # and then emptied is our litter to remove; a file the user had stays.
+      pre_existed="no"
+      [ -f "$settings_dest" ] && pre_existed="yes"
+
+      printf '  %smerge%s     .claude/settings.json\n' "$AIF_C_GREEN" "$AIF_C_RESET"
+      if [ "$AIF_DRY_RUN" -eq 0 ]; then
+        aif_json_merge "$settings_dest" "$fragment"
+      fi
+      # Store the fragment itself: uninstall subtracts it structurally, which is
+      # value-guarded and handles the nested hook array a leaf-path list cannot.
+      printf '%s\t%s\t%s\t%s\n' ".claude/settings.json" "json_merge" \
+        "$(printf '%s' "$fragment" | jq -c .)" "$pre_existed" >>"$edits_tsv"
+    fi
   fi
 
   # One line into CLAUDE.md, and only if the set actually has always-on content.

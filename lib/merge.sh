@@ -118,28 +118,40 @@ aif_json_merge() {
   mv "$tmp" "$target"
 }
 
-# aif_json_unmerge <target> <entries-json>
+# aif_json_unmerge <target> <fragment-json>
 #
-# Remove the keys we merged in — but only those still holding the value we
-# wrote. A key the user has since changed is theirs now, and stays.
+# Structurally subtract the fragment we merged, then prune what is left empty.
+# This is value-guarded by construction: a key is removed only where it still
+# deep-equals what we wrote (`.[$k] == $f[$k]`), and an array keeps only the
+# elements we did not add (`.[$k] - $f[$k]`). A key the user has since changed no
+# longer matches, so it stays — the classic uninstaller sin (taking back a
+# setting the user rewrote) cannot happen.
 #
-# Deleting by key alone would be the classic uninstaller sin: you put
-# "model": "opus" there, the user changed it to something they wanted, and
-# uninstall silently takes it away because the key name matches.
-#
-# The walk afterwards prunes objects left empty, so removing our only entry
-# under `env` does not leave `"env": {}` behind as litter.
+# Leaf-path deletion, the previous approach, could not invert a deeply nested
+# fragment: removing the scalars left `{"hooks":{"PreToolUse":[{}]}}` behind. The
+# recursive subtract plus a prune that clears empty objects AND arrays handles
+# the nesting.
 aif_json_unmerge() {
-  local target="$1" entries="$2"
+  local target="$1" fragment="$2"
   local tmp
 
   [ -f "$target" ] || return 0
 
   tmp="$(aif_tmpfile "$target")"
-  if ! jq --argjson entries "$entries" '
-        reduce $entries[] as $e (.;
-          if (getpath($e.path) == $e.value) then delpaths([$e.path]) else . end)
-        | walk(if type == "object" then with_entries(select(.value != {})) else . end)
+  if ! jq --argjson f "$fragment" '
+        def subtract($f):
+          reduce ($f | keys_unsorted[]) as $k (.;
+            if (has($k) | not) then .
+            elif (.[$k] == $f[$k]) then del(.[$k])
+            elif ((.[$k] | type) == "object") and (($f[$k] | type) == "object")
+              then .[$k] = (.[$k] | subtract($f[$k]))
+            elif ((.[$k] | type) == "array") and (($f[$k] | type) == "array")
+              then .[$k] = (.[$k] - $f[$k])
+            else . end);
+        def prune: walk(
+          if type == "object" then with_entries(select(.value != {} and .value != []))
+          else . end);
+        subtract($f) | prune
       ' "$target" >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
     aif_warn "could not revert $target — left untouched"

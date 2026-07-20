@@ -84,7 +84,8 @@ aif_manifest_write() {
       files:        (split_rows($files_raw) | map({ path: .[0], sha256: .[1] })),
       edits:        (split_rows($edits_raw) | map(
                        { path: .[0], kind: .[1] }
-                       + (if (.[2] // "") == "" then {} else { entries: (.[2] | fromjson) } end)
+                       + (if (.[2] // "") == "" then {} else { fragment: (.[2] | fromjson) } end)
+                       + (if (.[3] // "") == "" then {} else { pre_existed: (.[3] == "yes") } end)
                      ))
     }
     ' >"$dest.tmp" || aif_die "failed to build manifest"

@@ -95,6 +95,31 @@ Both halves disqualify it:
 
 Isolate eval runs with `CLAUDE_CONFIG_DIR` + `--setting-sources` instead.
 
+## 5b. Merging into a user's JSON reformats it; round-trip is content-clean, not byte-clean
+
+`aif init` merges the guard-hook registration into `.claude/settings.json` with
+jq, and jq has no format-preserving mode — it rewrites the whole file
+2-space-indented. So the round-trip promise is precise:
+
+- A file aif **created** (fresh project, no `.claude/settings.json`) is deleted
+  on uninstall → byte-clean.
+- **Marker-block** files (`CLAUDE.md`, `.gitignore`) are edited by text surgery,
+  never jq → byte-clean.
+- A `settings.json` the user **already had** is restored to the same *content* on
+  uninstall (verified with `jq -S`), but jq's reformatting means `git diff` may
+  show a formatting-only change.
+
+Two more traps this merge exposed, both real bugs that were fixed:
+
+- `${var:-{}}` mis-parses in bash: the `}` in the `{}` default closes the
+  parameter expansion, and a stray `}` is appended to the value. Assign the
+  default on its own line.
+- A `*` merge **replaces** arrays, it does not append. Merging a hook into a
+  `settings.json` that already has `hooks.PreToolUse` would drop the user's
+  hooks, so `aif init` refuses and warns rather than clobber. Uninstall subtracts
+  the fragment structurally (recursive, with array difference) — a flat
+  leaf-path deletion cannot invert a nested hook array and leaves `[{}]` behind.
+
 ## 5. jq `+` clobbers sibling keys; use `*`
 
 ```

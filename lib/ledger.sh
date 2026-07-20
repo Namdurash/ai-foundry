@@ -85,3 +85,25 @@ aif_ledger_gate_valid() {
     "$ledger")"
   [ "$latest" = "pass|$cur" ]
 }
+
+# aif_ledger_recorded_pass <work> <gate> — rc 0 iff the latest entry for this
+# gate is a pass whose subject artifact still hashes to the recorded value.
+#
+# For gates that cannot be re-run as a live precondition. verify-red asserts the
+# tests are red; once implementation starts that stops holding, so the recorded
+# pass — bound to tests.lock's bytes — IS the precondition, not a re-run.
+aif_ledger_recorded_pass() {
+  local work="$1" gate="$2" ledger result subject recorded actual
+  ledger="$(aif_ledger_path "$work")"
+  [ -f "$ledger" ] || return 1
+
+  result="$(jq -r --arg g "$gate" '[.entries[]|select(.gate==$g)]|last|.result//"none"' "$ledger")"
+  [ "$result" = "pass" ] || return 1
+
+  subject="$(jq -r --arg g "$gate" '[.entries[]|select(.gate==$g)]|last|.subject//""' "$ledger")"
+  recorded="$(jq -r --arg g "$gate" '[.entries[]|select(.gate==$g)]|last|.subject_sha256//""' "$ledger")"
+
+  [ -n "$subject" ] && [ -f "$work/$subject" ] || return 1
+  actual="$(aif_sha256 "$work/$subject")"
+  [ "$actual" = "$recorded" ]
+}

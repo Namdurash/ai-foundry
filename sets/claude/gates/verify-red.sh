@@ -97,6 +97,7 @@ if [ -z "$results" ]; then
 fi
 
 new_count=0
+new_rows=""
 if [ "$mode" = "per-test" ]; then
   # jq emits plain rows; classification happens in bash against the project's
   # failure-class patterns. Keeping the jq single-line and pattern-free is what
@@ -193,17 +194,24 @@ EOF
 aif_g_report "${cov# }" "coverage"
 
 # --- freeze: write tests.lock ----------------------------------------------
-# The test hashes lock the oracle; impl_frozen records the implementation as it
-# is NOW (before code) so green can restore it and confirm the tests go red
-# again. create paths do not exist yet, so they are recorded as to-be-created.
+# Lock the whole test tree, not just the declared files: green must catch logic
+# smuggled into a conftest.py or a fixture that no plan lists. impl_frozen
+# records the implementation as it is NOW (before code) so green can restore it
+# and confirm the tests go red again; create paths do not exist yet, so they are
+# recorded as to-be-created. covering is the new red test ids, for green's
+# revert-recheck to target.
 tests_json="$(
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    printf '%s\t%s\n' "$f" "$(aif_g_sha256 "$root/$f")"
+  while IFS= read -r rootdir; do
+    [ -n "$rootdir" ] || continue
+    [ -d "$root/$rootdir" ] || continue
+    find "$root/$rootdir" -type f 2>/dev/null | while IFS= read -r f; do
+      printf '%s\t%s\n' "${f#"$root"/}" "$(aif_g_sha256 "$f")"
+    done
   done <<EOF
-$test_files
+$(jq -r '.test.roots[]?' "$project")
 EOF
 )"
+covering_json="$(printf '%s' "$new_rows" | cut -f1)"
 impl_frozen="$(
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -219,11 +227,13 @@ jq -n \
   --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)" \
   --rawfile tests_raw <(printf '%s' "$tests_json") \
   --rawfile impl_raw <(printf '%s' "$impl_frozen") \
-  --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" '
+  --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
     | map({ (.[0]): .[1] }) | add // {};
   { schema: 1, plan_sha256: $plan_hash, mode: $mode, at: $at,
     tests: rows($tests_raw),
+    covering: $covering,
     impl_frozen: rows($impl_raw),
     impl_created: $create }' >"$work/tests.lock"
 

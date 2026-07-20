@@ -129,6 +129,8 @@ aif_g_report() {
 
   count="$(printf '%s\n' "$violations" | grep -c .)"
   printf 'REJECT %s: %s problem(s)\n' "$label" "$count" >&2
-  printf '%s\n' "$violations" | sed 's/^/  - /' >&2
+  # Drop blank lines: an accumulator that prepends "\nMSG" leaves a leading
+  # empty that would otherwise print as a bare bullet.
+  printf '%s\n' "$violations" | sed '/^[[:space:]]*$/d; s/^/  - /' >&2
   exit "$AIF_G_REJECT"
 }

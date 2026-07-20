@@ -73,8 +73,18 @@ _aif_station_run() {
   # test-author station freezes tests.lock). It, not the model's scattered
   # output, is what the next station's precondition binds to.
   freezes="$(printf '%s' "$meta" | jq -r '.freezes // empty')"
-  [ -n "$produces" ] || [ -n "$form_gate" ] ||
-    aif_die "station '$station' declares neither 'produces' nor 'form_gate' — nothing to verify"
+  local has_gate
+  has_gate="$(printf '%s' "$meta" | jq -r 'if (.gates // .form_gate) then "yes" else "no" end')"
+  [ -n "$produces" ] || [ "$has_gate" = "yes" ] ||
+    aif_die "station '$station' declares neither 'produces' nor a gate — nothing to verify"
+
+  # A station may tier by the ticket's risk instead of a fixed level. This is how
+  # the implement station gets haiku on a pure-function ticket and opus on a
+  # migration: the cheapest engine whose errors the gates catch, per principle 5.
+  # The risk is the human's call at spec time, never a model's.
+  if [ "$tier" = "risk" ]; then
+    tier="$(aif_meta_json "$work/spec.md" | jq -r '.risk // "medium"')"
+  fi
 
   model="$(jq -r --arg t "$tier" '.tiers[$t] // empty' "$project")"
   [ -n "$model" ] || aif_die "project.json has no tier mapping for '$tier'"
@@ -101,6 +111,20 @@ _aif_station_run() {
 $(printf '%s' "$meta" | jq -r '.requires[]? // empty')
 EOF
 
+  # requires_recorded: gates that cannot be re-run as a live precondition, so the
+  # recorded pass — bound to the frozen artifact's bytes — stands in. verify-red
+  # is the case: it asserts the tests are red, which stops holding the moment
+  # implementation begins.
+  local rgate
+  while IFS= read -r rgate; do
+    [ -n "$rgate" ] || continue
+    if ! aif_ledger_recorded_pass "$work" "$rgate"; then
+      aif_die "precondition not met for '$station': $rgate has no recorded pass for the current artifact — (re)run the station that produces it."
+    fi
+  done <<EOF
+$(printf '%s' "$meta" | jq -r '.requires_recorded[]? // empty')
+EOF
+
   # The user prompt names the ticket and the target; the station's system prompt
   # (its file body) says what to read and how. A judge additionally gets the hash
   # of the artifact it judges, to record as the verdict's binding.
@@ -123,6 +147,12 @@ EOF
     export CLAUDE_CONFIG_DIR
     mkdir -p "$CLAUDE_CONFIG_DIR"
   fi
+
+  # The guard hook reads this to scope its denials: the implement station may not
+  # write tests, the test station may not write implementation. The station runs
+  # as `claude -p`, not a named subagent, so a hook cannot be bound in agent
+  # frontmatter — an exported marker the child inherits is how the scope travels.
+  export AIF_STATION="$station"
 
   printf '%sstation%s %s · tier %s → model %s · profile %s\n' \
     "$AIF_C_DIM" "$AIF_C_RESET" "$station" "$tier" "$model" "$profile" >&2
@@ -191,32 +221,52 @@ EOF
     "$AIF_C_GREEN" "$AIF_C_RESET" "$station" "$attempt" \
     "$(printf '%s' "$usage" | jq -r '.output_tokens')"
 
-  # The form gate runs immediately: a station's output is only worth anything if
-  # it is admissible, and the sooner the reject the cheaper the retry.
-  if [ -n "$form_gate" ]; then
-    local gp="$root/.aif/gates/$form_gate.sh" gout grc=0
-    if [ -f "$gp" ]; then
-      gout="$(/bin/bash "$gp" "$work" 2>&1)" || grc=$?
+  # The gates run immediately: a station's output is only worth anything if it
+  # is admissible, and the sooner the reject the cheaper the retry. A station may
+  # have more than one (implement has green and scope); they run in order and any
+  # failure stops the station.
+  local gates_list gate gp gout grc gate_subject gate_hash
+  gates_list="$(printf '%s' "$meta" | jq -r 'if .gates then .gates[] elif .form_gate then .form_gate else empty end')"
+  while IFS= read -r gate; do
+    [ -n "$gate" ] || continue
+    gp="$root/.aif/gates/$gate.sh"
+    [ -f "$gp" ] || continue
+    grc=0
+    gout="$(/bin/bash "$gp" "$work" 2>&1)" || grc=$?
 
-      # Record the gate against the artifact it froze, when it names one, so the
-      # next station's precondition can bind to it — otherwise against what the
-      # station produced.
-      local gate_subject="$produces" gate_hash="$out_hash"
-      if [ -n "$freezes" ] && [ -f "$work/$freezes" ]; then
-        gate_subject="$freezes"
-        gate_hash="$(aif_sha256 "$work/$freezes")"
-      fi
+    # Record against the artifact this station froze, when it names one, so the
+    # next station's precondition can bind to it — otherwise against what the
+    # station produced.
+    gate_subject="$produces"
+    gate_hash="$out_hash"
+    if [ -n "$freezes" ] && [ -f "$work/$freezes" ]; then
+      gate_subject="$freezes"
+      gate_hash="$(aif_sha256 "$work/$freezes")"
+    fi
 
-      aif_ledger_gate "$work" "$form_gate" \
-        "$([ "$grc" -eq 0 ] && echo pass || echo fail)" \
-        "$gate_subject" "$gate_hash" "$(aif_sha256 "$gp")" \
-        "$(printf '%s' "$gout" | head -1)"
-      if [ "$grc" -ne 0 ]; then
-        aif_err "$form_gate rejected the output:"
-        printf '%s\n' "$gout" | sed 's/^/  /' >&2
-        return 1
-      fi
-      printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$gout" | head -1)"
+    aif_ledger_gate "$work" "$gate" \
+      "$([ "$grc" -eq 0 ] && echo pass || echo fail)" \
+      "$gate_subject" "$gate_hash" "$(aif_sha256 "$gp")" \
+      "$(printf '%s' "$gout" | head -1)"
+    if [ "$grc" -ne 0 ]; then
+      aif_err "$gate rejected the output:"
+      printf '%s\n' "$gout" | sed 's/^/  /' >&2
+      return 1
+    fi
+    printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$gout" | head -1)"
+  done <<EOF
+$gates_list
+EOF
+
+  # One commit per accepted station, so the next station's gates have a baseline
+  # to diff against (scope) and revert to (green's recheck). aif owns the commits
+  # between ticket start and merge; the human reviews the branch at the end.
+  if [ -d "$root/.git" ]; then
+    git -C "$root" add -A >/dev/null 2>&1 || true
+    if ! git -C "$root" diff --cached --quiet 2>/dev/null; then
+      git -C "$root" \
+        -c user.email="aif@local" -c user.name="aif" \
+        commit -q -m "aif: $station $ticket (attempt $attempt)" >/dev/null 2>&1 || true
     fi
   fi
 }

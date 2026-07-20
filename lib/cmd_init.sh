@@ -63,6 +63,15 @@ _aif_set_files() {
       printf '%s\t%s\n' "$file" ".aif/stations/$rel"
     done
   fi
+
+  # Hook scripts. Registered in .claude/settings.json via settings.fragment.json;
+  # this installs the scripts they point at.
+  if [ -d "$set_dir/hooks" ]; then
+    find "$set_dir/hooks" -type f -print 2>/dev/null | while IFS= read -r file; do
+      rel="${file#"$set_dir/hooks/"}"
+      printf '%s\t%s\n' "$file" ".aif/hooks/$rel"
+    done
+  fi
 }
 
 # The three-way rule. Echoes create | update | conflict.

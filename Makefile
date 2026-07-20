@@ -1,8 +1,9 @@
 SHELL := /bin/bash
 
-# Gates ship to users' projects and run in CI, so they are held to the same
-# standard as the CLI itself.
-SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) $(wildcard sets/*/gates/*.sh)
+# Gates and hooks ship to users' projects and run in CI, so they are held to the
+# same standard as the CLI itself.
+SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) \
+                 $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh)
 
 .PHONY: help lint fmt check
 

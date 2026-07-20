@@ -91,13 +91,29 @@ _aif_work_status() {
       _aif_stage "spec" "$(aif_no)" "spec-form: $(printf '%s' "$out" | head -1)"
       [ -z "$next" ] && next="fix spec.md"
     else
+      # spec-form → spec-judge → human approve. The judge runs before the human
+      # to keep a malformed or blocked spec off the human's desk.
       rc=0
-      out="$(_aif_gate "$root" "spec-approve" "$work")" || rc=$?
+      out="$(_aif_gate "$root" "spec-judge" "$work")" || rc=$?
+      if [ "$rc" -eq 127 ]; then
+        rc=0 # judge gate not installed (pre-M2b); skip it
+      fi
       if [ "$rc" -ne 0 ]; then
-        _aif_stage "spec" "$(aif_no)" "awaiting approval"
-        [ -z "$next" ] && next="aif approve $ticket"
+        _aif_stage "spec" "$(aif_no)" "judge: $(printf '%s' "$out" | head -1)"
+        case "$(printf '%s' "$out" | head -1)" in
+          *"not judged"*) [ -z "$next" ] && next="aif station run spec-judge $ticket" ;;
+          *"different spec"*) [ -z "$next" ] && next="aif station run spec-judge $ticket" ;;
+          *) [ -z "$next" ] && next="fix spec.md (judge found blockers)" ;;
+        esac
       else
-        _aif_stage "spec" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
+        rc=0
+        out="$(_aif_gate "$root" "spec-approve" "$work")" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          _aif_stage "spec" "$(aif_no)" "awaiting approval"
+          [ -z "$next" ] && next="aif approve $ticket"
+        else
+          _aif_stage "spec" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
+        fi
       fi
     fi
   fi

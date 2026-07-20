@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# Gate: spec-judge — is there a valid, current pass from the specification judge?
+#
+# The judge is an executor with an unknown error rate and nothing gating it, so
+# the gate makes the judge's output falsifiable rather than trusting it:
+#
+#   - Every finding must quote spec.md verbatim. A judge that invents a problem
+#     it cannot locate has malfunctioned — that is exit 3 (rerun), not exit 1
+#     (the spec is fine, the judge is broken).
+#   - The verdict binds to the spec's bytes. Edit spec.md after judging and the
+#     recorded hash no longer matches, so the pass lapses on its own.
+#
+# What it does NOT establish: that the judge was right. A judge that passes a bad
+# spec, or blocks a good one, is not caught here — that is the limit of a judge
+# with no oracle, and it is why the human still decides completeness.
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source-path=SCRIPTDIR source=_lib.sh
+. "$here/_lib.sh"
+
+aif_g_need jq
+
+work="${1:-}"
+[ -n "$work" ] || aif_g_error "usage: spec-judge.sh <work-dir>"
+
+spec="$work/spec.md"
+verdict="$work/verdict-spec.json"
+
+[ -f "$spec" ] || aif_g_error "spec.md missing"
+[ -f "$verdict" ] || aif_g_reject "not judged — no verdict-spec.json (run: aif station run spec-judge)"
+
+if ! jq -e . "$verdict" >/dev/null 2>&1; then
+  aif_g_error "verdict-spec.json is not valid JSON"
+fi
+
+spec_hash="$(aif_g_sha256 "$spec")"
+spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
+spec_ids="$(printf '%s' "$spec_meta" | jq -c '[.acceptance[]?.id]')"
+
+# --- envelope: reject a stale or malformed verdict --------------------------
+envelope="$(
+  jq -r \
+    --arg spec_hash "$spec_hash" \
+    --argjson spec_ids "$spec_ids" '
+    [
+      (if .subject != "spec.md" then "verdict.subject is not spec.md" else empty end),
+      (if .subject_sha256 != $spec_hash
+        then "verdict is for a different spec — it changed since it was judged; re-run the judge"
+        else empty end),
+      (if (.pass | type) != "boolean" then "verdict.pass must be a boolean" else empty end),
+      (if (.pass == false) and ((.findings // []) | length) == 0
+        then "verdict fails but lists no findings" else empty end),
+      ( (.findings // [])
+        | to_entries[]
+        | .key as $i | .value as $f
+        | (
+          (if ($f.severity // "") != "blocker"
+            then "findings[" + ($i|tostring) + "].severity must be blocker (the judge reports blockers only)"
+            else empty end),
+          (if ($f.ac != null) and (($spec_ids | index($f.ac)) == null)
+            then "findings[" + ($i|tostring) + "].ac \"" + ($f.ac|tostring) + "\" is not an AC in spec.md"
+            else empty end),
+          (if (($f.quote // "") | length) == 0
+            then "findings[" + ($i|tostring) + "].quote is empty" else empty end)
+        )
+      )
+    ] | .[]
+  ' "$verdict" 2>&1
+)" || aif_g_error "spec-judge: jq failed — $envelope"
+
+aif_g_report "$envelope" "verdict-spec.json"
+
+# --- every quote must be locatable in spec.md -------------------------------
+# A quote the judge could not have copied is a malfunction, not a spec defect:
+# exit 3 so the loop reruns the judge rather than sending the author in circles.
+while IFS= read -r q; do
+  [ -n "$q" ] || continue
+  if ! grep -qF -- "$q" "$spec"; then
+    aif_g_error "judge quoted text not found in spec.md: \"$q\" — rerun the judge"
+  fi
+done <<EOF
+$(jq -r '.findings[]?.quote // empty' "$verdict")
+EOF
+
+# --- the verdict itself -----------------------------------------------------
+# Fail on pass:false OR any blocker, so a self-contradictory pass-with-blocker
+# verdict still gates closed.
+blockers="$(jq '[.findings[]? | select(.severity == "blocker")] | length' "$verdict")"
+passed="$(jq -r '.pass' "$verdict")"
+
+if [ "$passed" != "true" ] || [ "$blockers" -gt 0 ]; then
+  printf 'REJECT spec.md: judge found %s blocker(s)\n' "$blockers" >&2
+  jq -r '.findings[]? | "  - " + (.ac // "spec") + ": " + .why + "\n      \"" + .quote + "\""' "$verdict" >&2
+  exit "$AIF_G_REJECT"
+fi
+
+printf 'spec-judge: passed, no blockers\n'

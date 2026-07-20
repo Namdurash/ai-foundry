@@ -57,21 +57,32 @@ _aif_station_run() {
     aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
   fi
 
-  local meta tier produces form_gate model max_turns
+  local meta tier produces form_gate judges model max_turns
   meta="$(aif_meta_json "$station_file")"
   tier="$(printf '%s' "$meta" | jq -r '.tier // "high"')"
   produces="$(printf '%s' "$meta" | jq -r '.produces // empty')"
   form_gate="$(printf '%s' "$meta" | jq -r '.form_gate // empty')"
+  # A judge station declares the artifact it judges. aif hashes that artifact and
+  # tells the judge the value to record, so the verdict binds to the exact bytes
+  # judged — a later edit invalidates it, same as every other *_sha256 binding.
+  judges="$(printf '%s' "$meta" | jq -r '.judges // empty')"
   [ -n "$produces" ] || aif_die "station '$station' declares no 'produces' artifact"
 
   model="$(jq -r --arg t "$tier" '.tiers[$t] // empty' "$project")"
   [ -n "$model" ] || aif_die "project.json has no tier mapping for '$tier'"
   max_turns="$(jq -r '.limits.station_max_turns // 30' "$project")"
 
-  # The user prompt names the ticket and the exact paths; the station's system
-  # prompt (its file body) carries the how.
+  # The user prompt names the ticket and the target; the station's system prompt
+  # (its file body) says what to read and how. A judge additionally gets the hash
+  # of the artifact it judges, to record as the verdict's binding.
   local user_prompt sys_prompt out err
-  user_prompt="Ticket ${ticket}. Read .aif/work/${ticket}/ticket.md and write .aif/work/${ticket}/${produces} following your instructions exactly."
+  user_prompt="Ticket ${ticket}. Your working directory is the project root. Produce .aif/work/${ticket}/${produces} exactly as your instructions specify; read the inputs your instructions name under .aif/work/${ticket}/."
+  if [ -n "$judges" ]; then
+    local judged_hash
+    judged_hash="$(aif_sha256 "$work/$judges")"
+    [ -n "$judged_hash" ] || aif_die "cannot judge $judges — it does not exist for $ticket"
+    user_prompt="$user_prompt You are judging .aif/work/${ticket}/${judges}, whose sha256 is ${judged_hash}. Record exactly that value as subject_sha256 in your verdict."
+  fi
   sys_prompt="$(mktemp "${TMPDIR:-/tmp}/aif-sys-XXXXXX")"
   aif_meta_body "$station_file" >"$sys_prompt"
   out="$(mktemp "${TMPDIR:-/tmp}/aif-out-XXXXXX")"

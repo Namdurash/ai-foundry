@@ -112,6 +112,22 @@ BSD sed treats the argument after `-i` as a backup suffix and then consumes the
 filename; GNU sed rejects the BSD form. There is no spelling that works on both.
 Every in-place edit goes through awk → temp file → `mv`.
 
+## 7a. Gates cannot call lib/ functions — they run without aif
+
+A gate ships into a project and runs from a fresh CI checkout, where `aif` is not
+installed and `lib/common.sh` is not on disk. A gate that calls `aif_have`,
+`aif_die`, or any `lib/` helper works on the author's machine (where the shell
+happens to have them in scope during testing) and fails in CI.
+
+Worse, it fails *silently*. Gates run under `set +e`, so a call to a missing
+function returns 127 and an `if aif_have python3 && …` simply takes the false
+branch — turning an optional-tool check into a quiet downgrade. verify-red went
+to coarse mode this way and every scenario passed vacuously.
+
+Gates use only their own `.aif/gates/_lib.sh` (`aif_g_*`) plus POSIX tools. When
+a gate needs something `lib/` already has, duplicate the few lines into `_lib.sh`
+rather than reaching across.
+
 ## 7. Evals cannot be run from inside an agent session
 
 A child `claude` spawned from within a Claude Code session cannot authenticate:

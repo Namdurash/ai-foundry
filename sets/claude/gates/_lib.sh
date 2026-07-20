@@ -35,6 +35,14 @@ aif_g_need() {
   command -v "$1" >/dev/null 2>&1 || aif_g_error "required tool not found: $1"
 }
 
+# aif_g_have <command> — true if present. Gates cannot use lib/common.sh's
+# aif_have (they run in CI without aif), and a call to a missing function fails
+# silently under set +e — which is how an optional tool check turns into a quiet
+# downgrade. Use this for optional tools like python3.
+aif_g_have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
 aif_g_sha256() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1

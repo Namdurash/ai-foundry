@@ -57,16 +57,24 @@ _aif_station_run() {
     aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
   fi
 
-  local meta tier produces form_gate judges model max_turns
+  local meta tier produces form_gate judges freezes model max_turns
   meta="$(aif_meta_json "$station_file")"
   tier="$(printf '%s' "$meta" | jq -r '.tier // "high"')"
+  # produces: a single artifact written into the work dir (spec.md, plan.md). A
+  # station that writes into the project instead (the test-author writes test
+  # files) has none; its form gate does the verifying and freezes the boundary.
   produces="$(printf '%s' "$meta" | jq -r '.produces // empty')"
   form_gate="$(printf '%s' "$meta" | jq -r '.form_gate // empty')"
   # A judge station declares the artifact it judges. aif hashes that artifact and
   # tells the judge the value to record, so the verdict binds to the exact bytes
   # judged — a later edit invalidates it, same as every other *_sha256 binding.
   judges="$(printf '%s' "$meta" | jq -r '.judges // empty')"
-  [ -n "$produces" ] || aif_die "station '$station' declares no 'produces' artifact"
+  # freezes: the artifact the form gate writes to record this boundary (the
+  # test-author station freezes tests.lock). It, not the model's scattered
+  # output, is what the next station's precondition binds to.
+  freezes="$(printf '%s' "$meta" | jq -r '.freezes // empty')"
+  [ -n "$produces" ] || [ -n "$form_gate" ] ||
+    aif_die "station '$station' declares neither 'produces' nor 'form_gate' — nothing to verify"
 
   model="$(jq -r --arg t "$tier" '.tiers[$t] // empty' "$project")"
   [ -n "$model" ] || aif_die "project.json has no tier mapping for '$tier'"
@@ -158,27 +166,29 @@ EOF
     aif_die "station failed: $reason"
   fi
 
-  local artifact
-  artifact="$work/$produces"
-  [ -f "$artifact" ] || aif_die "station reported success but did not write $produces"
+  local out_hash="" outputs="[]"
+  if [ -n "$produces" ]; then
+    local artifact="$work/$produces"
+    [ -f "$artifact" ] || aif_die "station reported success but did not write $produces"
+    out_hash="$(aif_sha256 "$artifact")"
+    outputs="$(jq -n --arg path "$produces" --arg sha "$out_hash" \
+      '[ { path: $path, sha256: $sha } ]')"
+  fi
 
-  local out_hash
-  out_hash="$(aif_sha256 "$artifact")"
   aif_ledger_append "$work" "$(jq -n \
     --arg s "$station" --argjson a "$attempt" --arg m "$model" \
     --argjson u "$usage" --argjson cost "$reported" \
-    --argjson d "$dur" --argjson t "$turns" \
-    --arg path "$produces" --arg sha "$out_hash" \
+    --argjson d "$dur" --argjson t "$turns" --argjson outputs "$outputs" \
     '{ station: $s, attempt: $a, model: $m,
        usage: $u,
        reported_cost_usd: $cost,
        cost_source: (if $cost > 0 then "reported" else "tokens-only" end),
        duration_ms: $d, num_turns: $t,
-       outputs: [ { path: $path, sha256: $sha } ] }')"
+       outputs: $outputs }')"
   rm -f "$out" "$err"
 
-  printf '%swrote%s %s (attempt %s, %s output tokens)\n' \
-    "$AIF_C_GREEN" "$AIF_C_RESET" "$produces" "$attempt" \
+  printf '%sran%s %s (attempt %s, %s output tokens)\n' \
+    "$AIF_C_GREEN" "$AIF_C_RESET" "$station" "$attempt" \
     "$(printf '%s' "$usage" | jq -r '.output_tokens')"
 
   # The form gate runs immediately: a station's output is only worth anything if
@@ -187,16 +197,26 @@ EOF
     local gp="$root/.aif/gates/$form_gate.sh" gout grc=0
     if [ -f "$gp" ]; then
       gout="$(/bin/bash "$gp" "$work" 2>&1)" || grc=$?
+
+      # Record the gate against the artifact it froze, when it names one, so the
+      # next station's precondition can bind to it — otherwise against what the
+      # station produced.
+      local gate_subject="$produces" gate_hash="$out_hash"
+      if [ -n "$freezes" ] && [ -f "$work/$freezes" ]; then
+        gate_subject="$freezes"
+        gate_hash="$(aif_sha256 "$work/$freezes")"
+      fi
+
       aif_ledger_gate "$work" "$form_gate" \
         "$([ "$grc" -eq 0 ] && echo pass || echo fail)" \
-        "$produces" "$out_hash" "$(aif_sha256 "$gp")" \
+        "$gate_subject" "$gate_hash" "$(aif_sha256 "$gp")" \
         "$(printf '%s' "$gout" | head -1)"
       if [ "$grc" -ne 0 ]; then
         aif_err "$form_gate rejected the output:"
         printf '%s\n' "$gout" | sed 's/^/  /' >&2
         return 1
       fi
-      printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$gout"
+      printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$gout" | head -1)"
     fi
   fi
 }

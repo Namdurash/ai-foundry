@@ -59,6 +59,18 @@ aif_sha256() {
   fi
 }
 
+# aif_sha256_stdin — digest of stdin. Used to hash a canonical JSON string
+# without a temp file, e.g. the ledger's per-entry chain.
+aif_sha256_stdin() {
+  if aif_have shasum; then
+    shasum -a 256 | cut -d' ' -f1
+  elif aif_have sha256sum; then
+    sha256sum | cut -d' ' -f1
+  else
+    printf ''
+  fi
+}
+
 # aif_tmpfile <target> — a temp file beside the target.
 #
 # Beside, not in $TMPDIR, so that the mv is a rename within one filesystem and

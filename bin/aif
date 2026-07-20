@@ -38,6 +38,8 @@ readonly AIF_VERSION AIF_ROOT
 . "$AIF_ROOT/lib/profile.sh"
 # shellcheck source=lib/paths.sh
 . "$AIF_ROOT/lib/paths.sh"
+# shellcheck source=lib/project.sh
+. "$AIF_ROOT/lib/project.sh"
 
 aif_usage() {
   cat <<EOF
@@ -49,6 +51,9 @@ commands:
   init        Install a foundry set into this project
   uninstall   Remove it again, reverting only what aif installed
   start       Run the foundry against this project's profile
+  project     Set up or validate .aif/project.json (init | check)
+  work        Start a ticket or show its state (new | status)
+  approve     The human gate — accept a specification
   doctor      Report what is installed and what aif can drive
   profiles    List the available (set, runner, model) profiles
   test        Run the evals against a profile and report a pass rate
@@ -88,6 +93,25 @@ main() {
       # shellcheck source=lib/cmd_start.sh
       . "$AIF_ROOT/lib/cmd_start.sh"
       aif_cmd_start ${1+"$@"}
+      ;;
+    project)
+      # shellcheck source=lib/cmd_project.sh
+      . "$AIF_ROOT/lib/cmd_project.sh"
+      aif_cmd_project ${1+"$@"}
+      ;;
+    work)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
+      aif_cmd_work ${1+"$@"}
+      ;;
+    approve)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
+      aif_cmd_approve ${1+"$@"}
       ;;
     doctor)
       # shellcheck source=lib/doctor.sh

@@ -41,11 +41,61 @@ _aif_doctor_tooling() {
   done
 }
 
+# Project health, but only when run inside an initialised project. Two
+# silent-failure classes are worth catching here before they cost a station run:
+# an invalid project.json (every gate downstream degrades to theatre), and a
+# skill pointing `agent:` at an agent that does not exist (which claude silently
+# resolves to general-purpose — a quiet tier downgrade on the quality mechanism).
+_aif_doctor_project() {
+  local root config
+  root="$(aif_project_root 2>/dev/null)" || return 0
+  [ -d "$root/.aif" ] || return 0
+
+  printf '\n%sProject%s  %s%s%s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$root" "$AIF_C_RESET"
+
+  config="$(aif_project_config "$root")"
+  if [ ! -f "$config" ]; then
+    printf '  %s %-14s %snot set up — run: aif project init%s\n' \
+      "$(aif_no)" "project.json" "$AIF_C_YELLOW" "$AIF_C_RESET"
+  else
+    local problems
+    problems="$(aif_project_validate "$config")"
+    if [ -n "$problems" ]; then
+      printf '  %s %-14s invalid:\n' "$(aif_no)" "project.json"
+      printf '%s\n' "$problems" | sed 's/^/       /'
+    else
+      printf '  %s %-14s valid\n' "$(aif_ok)" "project.json"
+    fi
+  fi
+
+  # Every agent a skill dispatches to must exist, or the fork silently falls
+  # back to general-purpose.
+  local skills_dir agents_dir missing=0 skill agent_name
+  skills_dir="$root/.claude/skills"
+  agents_dir="$root/.claude/agents"
+  if [ -d "$skills_dir" ]; then
+    for skill in "$skills_dir"/*/SKILL.md; do
+      [ -f "$skill" ] || continue
+      # A skill's frontmatter is YAML, not our meta block, so read the field
+      # directly rather than through aif_meta_json.
+      agent_name="$(grep -E '^agent:' "$skill" 2>/dev/null | head -1 | sed 's/^agent:[[:space:]]*//' | tr -d '\r')"
+      [ -n "$agent_name" ] || continue
+      if [ ! -f "$agents_dir/$agent_name.md" ]; then
+        printf '  %s %-14s %s → agent "%s" not found\n' \
+          "$(aif_no)" "skill target" "$(basename "$(dirname "$skill")")" "$agent_name"
+        missing=1
+      fi
+    done
+  fi
+  [ "$missing" -eq 0 ] && printf '  %s %-14s all skill agent targets exist\n' "$(aif_ok)" "skill targets"
+}
+
 aif_doctor() {
   printf '%saif %s%s\n\n' "$AIF_C_BOLD" "$AIF_VERSION" "$AIF_C_RESET"
 
   _aif_doctor_runners
   _aif_doctor_tooling
+  _aif_doctor_project
 
   printf '\n'
 

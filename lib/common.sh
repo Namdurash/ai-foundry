@@ -43,6 +43,19 @@ aif_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# aif_meta_json <file> — the JSON out of the aif:meta HTML comment, or empty.
+#
+# The same block the gates read (their copy lives in .aif/gates/_lib.sh, which
+# cannot source this file — it runs in CI without aif). Keep the two awk
+# programs identical.
+aif_meta_json() {
+  awk '
+    /^<!-- aif:meta$/ { inblock = 1; next }
+    /^-->$/           { inblock = 0 }
+    inblock           { print }
+  ' "$1"
+}
+
 # aif_meta_get <file> <key> [default] — read one KEY=VALUE line.
 #
 # Parsed, never sourced. Sets and evals are the things you eventually accept

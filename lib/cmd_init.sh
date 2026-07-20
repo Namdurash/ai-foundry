@@ -40,6 +40,20 @@ _aif_set_files() {
       printf '%s\t%s\n' "$file" ".claude/agents/$rel"
     done
   fi
+
+  # Gates are installed into the project rather than run from AIF_ROOT, so that
+  # a fresh CI checkout can verify an artifact without aif on the box. That also
+  # makes them versioned alongside the artifacts they gate: an old commit stays
+  # checkable against the gates that were current when it was written.
+  #
+  # project.templates/ is deliberately NOT installed — those are sources for
+  # `aif project init` to copy one of, not files the project carries.
+  if [ -d "$set_dir/gates" ]; then
+    find "$set_dir/gates" -type f -print 2>/dev/null | while IFS= read -r file; do
+      rel="${file#"$set_dir/gates/"}"
+      printf '%s\t%s\n' "$file" ".aif/gates/$rel"
+    done
+  fi
 }
 
 # The three-way rule. Echoes create | update | conflict.

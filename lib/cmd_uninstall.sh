@@ -20,6 +20,23 @@ usage: aif uninstall [--force] [--dry-run]
 EOF
 }
 
+# Drop a file that holds nothing once our block is out of it.
+#
+# `aif init` creates CLAUDE.md or .gitignore when the project has none. Removing
+# only the block would then leave an empty file behind, and the round trip would
+# not be clean — which is the one promise uninstall makes.
+#
+# This stays value-guarded despite the heuristic look: a file containing nothing
+# but whitespace holds no content of the user's, so there is nothing to destroy.
+# A file with any content at all is left exactly as it is.
+_aif_drop_if_empty() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  if [ -z "$(tr -d '[:space:]' <"$file")" ]; then
+    rm -f "$file"
+  fi
+}
+
 # Remove directories left empty by our own removals, walking up to the project
 # root. rmdir refuses to touch a non-empty directory, which is exactly the guard
 # we want: the moment we hit a directory holding anything else, we stop.
@@ -105,12 +122,14 @@ EOF
         printf '  %srevert%s    %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$rel"
         if [ "$AIF_DRY_RUN" -eq 0 ]; then
           aif_block_remove "$root/$rel" "$AIF_MARK_BEGIN_MD" "$AIF_MARK_END_MD"
+          _aif_drop_if_empty "$root/$rel"
         fi
         ;;
       marker_block_hash)
         printf '  %srevert%s    %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$rel"
         if [ "$AIF_DRY_RUN" -eq 0 ]; then
           aif_block_remove "$root/$rel" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH"
+          _aif_drop_if_empty "$root/$rel"
         fi
         ;;
       json_merge)

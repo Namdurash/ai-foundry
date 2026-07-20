@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 
-SHELL_SOURCES := bin/aif $(wildcard lib/*.sh)
+# Gates ship to users' projects and run in CI, so they are held to the same
+# standard as the CLI itself.
+SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) $(wildcard sets/*/gates/*.sh)
 
 .PHONY: help lint fmt check
 
@@ -12,7 +14,7 @@ help:
 lint:
 	@command -v shellcheck >/dev/null 2>&1 || { \
 		echo "shellcheck not found — brew install shellcheck"; exit 1; }
-	shellcheck $(SHELL_SOURCES)
+	shellcheck -x $(SHELL_SOURCES)
 
 fmt:
 	@command -v shfmt >/dev/null 2>&1 || { \

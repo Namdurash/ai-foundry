@@ -297,8 +297,15 @@ EOF
   printf '%s\t%s\n' ".gitignore" "marker_block_hash" >>"$edits_tsv"
 
   if [ "$AIF_DRY_RUN" -eq 0 ]; then
-    aif_gitignore_ensure "$root" "$AIF_PROFILE_STATE" \
-      "aif: the model choice is per-developer, the set is shared"
+    # Both patterns in one managed block: the profile (per-developer, never
+    # committed) and .aif/tmp/ (gates' scratch — a test report left there would
+    # otherwise trip scope's denylist and land in a station commit). One call,
+    # because a second aif_gitignore_ensure would replace the block, not extend
+    # it.
+    aif_block_inject "$root/.gitignore" \
+      "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
+      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s' \
+        "$AIF_PROFILE_STATE" ".aif/tmp/")"
 
     printf '%s\n' "$profile" | aif_write_file "$root/$AIF_PROFILE_STATE"
     # Ours, so the ledger owns it too, even though no set ships it.

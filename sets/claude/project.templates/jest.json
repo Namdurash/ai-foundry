@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "ticket_pattern": "^[A-Z]{2,10}-[0-9]+$",
+
+  "test": {
+    "roots": ["__tests__"],
+    "command": "JEST_JUNIT_OUTPUT_FILE=.aif/tmp/report.xml npx jest --ci --reporters=default --reporters=jest-junit",
+    "select": "JEST_JUNIT_OUTPUT_FILE=.aif/tmp/report.xml npx jest --ci --reporters=default --reporters=jest-junit {ids}",
+    "report": { "path": ".aif/tmp/report.xml", "format": "junit" },
+    "ac_marker": "AC-[0-9]{3}"
+  },
+
+  "failure_classes": {
+    "legitimate": [
+      "expect\\(",
+      "toBe",
+      "toEqual",
+      "toThrow",
+      "Cannot find module",
+      "is not a function",
+      "ReferenceError",
+      "TypeError",
+      "AssertionError"
+    ],
+    "broken": [
+      "SyntaxError",
+      "Unexpected token",
+      "Cannot use import statement",
+      "Test suite failed to run",
+      "must contain at least one test",
+      "Your test suite must contain"
+    ]
+  },
+
+  "limits": {
+    "spec_ac_max": 15,
+    "plan_files_max": 12,
+    "diff_lines_max": 400,
+    "attempts_max": 3,
+    "revisions_max": 5,
+    "station_max_turns": 30
+  },
+
+  "risk_rules": [
+    { "paths": ["**/auth/**", "**/payment*/**", "**/native*/**", "**/*Native*"],
+      "risk": "high" }
+  ],
+
+  "tiers": { "low": "haiku", "medium": "sonnet", "high": "opus" }
+}

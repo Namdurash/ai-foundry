@@ -28,7 +28,7 @@ differs only in environment. A Chinese model costs a config file, not an
 adapter.
 
 ```
-sets/claude/      native Claude Code layout: CLAUDE.md, skills/, agents/
+sets/claude/      native Claude Code layout: CLAUDE.md, skills/, agents/, commands/
 sets/codex/       native Codex layout: AGENTS.md, agents/*.toml   (later)
 profiles/*.profile   (set, model, env) triples — glob-enumerated, user-extensible
 tests/fixtures/   evals: fixture repo + task + deterministic oracle
@@ -45,7 +45,7 @@ aif uninstall       # and take it all back
 
 | Path | Committed | Why |
 |---|---|---|
-| `.claude/skills/`, `.claude/agents/` | yes | the shared foundry — the team's asset |
+| `.claude/skills/`, `.claude/agents/`, `.claude/commands/` | yes | the shared foundry — the team's asset |
 | `.aif/foundry.md` | yes | our context, imported by `CLAUDE.md` |
 | `.aif/manifest.json` | yes | the ledger of what we installed and changed |
 | `CLAUDE.md` | yes | **yours**; `aif` only appends one `@.aif/foundry.md` line |
@@ -131,6 +131,25 @@ aif project init      # detect the runner — then REVIEW .aif/project.json,
                       # especially test.command and test.roots
 aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?
 ```
+
+### Before the ticket — the analyst
+
+`aif work new` gives you a blank ticket to fill in. If you would rather be
+interviewed into a good one, run **`/aif-ticket`** inside the runner (`aif start`,
+then `/aif-ticket TICK-1 "add rate limiting to login"`). It ships as both a skill
+and a slash command with the same name, so `/aif-ticket` is reachable whether or
+not your runner lets you type skills; where it does, the skill wins and also
+auto-triggers. It plays business analyst: it asks the logical questions, drafts
+the ticket in your words,
+then spawns the **`aif-ticket-critic`** agent — a stand-in for the spec station
+that reads only your draft and reports where the spec would be forced to guess —
+and drives those gaps back to you until you have answered or consciously deferred
+each.
+
+It is not a station and has no gate: it is the on-ramp, sitting *before* the cycle
+below. It drafts from your answers and you confirm the exact words, so the ticket
+stays yours — the source of truth the spec is judged against. Then it points you at
+`aif station run spec`, and stops.
 
 ### A ticket, in order
 

@@ -41,6 +41,17 @@ _aif_set_files() {
     done
   fi
 
+  # Slash commands — the user-typed entry points. A skill can also be invoked by
+  # /name on current Claude Code, but an older runner (or one with skills hidden)
+  # exposes only commands, so a capability that must be reachable by hand ships a
+  # command too, not just a skill.
+  if [ -d "$set_dir/commands" ]; then
+    find "$set_dir/commands" -type f -print 2>/dev/null | while IFS= read -r file; do
+      rel="${file#"$set_dir/commands/"}"
+      printf '%s\t%s\n' "$file" ".claude/commands/$rel"
+    done
+  fi
+
   # Gates are installed into the project rather than run from AIF_ROOT, so that
   # a fresh CI checkout can verify an artifact without aif on the box. That also
   # makes them versioned alongside the artifacts they gate: an old commit stays

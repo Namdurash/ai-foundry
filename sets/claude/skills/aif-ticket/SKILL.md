@@ -78,7 +78,27 @@ user wants it to do*, stop — that decision is theirs.
 - Before moving on, confirm `.aif/work/<ID>/ledger.json` exists. If it does not, the dir is
   not pipeline-ready — fix that first.
 
-### 2. Interview — thorough, every time
+### 1a. If a real ticket is already there, ask before touching it
+
+`aif run` opens this skill on **every** run, including runs where the ticket is already
+finished — the decision about whether it needs work is yours and the user's, made in front of
+the actual text, not guessed from outside. So when `.aif/work/<ID>/ticket.md` already holds a
+real ticket (not the stub `aif work new` writes):
+
+1. **Show it** — the whole thing, not a summary.
+2. **Ask** what they want: proceed with it as it stands, refine some part of it, or rewrite it.
+3. If they say **proceed**, say so and stop. Change nothing. Do not re-interview, do not
+   "improve" the wording, do not re-run the critic. An unchanged ticket is a valid outcome and
+   the pipeline continues the moment you finish.
+4. If they want to **refine**, this is a targeted edit, not a fresh interview: ask only about
+   the part they named plus anything that part makes inconsistent, then go to step 3.
+5. If they want to **rewrite**, run the full interview from step 2.
+
+One thing to watch for: a ticket carrying a `## Rework requested at approve` section was sent
+back from the approval gate. Read those lines first — they are the user's own words about what
+was wrong, and they are usually exactly what needs answering.
+
+### 2. Interview — thorough, every time (for a new or rewritten ticket)
 
 Cover this checklist. Ask in small batches in the user's language, follow their answers, and
 do not read it out like a form. The goal is that by the end, a stranger reading only the

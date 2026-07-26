@@ -57,14 +57,13 @@ _aif_station_run() {
     aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
   fi
 
-  local meta tier produces form_gate judges freezes model max_turns
+  local meta tier produces judges freezes model max_turns
   meta="$(aif_meta_json "$station_file")"
   tier="$(printf '%s' "$meta" | jq -r '.tier // "high"')"
   # produces: a single artifact written into the work dir (spec.md, plan.md). A
   # station that writes into the project instead (the test-author writes test
   # files) has none; its form gate does the verifying and freezes the boundary.
   produces="$(printf '%s' "$meta" | jq -r '.produces // empty')"
-  form_gate="$(printf '%s' "$meta" | jq -r '.form_gate // empty')"
   # A judge station declares the artifact it judges. aif hashes that artifact and
   # tells the judge the value to record, so the verdict binds to the exact bytes
   # judged — a later edit invalidates it, same as every other *_sha256 binding.
@@ -124,6 +123,17 @@ EOF
   done <<EOF
 $(printf '%s' "$meta" | jq -r '.requires_recorded[]? // empty')
 EOF
+
+  # The artifact's bytes BEFORE the run, so afterwards we can tell "wrote it"
+  # from "left the previous attempt's file sitting there". An existence check
+  # alone cannot: on attempt 2 the file from attempt 1 satisfies it, the station
+  # reports success, and the gate re-judges stale bytes — returning complaints
+  # identical to last time while a full run was paid for. Observed live: a spec
+  # attempt that burned 2599 output tokens over 5 turns and changed nothing.
+  local pre_hash=""
+  if [ -n "$produces" ] && [ -f "$work/$produces" ]; then
+    pre_hash="$(aif_sha256 "$work/$produces")"
+  fi
 
   # The user prompt names the ticket and the target; the station's system prompt
   # (its file body) says what to read and how. A judge additionally gets the hash
@@ -201,6 +211,19 @@ EOF
     local artifact="$work/$produces"
     [ -f "$artifact" ] || aif_die "station reported success but did not write $produces"
     out_hash="$(aif_sha256 "$artifact")"
+    # Unchanged bytes are a failed attempt, not a successful one. Byte-identical
+    # output would in any case be re-judged to the same verdict, so treating it
+    # as success can only mislead — and it is recorded, because a run that
+    # changed nothing still cost tokens (principle 7).
+    if [ -n "$pre_hash" ] && [ "$out_hash" = "$pre_hash" ]; then
+      aif_ledger_append "$work" "$(jq -n --arg s "$station" --argjson a "$attempt" \
+        --arg m "$model" --argjson u "$usage" --argjson d "$dur" --argjson t "$turns" \
+        --arg p "$produces" \
+        '{ station: $s, attempt: $a, model: $m, usage: $u, duration_ms: $d,
+           num_turns: $t, result: "unchanged", reason: ($p + " was not rewritten") }')"
+      rm -f "$out" "$err"
+      aif_die "station reported success but left $produces byte-for-byte unchanged — nothing was rewritten, so its gate would return the same verdict as last time. Check the station's instructions or the ticket before re-running."
+    fi
     outputs="$(jq -n --arg path "$produces" --arg sha "$out_hash" \
       '[ { path: $path, sha256: $sha } ]')"
   fi

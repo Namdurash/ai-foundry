@@ -1,0 +1,110 @@
+---
+name: aif-fix
+description: Walk a human through a rejected foundry artifact — read the gate's complaints, explain why each one was raised, fix what is mechanically fixable, and send the rest back upstream where it belongs. Use when a gate has rejected spec.md, plan.md, tests or code, when `aif station run` or `aif run` reports REJECT, or when the user invokes /aif-fix. Not for writing a ticket from scratch — that is aif-ticket.
+---
+
+# aif-fix — the repair bench at a gate
+
+A gate rejected an artifact. This skill is the human-facing half of that rejection: it turns
+a list of machine complaints into a short conversation, fixes what is genuinely a wording or
+form problem, and refuses to fix what is actually a scoping problem in disguise.
+
+It is **not** a station and has no gate of its own. It edits an artifact that a station
+produced, so that the artifact's own gate will pass against real content.
+
+## The one rule that governs everything here
+
+**Never make the gate pass by making the artifact worse.**
+
+Every gate here is a *proxy*. `spec-form` counts criteria and matches verbs; it cannot see
+meaning. So there is always a cheap way to satisfy it that destroys the thing it was
+protecting — delete six acceptance criteria to get under a limit, replace a real assertion
+with a trivially true one, water down a `then` until it says nothing. Each of those turns a
+red gate green and leaves the project worse than the rejection did.
+
+If the only way you can see to satisfy a gate is to remove or weaken content, that is the
+gate telling you the problem is **upstream** — in the ticket, or in the scope. Say so, and
+take it to the user. Do not do it quietly.
+
+## Procedure
+
+### 1. Establish what was rejected, from the gate itself
+
+Do not work from the error text the user pasted; it may be stale. Re-derive it:
+
+- The station file `.aif/stations/<STATION>.md` names the artifact (`produces`) and its
+  gate(s) (`form_gate`, or `gates`) in its `aif:meta` block.
+- Run each gate yourself: `bash .aif/gates/<GATE>.sh .aif/work/<ID>` — exit `0` pass,
+  `1` the artifact is rejected, `3` the gate could not render a verdict.
+- **Exit 3 is not yours to fix in the artifact.** It means the gate broke or the environment
+  is wrong (an unparseable file, a missing tool, an already-broken repo). Report it and stop;
+  editing the artifact cannot help.
+- Read the gate script. It is the authority on *why* a rule exists, and the good ones say so
+  in their header comments, including what they knowingly cannot catch. Explain the rule to
+  the user in those terms, not as "the linter wants X".
+
+### 2. Sort the complaints into two piles
+
+This is the judgement the skill exists for. Before fixing anything, put every complaint into
+one of these:
+
+**Mechanical — the content is right, its form is wrong.** Fix these in the artifact:
+- an assertion that joins two checks with "and"/"or" → split into two criteria
+- a `then` with no assertion verb, or with two → rewrite to one verb from the gate's list
+- a judgement word ("valid", "correct", "gracefully") → say what is observable instead
+- `expect` holding prose instead of a literal → name the literal
+- ids out of sequence, a `surface` missing from the surfaces list → correct the reference
+
+**Structural — the artifact is honest and the gate is telling you the work is too big or
+the input was too vague.** These are the user's call, never yours:
+- "N criteria, limit is M — split the ticket" → the ticket covers too much. The fix is to
+  narrow this ticket and move the rest to another one. **Deleting criteria is not the fix.**
+- a criterion nobody can state a literal for → the ticket never decided that behaviour;
+  it needs an answer from the user, not a guess from you
+- the judge found a blocker that is a genuine gap in intent → back to the ticket
+
+For a structural finding, propose the split or the question concretely — name which criteria
+would stay and which would move — and let the user decide. When they decide, the change goes
+into `.aif/work/<ID>/ticket.md`, because the spec station reads the ticket and nothing else.
+
+### 3. Fix the mechanical pile, one at a time
+
+Show the user each fix as a before/after of the exact field. Keep the meaning identical —
+you are re-expressing an assertion, not choosing a new one. Where splitting one criterion
+into two changes the ids that follow, renumber contiguously from `AC-001`, as the gate
+requires.
+
+Where a fix would require *deciding* something the artifact did not say — a boundary, a
+status code, an exact literal — stop and ask. An invented literal is an unreviewed decision
+that will be tested as though a human chose it.
+
+### 4. Re-run the gate, and keep going until it is green or stuck
+
+After each round, re-run the gate. Report what is left. Stop when:
+- the gate passes → say so, and hand back (step 5); or
+- what remains is all structural → say exactly that, name what the user has to decide, and
+  stop. Do not grind at a rule you cannot satisfy honestly.
+
+If a gate keeps rejecting the same thing after two attempts at it, stop and say what you do
+not understand rather than trying a third variation. A gate you cannot satisfy is
+information, not an obstacle.
+
+### 5. Hand back
+
+State the artifact's state plainly, and name the next command without running it:
+
+- gate green → `aif run <ID>` continues the pipeline (or `aif station run <next> <ID>` for
+  the single step). If `aif run` invoked you, it re-runs the gate itself when you exit — you
+  do not need to do anything except be finished.
+- gate still red for structural reasons → the change belongs in `ticket.md`; `/aif-ticket
+  <ID>` re-opens the interview, and the spec is redone from the amended ticket.
+
+## What this skill cannot do — stated so it does not oversell
+
+- It cannot tell whether the artifact describes the **right** thing to build. Every gate here
+  checks form; `spec-judge` and the human approval gate are what stand between a
+  well-formed spec and a correct one, and both are still downstream.
+- It cannot rescue a bad ticket. Where the rejection traces to an unclear or oversized
+  ticket, the honest outcome of this skill is a change to `ticket.md` and a re-run — not a
+  patched artifact.
+- A green gate here is not an approval. `aif approve` is still yours to give.

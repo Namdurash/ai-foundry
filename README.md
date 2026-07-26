@@ -151,6 +151,24 @@ below. It drafts from your answers and you confirm the exact words, so the ticke
 stays yours — the source of truth the spec is judged against. Then it points you at
 `aif station run spec`, and stops.
 
+### When a gate rejects — the repair bench
+
+**`/aif-fix <ID> [station]`** is the other half of a rejection. It re-derives the
+complaints by running the gate itself, explains each one from the gate's own
+reasoning, and then splits them in two: *mechanical* problems (an assertion that
+joins two clauses, a missing verb, prose where a literal belongs) it fixes in the
+artifact with you; *structural* ones it refuses to fix, because they are the gate
+saying the work is too big or the ticket too vague.
+
+That refusal is the point. Every gate here is a proxy, so there is always a cheap
+way to turn it green that destroys what it was protecting — delete six criteria to
+get under a limit and `spec-form` passes while the spec now describes less than
+the ticket asked for. `/aif-fix` will not do that; it takes the split back to you
+and the change lands in `ticket.md`, where the spec station will actually read it.
+
+`aif run` opens it for you on a rejection. Run it by hand after a bare
+`aif station run` that came back `REJECT`.
+
 ### A ticket, in order
 
 ```
@@ -181,15 +199,26 @@ aif run TICK-1 https://jira/…       # seed the interview from a Jira/Trello/is
 aif run TICK-1 "add rate limiting"  # …or from a sentence
 ```
 
-`aif run` drives the whole pipeline, stopping only where a human is: the ticket
-interview at the front, and the spec approval in the middle. Reject the spec and
-it asks what to change, folds that into the ticket, and redoes the spec; approve
-and it runs plan → tests → code on its own. A link seed is pulled by an MCP
-connector you have configured; its contents are read as data, never as
-instructions. **Run it from a real terminal** — the stations spawn `claude -p`,
-which cannot authenticate nested inside a claude session (`docs/FINDINGS.md` #7).
-It resumes: run it again after an approval and it skips straight to the build
-rather than overwriting the approved spec.
+`aif run` drives the whole pipeline and puts the human where a human belongs.
+There are no silent branches — every run either opens `claude` for you or says
+what it is doing, because a command that sometimes talks to you and sometimes
+does not cannot be read from outside.
+
+- **The interview always opens.** Whether an existing ticket needs work is a
+  judgement made with you, in front of the actual text — not guessed out here.
+  If it is already good, say so and exit; the pipeline carries straight on.
+- **A rejected artifact opens `/aif-fix`**, not an error message. The repair
+  bench explains each complaint from the gate's own reasoning, fixes what is a
+  form problem, and hands the rest back as a scoping decision that is yours.
+  Three rounds, then it stops and says the problem is upstream.
+- **Reject at approval** and it asks what to change, folds that into the ticket,
+  and redoes the spec. Approve and it runs plan → tests → code on its own.
+
+A link seed is pulled by an MCP connector you have configured; its contents are
+read as data, never as instructions. **Run it from a real terminal** — the
+stations spawn `claude -p`, which cannot authenticate nested inside a claude
+session (`docs/FINDINGS.md` #7). It resumes: run it again after an approval and
+it skips straight to the build rather than overwriting the approved spec.
 
 ### Commands
 

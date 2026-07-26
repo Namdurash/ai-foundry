@@ -10,29 +10,42 @@
 # order and where a human is asked.
 #
 # The shape ("architecture C"): aif run is bash and runs from a plain terminal.
-#   - the two human steps are an interactive `claude` (the /aif-ticket interview,
-#     and the aif approve prompt);
+#   - the human steps are an interactive `claude` (the /aif-ticket interview, the
+#     /aif-fix repair bench, and the aif approve prompt);
 #   - the machine steps reuse `aif station run` verbatim.
 # It MUST run outside a claude session: a station spawns `claude -p`, and a
 # `claude -p` nested in a claude session cannot authenticate (docs/FINDINGS.md
 # #7). `aif approve` already needs a TTY, so "real terminal only" is a rule the
 # pipeline already carried — this command just states it up front.
 #
+# There are no silent branches. Every path through this file either opens claude
+# where a human is wanted or says out loud what it is doing, because a command
+# that sometimes talks to you and sometimes does not is unreadable from outside.
+#
 # It calls _aif_station_run (cmd_station.sh) and aif_cmd_approve / _aif_work_new
 # / _aif_work_status / _aif_gate (cmd_work.sh) in-process, so bin/aif sources
 # both alongside this file.
+
+# How many times a rejected artifact goes back to the repair bench before we
+# stop and hand the problem over. Past this, re-opening the same session is not
+# converging — it is grinding, and the user should hear that plainly.
+AIF_RUN_REPAIR_MAX=3
 
 _aif_run_usage() {
   cat <<EOF
 usage: aif run <ticket> [seed] [--profile P]
 
-  Drive one ticket through the whole pipeline, with two human stops:
+  Drive one ticket through the whole pipeline, with the human where a human
+  belongs:
 
     ticket (interview) -> spec -> approve -> plan -> tests -> code
 
   seed  optional: a Jira/Trello/issue link or a sentence, handed to the
         /aif-ticket interview as its starting point. A link is pulled by a
         configured MCP connector — that is the user's to set up.
+
+  The interview always opens; confirm the ticket there and exit to continue.
+  If a gate rejects an artifact, /aif-fix opens on it rather than stopping.
 
   Run it from a REAL TERMINAL, never inside a claude session: the stations
   spawn 'claude -p', which cannot authenticate when nested (FINDINGS #7).
@@ -49,41 +62,172 @@ _aif_run_ticket_ready() {
   ! grep -q "Describe the need in your own words" "$tm" 2>/dev/null
 }
 
-# _aif_run_interview <root> <ticket> <seed> <profile> — hand the terminal to an
-# interactive claude running the /aif-ticket analyst, then return so the pipeline
-# can go on. Interactive (not `claude -p`), so it authenticates the ordinary way.
-_aif_run_interview() {
-  local root="$1" ticket="$2" seed="$3" profile="$4"
+# _aif_run_claude <root> <prompt> <profile> — hand the terminal to an interactive
+# claude, then return so the pipeline can go on.
+#
+# Interactive, not `claude -p`, so it authenticates the ordinary way. Wrapped in
+# a subshell: the profile's exported routing stays inside, so one step cannot
+# contaminate the next.
+#
+# The human's exit status is not ours to interpret — quitting claude is not an
+# error. Whether the step achieved anything is decided by looking at the
+# artifact afterwards, never by this return code.
+_aif_run_claude() {
+  local root="$1" prompt="$2" profile="$3"
+  (
+    aif_profile_load "$profile"
+    # shellcheck source=lib/runner_claude.sh
+    . "$AIF_ROOT/lib/runner_claude.sh"
+    aif_profile_export_env
+    "aif_runner_${AIF_PROFILE_RUNNER}_converse" "$root" "$prompt" || true
+  )
+}
 
-  aif_profile_load "$profile"
-  # shellcheck source=lib/runner_claude.sh
-  . "$AIF_ROOT/lib/runner_claude.sh"
-  "aif_runner_${AIF_PROFILE_RUNNER}_available" ||
-    aif_die "runner '$AIF_PROFILE_RUNNER' is not installed"
-  if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
-    aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
+_aif_run_station_meta() {
+  # <root> <station> — the station's aif:meta JSON.
+  aif_meta_json "$1/.aif/stations/$2.md"
+}
+
+_aif_run_gates_of() {
+  # <root> <station> — the gates this station's output is checked by, one per
+  # line. Same resolution order as cmd_station.sh: .gates wins over .form_gate.
+  _aif_run_station_meta "$1" "$2" |
+    jq -r 'if .gates then .gates[] elif .form_gate then .form_gate else empty end'
+}
+
+# _aif_run_gates_verdict <root> <station> <ticket>
+#
+# Re-run every gate of a station against current bytes. Echoes the first
+# rejecting gate's output; rc 0 iff all of them pass. This is how the
+# orchestrator learns whether a failure is a REJECTED ARTIFACT (which a human at
+# the repair bench can fix) rather than a broken run — exit codes alone cannot
+# tell those apart, since both leave the station returning non-zero.
+_aif_run_gates_verdict() {
+  local root="$1" station="$2" ticket="$3"
+  local work="$root/.aif/work/$ticket"
+  local gate gp rc out
+
+  while IFS= read -r gate; do
+    [ -n "$gate" ] || continue
+    gp="$root/.aif/gates/$gate.sh"
+    [ -f "$gp" ] || continue
+    rc=0
+    out="$(/bin/bash "$gp" "$work" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf '%s\n' "$out"
+      return "$rc"
+    fi
+  done <<EOF
+$(_aif_run_gates_of "$root" "$station")
+EOF
+  return 0
+}
+
+# _aif_run_record_gates <root> <station> <ticket>
+#
+# Record a post-repair gate pass in the ledger, bound to the repaired bytes.
+# Without this the ledger's last word on the gate is the rejection, and the
+# ledger is meant to be the complete record of what happened — including that a
+# human fixed the artifact by hand and the gate then passed against it.
+_aif_run_record_gates() {
+  local root="$1" station="$2" ticket="$3"
+  local work="$root/.aif/work/$ticket"
+  local meta produces freezes subject hash gate gp
+
+  meta="$(_aif_run_station_meta "$root" "$station")"
+  produces="$(printf '%s' "$meta" | jq -r '.produces // empty')"
+  freezes="$(printf '%s' "$meta" | jq -r '.freezes // empty')"
+
+  # Bind to what the station froze when it names one, exactly as cmd_station.sh
+  # does, so a downstream precondition can still find its subject.
+  subject="$produces"
+  if [ -n "$freezes" ] && [ -f "$work/$freezes" ]; then
+    subject="$freezes"
   fi
-  aif_profile_export_env
+  hash=""
+  if [ -n "$subject" ] && [ -f "$work/$subject" ]; then
+    hash="$(aif_sha256 "$work/$subject")"
+  fi
 
-  local prompt="/aif-ticket $ticket"
-  [ -n "$seed" ] && prompt="$prompt $seed"
+  while IFS= read -r gate; do
+    [ -n "$gate" ] || continue
+    gp="$root/.aif/gates/$gate.sh"
+    [ -f "$gp" ] || continue
+    aif_ledger_gate "$work" "$gate" "pass" "$subject" "$hash" \
+      "$(aif_sha256 "$gp")" "repaired at the bench, gate re-run"
+  done <<EOF
+$(_aif_run_gates_of "$root" "$station")
+EOF
+}
 
-  printf '%sticket%s · interview via /aif-ticket — confirm the ticket, then exit claude to continue\n' \
-    "$AIF_C_DIM" "$AIF_C_RESET" >&2
+# _aif_run_step <root> <station> <ticket> <profile>
+#
+# Run one station, and when its gate rejects the artifact, open the repair bench
+# on it instead of stopping. rc 0 once the station's gates pass.
+#
+# The station runs in a subshell because _aif_station_run reports hard failures
+# with aif_die, which exits — un-subshelled, an authentication error three
+# stations in would kill the orchestrator mid-pipeline with no chance to react.
+_aif_run_step() {
+  local root="$1" station="$2" ticket="$3" profile="$4"
+  local rc gout round
 
-  # || true: the human may quit with a non-zero status, which is not our error.
-  # Whether a usable ticket exists is decided by _aif_run_ticket_ready, not here.
-  "aif_runner_${AIF_PROFILE_RUNNER}_converse" "$root" "$prompt" || true
+  rc=0
+  (_aif_station_run "$root" "$station" "$ticket" "$profile") || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+
+  # Non-zero. Ask the gates what they think of the artifact as it now stands: a
+  # rejection is repairable with a human, anything else is not this bench's job.
+  rc=0
+  gout="$(_aif_run_gates_verdict "$root" "$station" "$ticket")" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # The gates are happy, so the station failed for some other reason — its own
+    # message is already on screen and is the honest one to act on.
+    return 1
+  fi
+  if [ "$rc" -eq 3 ]; then
+    aif_err "$station: a gate could not render a verdict — that is the environment, not the artifact:"
+    printf '%s\n' "$gout" | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  round=0
+  while [ "$round" -lt "$AIF_RUN_REPAIR_MAX" ]; do
+    round=$((round + 1))
+    printf '\n%s%s rejected%s — opening /aif-fix (round %s of %s)\n' \
+      "$AIF_C_YELLOW" "$station" "$AIF_C_RESET" "$round" "$AIF_RUN_REPAIR_MAX" >&2
+    printf '%s\n' "$gout" | sed 's/^/  /' >&2
+    printf '%sfix it with the agent, then exit claude to continue%s\n\n' \
+      "$AIF_C_DIM" "$AIF_C_RESET" >&2
+
+    _aif_run_claude "$root" "/aif-fix $ticket $station" "$profile"
+
+    rc=0
+    gout="$(_aif_run_gates_verdict "$root" "$station" "$ticket")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _aif_run_record_gates "$root" "$station" "$ticket"
+      printf '%s✓%s %s: gates pass after repair\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$station"
+      return 0
+    fi
+  done
+
+  aif_err "$station is still rejected after $AIF_RUN_REPAIR_MAX repair rounds:"
+  printf '%s\n' "$gout" | sed 's/^/  /' >&2
+  aif_err "this is usually the ticket, not the artifact — amend .aif/work/$ticket/ticket.md and re-run 'aif run $ticket'."
+  return 1
 }
 
 _aif_run() {
   local root="$1" ticket="$2" seed="$3" profile="$4"
 
-  [ -n "$ticket" ] || { _aif_run_usage >&2; aif_die "usage: aif run <ticket> [seed]"; }
+  [ -n "$ticket" ] || {
+    _aif_run_usage >&2
+    aif_die "usage: aif run <ticket> [seed]"
+  }
 
-  # A real terminal, stated up front. The interview and the approval both need
-  # one, and aif approve would refuse anyway — fail now, with the reason, rather
-  # than three stations deep.
+  # A real terminal, stated up front. The interview, the repair bench and the
+  # approval all need one, and aif approve would refuse anyway — fail now, with
+  # the reason, rather than three stations deep.
   if [ ! -t 0 ]; then
     aif_die "aif run needs a real terminal — it interviews you and asks you to approve. Run it from a plain shell, not inside a claude session or a pipe."
   fi
@@ -100,6 +244,17 @@ _aif_run() {
     else
       aif_die "no profile — run 'aif init' or pass --profile"
     fi
+  fi
+
+  # Preflight the runner once, loudly, here — the interactive steps run inside
+  # subshells where an aif_die would be swallowed into a silent no-op.
+  aif_profile_load "$profile"
+  # shellcheck source=lib/runner_claude.sh
+  . "$AIF_ROOT/lib/runner_claude.sh"
+  "aif_runner_${AIF_PROFILE_RUNNER}_available" ||
+    aif_die "runner '$AIF_PROFILE_RUNNER' is not installed"
+  if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
+    aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
   fi
 
   local work="$root/.aif/work/$ticket"
@@ -125,27 +280,23 @@ _aif_run() {
       _aif_work_new "$root" "$ticket" >/dev/null
     fi
 
-    # Interview unless a real ticket is already sitting there. A seed always
-    # means "start (or redo) the interview from this" — the human asked to feed
-    # something in, so honour it even over an existing ticket.
-    if [ -n "$seed" ] || ! _aif_run_ticket_ready "$work"; then
-      _aif_run_interview "$root" "$ticket" "$seed" "$profile"
-      _aif_run_ticket_ready "$work" ||
-        aif_die "no ticket written for $ticket — the interview produced none, so there is nothing to spec."
-    else
-      printf '%susing existing ticket%s .aif/work/%s/ticket.md\n' \
-        "$AIF_C_DIM" "$AIF_C_RESET" "$ticket"
-    fi
+    # The interview ALWAYS opens. Whether the existing ticket needs work is a
+    # judgement, and the agent makes it with the user in front of the ticket —
+    # deciding it out here, from a grep, is how a command becomes unreadable:
+    # one invocation talks to you, the next silently does not.
+    _aif_run_claude "$root" "/aif-ticket $ticket $seed" "$profile"
+    _aif_run_ticket_ready "$work" ||
+      aif_die "no ticket written for $ticket — the interview produced none, so there is nothing to spec."
 
     # ---- the spec <-> approve loop ---------------------------------------
     # Reject is not "go back": aif approve appends the reason to the ticket and
     # the spec runs again against it. The human ends the loop by approving, so it
     # has no fixed cap — that call is theirs, not a counter's.
-    while : ; do
-      _aif_station_run "$root" "spec" "$ticket" "$profile" ||
-        aif_die "spec was rejected by spec-form — that is a malformed spec, not a call you make in prose. Fix spec.md (a later /aif-fix step will help), then re-run."
-      _aif_station_run "$root" "spec-judge" "$ticket" "$profile" ||
-        aif_die "spec-judge found blockers — resolve them in the ticket, then re-run 'aif run $ticket'."
+    while :; do
+      _aif_run_step "$root" "spec" "$ticket" "$profile" ||
+        aif_die "cannot get an admissible spec for $ticket — see above."
+      _aif_run_step "$root" "spec-judge" "$ticket" "$profile" ||
+        aif_die "spec-judge blocked $ticket — see above."
 
       local arc=0
       aif_cmd_approve "$ticket" || arc=$?
@@ -158,12 +309,12 @@ _aif_run() {
   fi
 
   # ---- autonomous: plan -> tests -> code ---------------------------------
-  # The human approved the WHAT; the rest is the machine's to build until a gate
-  # says otherwise. Any gate reject halts the run with its own message above.
+  # The human approved the WHAT; the rest is the machine's to build, stopping at
+  # the repair bench whenever a gate rejects what it produced.
   local st
   for st in plan plan-judge tests implement; do
-    _aif_station_run "$root" "$st" "$ticket" "$profile" ||
-      aif_die "$st was rejected by its gate (see above). Fix the artifact and re-run 'aif run $ticket' — the approved spec stands."
+    _aif_run_step "$root" "$st" "$ticket" "$profile" ||
+      aif_die "$st did not get past its gate for $ticket — see above. The approved spec stands; fix and re-run 'aif run $ticket'."
   done
 
   printf '\n%sdone%s — %s ran to code. Review the branch.\n\n' \
@@ -173,7 +324,10 @@ _aif_run() {
 
 aif_cmd_run() {
   case "${1:-}" in
-    -h | --help | "") _aif_run_usage; return 0 ;;
+    -h | --help | "")
+      _aif_run_usage
+      return 0
+      ;;
   esac
 
   local ticket="" seed="" profile=""
@@ -183,7 +337,10 @@ aif_cmd_run() {
         shift
         profile="${1:-}"
         ;;
-      -h | --help) _aif_run_usage; return 0 ;;
+      -h | --help)
+        _aif_run_usage
+        return 0
+        ;;
       -*) aif_die "unknown option: $1" ;;
       *)
         if [ -z "$ticket" ]; then

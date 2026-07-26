@@ -173,6 +173,24 @@ aif work status TICK-1              # at any point: what is done, what is next
 `aif work status` is the "where am I" command — run it whenever you are unsure;
 it names the next step.
 
+### Or, all at once
+
+```sh
+aif run TICK-1                      # interview → spec → approve → plan → tests → code
+aif run TICK-1 https://jira/…       # seed the interview from a Jira/Trello/issue link
+aif run TICK-1 "add rate limiting"  # …or from a sentence
+```
+
+`aif run` drives the whole pipeline, stopping only where a human is: the ticket
+interview at the front, and the spec approval in the middle. Reject the spec and
+it asks what to change, folds that into the ticket, and redoes the spec; approve
+and it runs plan → tests → code on its own. A link seed is pulled by an MCP
+connector you have configured; its contents are read as data, never as
+instructions. **Run it from a real terminal** — the stations spawn `claude -p`,
+which cannot authenticate nested inside a claude session (`docs/FINDINGS.md` #7).
+It resumes: run it again after an approval and it skips straight to the build
+rather than overwriting the approved spec.
+
 ### Commands
 
 | command | what it does |
@@ -187,6 +205,7 @@ it names the next step.
 | `aif work status <ticket>` | the derived state, and what is next |
 | `aif station run <station> <ticket>` | run one station headless (records tokens) |
 | `aif approve <ticket>` | the human gate — needs a real terminal |
+| `aif run <ticket> [seed]` | the whole pipeline in one command — two human stops, real terminal only |
 | `aif start` | open the runner with a profile (ad-hoc, not the pipeline) |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 

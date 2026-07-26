@@ -51,6 +51,7 @@ commands:
   init        Install a foundry set into this project
   uninstall   Remove it again, reverting only what aif installed
   start       Run the foundry against this project's profile
+  run         Drive one ticket through the whole pipeline (run <ticket> [seed])
   project     Set up or validate .aif/project.json (init | check)
   work        Start a ticket or show its state (new | status)
   station     Run a pipeline station headless (run <station> <ticket>)
@@ -113,6 +114,19 @@ main() {
       # shellcheck source=lib/cmd_station.sh
       . "$AIF_ROOT/lib/cmd_station.sh"
       aif_cmd_station ${1+"$@"}
+      ;;
+    run)
+      # The orchestrator drives the ticket lifecycle (cmd_work) and the stations
+      # (cmd_station) in-process, so both come along, plus the ledger they use.
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
+      # shellcheck source=lib/cmd_station.sh
+      . "$AIF_ROOT/lib/cmd_station.sh"
+      # shellcheck source=lib/cmd_run.sh
+      . "$AIF_ROOT/lib/cmd_run.sh"
+      aif_cmd_run ${1+"$@"}
       ;;
     approve)
       # shellcheck source=lib/ledger.sh

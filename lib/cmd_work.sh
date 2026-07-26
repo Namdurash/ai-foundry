@@ -173,11 +173,30 @@ EOF
   esac
 }
 
+# _aif_ticket_append_rework <work> <reason> — fold a human's rework reason back
+# into the ticket. The spec station reads the whole ticket narrative and nothing
+# else (by contract), so a rejection only reaches the next spec if it lands here,
+# as prose — not in a side channel the spec never opens. First rejection opens the
+# heading; later ones stack under it, so the spec sees the full history of asks.
+_aif_ticket_append_rework() {
+  local work="$1" reason="$2"
+  local tm="$work/ticket.md"
+  local heading="## Rework requested at approve"
+  [ -f "$tm" ] || aif_die "no ticket.md to record the rework reason in"
+  if ! grep -qF "$heading" "$tm" 2>/dev/null; then
+    printf '\n%s\n\n' "$heading" >>"$tm"
+  fi
+  printf -- '- %s\n' "$reason" >>"$tm"
+}
+
 # `aif approve <ticket>` — the human gate. Placed at the INPUT, not the output.
 #
 # Refuses unless stdin is a terminal. An agent's Bash tool is not a terminal, so
 # this is a real capability boundary — the closest thing to a human-presence
 # oracle available. The same guard runs in cmd_init.sh:131.
+#
+# Exit codes are read by `aif run`: 0 approved · 2 rejected with a reason (already
+# folded into the ticket, so the caller can re-spec) · 1 anything else.
 aif_cmd_approve() {
   local ticket="${1:-}"
   [ -n "$ticket" ] || aif_die "usage: aif approve <ticket>"
@@ -227,7 +246,22 @@ aif_cmd_approve() {
   read -r answer || aif_die "cancelled"
   case "$answer" in
     y | Y | yes | Yes) ;;
-    *) aif_die "not approved" ;;
+    *)
+      # Reject is not a dead end. Ask WHY — if the human did not already say —
+      # and fold it into the ticket so the next spec is redone against it. No
+      # reason means nothing to redo, so that stays a plain refusal.
+      printf '\n%swhat should change? one line — it goes into the ticket and the spec is redone:%s\n> ' \
+        "$AIF_C_BOLD" "$AIF_C_RESET"
+      local reason
+      read -r reason || reason=""
+      case "$reason" in
+        "") aif_die "not approved (no reason given — nothing to redo)" ;;
+      esac
+      _aif_ticket_append_rework "$work" "$reason"
+      printf '%srework noted%s in ticket.md — the spec will be redone against it.\n' \
+        "$AIF_C_YELLOW" "$AIF_C_RESET"
+      return 2
+      ;;
   esac
 
   approver="$(git -C "$root" config user.name 2>/dev/null || true)"

@@ -41,6 +41,30 @@ aif_runner_claude_start() {
   exec claude
 }
 
+# aif_runner_claude_converse <workdir> <prompt>
+#
+# An interactive claude the caller can RETURN from. The orchestrator (aif run)
+# hands the terminal over for a human touchpoint — the /aif-ticket interview —
+# and then carries on to the next step, so unlike _start this must NOT exec: a
+# replaced process never comes back. A subshell for the cd, so the caller's
+# working directory is left untouched.
+#
+# The profile env is already exported by the caller, so this inherits the right
+# routing. This is interactive, not `claude -p`, so it authenticates the ordinary
+# way — and because aif run is a plain-terminal command, FINDINGS #7 (a nested
+# `claude -p` cannot authenticate) does not apply to it.
+aif_runner_claude_converse() {
+  local workdir="$1" prompt="$2"
+  (
+    cd "$workdir" || exit 70
+    if [ -n "$prompt" ]; then
+      claude "$prompt"
+    else
+      claude
+    fi
+  )
+}
+
 # aif_runner_claude_eval <workdir> <prompt> <max_turns> <budget_usd> <out> <err>
 #
 # One headless run inside a disposable working directory. The caller has already

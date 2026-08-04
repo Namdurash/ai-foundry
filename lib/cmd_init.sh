@@ -66,14 +66,13 @@ _aif_set_files() {
     done
   fi
 
-  # Station system prompts. Installed into the project so a run is reproducible
-  # from the committed tree and versioned alongside the artifacts it produced.
-  if [ -d "$set_dir/stations" ]; then
-    find "$set_dir/stations" -type f -print 2>/dev/null | while IFS= read -r file; do
-      rel="${file#"$set_dir/stations/"}"
-      printf '%s\t%s\n' "$file" ".aif/stations/$rel"
-    done
-  fi
+  # Stations are agents (sets/*/agents/aif-<station>.md) and install with the
+  # rest of them, above. They were once a private .aif/stations/ tree; a station
+  # the runner cannot see cannot be dispatched as a subagent, and the split had
+  # aif and the runner reading two copies of the same thing.
+  #
+  # Reproducibility is unaffected — .claude/agents/ is committed too, so a run
+  # stays checkable against the station prompts that were current when it ran.
 
   # Hook scripts. Registered in .claude/settings.json via settings.fragment.json;
   # this installs the scripts they point at.

@@ -3,7 +3,8 @@ SHELL := /bin/bash
 # Gates and hooks ship to users' projects and run in CI, so they are held to the
 # same standard as the CLI itself.
 SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) \
-                 $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh)
+                 $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh) \
+                 scripts/check-set.sh
 
 .PHONY: help lint fmt check
 
@@ -28,4 +29,5 @@ check:
 	@/bin/bash --version | head -1
 	@/bin/bash bin/aif version
 	@/bin/bash bin/aif help >/dev/null
+	@/bin/bash scripts/check-set.sh
 	@echo "ok"

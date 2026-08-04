@@ -86,7 +86,7 @@ _aif_run_claude() {
 
 _aif_run_station_meta() {
   # <root> <station> — the station's aif:meta JSON.
-  aif_meta_json "$1/.aif/stations/$2.md"
+  aif_meta_json "$(aif_station_file "$1" "$2")"
 }
 
 _aif_run_gates_of() {

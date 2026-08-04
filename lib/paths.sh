@@ -34,6 +34,21 @@ aif_task_dir() {
   printf '%s/%s/%s' "$1" "$AIF_TASKS_DIR" "$2"
 }
 
+# aif_station_file <root> <station> — the file declaring a pipeline station.
+#
+# A station is a SUBAGENT, so its file lives where the runner looks for agents
+# (.claude/agents/aif-<station>.md), not in a private .aif/stations/ the runner
+# cannot see. One file now carries both readers: YAML frontmatter for the runner
+# (name, tools, model) and the aif:meta block for aif (tier, produces, gates,
+# preconditions). aif_meta_body strips everything up to the meta block's close,
+# so the frontmatter never leaks into the system prompt.
+#
+# The station's own name, not the agent's: callers say "spec", the aif- prefix
+# is this function's business.
+aif_station_file() {
+  printf '%s/.claude/agents/aif-%s.md' "$1" "$2"
+}
+
 # aif_runner_config_dir <profile> — an isolated runner config root for a profile.
 #
 # Deliberately outside the project. This becomes CLAUDE_CONFIG_DIR, which holds

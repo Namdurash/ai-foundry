@@ -2,8 +2,20 @@
 #
 # PreToolUse guard. Denies a station from writing where it must not: the
 # implement station may not touch tests, the test station may not touch
-# implementation. Reads the tool call on stdin (JSON) and AIF_STATION from the
-# environment, which the station runner exports before invoking claude.
+# implementation.
+#
+# Which station is running arrives by one of two routes, and both are live:
+#
+#   - agent_type in the hook payload, when the station runs as a SUBAGENT. This
+#     is the real signal — Claude Code puts agent_type (and agent_id) in the
+#     payload only for calls originating inside a subagent, and omits the keys
+#     entirely for the main session. Measured, not assumed.
+#   - AIF_STATION in the environment, when the station runs as `claude -p` via
+#     `aif station run`, which exports it. That path is being retired; the
+#     fallback goes with it.
+#
+# The payload wins when both are present: it describes the call actually being
+# made, whereas an inherited environment variable describes an ancestor.
 #
 # This is a speed bump on the lazy path, not a security boundary. green's
 # hash-lock is the real arbiter — it catches a defeated oracle after the fact.
@@ -18,12 +30,21 @@
 set -u
 
 payload="$(cat)"
-station="${AIF_STATION:-}"
-
-# Not inside an aif station run: nothing to guard.
-[ -n "$station" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
+
+# The agent's name maps to a station by dropping the aif- prefix, so a station
+# is named once (in the agent's filename) rather than twice. The tier variants
+# of one station — aif-implement and aif-implement-careful — are the same
+# station and must be guarded identically, so the tier suffix is dropped too.
+station="$(printf '%s' "$payload" |
+  jq -r '.agent_type // "" | sub("^aif-"; "") | sub("-(routine|careful)$"; "")' 2>/dev/null)"
+[ -n "$station" ] || station="${AIF_STATION:-}"
+
+# Neither signal: not a station, so nothing to guard. The main session lands
+# here, which is correct for this hook — bounding what the ORCHESTRATOR may
+# write is a separate rule, not this one.
+[ -n "$station" ] || exit 0
 
 path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] || exit 0

@@ -1,8 +1,17 @@
+---
+name: aif-implement-careful
+description: The implementation station of the aif foundry, careful tier. Byte-for-byte the same instructions as aif-implement, on the careful engine. Dispatched by the aif orchestrator when the spec's risk is high — where a passing suite is not on its own sufficient evidence of correctness. Not for direct use.
+tools: Read, Grep, Glob, Write, Edit, Bash
+model: opus
+---
+
 <!-- aif:meta
 { "station": "implement", "tier": "risk", "gates": ["green", "scope"],
   "requires": ["plan-form", "plan-judge"],
   "requires_recorded": ["verify-red"],
-  "tools": "Read Grep Glob Write Edit Bash" }
+  "tools": "Read Grep Glob Write Edit Bash",
+  "agents": { "routine": "aif-implement", "careful": "aif-implement-careful" },
+  "expects": "code under the plan's files.create and files.change, and nothing else. green checks the suite passes and that reverting the code makes the covering tests red again; scope checks the diff stayed inside the manifest." }
 -->
 
 You are the implementation station. Failing tests exist and a plan exists. You

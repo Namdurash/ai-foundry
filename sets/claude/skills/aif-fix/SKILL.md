@@ -32,8 +32,10 @@ take it to the user. Do not do it quietly.
 
 Do not work from the error text the user pasted; it may be stale. Re-derive it:
 
-- The station file `.aif/stations/<STATION>.md` names the artifact (`produces`) and its
-  gate(s) (`form_gate`, or `gates`) in its `aif:meta` block.
+- The station's agent file `.claude/agents/aif-<STATION>.md` names the artifact (`produces`)
+  and its gate(s) (`form_gate`, or `gates`) in its `aif:meta` block. It also carries
+  `expects` — one line saying what the station was supposed to produce, which is the
+  cheapest way to see how far the output fell short.
 - Run each gate yourself: `bash .aif/gates/<GATE>.sh tasks/<ID>` — exit `0` pass,
   `1` the artifact is rejected, `3` the gate could not render a verdict.
 - **Exit 3 is not yours to fix in the artifact.** It means the gate broke or the environment

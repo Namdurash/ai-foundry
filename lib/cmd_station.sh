@@ -36,7 +36,7 @@ _aif_station_run() {
   work="$(aif_task_dir "$root" "$ticket")"
   [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif create-ticket $ticket)"
 
-  station_file="$root/.aif/stations/$station.md"
+  station_file="$(aif_station_file "$root" "$station")"
   [ -f "$station_file" ] || aif_die "no such station: $station"
 
   project="$(aif_project_config "$root")"

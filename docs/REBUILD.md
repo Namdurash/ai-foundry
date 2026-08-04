@@ -177,7 +177,30 @@ Two things the work turned up that were not in the plan:
   - `subtype` is recorded, never branched on. FINDINGS #2 forbids *branching*;
     it was over-read into *not recording*, and that cost a whole diagnosis.
 
-### Phase 2 — Stations become subagents
+### Phase 2 — Stations become subagents — **DONE**
+
+Verified by `make lint`, `make check` (which now runs `scripts/check-set.sh`),
+`scripts/demo.sh`, and one live `aif station run spec` in a scratch repo —
+which resolved `tier careful → model opus`, ran, and wrote a spec. That last
+run also confirms the frontmatter never reaches the system prompt: the station
+behaved correctly on an empty template ticket, refusing to invent scope and
+recording an assumption saying so.
+
+Two decisions the plan did not anticipate:
+
+- **`implement` needs two agent files, not one.** Its tier comes from the
+  ticket's risk, and YAML frontmatter is static — a subagent's model cannot be
+  chosen at dispatch time. So `aif-implement` (sonnet) and
+  `aif-implement-careful` (opus) exist, generated so their bodies are identical
+  by construction, and the orchestrator picks by risk. `meta.agents` records the
+  mapping.
+- **The two consumers of a station file can now disagree.** The runner reads the
+  frontmatter (`model`), aif reads `aif:meta` (`tier`) — nothing forces them to
+  agree, and a disagreement means a station silently on the wrong engine, which
+  is exactly the class of defect that made this rebuild necessary.
+  `scripts/check-set.sh` asserts they agree, that the tier variants have not
+  drifted, and that the guard hook routes correctly. It was verified to fail
+  when either is broken, because a check that cannot fail proves nothing.
 
 - Each `sets/claude/stations/<name>.md` becomes
   `sets/claude/agents/aif-<name>.md` with subagent frontmatter: `name`,

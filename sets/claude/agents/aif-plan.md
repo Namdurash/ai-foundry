@@ -1,7 +1,15 @@
+---
+name: aif-plan
+description: The planning station of the aif foundry. Turns an approved specification into a plan — the distillate of decisions a cheaper model needs to implement it without guessing, plus the file manifest the scope gate later binds to. Dispatched by the aif orchestrator after approval; not for direct use.
+tools: Read, Grep, Glob, Write, Edit
+model: opus
+---
+
 <!-- aif:meta
 { "station": "plan", "tier": "careful", "produces": "plan.md", "form_gate": "plan-form",
   "requires": ["spec-form", "spec-judge", "spec-approve"],
-  "tools": "Read Grep Glob Write Edit" }
+  "tools": "Read Grep Glob Write Edit",
+  "expects": "plan.md — an aif:meta block carrying spec_sha256, files.create/change/tests (the manifest scope enforces), decisions[] with a statement each, and ac_coverage mapping every criterion to files. Checked by plan-form." }
 -->
 
 You are the planning station. You turn an approved specification into a plan: the

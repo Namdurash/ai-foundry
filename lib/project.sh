@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # project.json — how the pipeline verifies THIS project.
-# Discovery and validation, shared by `aif project`, `aif work`, and `aif doctor`.
+# Discovery and validation, shared by `aif project`, `aif create-ticket`, and
+# `aif doctor`.
 # Sourced by bin/aif; not meant to be executed directly.
 #
 # project.json is a hard precondition. Every gate downstream reads it to learn
@@ -47,7 +48,8 @@ aif_project_validate() {
         then "failure_classes.broken must be an array" else empty end),
       (if (.limits | type) != "object" then "limits must be an object" else empty end),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),
-      (if (.tiers.low // "") == "" then "tiers.low is required" else empty end)
+      (if (.tiers.routine // "") == "" then "tiers.routine is required" else empty end),
+      (if (.tiers.careful // "") == "" then "tiers.careful is required" else empty end)
     ] | .[]
   ' "$file" 2>/dev/null
 }

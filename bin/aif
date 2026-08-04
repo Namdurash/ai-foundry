@@ -48,19 +48,20 @@ ${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
 usage: aif <command> [options]
 
 commands:
-  init        Install a foundry set into this project
-  uninstall   Remove it again, reverting only what aif installed
-  start       Run the foundry against this project's profile
-  run         Drive one ticket through the whole pipeline (run <ticket> [seed])
-  project     Set up or validate .aif/project.json (init | check)
-  work        Start a ticket or show its state (new | status)
-  station     Run a pipeline station headless (run <station> <ticket>)
-  approve     The human gate — accept a specification
-  doctor      Report what is installed and what aif can drive
-  profiles    List the available (set, runner, model) profiles
-  test        Run the evals against a profile and report a pass rate
-  version     Print the version
-  help        Print this message
+  init          Install a foundry set into this project
+  uninstall     Remove it again, reverting only what aif installed
+  start         Run the foundry against this project's profile
+  run           Drive one ticket through the whole pipeline (run <ticket> [seed])
+  project       Set up or validate .aif/project.json (init | check)
+  create-ticket Start a ticket
+  status        Show a ticket's derived state, and what is next
+  station       Run a pipeline station headless (run <station> <ticket>)
+  approve       The human gate — accept a specification
+  doctor        Report what is installed and what aif can drive
+  profiles      List the available (set, runner, model) profiles
+  test          Run the evals against a profile and report a pass rate
+  version       Print the version
+  help          Print this message
 EOF
 }
 
@@ -101,12 +102,19 @@ main() {
       . "$AIF_ROOT/lib/cmd_project.sh"
       aif_cmd_project ${1+"$@"}
       ;;
-    work)
+    create-ticket)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_work.sh
-      . "$AIF_ROOT/lib/cmd_work.sh"
-      aif_cmd_work ${1+"$@"}
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
+      aif_cmd_create_ticket ${1+"$@"}
+      ;;
+    status)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
+      aif_cmd_status ${1+"$@"}
       ;;
     station)
       # shellcheck source=lib/ledger.sh
@@ -116,12 +124,12 @@ main() {
       aif_cmd_station ${1+"$@"}
       ;;
     run)
-      # The orchestrator drives the ticket lifecycle (cmd_work) and the stations
+      # The orchestrator drives the ticket lifecycle (cmd_ticket) and the stations
       # (cmd_station) in-process, so both come along, plus the ledger they use.
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_work.sh
-      . "$AIF_ROOT/lib/cmd_work.sh"
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
       # shellcheck source=lib/cmd_station.sh
       . "$AIF_ROOT/lib/cmd_station.sh"
       # shellcheck source=lib/cmd_run.sh
@@ -131,8 +139,8 @@ main() {
     approve)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_work.sh
-      . "$AIF_ROOT/lib/cmd_work.sh"
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
       aif_cmd_approve ${1+"$@"}
       ;;
     doctor)

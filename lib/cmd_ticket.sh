@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# `aif work new|status` and `aif approve` — the ticket lifecycle.
+# `aif create-ticket`, `aif status` and `aif approve` — the ticket lifecycle.
 # Sourced by bin/aif; not meant to be executed directly.
 #
-# State is derived, never stored. `aif work status` computes it by running the
+# State is derived, never stored. `aif status` computes it by running the
 # installed gates against the CURRENT bytes of each artifact — "passes now", not
 # "passed once". That is what makes a backward transition free: edit spec.md and
 # its gates stop passing, with nothing to undo.
@@ -16,19 +16,19 @@ _aif_gate() {
   /bin/bash "$gp" "$3" 2>&1
 }
 
-_aif_work_new() {
+_aif_ticket_create() {
   local root="$1" ticket="$2"
   local pattern work
 
   pattern="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' "$(aif_project_config "$root")" 2>/dev/null)"
   case "$ticket" in
-    "") aif_die "usage: aif work new <ticket>" ;;
+    "") aif_die "usage: aif create-ticket <ticket>" ;;
   esac
   if ! printf '%s' "$ticket" | grep -qE "$pattern"; then
     aif_die "ticket '$ticket' does not match $pattern (from project.json)"
   fi
 
-  work="$root/.aif/work/$ticket"
+  work="$(aif_task_dir "$root" "$ticket")"
   [ -d "$work" ] && aif_die "$ticket already exists at $work"
 
   mkdir -p "$work"
@@ -48,10 +48,10 @@ EOF
 
   aif_ledger_init "$work" "$ticket"
 
-  printf '%screated%s %s\n\n' "$AIF_C_GREEN" "$AIF_C_RESET" ".aif/work/$ticket/"
-  printf '  1. edit %s.aif/work/%s/ticket.md%s — the need, in your words\n' \
+  printf '%screated%s %s\n\n' "$AIF_C_GREEN" "$AIF_C_RESET" "tasks/$ticket/"
+  printf '  1. edit %stasks/%s/ticket.md%s — the need, in your words\n' \
     "$AIF_C_BOLD" "$ticket" "$AIF_C_RESET"
-  printf '  2. aif work status %s — see what is next\n' "$ticket"
+  printf '  2. aif status %s — see what is next\n' "$ticket"
 }
 
 # One pipeline stage line for `status`: name, glyph, detail.
@@ -60,12 +60,12 @@ _aif_stage() {
   printf '  %s  %-8s %s\n' "$glyph" "$label" "$detail"
 }
 
-_aif_work_status() {
+_aif_ticket_status() {
   local root="$1" ticket="$2"
   local work out rc next=""
 
-  work="$root/.aif/work/$ticket"
-  [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif work new $ticket)"
+  work="$(aif_task_dir "$root" "$ticket")"
+  [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif create-ticket $ticket)"
 
   printf '%s%s%s\n\n' "$AIF_C_BOLD" "$ticket" "$AIF_C_RESET"
 
@@ -153,24 +153,34 @@ _aif_work_status() {
   fi
 }
 
-aif_cmd_work() {
-  local sub="${1:-}"
-  [ $# -gt 0 ] && shift
+aif_cmd_create_ticket() {
+  local arg="${1:-}"
+
+  case "$arg" in
+    -h | --help | "")
+      printf 'usage: aif create-ticket <ticket>   start a ticket\n'
+      return 0
+      ;;
+  esac
 
   local root
   root="$(aif_require_project)"
+  _aif_ticket_create "$root" "$arg"
+}
 
-  case "$sub" in
-    new) _aif_work_new "$root" "${1:-}" ;;
-    status) _aif_work_status "$root" "${1:-}" ;;
+aif_cmd_status() {
+  local arg="${1:-}"
+
+  case "$arg" in
     -h | --help | "")
-      cat <<EOF
-usage: aif work new <ticket>      start a ticket
-       aif work status <ticket>   show the derived state
-EOF
+      printf 'usage: aif status <ticket>   show the derived state\n'
+      return 0
       ;;
-    *) aif_die "unknown subcommand: $sub" ;;
   esac
+
+  local root
+  root="$(aif_require_project)"
+  _aif_ticket_status "$root" "$arg"
 }
 
 # _aif_ticket_append_rework <work> <reason> — fold a human's rework reason back
@@ -203,7 +213,7 @@ aif_cmd_approve() {
 
   local root work spec meta hash approver out rc
   root="$(aif_require_project)"
-  work="$root/.aif/work/$ticket"
+  work="$(aif_task_dir "$root" "$ticket")"
   spec="$work/spec.md"
 
   [ -f "$spec" ] || aif_die "no spec.md for $ticket — nothing to approve"

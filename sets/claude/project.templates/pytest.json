@@ -42,5 +42,5 @@
       "risk": "high" }
   ],
 
-  "tiers": { "low": "haiku", "medium": "sonnet", "high": "opus" }
+  "tiers": { "routine": "sonnet", "careful": "opus" }
 }

@@ -14,7 +14,7 @@
 #     shows is structurally zero under subscription auth. Dollars are derived
 #     later from a price table; tokens are the raw datum.
 #
-# State is never stored — it is a fold over these entries (see cmd_work.sh). A
+# State is never stored — it is a fold over these entries (see cmd_ticket.sh). A
 # derived state cannot drift from the events it is derived from, and cannot lie.
 
 AIF_LEDGER_SCHEMA=1
@@ -37,12 +37,12 @@ aif_ledger_init() {
 #
 # Stamps the entry with seq, at, and prev (the sha256 of the previous stored
 # entry) and appends it. The chain is cheap self-consistency; git is the real
-# tamper-evidence, since .aif/work/ is committed.
+# tamper-evidence, since tasks/ is committed.
 aif_ledger_append() {
   local work="$1" entry="$2"
   local ledger tmp seq prev last stamp
   ledger="$(aif_ledger_path "$work")"
-  [ -f "$ledger" ] || aif_die "no ledger at $ledger — run 'aif work new' first"
+  [ -f "$ledger" ] || aif_die "no ledger at $ledger — run 'aif create-ticket' first"
 
   seq=$(($(jq '.entries | length' "$ledger") + 1))
   if [ "$seq" -eq 1 ]; then

@@ -142,8 +142,24 @@ aif_runner_claude_result_ok() {
 }
 
 # aif_runner_claude_result_error <result.json> — the human-readable reason.
+#
+# "no result field" is not a fallback for a missing key so much as a diagnosis:
+# the envelope carries .result only when the run produced a final answer. Its
+# absence, with usage present, is what an exhausted turn budget looks like — so
+# read this alongside subtype and num_turns, never alone.
 aif_runner_claude_result_error() {
   jq -r '.result // "no result field"' "$1" 2>/dev/null | head -1
+}
+
+# aif_runner_claude_result_subtype <result.json> — the envelope's own label for
+# how the run ended ("success", "error_max_turns", …).
+#
+# For the RECORD only. FINDINGS #2 establishes that subtype reports "success"
+# alongside is_error:true, so nothing may branch on it — but that is an argument
+# against trusting it, not against storing it. Stored, it names a failure mode
+# in one word; withheld, it has to be reconstructed from which keys are missing.
+aif_runner_claude_result_subtype() {
+  jq -r '.subtype // ""' "$1" 2>/dev/null | head -1
 }
 
 # aif_runner_claude_result_cost <result.json> — "cost_usd turns in_tok out_tok".

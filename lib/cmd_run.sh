@@ -22,9 +22,9 @@
 # where a human is wanted or says out loud what it is doing, because a command
 # that sometimes talks to you and sometimes does not is unreadable from outside.
 #
-# It calls _aif_station_run (cmd_station.sh) and aif_cmd_approve / _aif_work_new
-# / _aif_work_status / _aif_gate (cmd_work.sh) in-process, so bin/aif sources
-# both alongside this file.
+# It calls _aif_station_run (cmd_station.sh) and aif_cmd_approve /
+# _aif_ticket_create / _aif_ticket_status / _aif_gate (cmd_ticket.sh) in-process,
+# so bin/aif sources both alongside this file.
 
 # How many times a rejected artifact goes back to the repair bench before we
 # stop and hand the problem over. Past this, re-opening the same session is not
@@ -53,8 +53,9 @@ EOF
 }
 
 # _aif_run_ticket_ready <work> — true once ticket.md holds a real ticket rather
-# than the stub `aif work new` writes. The stub carries a fixed instruction line;
-# the moment the interview (or a human) replaces it with narrative, it is gone.
+# than the stub `aif create-ticket` writes. The stub carries a fixed instruction
+# line; the moment the interview (or a human) replaces it with narrative, it is
+# gone.
 # A cheap proxy, not a validator — the spec station and its gate judge the rest.
 _aif_run_ticket_ready() {
   local tm="$1/ticket.md"
@@ -104,8 +105,8 @@ _aif_run_gates_of() {
 # tell those apart, since both leave the station returning non-zero.
 _aif_run_gates_verdict() {
   local root="$1" station="$2" ticket="$3"
-  local work="$root/.aif/work/$ticket"
-  local gate gp rc out
+  local work gate gp rc out
+  work="$(aif_task_dir "$root" "$ticket")"
 
   while IFS= read -r gate; do
     [ -n "$gate" ] || continue
@@ -131,8 +132,8 @@ EOF
 # human fixed the artifact by hand and the gate then passed against it.
 _aif_run_record_gates() {
   local root="$1" station="$2" ticket="$3"
-  local work="$root/.aif/work/$ticket"
-  local meta produces freezes subject hash gate gp
+  local work meta produces freezes subject hash gate gp
+  work="$(aif_task_dir "$root" "$ticket")"
 
   meta="$(_aif_run_station_meta "$root" "$station")"
   produces="$(printf '%s' "$meta" | jq -r '.produces // empty')"
@@ -213,7 +214,7 @@ _aif_run_step() {
 
   aif_err "$station is still rejected after $AIF_RUN_REPAIR_MAX repair rounds:"
   printf '%s\n' "$gout" | sed 's/^/  /' >&2
-  aif_err "this is usually the ticket, not the artifact — amend .aif/work/$ticket/ticket.md and re-run 'aif run $ticket'."
+  aif_err "this is usually the ticket, not the artifact — amend tasks/$ticket/ticket.md and re-run 'aif run $ticket'."
   return 1
 }
 
@@ -257,7 +258,8 @@ _aif_run() {
     aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
   fi
 
-  local work="$root/.aif/work/$ticket"
+  local work
+  work="$(aif_task_dir "$root" "$ticket")"
 
   printf '%srun%s %s · profile %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$ticket" "$profile" >&2
 
@@ -277,7 +279,7 @@ _aif_run() {
     # Create the work dir if new — this also inits the ledger every station
     # records into, so a bare mkdir would not do.
     if [ ! -d "$work" ]; then
-      _aif_work_new "$root" "$ticket" >/dev/null
+      _aif_ticket_create "$root" "$ticket" >/dev/null
     fi
 
     # The interview ALWAYS opens. Whether the existing ticket needs work is a
@@ -319,7 +321,7 @@ _aif_run() {
 
   printf '\n%sdone%s — %s ran to code. Review the branch.\n\n' \
     "$AIF_C_GREEN" "$AIF_C_RESET" "$ticket"
-  _aif_work_status "$root" "$ticket"
+  _aif_ticket_status "$root" "$ticket"
 }
 
 aif_cmd_run() {

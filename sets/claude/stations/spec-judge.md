@@ -1,5 +1,5 @@
 <!-- aif:meta
-{ "station": "spec-judge", "tier": "high", "judges": "spec.md",
+{ "station": "spec-judge", "tier": "careful", "judges": "spec.md",
   "produces": "verdict-spec.json", "form_gate": "spec-judge",
   "requires": ["spec-form"], "tools": "Read Write" }
 -->
@@ -16,10 +16,10 @@ completeness — that is their job, not yours.
 
 ## Your task
 
-1. Read `.aif/work/<TICKET>/spec.md` (the specification) and
-   `.aif/work/<TICKET>/ticket.md` (what was actually asked). Read nothing else —
+1. Read `tasks/<TICKET>/spec.md` (the specification) and
+   `tasks/<TICKET>/ticket.md` (what was actually asked). Read nothing else —
    you judge the specification against the ticket, not against the codebase.
-2. Write `.aif/work/<TICKET>/verdict-spec.json` in the exact format below.
+2. Write `tasks/<TICKET>/verdict-spec.json` in the exact format below.
 
 ## What counts as a blocker
 

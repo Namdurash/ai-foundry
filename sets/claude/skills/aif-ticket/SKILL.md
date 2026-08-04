@@ -5,7 +5,7 @@ description: Interview the user to produce a foundry ticket — the entry artifa
 
 # aif-ticket — the analyst on the on-ramp
 
-The gated cycle starts from one artifact: a ticket at `.aif/work/<ID>/ticket.md`. Its
+The gated cycle starts from one artifact: a ticket at `tasks/<ID>/ticket.md`. Its
 quality decides how much the `spec` station has to *guess* and how much lands, unreviewed,
 in the spec's silent assumptions. This skill is the on-ramp to that cycle — it is **not** a
 station, it has no gate, and it produces the ticket the rest of the machine runs on.
@@ -61,29 +61,29 @@ user wants it to do*, stop — that decision is theirs.
   answer and interview onward from there.
 - Detect the **language** of the user's description; you will conduct the interview and
   write the narrative in it. (Structured meta keys stay English — see the format.)
-- **Create the work dir with `aif work new <ID>`, always — never hand-create it.** That
+- **Create the work dir with `aif create-ticket <ID>`, always — never hand-create it.** That
   command does two things a bare `mkdir` + write does not: it validates the id, and it
-  initialises `ledger.json`. A ticket dir without a ledger passes `aif work status` but makes
+  initialises `ledger.json`. A ticket dir without a ledger passes `aif status` but makes
   every `aif station run` crash with `jq: Could not open file … ledger.json`, because each
   station records its attempt in the ledger. So:
-  - Run `aif work new <ID>`. It writes a template `ticket.md` and the ledger; you overwrite
+  - Run `aif create-ticket <ID>`. It writes a template `ticket.md` and the ledger; you overwrite
     only `ticket.md` in step 3, leaving the ledger in place.
   - If it says the ticket **already exists**, do not write over it blindly. Ask whether to
-    refine that ticket. If yes, first check that `.aif/work/<ID>/ledger.json` exists — if it
-    is missing, the dir is half-made: move the stray files aside, run `aif work new <ID>` to
-    get a clean scaffold, then restore the narrative into `ticket.md`.
+    refine that ticket. If yes, first check that `tasks/<ID>/ledger.json` exists — if it
+    is missing, the dir is half-made: move the stray files aside, run `aif create-ticket <ID>`
+    to get a clean scaffold, then restore the narrative into `ticket.md`.
   - If `aif` is genuinely not on `PATH`, stop and say so. This skill exists to feed the `aif`
     pipeline; without the CLI there is nothing to feed, and a hand-made dir would only break
     later. Do not fake it.
-- Before moving on, confirm `.aif/work/<ID>/ledger.json` exists. If it does not, the dir is
+- Before moving on, confirm `tasks/<ID>/ledger.json` exists. If it does not, the dir is
   not pipeline-ready — fix that first.
 
 ### 1a. If a real ticket is already there, ask before touching it
 
 `aif run` opens this skill on **every** run, including runs where the ticket is already
 finished — the decision about whether it needs work is yours and the user's, made in front of
-the actual text, not guessed from outside. So when `.aif/work/<ID>/ticket.md` already holds a
-real ticket (not the stub `aif work new` writes):
+the actual text, not guessed from outside. So when `tasks/<ID>/ticket.md` already holds a
+real ticket (not the stub `aif create-ticket` writes):
 
 1. **Show it** — the whole thing, not a summary.
 2. **Ask** what they want: proceed with it as it stands, refine some part of it, or rewrite it.
@@ -127,7 +127,7 @@ user confirm it. Never default `risk` silently; it is a real decision.
 
 ### 3. Draft the ticket
 
-Write `.aif/work/<ID>/ticket.md` in the format below, in the user's language, from their
+Write `tasks/<ID>/ticket.md` in the format below, in the user's language, from their
 answers. Readable prose, lightly sectioned. Where the user consciously chose to leave a
 point for the spec, record it under *Deliberately left open* — that is honest (not
 everything is knowable now), and it tells the spec author what was left to their judgement.
@@ -137,13 +137,13 @@ everything is knowable now), and it tells the spec author what was left to their
 Now find what the draft still leaves unsaid, using a stand-in for the spec station:
 
 - Spawn the **`aif-ticket-critic`** agent (via the Task/Agent tool, `subagent_type:
-  "aif-ticket-critic"`). Tell it to read `.aif/work/<ID>/ticket.md` and report per its
+  "aif-ticket-critic"`). Tell it to read `tasks/<ID>/ticket.md` and report per its
   instructions. It reads only the ticket — the same blindfold the spec station wears — so it
   sees exactly what the frozen text does and does not say, none of this interview.
 - Take its findings back to the user. For each, they **answer** (you fold the answer into the
   narrative) or **consciously defer** it (it goes under *Deliberately left open*). You do not
   answer for them.
-- Rewrite `.aif/work/<ID>/ticket.md` and run the critic again.
+- Rewrite `tasks/<ID>/ticket.md` and run the critic again.
 - Stop when a round surfaces nothing new, or the user says it is enough. **Cap at 3 rounds**
   — run the critic at most three times per ticket, sequentially, one at a time; past that,
   driving every last gap closed slides into waterfall, and the human approval gate and the
@@ -158,17 +158,17 @@ theirs even though you held the pen.
 
 ### 6. Hand off
 
-State that the ticket is ready at `.aif/work/<ID>/ticket.md`, and name the next step without
+State that the ticket is ready at `tasks/<ID>/ticket.md`, and name the next step without
 taking it:
 
-- `aif work status <ID>` — see the derived state, and what is next.
+- `aif status <ID>` — see the derived state, and what is next.
 - `aif station run spec <ID>` — enter the gated cycle (their call, not yours).
 
 ## The format
 
 A single `aif:meta` HTML comment holding JSON, then the narrative. Meta keys and values are
 **English**; the narrative is in the ticket's language. This is the same envelope
-`aif work new` writes and the `spec` station reads — match it exactly.
+`aif create-ticket` writes and the `spec` station reads — match it exactly.
 
 ```markdown
 <!-- aif:meta

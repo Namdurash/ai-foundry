@@ -3,15 +3,19 @@
 # `aif station run <station> <ticket>` — run one pipeline station headless.
 # Sourced by bin/aif; not meant to be executed directly.
 #
-# This is the instrumented path the whole tiering claim rests on. aif invokes
-# claude -p itself, so the JSON envelope carries the token usage the ledger
-# needs — an in-session subagent would report none (FINDINGS #7 territory). The
-# skills in a later milestone are thin wrappers that shell out to this.
+# This is the instrumented path: aif invokes claude -p itself, so the JSON
+# envelope carries the token usage the ledger needs.
 #
-# The station declares a tier (low|medium|high). project.json maps the tier to a
-# model alias (opus|sonnet|haiku). The profile's environment maps the alias to a
-# concrete model (opus → glm-5.2 on the glm profile). Three levels, so the set
-# stays model-agnostic while a station still says how much engine it needs.
+# NOTE (docs/REBUILD.md): the belief that an in-session subagent could not report
+# usage is false, and was measured to be false. A SubagentStop hook receives
+# agent_transcript_path, whose per-turn message.usage yields the same four token
+# classes. This file is superseded by that route in phase 4.
+#
+# The station declares a tier (routine|careful). project.json maps the tier to a
+# model alias (sonnet|opus). The profile's environment maps the alias to a
+# concrete model (opus → glm-5.2 on the glm profile). Three levels of
+# indirection, so the set stays model-agnostic while a station still says how
+# much engine it needs.
 
 _aif_station_usage() {
   cat <<EOF
@@ -29,8 +33,8 @@ _aif_station_run() {
   [ -n "$station" ] || aif_die "usage: aif station run <station> <ticket>"
   [ -n "$ticket" ] || aif_die "usage: aif station run <station> <ticket>"
 
-  work="$root/.aif/work/$ticket"
-  [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif work new $ticket)"
+  work="$(aif_task_dir "$root" "$ticket")"
+  [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif create-ticket $ticket)"
 
   station_file="$root/.aif/stations/$station.md"
   [ -f "$station_file" ] || aif_die "no such station: $station"
@@ -59,7 +63,7 @@ _aif_station_run() {
 
   local meta tier produces judges freezes model max_turns
   meta="$(aif_meta_json "$station_file")"
-  tier="$(printf '%s' "$meta" | jq -r '.tier // "high"')"
+  tier="$(printf '%s' "$meta" | jq -r '.tier // "careful"')"
   # produces: a single artifact written into the work dir (spec.md, plan.md). A
   # station that writes into the project instead (the test-author writes test
   # files) has none; its form gate does the verifying and freezes the boundary.
@@ -78,11 +82,23 @@ _aif_station_run() {
     aif_die "station '$station' declares neither 'produces' nor a gate — nothing to verify"
 
   # A station may tier by the ticket's risk instead of a fixed level. This is how
-  # the implement station gets haiku on a pure-function ticket and opus on a
-  # migration: the cheapest engine whose errors the gates catch, per principle 5.
-  # The risk is the human's call at spec time, never a model's.
+  # the implement station gets the routine engine on a pure-function ticket and
+  # the careful one on a migration: the cheapest engine whose errors the gates
+  # catch, per principle 5. The risk is the human's call at spec time, never a
+  # model's.
+  #
+  # risk stays three-valued because it describes the WORK — a human judgement
+  # about what is being built — while a tier describes an ENGINE, and there are
+  # only two of those. low and medium therefore collapse onto routine: the
+  # question a tier answers is "do the gates catch this model's mistakes", and
+  # for everything short of high risk the answer is yes.
   if [ "$tier" = "risk" ]; then
-    tier="$(aif_meta_json "$work/spec.md" | jq -r '.risk // "medium"')"
+    local risk
+    risk="$(aif_meta_json "$work/spec.md" | jq -r '.risk // "medium"')"
+    case "$risk" in
+      high) tier="careful" ;;
+      *) tier="routine" ;;
+    esac
   fi
 
   model="$(jq -r --arg t "$tier" '.tiers[$t] // empty' "$project")"
@@ -139,12 +155,12 @@ EOF
   # (its file body) says what to read and how. A judge additionally gets the hash
   # of the artifact it judges, to record as the verdict's binding.
   local user_prompt sys_prompt out err
-  user_prompt="Ticket ${ticket}. Your working directory is the project root. Produce .aif/work/${ticket}/${produces} exactly as your instructions specify; read the inputs your instructions name under .aif/work/${ticket}/."
+  user_prompt="Ticket ${ticket}. Your working directory is the project root. Produce tasks/${ticket}/${produces} exactly as your instructions specify; read the inputs your instructions name under tasks/${ticket}/."
   if [ -n "$judges" ]; then
     local judged_hash
     judged_hash="$(aif_sha256 "$work/$judges")"
     [ -n "$judged_hash" ] || aif_die "cannot judge $judges — it does not exist for $ticket"
-    user_prompt="$user_prompt You are judging .aif/work/${ticket}/${judges}, whose sha256 is ${judged_hash}. Record exactly that value as subject_sha256 in your verdict."
+    user_prompt="$user_prompt You are judging tasks/${ticket}/${judges}, whose sha256 is ${judged_hash}. Record exactly that value as subject_sha256 in your verdict."
   fi
   sys_prompt="$(mktemp "${TMPDIR:-/tmp}/aif-sys-XXXXXX")"
   aif_meta_body "$station_file" >"$sys_prompt"
@@ -178,7 +194,7 @@ EOF
 
   # Record the attempt regardless of outcome — a failed station still cost
   # tokens, and principle 7 counts what was spent, not only what succeeded.
-  local attempt usage reported dur turns
+  local attempt usage reported dur turns subtype
   attempt=$(($(jq --arg s "$station" \
     '[.entries[] | select(.station == $s)] | length' \
     "$(aif_ledger_path "$work")") + 1))
@@ -193,15 +209,32 @@ EOF
   reported="$(jq -r '.total_cost_usd // 0' "$out")"
   dur="$(jq -r '.duration_ms // 0' "$out")"
   turns="$(jq -r '.num_turns // 0' "$out")"
+  subtype="$(aif_runner_claude_result_subtype "$out")"
 
   if ! aif_runner_claude_result_ok "$out"; then
     local reason
     reason="$(aif_runner_claude_result_error "$out")"
+    # A failed attempt is recorded with the SAME fields as a successful one.
+    # It was not, and that asymmetry cost a diagnosis: an implement attempt on
+    # OPES-48 landed here having spent ~$0.25, and the row carried no cost at
+    # all — not because the envelope withheld it (it is in $reported, read
+    # above) but because this object simply omitted the key. A schema where the
+    # failure path records less than the success path biases every total
+    # downward, and it biases it exactly on the tickets that went worst.
+    #
+    # subtype is RECORDED here and branched on nowhere. FINDINGS #2 forbids
+    # branching on it, because it reports "success" alongside is_error:true.
+    # That was over-read into not storing it, which is a different thing: with
+    # subtype in the row, "error_max_turns" would have said in one word what
+    # otherwise had to be inferred from the shape of a missing .result field.
     aif_ledger_append "$work" "$(jq -n --arg s "$station" --argjson a "$attempt" \
       --arg m "$model" --argjson u "$usage" --argjson d "$dur" --argjson t "$turns" \
-      --arg r "$reason" \
-      '{ station: $s, attempt: $a, model: $m, usage: $u, duration_ms: $d,
-         num_turns: $t, result: "error", reason: $r }')"
+      --argjson cost "$reported" --arg sub "$subtype" --arg r "$reason" \
+      '{ station: $s, attempt: $a, model: $m, usage: $u,
+         reported_cost_usd: $cost,
+         cost_source: (if $cost > 0 then "reported" else "tokens-only" end),
+         duration_ms: $d, num_turns: $t, subtype: $sub,
+         result: "error", reason: $r }')"
     rm -f "$out" "$err"
     aif_die "station failed: $reason"
   fi
@@ -218,9 +251,12 @@ EOF
     if [ -n "$pre_hash" ] && [ "$out_hash" = "$pre_hash" ]; then
       aif_ledger_append "$work" "$(jq -n --arg s "$station" --argjson a "$attempt" \
         --arg m "$model" --argjson u "$usage" --argjson d "$dur" --argjson t "$turns" \
-        --arg p "$produces" \
-        '{ station: $s, attempt: $a, model: $m, usage: $u, duration_ms: $d,
-           num_turns: $t, result: "unchanged", reason: ($p + " was not rewritten") }')"
+        --argjson cost "$reported" --arg sub "$subtype" --arg p "$produces" \
+        '{ station: $s, attempt: $a, model: $m, usage: $u,
+           reported_cost_usd: $cost,
+           cost_source: (if $cost > 0 then "reported" else "tokens-only" end),
+           duration_ms: $d, num_turns: $t, subtype: $sub,
+           result: "unchanged", reason: ($p + " was not rewritten") }')"
       rm -f "$out" "$err"
       aif_die "station reported success but left $produces byte-for-byte unchanged — nothing was rewritten, so its gate would return the same verdict as last time. Check the station's instructions or the ticket before re-running."
     fi
@@ -230,13 +266,13 @@ EOF
 
   aif_ledger_append "$work" "$(jq -n \
     --arg s "$station" --argjson a "$attempt" --arg m "$model" \
-    --argjson u "$usage" --argjson cost "$reported" \
+    --argjson u "$usage" --argjson cost "$reported" --arg sub "$subtype" \
     --argjson d "$dur" --argjson t "$turns" --argjson outputs "$outputs" \
     '{ station: $s, attempt: $a, model: $m,
        usage: $u,
        reported_cost_usd: $cost,
        cost_source: (if $cost > 0 then "reported" else "tokens-only" end),
-       duration_ms: $d, num_turns: $t,
+       duration_ms: $d, num_turns: $t, subtype: $sub,
        outputs: $outputs }')"
   rm -f "$out" "$err"
 

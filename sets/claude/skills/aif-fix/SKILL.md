@@ -34,7 +34,7 @@ Do not work from the error text the user pasted; it may be stale. Re-derive it:
 
 - The station file `.aif/stations/<STATION>.md` names the artifact (`produces`) and its
   gate(s) (`form_gate`, or `gates`) in its `aif:meta` block.
-- Run each gate yourself: `bash .aif/gates/<GATE>.sh .aif/work/<ID>` — exit `0` pass,
+- Run each gate yourself: `bash .aif/gates/<GATE>.sh tasks/<ID>` — exit `0` pass,
   `1` the artifact is rejected, `3` the gate could not render a verdict.
 - **Exit 3 is not yours to fix in the artifact.** It means the gate broke or the environment
   is wrong (an unparseable file, a missing tool, an already-broken repo). Report it and stop;
@@ -65,7 +65,7 @@ the input was too vague.** These are the user's call, never yours:
 
 For a structural finding, propose the split or the question concretely — name which criteria
 would stay and which would move — and let the user decide. When they decide, the change goes
-into `.aif/work/<ID>/ticket.md`, because the spec station reads the ticket and nothing else.
+into `tasks/<ID>/ticket.md`, because the spec station reads the ticket and nothing else.
 
 ### 3. Fix the mechanical pile, one at a time
 

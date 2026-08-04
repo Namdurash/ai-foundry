@@ -15,7 +15,7 @@ that it can be.
 
 ## Your task
 
-1. Read `.aif/work/<TICKET>/plan.md` — the files to create and change, and the
+1. Read `tasks/<TICKET>/plan.md` — the files to create and change, and the
    decisions already made. Follow the decisions; they are not yours to revisit.
 2. Read the failing tests. They are the specification in executable form. Make
    them pass.

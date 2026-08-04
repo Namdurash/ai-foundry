@@ -26,7 +26,7 @@ step() { printf '\n%s▸ %s%s\n' "$bold" "$1" "$rst"; }
 note() { printf '  %s%s%s\n' "$dim" "$1" "$rst"; }
 gate() { # <label> <gate> <ticket> <expected-exit>
   local out rc=0
-  out="$(/bin/bash ".aif/gates/$2.sh" ".aif/work/$3" 2>&1)" || rc=$?
+  out="$(/bin/bash ".aif/gates/$2.sh" "tasks/$3" 2>&1)" || rc=$?
   if [ "$rc" -eq "$4" ]; then
     printf '  %s✓%s %-12s exit %s  %s\n' "$grn" "$rst" "$2" "$rc" "$(printf '%s' "$out" | head -1)"
   else
@@ -67,12 +67,12 @@ tmp="$(mktemp)"; jq '.test.command="bash .aif/mkreport.sh" | .test.report.path="
 
 # ---------------------------------------------------------------------------
 step "2. start a ticket"
-"$AIF" work new PROJ-1 >/dev/null
-note "wrote .aif/work/PROJ-1/ticket.md (in the live flow, you fill this in)"
+"$AIF" create-ticket PROJ-1 >/dev/null
+note "wrote tasks/PROJ-1/ticket.md (in the live flow, you fill this in)"
 
 # ---------------------------------------------------------------------------
 step "3. SPECIFICATION boundary  —  spec-form → spec-judge → human"
-cat > .aif/work/PROJ-1/spec.md <<'SPEC'
+cat > tasks/PROJ-1/spec.md <<'SPEC'
 <!-- aif:meta
 { "schema": 1, "ticket": "PROJ-1", "lang": "en", "risk": "low",
   "surfaces": ["POST /api/users"],
@@ -89,8 +89,8 @@ SPEC
 gate "spec form" spec-form PROJ-1 0
 
 note "now the same gate on a BAD spec (vague expect, two assertions):"
-mkdir -p .aif/work/BAD
-cat > .aif/work/BAD/spec.md <<'SPEC'
+mkdir -p tasks/BAD
+cat > tasks/BAD/spec.md <<'SPEC'
 <!-- aif:meta
 { "schema": 1, "ticket": "BAD-1", "lang": "en", "risk": "low", "surfaces": ["POST /x"],
   "acceptance": [ { "id": "AC-001", "surface": "POST /x", "given": "a", "when": "b",
@@ -101,25 +101,25 @@ SPEC
 gate "spec form" spec-form BAD 1
 
 note "judge verdict (hand-written; live: aif station run spec-judge):"
-SH="$(shasum -a 256 .aif/work/PROJ-1/spec.md | cut -d' ' -f1)"
-jq -n --arg s "$SH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[]}' > .aif/work/PROJ-1/verdict-spec.json
+SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
+jq -n --arg s "$SH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[]}' > tasks/PROJ-1/verdict-spec.json
 gate "spec judge" spec-judge PROJ-1 0
 
 note "human approval (hand-written; live: aif approve PROJ-1, needs a real terminal):"
-jq -n --arg s "$SH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",tty:true,approved_assumptions:["AS-001"]}' > .aif/work/PROJ-1/approval.json
+jq -n --arg s "$SH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",tty:true,approved_assumptions:["AS-001"]}' > tasks/PROJ-1/approval.json
 gate "spec approve" spec-approve PROJ-1 0
 
 note "the backward transition, for free: append one line to spec.md and the"
 note "approval below it lapses on its own — no 'go back' command needed:"
-cp .aif/work/PROJ-1/spec.md /tmp/aif-demo-spec.bak
-printf '\nan edit after approval\n' >> .aif/work/PROJ-1/spec.md
+cp tasks/PROJ-1/spec.md /tmp/aif-demo-spec.bak
+printf '\nan edit after approval\n' >> tasks/PROJ-1/spec.md
 gate "spec approve" spec-approve PROJ-1 1
-cp /tmp/aif-demo-spec.bak .aif/work/PROJ-1/spec.md; rm -f /tmp/aif-demo-spec.bak
+cp /tmp/aif-demo-spec.bak tasks/PROJ-1/spec.md; rm -f /tmp/aif-demo-spec.bak
 
 # ---------------------------------------------------------------------------
-step "4. PLAN boundary  —  plan-form → plan-judge (on haiku)"
-SH="$(shasum -a 256 .aif/work/PROJ-1/spec.md | cut -d' ' -f1)"
-cat > .aif/work/PROJ-1/plan.md <<PLAN
+step "4. PLAN boundary  —  plan-form → plan-judge (on the routine tier)"
+SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
+cat > tasks/PROJ-1/plan.md <<PLAN
 <!-- aif:meta
 { "schema": 1, "ticket": "PROJ-1", "spec_sha256": "$SH", "risk": "low",
   "files": { "create": [], "change": ["src/api/users.py"], "tests": ["tests/test_users.py"] },
@@ -129,8 +129,8 @@ cat > .aif/work/PROJ-1/plan.md <<PLAN
 # PROJ-1 — plan
 PLAN
 gate "plan form" plan-form PROJ-1 0
-PLH="$(shasum -a 256 .aif/work/PROJ-1/plan.md | cut -d' ' -f1)"
-jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > .aif/work/PROJ-1/verdict-plan.json
+PLH="$(shasum -a 256 tasks/PROJ-1/plan.md | cut -d' ' -f1)"
+jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
 gate "plan judge" plan-judge PROJ-1 0
 git add -A; git commit -qm "aif: plan PROJ-1" >/dev/null
 
@@ -158,15 +158,27 @@ printf 'x\n' > src/api/sneaky.py
 gate "scope" scope PROJ-1 1
 rm -f src/api/sneaky.py
 
+note "now the denylist, which is a different defence. Above, sneaky.py was caught"
+note "for not being in the plan — so an implementation that simply ADDS itself to"
+note "the plan would walk straight through. Here it does exactly that: it lists"
+note "the plan and the ledger as files it may change, then edits the ledger. Every"
+note "changed file is now permitted, and only the denylist is left standing:"
+cp tasks/PROJ-1/plan.md /tmp/aif-demo-plan.bak
+perl -pi -e 's{"change": \["src/api/users\.py"\]}{"change": ["src/api/users.py", "tasks/PROJ-1/plan.md", "tasks/PROJ-1/ledger.json"]}' tasks/PROJ-1/plan.md
+printf '{"tampered":true}\n' > tasks/PROJ-1/ledger.json
+gate "scope" scope PROJ-1 1
+cp /tmp/aif-demo-plan.bak tasks/PROJ-1/plan.md
+git checkout -q -- tasks/PROJ-1/ledger.json
+
 # ---------------------------------------------------------------------------
 step "done"
 printf '  The pipeline ran end to end: %sTicket → Spec → Plan → Tests → Code%s,\n' "$bold" "$rst"
 printf '  every boundary machine-checked, no model called.\n\n'
 printf '  %sTo run it live%s (needs an authenticated claude in a real terminal):\n' "$bold" "$rst"
-printf '    %saif work new PROJ-1%s        then edit .aif/work/PROJ-1/ticket.md\n' "$dim" "$rst"
+printf '    %saif create-ticket PROJ-1%s   then edit tasks/PROJ-1/ticket.md\n' "$dim" "$rst"
 printf '    %saif station run spec PROJ-1%s\n' "$dim" "$rst"
 printf '    %saif approve PROJ-1%s\n' "$dim" "$rst"
 printf '    %saif station run plan PROJ-1%s   (and plan-judge, tests, implement)\n' "$dim" "$rst"
-printf '    %saif work status PROJ-1%s      at any point, to see what is next\n\n' "$dim" "$rst"
+printf '    %saif status PROJ-1%s          at any point, to see what is next\n\n' "$dim" "$rst"
 
 rm -rf "$DEMO"

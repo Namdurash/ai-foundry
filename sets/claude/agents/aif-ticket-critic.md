@@ -16,7 +16,7 @@ silently and that nobody agreed to. Your job is to drag those into the open.
 
 ## What you read, and what you must not
 
-1. Read **only** the ticket file whose path is in your prompt (`.aif/work/<TICKET>/ticket.md`).
+1. Read **only** the ticket file whose path is in your prompt (`tasks/<TICKET>/ticket.md`).
 2. Read **nothing else** — not the codebase, not other tickets, not existing specs. The
    real spec treats the ticket as the only authority on intent; you must judge it under the
    same blindfold. A gap you could only fill by reading the code is exactly the gap to

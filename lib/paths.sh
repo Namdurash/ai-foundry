@@ -12,6 +12,28 @@
 # shellcheck disable=SC2034
 AIF_PROFILE_STATE=".aif/profile.local"
 
+# Where a ticket's artifacts live, relative to the project root.
+#
+# At the root, not under .aif/, and that is a deliberate split: .aif/ holds what
+# `aif init` installed and `aif uninstall` may remove (project.json, gates,
+# agents, hooks), while tasks/ holds the project's own work — tickets, specs,
+# plans, ledgers. Uninstalling the foundry must never take the record of what it
+# built with it.
+#
+# Committed, not ignored: git is the real tamper-evidence behind the ledger's
+# hash chain (see lib/ledger.sh).
+# shellcheck disable=SC2034
+AIF_TASKS_DIR="tasks"
+
+# aif_task_dir <root> <ticket> — where this ticket's artifacts live.
+#
+# One place, because the path is dereferenced by the CLI, the gates, the
+# stations' prompts and the skills; when it was spelled out at each site, moving
+# it meant finding seventeen of them.
+aif_task_dir() {
+  printf '%s/%s/%s' "$1" "$AIF_TASKS_DIR" "$2"
+}
+
 # aif_runner_config_dir <profile> — an isolated runner config root for a profile.
 #
 # Deliberately outside the project. This becomes CLAUDE_CONFIG_DIR, which holds

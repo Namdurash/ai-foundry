@@ -134,7 +134,7 @@ aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?
 
 ### Before the ticket — the analyst
 
-`aif work new` gives you a blank ticket to fill in. If you would rather be
+`aif create-ticket` gives you a blank ticket to fill in. If you would rather be
 interviewed into a good one, run **`/aif-ticket`** inside the runner (`aif start`,
 then `/aif-ticket TICK-1 "add rate limiting to login"`). It ships as both a skill
 and a slash command with the same name, so `/aif-ticket` is reachable whether or
@@ -177,18 +177,18 @@ Ticket ── spec ── plan ── tests ── code
 ```
 
 ```sh
-aif work new TICK-1                 # creates .aif/work/TICK-1/ticket.md — you fill it in
+aif create-ticket TICK-1            # creates tasks/TICK-1/ticket.md — you fill it in
 aif station run spec TICK-1         # opus  → spec.md        · gate: spec-form
 aif station run spec-judge TICK-1   # opus, blockers only    · gate: spec-judge
 aif approve TICK-1                  # YOU, at a real terminal · gate: spec-approve
 aif station run plan TICK-1         # opus  → plan.md        · gate: plan-form
-aif station run plan-judge TICK-1   # haiku, "where would you guess?" · gate: plan-judge
+aif station run plan-judge TICK-1   # routine tier, "where would you guess?" · gate: plan-judge
 aif station run tests TICK-1        # opus  → failing tests  · gate: verify-red
 aif station run implement TICK-1    # by risk → code         · gates: green + scope
-aif work status TICK-1              # at any point: what is done, what is next
+aif status TICK-1                   # at any point: what is done, what is next
 ```
 
-`aif work status` is the "where am I" command — run it whenever you are unsure;
+`aif status` is the "where am I" command — run it whenever you are unsure;
 it names the next step.
 
 ### Or, all at once
@@ -230,8 +230,8 @@ it skips straight to the build rather than overwriting the approved spec.
 | `aif profiles` | list the (set, runner, model) profiles |
 | `aif project init [runner]` | scaffold `.aif/project.json` |
 | `aif project check` | validate it |
-| `aif work new <ticket>` | start a ticket |
-| `aif work status <ticket>` | the derived state, and what is next |
+| `aif create-ticket <ticket>` | start a ticket |
+| `aif status <ticket>` | the derived state, and what is next |
 | `aif station run <station> <ticket>` | run one station headless (records tokens) |
 | `aif approve <ticket>` | the human gate — needs a real terminal |
 | `aif run <ticket> [seed]` | the whole pipeline in one command — two human stops, real terminal only |
@@ -242,16 +242,22 @@ it skips straight to the build rather than overwriting the approved spec.
 
 | station | tier | produces | its gate(s) |
 |---|---|---|---|
-| `spec` | opus (high) | `spec.md` | spec-form |
-| `spec-judge` | opus (high) | `verdict-spec.json` | spec-judge |
-| `plan` | opus (high) | `plan.md` | plan-form |
-| `plan-judge` | **haiku (low)** | `verdict-plan.json` | plan-judge |
-| `tests` | opus (high) | test files + `tests.lock` | verify-red |
+| `spec` | careful (opus) | `spec.md` | spec-form |
+| `spec-judge` | careful (opus) | `verdict-spec.json` | spec-judge |
+| `plan` | careful (opus) | `plan.md` | plan-form |
+| `plan-judge` | **routine (sonnet)** | `verdict-plan.json` | plan-judge |
+| `tests` | careful (opus) | test files + `tests.lock` | verify-red |
 | `implement` | **by risk** | code | green, scope |
 
-The tier is a label; the profile maps it to a model (`opus` → glm-5.2 on the
-`glm` profile). `implement`'s tier comes from the spec's `risk`: low→haiku,
-high→opus.
+There are two tiers, and the question a tier answers is "do the gates catch this
+model's mistakes": `routine` where they do, `careful` where they do not. The tier
+is a label; the profile maps it to a model (`opus` → glm-5.2 on the `glm`
+profile).
+
+`implement`'s tier comes from the spec's `risk`, which stays three-valued because
+it describes the *work* — a human's judgement at spec time — while a tier
+describes an *engine*. `low` and `medium` both map to `routine`, `high` to
+`careful`.
 
 ### Gates and exit codes
 
@@ -273,7 +279,7 @@ is `1`.
 Edit any upstream artifact and everything below it lapses on its own, because
 every artifact binds to the hash of the one above it. Change `spec.md` after
 approving, and the approval, the judge verdict, the plan, and the tests all go
-invalid. There is no "go back" — `aif work status` just shows what became
+invalid. There is no "go back" — `aif status` just shows what became
 unvalidated.
 
 ### Offline, no tokens

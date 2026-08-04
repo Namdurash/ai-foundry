@@ -1,5 +1,5 @@
 <!-- aif:meta
-{ "station": "plan", "tier": "high", "produces": "plan.md", "form_gate": "plan-form",
+{ "station": "plan", "tier": "careful", "produces": "plan.md", "form_gate": "plan-form",
   "requires": ["spec-form", "spec-judge", "spec-approve"],
   "tools": "Read Grep Glob Write Edit" }
 -->
@@ -18,12 +18,12 @@ seen this ticket could carry it out.
 
 ## Your task
 
-1. Read `.aif/work/<TICKET>/spec.md` — the approved specification. Its acceptance
+1. Read `tasks/<TICKET>/spec.md` — the approved specification. Its acceptance
    criteria are the contract.
 2. Explore the repository with Grep and Glob to learn the real shape of the code:
    which files exist, what the relevant interfaces actually are, where this kind
    of change goes. A plan written against an imagined repository is rejected.
-3. Write `.aif/work/<TICKET>/plan.md` in the exact format below.
+3. Write `tasks/<TICKET>/plan.md` in the exact format below.
 
 ## The format
 

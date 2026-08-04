@@ -1,5 +1,5 @@
 <!-- aif:meta
-{ "station": "tests", "tier": "high", "form_gate": "verify-red", "freezes": "tests.lock",
+{ "station": "tests", "tier": "careful", "form_gate": "verify-red", "freezes": "tests.lock",
   "requires": ["plan-form", "plan-judge"],
   "tools": "Read Grep Glob Write Edit" }
 -->
@@ -14,8 +14,8 @@ later means the code satisfies the specification and not merely itself.
 
 ## Your task
 
-1. Read `.aif/work/<TICKET>/spec.md` (the acceptance criteria) and
-   `.aif/work/<TICKET>/plan.md` (the file layout and decisions).
+1. Read `tasks/<TICKET>/spec.md` (the acceptance criteria) and
+   `tasks/<TICKET>/plan.md` (the file layout and decisions).
 2. Write the test files named in the plan's `files.tests`. Write nothing else —
    in particular, do not create or modify any file in the plan's `files.create`
    or `files.change`. Those belong to the implementation station.

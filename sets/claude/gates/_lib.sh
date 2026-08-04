@@ -99,8 +99,9 @@ aif_g_meta_or_die() {
 # aif_g_project <work-dir> — path to project.json, walking up from the work dir.
 #
 # Gates are handed a work dir but their configuration lives at the project root,
-# and neither the depth of .aif/work/<ticket>/ nor the caller's cwd is
-# guaranteed.
+# and neither the depth of tasks/<ticket>/ nor the caller's cwd is guaranteed.
+# Walking up rather than hopping a fixed number of levels is what let the work
+# dir move out of .aif/ without touching this function.
 aif_g_project() {
   local dir
   dir="$(cd "$1" 2>/dev/null && pwd -P)" || aif_g_error "no such work dir: $1"

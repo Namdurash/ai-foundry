@@ -1,5 +1,5 @@
 <!-- aif:meta
-{ "station": "plan-judge", "tier": "low", "judges": "plan.md",
+{ "station": "plan-judge", "tier": "routine", "judges": "plan.md",
   "produces": "verdict-plan.json", "form_gate": "plan-judge",
   "requires": ["plan-form"], "tools": "Read Grep Glob Write" }
 -->
@@ -20,13 +20,13 @@ you will notice them.
 
 ## Your task
 
-1. Read `.aif/work/<TICKET>/plan.md` — the plan. Its `files` and `ac_coverage`
+1. Read `tasks/<TICKET>/plan.md` — the plan. Its `files` and `ac_coverage`
    tell you what you are meant to build and where.
 2. For each file the plan says to create or change, read the surrounding code
    with Grep and Glob as if you were about to edit it. Ask: does the plan tell
    me the specific function, signature, data shape, and behaviour to write here —
    or would I have to invent one?
-3. Write `.aif/work/<TICKET>/verdict-plan.json` in the exact format below.
+3. Write `tasks/<TICKET>/verdict-plan.json` in the exact format below.
 
 ## The format
 

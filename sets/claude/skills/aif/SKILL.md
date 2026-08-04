@@ -75,6 +75,11 @@ own words about what was wrong, and it is usually exactly what needs answering.
      already rejected, so re-running it would produce the same verdict. Do not retry blindly:
      something in the ticket or the station's inputs is not giving it what it needs. Say so
      and work it out with the user.
+4. **Say what it cost.** You do not have to measure anything — a `SubagentStop` hook already
+   recorded the station's tokens, model and turn count into `tasks/<ID>/ledger.json` from its
+   own transcript. Read the last entry for that station and report it in one line. If
+   `cost_usd` is `null` the model is not in `.aif/prices.json`; report the tokens and say the
+   table needs an entry, rather than guessing a figure.
 
 ### `human`, step `approve` — the one gate with no machine backstop
 

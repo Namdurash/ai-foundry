@@ -74,6 +74,13 @@ _aif_set_files() {
   # Reproducibility is unaffected — .claude/agents/ is committed too, so a run
   # stays checkable against the station prompts that were current when it ran.
 
+  # The price table the metering hook derives dollars with. Installed rather than
+  # read from the set because it is the project's to maintain: prices change, and
+  # a team should be able to correct theirs without editing aif.
+  if [ -f "$set_dir/prices.json" ]; then
+    printf '%s\t%s\n' "$set_dir/prices.json" ".aif/prices.json"
+  fi
+
   # Hook scripts. Registered in .claude/settings.json via settings.fragment.json;
   # this installs the scripts they point at.
   if [ -d "$set_dir/hooks" ]; then
@@ -259,19 +266,47 @@ EOF
   if [ -f "$set_dir/settings.fragment.json" ]; then
     fragment="$(cat "$set_dir/settings.fragment.json")"
 
-    # A `*` merge REPLACES arrays rather than appending, so merging our hook into
-    # a settings.json that already has PreToolUse hooks would drop the user's.
-    # Refuse in that case rather than clobber — the guard hook is defence in
-    # depth (green's hash-lock is the real arbiter), so skipping it is safe.
-    clobbers=no
+    # A `*` merge REPLACES arrays rather than appending, so merging into a
+    # settings.json that already has hooks for the same EVENT would drop the
+    # user's. Checked per event and dropped per event, rather than abandoning the
+    # whole fragment: the events are independent, and skipping the metering hook
+    # because someone happens to have a PreToolUse of their own would silently
+    # turn off cost accounting.
+    #
+    # Each skip is reported with its actual consequence. They are not the same:
+    # the guard is defence in depth (green's hash-lock is the real arbiter), so
+    # losing it costs a speed bump. Losing the meter means stations run and
+    # nothing records what they cost — which is the defect this pipeline was
+    # rebuilt to fix, so it is stated as loudly as a warning can state it.
+    local event
     if [ -f "$settings_dest" ]; then
-      printf '%s' "$fragment" | jq -e '.hooks.PreToolUse' >/dev/null 2>&1 &&
-        jq -e '.hooks.PreToolUse' "$settings_dest" >/dev/null 2>&1 && clobbers=yes
+      while IFS= read -r event; do
+        [ -n "$event" ] || continue
+        jq -e --arg e "$event" '.hooks[$e]' "$settings_dest" >/dev/null 2>&1 || continue
+        case "$event" in
+          PreToolUse)
+            aif_warn "you already have PreToolUse hooks — skipping the guard hook so yours are not replaced"
+            aif_warn "  register .aif/hooks/guard.sh yourself to keep the test/implementation guard"
+            ;;
+          SubagentStop)
+            aif_warn "you already have SubagentStop hooks — skipping the metering hook so yours are not replaced"
+            aif_warn "  WITHOUT IT NOTHING RECORDS WHAT A STATION COSTS. Register .aif/hooks/meter.sh yourself."
+            ;;
+          *)
+            aif_warn "you already have $event hooks — skipping ours so yours are not replaced"
+            ;;
+        esac
+        fragment="$(printf '%s' "$fragment" | jq --arg e "$event" 'del(.hooks[$e])')"
+      done <<EOF
+$(printf '%s' "$fragment" | jq -r '.hooks | keys[]?')
+EOF
     fi
 
+    clobbers=no
+    printf '%s' "$fragment" | jq -e '(.hooks // {}) | length == 0' >/dev/null 2>&1 && clobbers=yes
+
     if [ "$clobbers" = "yes" ]; then
-      aif_warn "you already have PreToolUse hooks — skipping the guard hook so yours are not replaced"
-      aif_warn "  register it yourself from .aif/hooks/guard.sh if you want the test/impl guard"
+      aif_warn "nothing left to merge into .claude/settings.json"
     else
       # Whether the file existed decides uninstall's cleanup: a file we created
       # and then emptied is our litter to remove; a file the user had stays.
@@ -307,15 +342,17 @@ EOF
   printf '%s\t%s\n' ".gitignore" "marker_block_hash" >>"$edits_tsv"
 
   if [ "$AIF_DRY_RUN" -eq 0 ]; then
-    # Both patterns in one managed block: the profile (per-developer, never
-    # committed) and .aif/tmp/ (gates' scratch — a test report left there would
-    # otherwise trip scope's denylist and land in a station commit). One call,
-    # because a second aif_gitignore_ensure would replace the block, not extend
-    # it.
+    # All patterns in one managed block: the profile (per-developer, never
+    # committed), .aif/tmp/ (gates' scratch — a test report left there would
+    # otherwise trip scope's denylist and land in a station commit), and
+    # .aif/state/ (which ticket this session is on, written by `aif _state` for
+    # the metering hook to read — session-local, and meaningless to anyone else).
+    # One call, because a second aif_block_inject would replace the block rather
+    # than extend it.
     aif_block_inject "$root/.gitignore" \
       "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
-      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s' \
-        "$AIF_PROFILE_STATE" ".aif/tmp/")"
+      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s' \
+        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/")"
 
     printf '%s\n' "$profile" | aif_write_file "$root/$AIF_PROFILE_STATE"
     # Ours, so the ledger owns it too, even though no set ships it.

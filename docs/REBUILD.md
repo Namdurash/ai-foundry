@@ -281,7 +281,39 @@ three defects that the old path had hidden:
     into the model's judgement — and that is precisely the integrity the foundry
     exists to provide.
 
-### Phase 4 — Accounting
+### Phase 4 — Accounting — **DONE**
+
+Verified by `scripts/demo.sh`, which now carries eight metering assertions (22
+in total): dedupe by `message.id`, `<synthetic>` exclusion, an unpriced model
+yielding `null`, a priced one matching a hand calculation to the cent, a missing
+transcript recorded as `unmetered`, a non-station subagent ignored, eight
+concurrent appends losing no row, and the hash chain verifying end to end
+afterwards.
+
+Departures from the plan:
+
+- **The pointer is written by `aif _state`, not `aif run`.** `aif run` may be
+  handed a board link or a sentence and legitimately not know the ticket id. The
+  orchestrator calls `_state` immediately before every dispatch by its own
+  protocol, so writing it there makes it fresh exactly when a subagent is about
+  to start.
+- **`prices.json` ships empty.** Shipping numbers I could not verify would
+  produce confident dollar figures nobody re-checks — the same class of defect as
+  the ledger row that silently omitted its cost. Tokens are always recorded;
+  dollars appear when the table is filled in.
+- **The hook is a shim, not an implementation.** It forwards to `aif _meter`
+  rather than appending to the ledger itself, because a hash-chained append with
+  two implementations produces a chain that does not verify. That makes `aif` a
+  requirement for metering, unlike the gates (FINDINGS #7a) — fair, since the
+  supported way to open a session is `aif run`, and the hook says so when `aif` is
+  missing instead of accounting for nothing.
+- **`aif init`'s settings merge had to become per-event.** It refused the whole
+  fragment when the user already had *any* colliding hook, with the rationale
+  that the guard is defence in depth and safe to skip. That rationale does not
+  transfer: skipping the meter turns off cost accounting entirely. Collisions are
+  now detected and dropped per event, each with its actual consequence stated.
+  Verified against a project that already had its own `PreToolUse` — the user's
+  hook survived and the meter was still installed.
 
 - **`sets/claude/hooks/meter.sh` on `SubagentStop`.** Reads the payload, rolls up
   `agent_transcript_path` (dedupe by `message.id`, drop `<synthetic>`), appends

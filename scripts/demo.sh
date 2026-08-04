@@ -211,6 +211,76 @@ cp /tmp/aif-demo-plan.bak tasks/PROJ-1/plan.md
 git checkout -q -- tasks/PROJ-1/ledger.json
 
 # ---------------------------------------------------------------------------
+step "7. ACCOUNTING  —  what a station cost, from its own transcript"
+
+check() { # <label> <actual> <expected>
+  if [ "$2" = "$3" ]; then
+    printf '  %s✓%s %-28s %s\n' "$grn" "$rst" "$1" "$2"
+  else
+    printf '  %s✗%s %-28s %s (wanted %s)\n' "$red" "$rst" "$1" "$2" "$3"
+  fi
+}
+
+# A subagent transcript with both measured traps in it: one message repeated
+# three times under the same id (usage repeats per content block — a real file
+# had 36 rows for 14 requests), and a "<synthetic>" entry, which is not billed.
+TR="$DEMO/agent-demo.jsonl"
+{
+  for _ in 1 2 3; do
+    printf '{"type":"assistant","message":{"id":"m1","model":"demo-model","usage":{"input_tokens":10,"output_tokens":100,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50}}}\n'
+  done
+  printf '{"type":"assistant","message":{"id":"m2","model":"demo-model","usage":{"input_tokens":5,"output_tokens":40,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0}}}\n'
+  printf '{"type":"assistant","message":{"id":"ms","model":"<synthetic>","usage":{"input_tokens":9999,"output_tokens":9999,"cache_read_input_tokens":9999,"cache_creation_input_tokens":9999}}}\n'
+} > "$TR"
+
+meter() { # <agent_type> <transcript>
+  jq -n --arg a "$1" --arg t "$2" \
+    '{agent_type:$a, agent_id:"demo", agent_transcript_path:$t, last_assistant_message:"done"}' |
+    "$AIF" _meter 2>/dev/null
+}
+
+note "the transcript repeats usage per content block and carries a <synthetic>"
+note "row; counted naively that is 3x the output tokens plus 9999 unbilled ones:"
+meter aif-plan "$TR"
+last_plan() { jq -r --arg k "$1" '[.entries[]|select(.station=="plan")]|last|.[$k]//"null"' tasks/PROJ-1/ledger.json; }
+check "deduped output tokens" "$(jq -r '[.entries[]|select(.station=="plan")]|last|.usage.output_tokens' tasks/PROJ-1/ledger.json)" "140"
+check "turns, not content blocks" "$(last_plan num_turns)" "2"
+check "unpriced model → null cost" "$(last_plan cost_usd)" "null"
+
+note "now with a price table (1/5/0.1/1.25 per MTok): 15 + 700 + 300 + 62.5 = \$0.0010775"
+jq '.models={"demo-model":{"input":1,"output":5,"cache_read":0.1,"cache_write":1.25}}' \
+  .aif/prices.json > .aif/p.tmp && mv .aif/p.tmp .aif/prices.json
+meter aif-plan "$TR"
+check "priced from tokens" "$(last_plan cost_usd)" "0.0010775"
+
+note "a station that left no transcript is RECORDED as unmetered, never skipped —"
+note "a gap that announces itself is recoverable; a silent one flatters the total:"
+meter aif-tests "/nonexistent.jsonl"
+check "missing transcript" "$(jq -r '[.entries[]|select(.station=="tests" and .result=="unmetered")]|length' tasks/PROJ-1/ledger.json)" "1"
+
+note "a subagent that is not a station is not a pipeline cost:"
+BEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
+meter general-purpose "$TR"
+check "unrelated subagent ignored" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$BEFORE"
+
+note "subagents finish whenever they finish, so the append is locked. Eight at"
+note "once, and the hash chain still has to verify end to end:"
+BEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
+for _ in 1 2 3 4 5 6 7 8; do meter aif-spec "$TR" & done
+wait
+check "no row lost to a race" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((BEFORE + 8))"
+
+N=$(jq '.entries|length' tasks/PROJ-1/ledger.json); BROKEN=0; i=1
+while [ "$i" -lt "$N" ]; do
+  want=$(jq -r ".entries[$i].prev" tasks/PROJ-1/ledger.json)
+  got=$(jq -S -c ".entries[$((i-1))]" tasks/PROJ-1/ledger.json | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)
+  [ "$want" = "$got" ] || BROKEN=$((BROKEN + 1))
+  i=$((i + 1))
+done
+check "hash chain unbroken" "$BROKEN" "0"
+git checkout -q -- tasks/PROJ-1/ledger.json 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 step "done"
 printf '  The pipeline ran end to end: %sTicket → Spec → Plan → Tests → Code%s,\n' "$bold" "$rst"
 printf '  every boundary machine-checked, no model called.\n\n'

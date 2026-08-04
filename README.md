@@ -285,6 +285,29 @@ approving, and the approval, the judge verdict, the plan, and the tests all go
 invalid. There is no "go back" — the derived state simply stops showing them as
 done.
 
+### What each station cost
+
+Every station is metered. A `SubagentStop` hook reads that subagent's own
+transcript, rolls up its four token classes, and appends a row to
+`tasks/<ID>/ledger.json` — one row per attempt, never updated in place, because
+overwriting a row is how rework disappears from a metric that exists to count it.
+
+Tokens are the raw datum; dollars are derived from `.aif/prices.json`. **That
+table ships empty on purpose.** A wrong price produces a confident figure nobody
+re-checks; a missing one produces `cost_usd: null` beside a complete token count,
+which is obvious and fixable. Fill it in from your provider's pricing page.
+
+This replaced reading `total_cost_usd` off a `claude -p` envelope, and is better
+in three ways: it works under subscription auth, where that field is structurally
+`0`; it survives a station that failed, because the transcript is written as the
+run happens rather than assembled at the end; and it is per-turn, so a station
+that ground through its turn budget looks like grinding instead of like one large
+number.
+
+A station that leaves no readable transcript is recorded as `unmetered` rather
+than skipped. An accounting gap that announces itself is recoverable; a silent
+one just makes the total look better than it was.
+
 ### What is verified, and what is trusted
 
 Almost everything here is checked by a gate that can be re-run. Three things are

@@ -116,6 +116,14 @@ aif_cmd_state() {
   root="$(aif_require_project)"
   work="$(aif_task_dir "$root" "$ticket")"
 
+  # Tell the metering hook which ticket a subagent's cost belongs to. Here
+  # because the orchestrator calls _state immediately before every dispatch, so
+  # this is fresh precisely when it matters. See aif_current_ticket_file.
+  local pointer
+  pointer="$(aif_current_ticket_file "$root")"
+  mkdir -p "$(dirname "$pointer")" 2>/dev/null || true
+  printf '%s\n' "$ticket" >"$pointer" 2>/dev/null || true
+
   local dir_rel="$AIF_TASKS_DIR/$ticket"
 
   if [ ! -d "$work" ]; then

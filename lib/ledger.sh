@@ -42,7 +42,29 @@ aif_ledger_append() {
   local work="$1" entry="$2"
   local ledger tmp seq prev last stamp
   ledger="$(aif_ledger_path "$work")"
-  [ -f "$ledger" ] || aif_die "no ledger at $ledger — run 'aif create-ticket' first"
+  [ -f "$ledger" ] || aif_die "no ledger at $ledger — run 'aif _ticket-init' first"
+
+  # Read-modify-write, so two writers racing would silently drop one entry —
+  # and a ledger that quietly loses rows is worse than one that fails loudly,
+  # because the number it then reports is too low and looks fine. The metering
+  # hook made this reachable: it fires when a subagent finishes, and finishes
+  # are not serialised by anything aif controls.
+  #
+  # mkdir is the lock: atomic on every POSIX filesystem, needs no flock (absent
+  # from stock macOS), and leaves a directory a human can see and delete.
+  local lock="$ledger.lock" waited=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 100 ]; then
+      aif_die "ledger is locked by another writer ($lock) — remove it if no run is in progress"
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+  done
+  # The path is expanded into the trap NOW, not read from a local at fire time —
+  # by then the local is out of scope. No other trap exists in this codebase, so
+  # clearing it below cannot clobber someone else's.
+  # shellcheck disable=SC2064 # expanding now is the point, see above
+  trap "rmdir '$lock' 2>/dev/null || true" EXIT INT TERM
 
   seq=$(($(jq '.entries | length' "$ledger") + 1))
   if [ "$seq" -eq 1 ]; then
@@ -58,6 +80,9 @@ aif_ledger_append() {
     --argjson prev "$prev" --arg at "$stamp" \
     '.entries += [ $entry + { seq: $seq, at: $at, prev: $prev } ]' \
     "$ledger" >"$tmp" && mv "$tmp" "$ledger"
+
+  rmdir "$lock" 2>/dev/null || true
+  trap - EXIT INT TERM
 }
 
 # aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason>

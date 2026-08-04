@@ -152,6 +152,13 @@ main() {
       . "$AIF_ROOT/lib/cmd_ticket.sh"
       aif_cmd_rework ${1+"$@"}
       ;;
+    _meter)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_meter.sh
+      . "$AIF_ROOT/lib/cmd_meter.sh"
+      aif_cmd_meter ${1+"$@"}
+      ;;
     _approve)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"

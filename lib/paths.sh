@@ -34,6 +34,24 @@ aif_task_dir() {
   printf '%s/%s/%s' "$1" "$AIF_TASKS_DIR" "$2"
 }
 
+# aif_current_ticket_file <root> — which ticket this session is working on.
+#
+# The metering hook needs a ticket and the SubagentStop payload does not carry
+# one: it knows the agent, the transcript and the cwd, but nothing about the
+# foundry. This pointer supplies it.
+#
+# Written by `aif _state`, which is not an arbitrary choice — the orchestrator
+# calls _state immediately before every dispatch, by its own protocol, so the
+# pointer is fresh exactly when a subagent is about to run. Writing it in
+# `aif run` instead would be wrong: `aif run` may be handed a board link or a
+# sentence and legitimately not know the ticket id yet.
+#
+# Session-local and gitignored: it says where one developer is, not anything
+# about the project.
+aif_current_ticket_file() {
+  printf '%s/.aif/state/current' "$1"
+}
+
 # aif_station_file <root> <station> — the file declaring a pipeline station.
 #
 # A station is a SUBAGENT, so its file lives where the runner looks for agents

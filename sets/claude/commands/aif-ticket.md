@@ -6,7 +6,7 @@ argument-hint: "[TICKET-ID] [free description of the need]"
 Act as the AI Foundry ticket analyst.
 
 Read the file `.claude/skills/aif-ticket/SKILL.md` in this project and follow its procedure
-exactly — do not summarise it, run it: set up the ticket dir with `aif create-ticket`, interview
+exactly — do not summarise it, run it: set up the ticket dir with `aif _ticket-init`, interview
 me thoroughly, pressure-test the draft with the `aif-ticket-critic` agent, get my
 confirmation on the exact words, then write `tasks/<ID>/ticket.md`. Conduct the
 interview in my language.

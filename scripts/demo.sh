@@ -8,8 +8,8 @@
 # and green run without pytest.
 #
 # This is the machine end to end without spending a token. The live pipeline is
-# the same commands with `aif station run <station> <ticket>` in place of the
-# hand-written artifacts — see the end of this script.
+# the same gates, with a subagent per station in place of the hand-written
+# artifacts — see the end of this script.
 #
 # Usage:  bash scripts/demo.sh
 
@@ -67,8 +67,42 @@ tmp="$(mktemp)"; jq '.test.command="bash .aif/mkreport.sh" | .test.report.path="
 
 # ---------------------------------------------------------------------------
 step "2. start a ticket"
-"$AIF" create-ticket PROJ-1 >/dev/null
-note "wrote tasks/PROJ-1/ticket.md (in the live flow, you fill this in)"
+"$AIF" _ticket-init PROJ-1 >/dev/null
+note "scaffolded tasks/PROJ-1/ (ticket.md + ledger.json)"
+cat > tasks/PROJ-1/ticket.md <<'TICKET'
+<!-- aif:meta
+{ "schema": 1, "ticket": "PROJ-1", "lang": "en", "risk": "low" }
+-->
+# PROJ-1 — reject duplicate registration
+
+Registering with an email that is already taken currently succeeds and creates a
+second account. It should be refused, and the caller should be able to tell that
+refusal apart from a validation error.
+TICKET
+note "and replaced the stub with a real ticket (live: the interview does this)"
+
+state() { # <label> <expected next.step>
+  local got; got="$("$AIF" _state PROJ-1 | jq -r '.next.step // .next.kind')"
+  if [ "$got" = "$2" ]; then
+    printf '  %s✓%s %-12s next: %s\n' "$grn" "$rst" "_state" "$got"
+  else
+    printf '  %s✗%s %-12s next: %s (wanted %s)\n' "$red" "$rst" "_state" "$got" "$2"
+  fi
+}
+sgate() { # <station> <ticket> <expected-exit> — check a station the way the
+  # orchestrator does: every gate it declares, recorded in the ledger.
+  local out rc=0
+  out="$("$AIF" _gate "$1" "$2" 2>&1)" || rc=$?
+  if [ "$rc" -eq "$3" ]; then
+    printf '  %s✓%s %-12s exit %s  %s\n' "$grn" "$rst" "_gate $1" "$rc" "$(printf '%s' "$out" | head -1)"
+  else
+    printf '  %s✗%s %-12s exit %s (wanted %s)  %s\n' "$red" "$rst" "_gate $1" "$rc" "$3" "$(printf '%s' "$out" | head -1)"
+  fi
+}
+
+note "the state machine derives what is next by running the gates, so it cannot"
+note "be stale — and the orchestrator obeys it rather than deciding for itself:"
+state "fresh ticket" spec
 
 # ---------------------------------------------------------------------------
 step "3. SPECIFICATION boundary  —  spec-form → spec-judge → human"
@@ -100,13 +134,14 @@ cat > tasks/BAD/spec.md <<'SPEC'
 SPEC
 gate "spec form" spec-form BAD 1
 
-note "judge verdict (hand-written; live: aif station run spec-judge):"
+note "judge verdict (hand-written; live: the aif-spec-judge subagent):"
 SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
 jq -n --arg s "$SH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[]}' > tasks/PROJ-1/verdict-spec.json
 gate "spec judge" spec-judge PROJ-1 0
+state "spec judged, not approved" approve
 
-note "human approval (hand-written; live: aif approve PROJ-1, needs a real terminal):"
-jq -n --arg s "$SH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",tty:true,approved_assumptions:["AS-001"]}' > tasks/PROJ-1/approval.json
+note "human approval (hand-written; live: the orchestrator asks you in chat):"
+jq -n --arg s "$SH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",channel:"chat",confirmation:"yes, that is what I meant",approved_assumptions:["AS-001"]}' > tasks/PROJ-1/approval.json
 gate "spec approve" spec-approve PROJ-1 0
 
 note "the backward transition, for free: append one line to spec.md and the"
@@ -132,7 +167,7 @@ gate "plan form" plan-form PROJ-1 0
 PLH="$(shasum -a 256 tasks/PROJ-1/plan.md | cut -d' ' -f1)"
 jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
 gate "plan judge" plan-judge PROJ-1 0
-git add -A; git commit -qm "aif: plan PROJ-1" >/dev/null
+"$AIF" _commit plan PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
 step "5. TEST boundary  —  verify-red (fails for the right reason)"
@@ -141,17 +176,22 @@ def test_conflict():  # AC-001
     from src.api.users import create
     assert create() == 409
 PY
-gate "verify-red" verify-red PROJ-1 0
-note "the tests are RED now (create() returns 200), and red for a real assertion"
-git add -A; git commit -qm "aif: tests PROJ-1" >/dev/null
+sgate tests PROJ-1 0
+note "the tests are RED now (create() returns 200), and red for a real assertion."
+note "verify-red's pass is RECORDED, bound to tests.lock: it asserts the tests are"
+note "red, which stops being true the moment implementation starts, so the record"
+note "is the verdict from here on — re-running it later would report a false alarm."
+"$AIF" _commit tests PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
 step "6. CODE boundary  —  green (+ revert-recheck) → scope"
 note "implement: make the test pass, touching only the plan's files"
 printf 'def create():\n    return 409\n' > src/api/users.py
-gate "green" green PROJ-1 0
-gate "scope" scope PROJ-1 0
+sgate implement PROJ-1 0
+"$AIF" _commit implement PROJ-1 >/dev/null
 note "green re-ran with the code reverted and confirmed the test goes red again"
+note "every gate now passes against current bytes, so the ticket is done:"
+state "all gates pass" done
 
 note "now break scope — touch a file the plan never named:"
 printf 'x\n' > src/api/sneaky.py
@@ -175,10 +215,9 @@ step "done"
 printf '  The pipeline ran end to end: %sTicket → Spec → Plan → Tests → Code%s,\n' "$bold" "$rst"
 printf '  every boundary machine-checked, no model called.\n\n'
 printf '  %sTo run it live%s (needs an authenticated claude in a real terminal):\n' "$bold" "$rst"
-printf '    %saif create-ticket PROJ-1%s   then edit tasks/PROJ-1/ticket.md\n' "$dim" "$rst"
-printf '    %saif station run spec PROJ-1%s\n' "$dim" "$rst"
-printf '    %saif approve PROJ-1%s\n' "$dim" "$rst"
-printf '    %saif station run plan PROJ-1%s   (and plan-judge, tests, implement)\n' "$dim" "$rst"
-printf '    %saif status PROJ-1%s          at any point, to see what is next\n\n' "$dim" "$rst"
+printf '    %saif run PROJ-1%s\n\n' "$dim" "$rst"
+printf '  One command. It opens a session on the orchestrator, which interviews you,\n'
+printf '  dispatches each station as a subagent, and runs these same gates between\n'
+printf '  them — asking %saif _state%s what comes next rather than deciding itself.\n\n' "$dim" "$rst"
 
 rm -rf "$DEMO"

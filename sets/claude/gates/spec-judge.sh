@@ -30,7 +30,7 @@ spec="$work/spec.md"
 verdict="$work/verdict-spec.json"
 
 [ -f "$spec" ] || aif_g_error "spec.md missing"
-[ -f "$verdict" ] || aif_g_reject "not judged — no verdict-spec.json (run: aif station run spec-judge)"
+[ -f "$verdict" ] || aif_g_reject "not judged — no verdict-spec.json (the spec-judge station has not run)"
 
 if ! jq -e . "$verdict" >/dev/null 2>&1; then
   aif_g_error "verdict-spec.json is not valid JSON"

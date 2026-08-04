@@ -48,22 +48,29 @@ ${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
 usage: aif <command> [options]
 
 commands:
+  run           Open the foundry on a ticket, a board link, or a description
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
-  start         Run the foundry against this project's profile
-  run           Drive one ticket through the whole pipeline (run <ticket> [seed])
   project       Set up or validate .aif/project.json (init | check)
-  create-ticket Start a ticket
-  status        Show a ticket's derived state, and what is next
-  station       Run a pipeline station headless (run <station> <ticket>)
-  approve       The human gate — accept a specification
   doctor        Report what is installed and what aif can drive
   profiles      List the available (set, runner, model) profiles
   test          Run the evals against a profile and report a pass rate
   version       Print the version
   help          Print this message
+
+'run' is the whole pipeline. There is no command per stage: the stages are
+subagents inside the session it opens, so you can watch them work.
 EOF
 }
+
+# Commands prefixed with _ are the orchestrator's, not the user's. They are the
+# machinery the skill calls: derive state, run gates, record, commit.
+#
+# They exist as commands rather than living inside the skill because each one is
+# something a model must not decide. `_state` says which station runs next, and
+# if that answer came from the model's judgement the pipeline would have opinions
+# where it needs preconditions. Deliberately absent from the help above: they are
+# an interface between two parts of aif, not a surface to learn.
 
 main() {
   local cmd="${1:-help}"
@@ -90,55 +97,66 @@ main() {
       . "$AIF_ROOT/lib/cmd_uninstall.sh"
       aif_cmd_uninstall ${1+"$@"}
       ;;
-    start)
-      # shellcheck source=lib/manifest.sh
-      . "$AIF_ROOT/lib/manifest.sh"
-      # shellcheck source=lib/cmd_start.sh
-      . "$AIF_ROOT/lib/cmd_start.sh"
-      aif_cmd_start ${1+"$@"}
-      ;;
     project)
       # shellcheck source=lib/cmd_project.sh
       . "$AIF_ROOT/lib/cmd_project.sh"
       aif_cmd_project ${1+"$@"}
       ;;
-    create-ticket)
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_ticket.sh
-      . "$AIF_ROOT/lib/cmd_ticket.sh"
-      aif_cmd_create_ticket ${1+"$@"}
-      ;;
-    status)
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_ticket.sh
-      . "$AIF_ROOT/lib/cmd_ticket.sh"
-      aif_cmd_status ${1+"$@"}
-      ;;
-    station)
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_station.sh
-      . "$AIF_ROOT/lib/cmd_station.sh"
-      aif_cmd_station ${1+"$@"}
-      ;;
     run)
-      # The orchestrator drives the ticket lifecycle (cmd_ticket) and the stations
-      # (cmd_station) in-process, so both come along, plus the ledger they use.
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/cmd_ticket.sh
-      . "$AIF_ROOT/lib/cmd_ticket.sh"
-      # shellcheck source=lib/cmd_station.sh
-      . "$AIF_ROOT/lib/cmd_station.sh"
       # shellcheck source=lib/cmd_run.sh
       . "$AIF_ROOT/lib/cmd_run.sh"
       aif_cmd_run ${1+"$@"}
       ;;
-    approve)
+    _state)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_state.sh
+      . "$AIF_ROOT/lib/cmd_state.sh"
+      aif_cmd_state ${1+"$@"}
+      ;;
+    _gate)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_gate.sh
+      . "$AIF_ROOT/lib/cmd_gate.sh"
+      aif_cmd_gate ${1+"$@"}
+      ;;
+    _commit)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_gate.sh
+      . "$AIF_ROOT/lib/cmd_gate.sh"
+      aif_cmd_commit ${1+"$@"}
+      ;;
+    _ticket-init)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
+      aif_cmd_ticket_init ${1+"$@"}
+      ;;
+    _rework)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_ticket.sh
+      . "$AIF_ROOT/lib/cmd_ticket.sh"
+      aif_cmd_rework ${1+"$@"}
+      ;;
+    _approve)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
       # shellcheck source=lib/cmd_ticket.sh
       . "$AIF_ROOT/lib/cmd_ticket.sh"
       aif_cmd_approve ${1+"$@"}

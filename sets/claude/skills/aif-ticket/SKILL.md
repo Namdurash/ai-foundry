@@ -34,7 +34,7 @@ user wants it to do*, stop — that decision is theirs.
   spec station's qualified job, and doing it here would blur the artifact boundary and rush
   falsifiable form before it is cheap to commit to. Capture *behavior in the user's words*,
   not assertions.
-- You stop at the ticket. Do **not** run the spec station, plan, tests, or `aif approve`.
+- You stop at the ticket. Do **not** run the spec station, plan, tests, or record an approval.
   When the ticket is confirmed, name the next command and hand back control.
 
 ## Procedure
@@ -61,16 +61,16 @@ user wants it to do*, stop — that decision is theirs.
   answer and interview onward from there.
 - Detect the **language** of the user's description; you will conduct the interview and
   write the narrative in it. (Structured meta keys stay English — see the format.)
-- **Create the work dir with `aif create-ticket <ID>`, always — never hand-create it.** That
+- **Create the work dir with `aif _ticket-init <ID>`, always — never hand-create it.** That
   command does two things a bare `mkdir` + write does not: it validates the id, and it
-  initialises `ledger.json`. A ticket dir without a ledger passes `aif status` but makes
-  every `aif station run` crash with `jq: Could not open file … ledger.json`, because each
+  initialises `ledger.json`. A ticket dir without a ledger looks fine but makes
+  every station crash with `jq: Could not open file … ledger.json`, because each
   station records its attempt in the ledger. So:
-  - Run `aif create-ticket <ID>`. It writes a template `ticket.md` and the ledger; you overwrite
+  - Run `aif _ticket-init <ID>`. It writes a template `ticket.md` and the ledger; you overwrite
     only `ticket.md` in step 3, leaving the ledger in place.
   - If it says the ticket **already exists**, do not write over it blindly. Ask whether to
     refine that ticket. If yes, first check that `tasks/<ID>/ledger.json` exists — if it
-    is missing, the dir is half-made: move the stray files aside, run `aif create-ticket <ID>`
+    is missing, the dir is half-made: move the stray files aside, run `aif _ticket-init <ID>`
     to get a clean scaffold, then restore the narrative into `ticket.md`.
   - If `aif` is genuinely not on `PATH`, stop and say so. This skill exists to feed the `aif`
     pipeline; without the CLI there is nothing to feed, and a hand-made dir would only break
@@ -83,7 +83,7 @@ user wants it to do*, stop — that decision is theirs.
 `aif run` opens this skill on **every** run, including runs where the ticket is already
 finished — the decision about whether it needs work is yours and the user's, made in front of
 the actual text, not guessed from outside. So when `tasks/<ID>/ticket.md` already holds a
-real ticket (not the stub `aif create-ticket` writes):
+real ticket (not the stub `aif _ticket-init` writes):
 
 1. **Show it** — the whole thing, not a summary.
 2. **Ask** what they want: proceed with it as it stands, refine some part of it, or rewrite it.
@@ -158,17 +158,20 @@ theirs even though you held the pen.
 
 ### 6. Hand off
 
-State that the ticket is ready at `tasks/<ID>/ticket.md`, and name the next step without
-taking it:
+State that the ticket is ready at `tasks/<ID>/ticket.md` and hand control back.
 
-- `aif status <ID>` — see the derived state, and what is next.
-- `aif station run spec <ID>` — enter the gated cycle (their call, not yours).
+If the `aif` orchestrator invoked you, simply return — it will ask `aif _state <ID>` what
+comes next and dispatch the spec station itself. Do not dispatch it yourself: entering the
+gated cycle is the orchestrator's move, made from derived state rather than from your
+memory of what you just did.
+
+If a person invoked you directly, tell them `aif run <ID>` continues from here.
 
 ## The format
 
 A single `aif:meta` HTML comment holding JSON, then the narrative. Meta keys and values are
 **English**; the narrative is in the ticket's language. This is the same envelope
-`aif create-ticket` writes and the `spec` station reads — match it exactly.
+`aif _ticket-init` writes and the `spec` station reads — match it exactly.
 
 ```markdown
 <!-- aif:meta
@@ -191,7 +194,7 @@ was a choice, not an oversight. Omit this heading entirely when nothing was defe
 
 - It cannot check that the ticket describes the **right** thing to build. That judgement is
   the user's, at the input, with no machine gate — the interview supports it, it does not
-  replace it. The human `aif approve` gate is still downstream, unchanged.
+  replace it. The human approval gate is still downstream, unchanged.
 - The critic has no oracle. It can miss a gap or raise a non-issue; it is a prompt for the
   user's judgement, not an authority. Treat a thin critic result as "look again", not "done".
 - It reduces the assumptions the spec is forced to make. It does not make the ticket

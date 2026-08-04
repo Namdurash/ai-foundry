@@ -4,7 +4,7 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early.** The machine works — `init`, `start`, `doctor`, `profiles`,
+> **Status: early.** The machine works — `init`, `run`, `doctor`, `profiles`,
 > `test`. What it pours does not exist yet: the set ships a placeholder while the
 > AI SDLC content is decided. See the roadmap.
 
@@ -69,21 +69,24 @@ removed only while they still hold the value we wrote, because deleting by key
 name alone is how an uninstaller takes away the setting you actually wanted.
 
 Model routing is deliberately absent from every file above — it is exported at
-`aif start` time instead. See `docs/FINDINGS.md`.
+`aif run` time instead. See `docs/FINDINGS.md`.
 
 ### Running it
 
 ```sh
-aif start                    # interactive
-aif start "add validation"   # interactive, opening with that task
-aif start --headless "..."   # one-shot, for CI
+aif run TICK-1               # the pipeline, on this project's profile
 ```
 
-`aif start` is the entry point for anything other than your default provider.
+`aif run` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
 the project is not on the profile's model** — it uses whatever the project
 already had. That is deliberate: the alternative is a routing setting that might
 be ignored, which puts you on a model you did not choose without telling you.
+
+The same export is how each station gets its engine: a station is a subagent
+declaring `model: opus`, and the profile decides what `opus` resolves to
+(`glm-5.2` on the `glm` profile). The set stays model-agnostic while a station
+still says how much engine it needs.
 
 Each profile clears routing before applying its own, so a leftover `ANTHROPIC_*`
 in your shell cannot redirect a run. A profile means the same thing on every
@@ -134,22 +137,21 @@ aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?
 
 ### Before the ticket — the analyst
 
-`aif create-ticket` gives you a blank ticket to fill in. If you would rather be
-interviewed into a good one, run **`/aif-ticket`** inside the runner (`aif start`,
-then `/aif-ticket TICK-1 "add rate limiting to login"`). It ships as both a skill
-and a slash command with the same name, so `/aif-ticket` is reachable whether or
-not your runner lets you type skills; where it does, the skill wins and also
-auto-triggers. It plays business analyst: it asks the logical questions, drafts
-the ticket in your words,
-then spawns the **`aif-ticket-critic`** agent — a stand-in for the spec station
-that reads only your draft and reports where the spec would be forced to guess —
-and drives those gaps back to you until you have answered or consciously deferred
-each.
+`aif run` opens the interview itself when a ticket has none — you do not fill in a
+blank file. **`/aif-ticket`** is the skill behind it, and you can also run it by
+hand (`/aif-ticket TICK-1 "add rate limiting to login"`). It ships as both a skill
+and a slash command with the same name, so it is reachable whether or not your
+runner lets you type skills; where it does, the skill wins and also auto-triggers.
+
+It plays business analyst: it asks the logical questions, drafts the ticket in
+your words, then spawns the **`aif-ticket-critic`** agent — a stand-in for the
+spec station that reads only your draft and reports where the spec would be
+forced to guess — and drives those gaps back to you until you have answered or
+consciously deferred each.
 
 It is not a station and has no gate: it is the on-ramp, sitting *before* the cycle
 below. It drafts from your answers and you confirm the exact words, so the ticket
-stays yours — the source of truth the spec is judged against. Then it points you at
-`aif station run spec`, and stops.
+stays yours — the source of truth the spec is judged against.
 
 ### When a gate rejects — the repair bench
 
@@ -166,8 +168,9 @@ get under a limit and `spec-form` passes while the spec now describes less than
 the ticket asked for. `/aif-fix` will not do that; it takes the split back to you
 and the change lands in `ticket.md`, where the spec station will actually read it.
 
-`aif run` opens it for you on a rejection. Run it by hand after a bare
-`aif station run` that came back `REJECT`.
+Inside `aif run` this is what the orchestrator does on a rejection, in the session,
+with you present — the same split, the same refusal to make a structural
+complaint go away.
 
 ### A ticket, in order
 
@@ -177,27 +180,27 @@ Ticket ── spec ── plan ── tests ── code
 ```
 
 ```sh
-aif create-ticket TICK-1            # creates tasks/TICK-1/ticket.md — you fill it in
-aif station run spec TICK-1         # opus  → spec.md        · gate: spec-form
-aif station run spec-judge TICK-1   # opus, blockers only    · gate: spec-judge
-aif approve TICK-1                  # YOU, at a real terminal · gate: spec-approve
-aif station run plan TICK-1         # opus  → plan.md        · gate: plan-form
-aif station run plan-judge TICK-1   # routine tier, "where would you guess?" · gate: plan-judge
-aif station run tests TICK-1        # opus  → failing tests  · gate: verify-red
-aif station run implement TICK-1    # by risk → code         · gates: green + scope
-aif status TICK-1                   # at any point: what is done, what is next
-```
-
-`aif status` is the "where am I" command — run it whenever you are unsure;
-it names the next step.
-
-### Or, all at once
-
-```sh
 aif run TICK-1                      # interview → spec → approve → plan → tests → code
-aif run TICK-1 https://jira/…       # seed the interview from a Jira/Trello/issue link
-aif run TICK-1 "add rate limiting"  # …or from a sentence
+aif run https://jira/…              # start (or resume) from a board card
+aif run "add rate limiting"         # …or from a sentence
 ```
+
+**One command, and there is no command per stage.** `aif run` opens an ordinary
+interactive session on the orchestrator skill, which dispatches each station as a
+**subagent** — so you watch the spec being written, the plan being argued with,
+the tests going red. The stations used to be `claude -p` subprocesses whose
+reasoning was written to a temp file and deleted; a $1.27 planning step reported
+one line and nothing else.
+
+With a ticket id, work **resumes wherever that ticket actually stands**. Nothing
+records "we are at the plan stage": the state is derived by running the gates
+against the artifacts' current bytes, so it accounts for edits nobody told it
+about and cannot go stale. Edit an approved `spec.md` and the approval lapses on
+its own, with nothing to undo.
+
+The orchestrator does not decide what runs next either — it asks `aif _state`,
+which is bash. That is deliberate: if "what runs next" were the model's
+judgement, the pipeline would have opinions where it needs preconditions.
 
 `aif run` drives the whole pipeline and puts the human where a human belongs.
 There are no silent branches — every run either opens `claude` for you or says
@@ -230,13 +233,13 @@ it skips straight to the build rather than overwriting the approved spec.
 | `aif profiles` | list the (set, runner, model) profiles |
 | `aif project init [runner]` | scaffold `.aif/project.json` |
 | `aif project check` | validate it |
-| `aif create-ticket <ticket>` | start a ticket |
-| `aif status <ticket>` | the derived state, and what is next |
-| `aif station run <station> <ticket>` | run one station headless (records tokens) |
-| `aif approve <ticket>` | the human gate — needs a real terminal |
-| `aif run <ticket> [seed]` | the whole pipeline in one command — two human stops, real terminal only |
-| `aif start` | open the runner with a profile (ad-hoc, not the pipeline) |
+| `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
+
+There is no command per stage. `aif run` opens the orchestrator, which dispatches
+the stations as subagents and calls a small internal surface (`aif _state`,
+`_gate`, `_commit`, `_approve`, …) that is not listed in `--help` — it is an
+interface between two parts of aif, not something to learn.
 
 ### Stations and their model tier
 
@@ -279,19 +282,49 @@ is `1`.
 Edit any upstream artifact and everything below it lapses on its own, because
 every artifact binds to the hash of the one above it. Change `spec.md` after
 approving, and the approval, the judge verdict, the plan, and the tests all go
-invalid. There is no "go back" — `aif status` just shows what became
-unvalidated.
+invalid. There is no "go back" — the derived state simply stops showing them as
+done.
+
+### What is verified, and what is trusted
+
+Almost everything here is checked by a gate that can be re-run. Three things are
+not, and saying so plainly is the point of this section — a claim of "verified"
+that quietly includes these would be worth less than no claim at all.
+
+**The approval is trusted, not verified.** `spec-approve` checks that an approval
+exists, that it names how it was given, that it carries the approver's own words,
+and that it binds to the exact spec. It cannot check that a human said them. It
+used to require `tty: true`, written only when stdin was a terminal — a real
+capability boundary, since an agent's Bash tool is not a terminal. That is gone,
+because the human now approves inside the session where no terminal exists to
+check for. What replaced it is evidence, not proof. "A person judged this
+complete" is not machine-decidable, and this is where that shows.
+
+**A green suite is not correctness.** `green` proves the frozen tests pass and
+that reverting the implementation makes them red again. It cannot prove the tests
+were the right tests. The oracle is only as good as the spec it came from, which
+is why the human gate sits at the *input*.
+
+**At the code boundary, "passes now" weakens to "passed, against an unchanged
+plan".** `green` and `scope` are both relative to a baseline that the accepting
+commit moves: after it, reverting no longer removes the implementation and there
+is no diff left to scope. Their recorded verdicts bind to `plan.md`, so a changed
+plan invalidates them — but editing the source afterwards does not re-open the
+gate. Nothing cheap fixes this; the evidence a revert-recheck needs is destroyed
+by the commit that preserves the work.
 
 ### Offline, no tokens
 
 ```sh
 bash scripts/demo.sh        # the whole pipeline on hand-written artifacts
 make lint                   # shellcheck everything
-make check                  # run the CLI under bash 3.2
+make check                  # the CLI under bash 3.2, plus the set's own assertions
 ```
 
-Run live pipeline commands from a **real terminal**: a `claude` spawned inside an
-agent session cannot authenticate (see `docs/FINDINGS.md`).
+`scripts/demo.sh` runs every gate against known-good and known-bad artifacts,
+including the attacks: an implementation that adds itself to the plan, an
+approval that lapses when the spec changes, tests that stop depending on the
+code. No model is called.
 
 ## Requirements
 
@@ -318,7 +351,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] Profiles — `anthropic` and `glm`, user-extensible
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
 - [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
-- [x] `aif start` — profile export, interactive and headless
+- [x] `aif run` — profile export into an interactive session
 - [x] `aif uninstall` — reverse the manifest, value-guarded
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

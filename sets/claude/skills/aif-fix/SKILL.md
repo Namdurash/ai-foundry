@@ -1,6 +1,6 @@
 ---
 name: aif-fix
-description: Walk a human through a rejected foundry artifact — read the gate's complaints, explain why each one was raised, fix what is mechanically fixable, and send the rest back upstream where it belongs. Use when a gate has rejected spec.md, plan.md, tests or code, when `aif station run` or `aif run` reports REJECT, or when the user invokes /aif-fix. Not for writing a ticket from scratch — that is aif-ticket.
+description: Walk a human through a rejected foundry artifact — read the gate's complaints, explain why each one was raised, fix what is mechanically fixable, and send the rest back upstream where it belongs. Use when a gate has rejected spec.md, plan.md, tests or code, when a station is rejected during `aif run`, or when the user invokes /aif-fix. Not for writing a ticket from scratch — that is aif-ticket.
 ---
 
 # aif-fix — the repair bench at a gate
@@ -95,7 +95,7 @@ information, not an obstacle.
 
 State the artifact's state plainly, and name the next command without running it:
 
-- gate green → `aif run <ID>` continues the pipeline (or `aif station run <next> <ID>` for
+- gate green → the orchestrator continues from derived state (or `aif run <ID>` for
   the single step). If `aif run` invoked you, it re-runs the gate itself when you exit — you
   do not need to do anything except be finished.
 - gate still red for structural reasons → the change belongs in `ticket.md`; `/aif-ticket
@@ -109,4 +109,4 @@ State the artifact's state plainly, and name the next command without running it
 - It cannot rescue a bad ticket. Where the rejection traces to an unclear or oversized
   ticket, the honest outcome of this skill is a change to `ticket.md` and a re-run — not a
   patched artifact.
-- A green gate here is not an approval. `aif approve` is still yours to give.
+- A green gate here is not an approval. The human approval is still yours to give.

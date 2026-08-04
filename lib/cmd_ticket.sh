@@ -1,293 +1,150 @@
 #!/usr/bin/env bash
 #
-# `aif create-ticket`, `aif status` and `aif approve` — the ticket lifecycle.
+# The ticket lifecycle: scaffold, fold a rejection back in, record an approval.
 # Sourced by bin/aif; not meant to be executed directly.
 #
-# State is derived, never stored. `aif status` computes it by running the
-# installed gates against the CURRENT bytes of each artifact — "passes now", not
-# "passed once". That is what makes a backward transition free: edit spec.md and
-# its gates stop passing, with nothing to undo.
+# None of these are user-facing commands any more. The user's entry point is
+# `aif run`, which opens a session; the orchestrator skill inside it calls these.
+# They stay in bash rather than moving into the skill because each one either
+# writes a binding the gates read, or decides something a model must not.
 
-_aif_gate() {
-  # <root> <gate-name> <work-dir> — run an installed gate, echo output, return
-  # its exit code (0 pass / 1 reject / 3 error / 127 not installed).
-  local gp="$1/.aif/gates/$2.sh"
-  [ -f "$gp" ] || return 127
-  /bin/bash "$gp" "$3" 2>&1
-}
+# `aif _ticket-init <ticket>` — create tasks/<ticket>/ and its ledger.
+#
+# Not a bare mkdir: it validates the id against the project's pattern and
+# initialises ledger.json. A ticket dir without a ledger looks fine until the
+# first station tries to record an attempt into a file that is not there.
+aif_cmd_ticket_init() {
+  local ticket="${1:-}"
+  [ -n "$ticket" ] || aif_die "usage: aif _ticket-init <ticket>"
 
-_aif_ticket_create() {
-  local root="$1" ticket="$2"
-  local pattern work
+  local root work pattern
+  root="$(aif_require_project)"
 
-  pattern="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' "$(aif_project_config "$root")" 2>/dev/null)"
-  case "$ticket" in
-    "") aif_die "usage: aif create-ticket <ticket>" ;;
-  esac
+  pattern="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' \
+    "$(aif_project_config "$root")" 2>/dev/null)"
   if ! printf '%s' "$ticket" | grep -qE "$pattern"; then
     aif_die "ticket '$ticket' does not match $pattern (from project.json)"
   fi
 
   work="$(aif_task_dir "$root" "$ticket")"
-  [ -d "$work" ] && aif_die "$ticket already exists at $work"
+  [ -d "$work" ] && aif_die "$ticket already exists at $AIF_TASKS_DIR/$ticket"
 
   mkdir -p "$work"
 
-  # The ticket is the human's words, verbatim — the one source of truth the
-  # spec is judged against, so it is written by a person and never by a model.
-  # risk defaults to medium (→ sonnet), never the cheapest tier by omission.
+  # The ticket is the human's words, verbatim — the one source of truth the spec
+  # is judged against, so it is written by a person and never by a model.
+  # risk defaults to medium, never the cheapest tier by omission.
   cat >"$work/ticket.md" <<EOF
 <!-- aif:meta
 { "schema": 1, "ticket": "$ticket", "lang": "en", "risk": "medium" }
 -->
 
 <!-- Describe the need in your own words. Set lang and risk in the block above.
-     risk drives the implementation tier: low→cheap, high→careful + human review.
+     risk drives the implementation tier: low and medium run on the routine
+     engine, high on the careful one.
      This text is the source of truth the specification is judged against. -->
 EOF
 
   aif_ledger_init "$work" "$ticket"
-
-  printf '%screated%s %s\n\n' "$AIF_C_GREEN" "$AIF_C_RESET" "tasks/$ticket/"
-  printf '  1. edit %stasks/%s/ticket.md%s — the need, in your words\n' \
-    "$AIF_C_BOLD" "$ticket" "$AIF_C_RESET"
-  printf '  2. aif status %s — see what is next\n' "$ticket"
+  printf '%screated%s %s/%s/\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$AIF_TASKS_DIR" "$ticket"
 }
 
-# One pipeline stage line for `status`: name, glyph, detail.
-_aif_stage() {
-  local label="$1" glyph="$2" detail="$3"
-  printf '  %s  %-8s %s\n' "$glyph" "$label" "$detail"
-}
+# `aif _rework <ticket> <reason>` — fold a rejection back into the ticket.
+#
+# The spec station reads the whole ticket narrative and nothing else, by
+# contract. So a rejection only reaches the next spec if it lands there, as
+# prose — not in a side channel the spec never opens. The first rejection opens
+# the heading; later ones stack under it, so the spec sees the full history of
+# asks rather than only the latest.
+aif_cmd_rework() {
+  local ticket="${1:-}" reason="${2:-}"
+  [ -n "$ticket" ] && [ -n "$reason" ] || aif_die "usage: aif _rework <ticket> <reason>"
 
-_aif_ticket_status() {
-  local root="$1" ticket="$2"
-  local work out rc next=""
-
-  work="$(aif_task_dir "$root" "$ticket")"
-  [ -d "$work" ] || aif_die "no such ticket: $ticket (start it with: aif create-ticket $ticket)"
-
-  printf '%s%s%s\n\n' "$AIF_C_BOLD" "$ticket" "$AIF_C_RESET"
-
-  # ticket.md
-  if [ -f "$work/ticket.md" ]; then
-    _aif_stage "ticket" "$(aif_ok)" "present"
-  else
-    _aif_stage "ticket" "$(aif_no)" "missing"
-    next="write ticket.md"
-  fi
-
-  # spec.md → spec-form (live), then spec-approve (live)
-  if [ ! -f "$work/spec.md" ]; then
-    _aif_stage "spec" "$(aif_no)" "not written"
-    [ -z "$next" ] && next="run the spec station"
-  else
-    # rc captured via `|| rc=$?`, never `out=$(...); rc=$?`: under `set -e` a
-    # command substitution that exits non-zero in a plain assignment kills the
-    # script, and a rejecting gate exiting non-zero is the whole point here.
-    rc=0
-    out="$(_aif_gate "$root" "spec-form" "$work")" || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      _aif_stage "spec" "$(aif_no)" "spec-form: $(printf '%s' "$out" | head -1)"
-      [ -z "$next" ] && next="fix spec.md"
-    else
-      # spec-form → spec-judge → human approve. The judge runs before the human
-      # to keep a malformed or blocked spec off the human's desk.
-      rc=0
-      out="$(_aif_gate "$root" "spec-judge" "$work")" || rc=$?
-      if [ "$rc" -eq 127 ]; then
-        rc=0 # judge gate not installed (pre-M2b); skip it
-      fi
-      if [ "$rc" -ne 0 ]; then
-        _aif_stage "spec" "$(aif_no)" "judge: $(printf '%s' "$out" | head -1)"
-        case "$(printf '%s' "$out" | head -1)" in
-          *"not judged"*) [ -z "$next" ] && next="aif station run spec-judge $ticket" ;;
-          *"different spec"*) [ -z "$next" ] && next="aif station run spec-judge $ticket" ;;
-          *) [ -z "$next" ] && next="fix spec.md (judge found blockers)" ;;
-        esac
-      else
-        rc=0
-        out="$(_aif_gate "$root" "spec-approve" "$work")" || rc=$?
-        if [ "$rc" -ne 0 ]; then
-          _aif_stage "spec" "$(aif_no)" "awaiting approval"
-          [ -z "$next" ] && next="aif approve $ticket"
-        else
-          _aif_stage "spec" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
-        fi
-      fi
-    fi
-  fi
-
-  # plan.md → plan-form (live)
-  if [ ! -f "$work/plan.md" ]; then
-    _aif_stage "plan" "$(aif_no)" "not written"
-    [ -z "$next" ] && next="run the plan station"
-  else
-    rc=0
-    out="$(_aif_gate "$root" "plan-form" "$work")" || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      _aif_stage "plan" "$(aif_no)" "plan-form: $(printf '%s' "$out" | head -1)"
-      [ -z "$next" ] && next="fix plan.md"
-    else
-      rc=0
-      out="$(_aif_gate "$root" "plan-judge" "$work")" || rc=$?
-      if [ "$rc" -eq 127 ]; then rc=0; fi
-      if [ "$rc" -ne 0 ]; then
-        _aif_stage "plan" "$(aif_no)" "judge: $(printf '%s' "$out" | head -1)"
-        case "$(printf '%s' "$out" | head -1)" in
-          *"not judged"* | *"different plan"*)
-            [ -z "$next" ] && next="aif station run plan-judge $ticket" ;;
-          *) [ -z "$next" ] && next="fix plan.md (implementer would guess)" ;;
-        esac
-      else
-        _aif_stage "plan" "$(aif_ok)" "$(printf '%s' "$out" | head -1)"
-      fi
-    fi
-  fi
-
-  printf '\n'
-  if [ -n "$next" ]; then
-    printf 'next: %s%s%s\n' "$AIF_C_BOLD" "$next" "$AIF_C_RESET"
-  else
-    printf 'next: %stests station (not built yet)%s\n' "$AIF_C_DIM" "$AIF_C_RESET"
-  fi
-}
-
-aif_cmd_create_ticket() {
-  local arg="${1:-}"
-
-  case "$arg" in
-    -h | --help | "")
-      printf 'usage: aif create-ticket <ticket>   start a ticket\n'
-      return 0
-      ;;
-  esac
-
-  local root
+  local root tm heading="## Rework requested at approve"
   root="$(aif_require_project)"
-  _aif_ticket_create "$root" "$arg"
-}
+  tm="$(aif_task_dir "$root" "$ticket")/ticket.md"
+  [ -f "$tm" ] || aif_die "no ticket.md for $ticket to record the rework reason in"
 
-aif_cmd_status() {
-  local arg="${1:-}"
-
-  case "$arg" in
-    -h | --help | "")
-      printf 'usage: aif status <ticket>   show the derived state\n'
-      return 0
-      ;;
-  esac
-
-  local root
-  root="$(aif_require_project)"
-  _aif_ticket_status "$root" "$arg"
-}
-
-# _aif_ticket_append_rework <work> <reason> — fold a human's rework reason back
-# into the ticket. The spec station reads the whole ticket narrative and nothing
-# else (by contract), so a rejection only reaches the next spec if it lands here,
-# as prose — not in a side channel the spec never opens. First rejection opens the
-# heading; later ones stack under it, so the spec sees the full history of asks.
-_aif_ticket_append_rework() {
-  local work="$1" reason="$2"
-  local tm="$work/ticket.md"
-  local heading="## Rework requested at approve"
-  [ -f "$tm" ] || aif_die "no ticket.md to record the rework reason in"
   if ! grep -qF "$heading" "$tm" 2>/dev/null; then
     printf '\n%s\n\n' "$heading" >>"$tm"
   fi
   printf -- '- %s\n' "$reason" >>"$tm"
+  printf '%srework noted%s in %s/%s/ticket.md — the spec is redone against it.\n' \
+    "$AIF_C_YELLOW" "$AIF_C_RESET" "$AIF_TASKS_DIR" "$ticket"
 }
 
-# `aif approve <ticket>` — the human gate. Placed at the INPUT, not the output.
+# `aif _approve <ticket> --confirmation <text>` — record the human's acceptance.
 #
-# Refuses unless stdin is a terminal. An agent's Bash tool is not a terminal, so
-# this is a real capability boundary — the closest thing to a human-presence
-# oracle available. The same guard runs in cmd_init.sh:131.
+# The human gate, placed at the INPUT: the question is "is anything missing from
+# what this says done means", not "is the code right".
 #
-# Exit codes are read by `aif run`: 0 approved · 2 rejected with a reason (already
-# folded into the ticket, so the caller can re-spec) · 1 anything else.
+# It used to refuse unless stdin was a terminal, on the grounds that an agent's
+# Bash tool is not one. That was a genuine capability boundary and it is gone on
+# purpose — the human now sits in the session where the approval is asked for,
+# and the terminal check blocked the only path they have.
+#
+# What replaces it is weaker, and is written down as weaker: the confirmation
+# text is EVIDENCE, not proof. A model could fabricate it. Requiring it at all is
+# the design — an approval that could be recorded with no argument would
+# eventually be recorded by accident. See the README's trust assumptions.
 aif_cmd_approve() {
-  local ticket="${1:-}"
-  [ -n "$ticket" ] || aif_die "usage: aif approve <ticket>"
+  local ticket="" confirmation="" approver=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --confirmation)
+        shift
+        confirmation="${1:-}"
+        ;;
+      --by)
+        shift
+        approver="${1:-}"
+        ;;
+      -*) aif_die "unknown option: $1" ;;
+      *) [ -n "$ticket" ] || ticket="$1" ;;
+    esac
+    shift
+  done
 
-  local root work spec meta hash approver out rc
+  [ -n "$ticket" ] || aif_die "usage: aif _approve <ticket> --confirmation <the user's words>"
+  [ -n "$confirmation" ] ||
+    aif_die "refusing to approve without --confirmation: record what the user actually said when they accepted this spec"
+
+  local root work spec meta hash out rc
   root="$(aif_require_project)"
   work="$(aif_task_dir "$root" "$ticket")"
   spec="$work/spec.md"
-
   [ -f "$spec" ] || aif_die "no spec.md for $ticket — nothing to approve"
 
-  if [ ! -t 0 ]; then
-    aif_die "approval must be given at a terminal — this is the human gate, and stdin is not a TTY"
-  fi
-
-  # Never approve a malformed spec: the human decides on completeness and
+  # Never approve a malformed spec. The human decides on completeness and on the
   # assumptions, not on whether the criteria are shaped right — that is the
   # machine's job, and it runs first.
   rc=0
-  out="$(_aif_gate "$root" "spec-form" "$work")" || rc=$?
+  out="$(aif_gate_run "$root" "spec-form" "$work")" || rc=$?
   if [ "$rc" -ne 0 ]; then
     aif_err "spec.md does not pass spec-form — fix it before approving:"
     printf '%s\n' "$out" | sed 's/^/  /' >&2
     return 1
   fi
 
+  [ -n "$approver" ] || approver="$(git -C "$root" config user.name 2>/dev/null || true)"
+  [ -n "$approver" ] || approver="${USER:-unknown}"
+
   meta="$(aif_meta_json "$spec")"
   hash="$(aif_sha256 "$spec")"
 
-  # Bound decision: the AC list and, explicitly, the assumptions — everything
-  # the spec decided that the ticket did not say. Five items to weigh, not three
-  # pages to skim. The question is "is anything missing", not "is this right".
-  printf '\n%s%s%s — acceptance criteria\n\n' "$AIF_C_BOLD" "$ticket" "$AIF_C_RESET"
-  printf '%s' "$meta" | jq -r '.acceptance[] | "  \(.id)  \(.then) → \(.expect|tostring)"'
-
-  local n_assume
-  n_assume="$(printf '%s' "$meta" | jq '.assumptions | length')"
-  if [ "$n_assume" -gt 0 ]; then
-    printf '\n%sassumptions the spec made that the ticket did not state:%s\n\n' \
-      "$AIF_C_YELLOW" "$AIF_C_RESET"
-    printf '%s' "$meta" | jq -r '.assumptions[] | "  \(.id)  \(.text)"'
-  fi
-
-  printf '\n%sIs anything missing, and do you accept these assumptions? [y/N] %s' \
-    "$AIF_C_BOLD" "$AIF_C_RESET"
-  local answer
-  read -r answer || aif_die "cancelled"
-  case "$answer" in
-    y | Y | yes | Yes) ;;
-    *)
-      # Reject is not a dead end. Ask WHY — if the human did not already say —
-      # and fold it into the ticket so the next spec is redone against it. No
-      # reason means nothing to redo, so that stays a plain refusal.
-      printf '\n%swhat should change? one line — it goes into the ticket and the spec is redone:%s\n> ' \
-        "$AIF_C_BOLD" "$AIF_C_RESET"
-      local reason
-      read -r reason || reason=""
-      case "$reason" in
-        "") aif_die "not approved (no reason given — nothing to redo)" ;;
-      esac
-      _aif_ticket_append_rework "$work" "$reason"
-      printf '%srework noted%s in ticket.md — the spec will be redone against it.\n' \
-        "$AIF_C_YELLOW" "$AIF_C_RESET"
-      return 2
-      ;;
-  esac
-
-  approver="$(git -C "$root" config user.name 2>/dev/null || true)"
-  [ -n "$approver" ] || approver="${USER:-unknown}"
-
   jq -n \
-    --arg s "$hash" --arg a "$approver" \
+    --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
     --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --argjson assumptions "$(printf '%s' "$meta" | jq -c '[.assumptions[]?.id]')" \
     '{ schema: 1, subject: "spec.md", subject_sha256: $s,
-       approver: $a, at: $at, tty: true, approved_assumptions: $assumptions }' \
+       approver: $a, at: $at, channel: "chat", confirmation: $c,
+       approved_assumptions: $assumptions }' \
     >"$work/approval.json.tmp" && mv "$work/approval.json.tmp" "$work/approval.json"
 
-  aif_ledger_append "$work" "$(jq -n --arg s "$hash" --arg a "$approver" \
-    '{ event: "approve", subject: "spec.md", subject_sha256: $s, approver: $a }')"
+  aif_ledger_append "$work" "$(jq -n --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
+    '{ event: "approve", subject: "spec.md", subject_sha256: $s,
+       approver: $a, channel: "chat", confirmation: $c }')"
 
-  printf '\n%sapproved%s by %s — bound to this spec; edit spec.md and it lapses.\n' \
+  printf '%sapproved%s by %s — bound to this spec; edit spec.md and it lapses.\n' \
     "$AIF_C_GREEN" "$AIF_C_RESET" "$approver"
 }

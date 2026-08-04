@@ -221,7 +221,41 @@ Two decisions the plan did not anticipate:
   `exec claude`; subagents inherit it, so `model: opus` still resolves to
   `glm-5.2` on the glm profile. The three-level indirection is preserved.
 
-### Phase 3 — The orchestrator skill and the single entry point
+### Phase 3 — The orchestrator skill and the single entry point — **DONE**
+
+Verified by `make lint`, `make check`, `scripts/demo.sh` (14 assertions, now
+including three `aif _state` checks and two `aif _gate` runs), an
+install/uninstall round trip that leaves `git status` clean, and a scratch-repo
+walk of `_ticket-init → _state → _rework → _approve`.
+
+`lib/cmd_station.sh` and `lib/cmd_start.sh` were deleted here rather than in
+phase 7 — leaving a second, unused execution path would have invited drift.
+**Cost accounting is therefore absent until phase 4**: gate verdicts are recorded
+(that is what `aif _gate` is for, and `_state` depends on it), but per-station
+token counts are not, because nothing writes them until the `SubagentStop` hook
+lands.
+
+Running the demo through the real commands rather than raw gate calls surfaced
+three defects that the old path had hidden:
+
+- **Instrumentation perturbed the measurement.** `_gate` recorded green's pass to
+  the ledger before running scope. The ledger lives under `tasks/`, `tasks/` is on
+  scope's denylist, and scope diffs the working tree — so a correct
+  implementation was rejected for the pipeline's own bookkeeping. Verdicts are now
+  collected and written after every gate has run. This bug existed in
+  `cmd_station.sh` too; the demo never called it, so nobody saw it.
+- **A freezing gate creates the artifact it freezes.** The subject a verdict binds
+  to was resolved before the gate ran, so for the tests station — whose
+  `verify-red` *writes* `tests.lock` — it resolved to nothing. The recorded pass
+  bound to nothing, and the next station's precondition could never be satisfied.
+  Resolved again after each gate.
+- **`green` and `scope` cannot be re-run after the accepting commit.** scope finds
+  no diff and passes vacuously; green reverts to a commit that already contains the
+  implementation, sees the tests still pass, and concludes they never depended on
+  the code — a false accusation from a correct gate. Both are `recorded` in the
+  state walk now, bound to `plan.md` via a new `binds` field. The honest cost is
+  written into `lib/cmd_state.sh` and the README: at the code boundary, "passes
+  now" weakens to "passed, against a plan that has not changed since".
 
 - **`sets/claude/skills/aif/SKILL.md`** — the orchestrator. Responsibilities:
   ticket resolution, dispatching subagents in order, running gates, presenting

@@ -69,6 +69,18 @@ aif_ledger_gate() {
        subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }')"
 }
 
+# aif_ledger_gate_last <work> <gate> — "<result>|<subject_sha256>" for the latest
+# entry this gate wrote, or "none|" if it has never run here.
+aif_ledger_gate_last() {
+  local ledger
+  ledger="$(aif_ledger_path "$1")"
+  [ -f "$ledger" ] || { printf 'none|'; return 0; }
+  jq -r --arg g "$2" \
+    '[.entries[] | select(.gate == $g)] | last
+     | if . == null then "none|" else (.result + "|" + (.subject_sha256 // "")) end' \
+    "$ledger"
+}
+
 # aif_ledger_gate_valid <work> <gate> <current-sha> — rc 0 iff the latest entry
 # for this gate is a pass recorded against exactly the current artifact bytes.
 #

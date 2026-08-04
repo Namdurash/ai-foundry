@@ -3,15 +3,20 @@
 # Gate: spec-approve — did a human accept this exact spec?
 #
 # The one gate with no machine backstop, because the thing it verifies — that a
-# person judged the spec complete — is not machine-decidable by construction.
-# It checks the RECORD of that judgement: approval.json, bound to the spec's
-# bytes, and marked as having been made at a real terminal.
+# person judged the spec complete — is not machine-decidable by construction. It
+# checks the RECORD of that judgement: approval.json, bound to the spec's bytes.
 #
-# `tty: true` is the load-bearing field. `aif approve` writes it only when
-# stdin is a terminal, and an agent's Bash tool is not a terminal. That is a
-# genuine capability boundary rather than a pattern match — though a determined
-# agent could allocate a pty, so it is a speed bump on the lazy path, not a
-# security boundary. See docs/FINDINGS.md.
+# It used to require `tty: true`, written only when stdin was a terminal, on the
+# grounds that an agent's Bash tool is not one. That was a real capability
+# boundary. It is gone, deliberately: the human now approves inside the session,
+# where no terminal exists to check for, and the old rule blocked the only path
+# they have.
+#
+# What is checked instead is that the approval names HOW it was given and, for a
+# chat approval, carries the user's own words. That is evidence, not proof — a
+# model could write those words itself. The honest summary: everything else in
+# this pipeline is verified, and this one thing is trusted. It is stated in the
+# README rather than implied by a field name.
 
 set -uo pipefail
 
@@ -28,7 +33,7 @@ spec="$work/spec.md"
 approval="$work/approval.json"
 
 [ -f "$spec" ] || aif_g_error "spec.md missing"
-[ -f "$approval" ] || aif_g_reject "not approved — no approval.json (run: aif approve)"
+[ -f "$approval" ] || aif_g_reject "not approved — no approval.json (the human has not approved this spec)"
 
 if ! jq -e . "$approval" >/dev/null 2>&1; then
   aif_g_error "approval.json is not valid JSON"
@@ -46,8 +51,16 @@ violations="$(
       (if .subject_sha256 != $spec_hash
         then "approval is for a different spec — it changed since it was approved; re-approve"
         else empty end),
-      (if (.tty // false) != true
-        then "approval.tty is not true — approval was not made at a terminal"
+      # channel says how the approval was given. A pre-chat approval.json carries
+      # tty:true and no channel; it stays valid, because invalidating approvals
+      # that were correctly given under the older rule would be a lie about what
+      # happened.
+      (if (.channel // (if (.tty // false) == true then "tty" else "" end)) as $c
+          | ($c != "chat" and $c != "tty")
+        then "approval.channel must be chat or tty — it must say how the approval was given"
+        else empty end),
+      (if (.channel // "") == "chat" and ((.confirmation // "") | length) == 0
+        then "a chat approval must carry the approvers own words in approval.confirmation"
         else empty end),
       (if (.approver // "") == "" then "approval.approver is empty" else empty end),
       (if (.at // "") == "" then "approval.at is empty" else empty end),

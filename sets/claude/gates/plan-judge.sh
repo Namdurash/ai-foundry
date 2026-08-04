@@ -27,7 +27,7 @@ plan="$work/plan.md"
 verdict="$work/verdict-plan.json"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"
-[ -f "$verdict" ] || aif_g_reject "not judged — no verdict-plan.json (run: aif station run plan-judge)"
+[ -f "$verdict" ] || aif_g_reject "not judged — no verdict-plan.json (the plan-judge station has not run)"
 
 if ! jq -e . "$verdict" >/dev/null 2>&1; then
   aif_g_error "verdict-plan.json is not valid JSON"

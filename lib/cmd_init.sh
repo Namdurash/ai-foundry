@@ -377,7 +377,7 @@ EOF
 
   if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
     printf '\n'
-    aif_warn "$AIF_PROFILE_SECRET_VAR is not set — export it before running aif start"
+    aif_warn "$AIF_PROFILE_SECRET_VAR is not set — export it before running aif run"
   fi
 
   [ "$conflicts" -eq 0 ]

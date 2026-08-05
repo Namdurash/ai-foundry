@@ -4,7 +4,9 @@ Things we probed rather than assumed. Each one shapes the code, and each one is
 non-obvious enough that someone will eventually try to "simplify" it back.
 
 Probed against `claude` **2.1.85** (Homebrew cask) on macOS 26.5.2, bash 3.2.57,
-jq 1.7.1-apple, on 2026-07-16.
+jq 1.7.1-apple, on 2026-07-16. Findings 8–10 were probed against `claude`
+**2.1.212** on 2026-08-05; where a later probe contradicted an earlier one, the
+earlier entry says so rather than being quietly rewritten.
 
 ---
 
@@ -68,6 +70,14 @@ two together are a reasonable belt-and-braces check.
 
 Related: `total_cost_usd` is `0` on error, and can legitimately be `0` under
 subscription auth — so never treat a zero cost as a signal of anything.
+
+**Record it anyway.** "Do not branch on it" was over-read into "do not store it",
+and that cost a diagnosis. An `implement` attempt on a live ticket ended with
+`is_error: true` and no `.result` field, and the ledger row said only "no result
+field" — the shape of an exhausted turn budget, which had to be reconstructed
+from which keys were *missing*. `subtype` would have said `error_max_turns` in
+one word. Untrustworthy as a decision input and valuable as a record are not in
+tension; they are different uses.
 
 ## 3. `CLAUDE_CONFIG_DIR` relocates authentication too
 
@@ -153,26 +163,102 @@ Gates use only their own `.aif/gates/_lib.sh` (`aif_g_*`) plus POSIX tools. When
 a gate needs something `lib/` already has, duplicate the few lines into `_lib.sh`
 rather than reaching across.
 
-## 7. Evals cannot be run from inside an agent session
+## 7. A nested `claude` sometimes cannot authenticate — NARROWED, 2026-08-05
 
-A child `claude` spawned from within a Claude Code session cannot authenticate:
+**This entry was written as a general rule and the general rule is false.** It is
+kept, corrected, because a whole architecture was justified by it: `aif run` used
+to refuse to start unless stdin was a terminal, on the grounds that a station
+spawned from inside a session could never authenticate.
+
+What was observed on 2026-07-16 was real:
 
 ```
 401 {"type":"authentication_error","message":"Invalid authentication credentials"}
 ```
 
-The session holds an OAuth credential that it does not hand down to child
-processes — it exports `CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH` and friends, but no
-usable token. The child inherits the session's `ANTHROPIC_BASE_URL` and nothing
-to authenticate against it with, so every run 401s.
+What was inferred from it was not. The conclusion — a session holds an OAuth
+credential it does not hand down, so every nested run 401s — was never isolated
+against the other things in that environment.
 
-This is the same entanglement as #1, wearing a different hat. `aif test` works
-correctly — it reports the failure honestly rather than hiding it — but the
-numbers it produces in that context measure the sandbox, not the profile.
+**Re-probed 2026-08-05, claude 2.1.212.** A `claude -p` spawned from inside a
+Claude Code session, itself OAuth (`CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH=1`, no
+`ANTHROPIC_API_KEY`), returned `is_error: false` and did its work. Twice, on
+different prompts. The nested call authenticates.
 
-**Run evals from a plain terminal.** If the harness reports 0/N with an
-authentication error for every run, check where you are before you debug the
-harness.
+So the honest statement is the diagnostic one that was always at the bottom of
+this entry, and nothing more than it: **if a nested run 401s, look at where you
+are before you debug the harness.** It can happen. It is not a law, and no design
+should rest on it. The one that did has been rebuilt (`docs/REBUILD.md`).
+
+---
+
+## 8. A subagent's usage is fully recoverable from its own transcript
+
+Claude Code writes one transcript per subagent:
+
+```
+~/.claude/projects/<slug>/<session-id>/subagents/agent-<id>.jsonl
+~/.claude/projects/<slug>/<session-id>/subagents/agent-<id>.meta.json
+```
+
+Every assistant turn carries `message.usage` (all four token classes) and
+`message.model`; the `.meta.json` carries `agentType`, `description`,
+`toolUseId` and `parentAgentId`. Rolling one up yields exactly what a
+`claude -p` envelope reports — measured against a live run.
+
+This matters because "an in-session subagent reports no usage" was the reason
+the pipeline shelled out to `claude -p` once per station, which in turn is why a
+user could not see any of the work. It is false. The transcript route is also
+strictly better: it works under subscription auth, where `total_cost_usd` is
+structurally `0` (#2); it survives a failed station, because the file is written
+as the run happens rather than assembled at the end; and it is per-turn, so a
+run that ground through its turn budget looks like grinding.
+
+**Two traps, both found by measuring rather than reading:**
+
+- **`message.usage` repeats per content block.** One measured file had 36 rows
+  carrying usage for 14 real requests. Sum them naively and the cost inflates
+  ~2.5×. **Dedupe by `message.id`.**
+- **Some entries carry `model: "<synthetic>"`.** Not billed. Filter them out, or
+  a single one contributes ~10k phantom tokens.
+
+## 9. Hook payloads say who is calling — and the absence of a field is the signal
+
+`SubagentStop` receives, on stdin:
+
+```json
+{ "agent_id": "a7b7…", "agent_type": "general-purpose",
+  "agent_transcript_path": ".../subagents/agent-<id>.jsonl",
+  "transcript_path": ".../<session>.jsonl",
+  "last_assistant_message": "…", "session_id": "…", "cwd": "…" }
+```
+
+`agent_transcript_path` is a dedicated field pointing at that one subagent's
+transcript — no guessing from timestamps.
+
+`PreToolUse` carries `agent_id` and `agent_type` **only when the call originates
+inside a subagent.** From the main session the keys are absent entirely, not
+empty:
+
+```
+from a subagent:     { "agent_id": "a7b7…", "agent_type": "general-purpose" }
+from the session:    { }
+```
+
+That absence is a usable discriminator, and the guard hook is built on it: it is
+how "the orchestrator is writing this" is told from "a station is writing this".
+
+Hooks also inherit the parent process's environment — probed, because the write
+ban depends on `aif run` exporting a marker the hook can see.
+
+## 10. `junit.py` emits one line, not one line per case
+
+It prints a JSON array. `wc -l` on its output returns 0 for a perfectly good
+report, which is how a toolchain probe came to declare a working project broken.
+Count with `jq 'length'`.
+
+Small, and recorded because it is the exact shape of mistake this file exists
+for: an interface assumed from its name instead of run once.
 
 ---
 

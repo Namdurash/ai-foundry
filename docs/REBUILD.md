@@ -420,7 +420,62 @@ Three consequences of that which each needed handling:
   `scope` then checks against the amended plan. The escape hatch exists, and it
   is never silent.
 
-### Phase 7 — Cleanup
+### Phase 7 — Cleanup — **DONE**
+
+Most of the deletions had already happened where they were forced (phase 3 took
+`cmd_station.sh` and `cmd_start.sh`; the README was rewritten as each phase
+changed what it described). What remained:
+
+- **`docs/FINDINGS.md` #7 is narrowed rather than deleted**, and says so at the
+  top of the entry. A whole architecture was justified by it — `aif run` used to
+  refuse to start outside a terminal — so quietly rewriting it would erase the
+  reason that design existed. The observation was real; the general rule inferred
+  from it was not, and the re-probe is recorded with its date and version.
+- **Three findings added** (#8 subagent transcripts and their two measurement
+  traps, #9 hook payload fields and the absent-key discriminator, #10 `junit.py`
+  emitting one line). Each is something that was assumed, then measured, and the
+  measurement disagreed.
+- **`aif-fix` stays, and the orchestrator delegates to it** rather than carrying
+  a condensed copy. Same reason it delegates the interview to `aif-ticket`: the
+  mechanical-versus-structural split is the judgement that skill exists for, and
+  a summary is exactly where "never make a gate pass by making the artifact
+  worse" gets lost. Its fix step now prefers re-dispatching the station over
+  hand-editing.
+- **`aif-hello` removed.** Its stated purpose was proving the wiring before the
+  foundry content existed. The content exists, and `aif doctor` answers the same
+  question without a model call.
+- **Four dead runner functions removed** (`_converse`, `_station`,
+  `_result_usage`, `_result_subtype`) — orphaned when the bash orchestrator went.
+- **Migration is detected, not performed.** `aif _state` recognises a ticket
+  still under `.aif/work/` and returns `next.kind: "migrate"` with the exact
+  `git mv`. Automatic would be worse: moving a directory of someone's committed
+  work should appear in their diff because they ran it.
+- Versions bumped — CLI `0.2.0` (commands were removed, which is breaking), set
+  `0.3.0`.
+
+---
+
+## Where this landed
+
+The eleven observations that started this, and what happened to each:
+
+| # | Observation | Outcome |
+|---|---|---|
+| 1 | `create-ticket` has no value | Gone from the surface; survives as `_ticket-init`, which the interview calls |
+| 2 | Remove `approve` | Gone. Approval is recorded from chat, with the user's own words |
+| 3 | Tickets outside `.aif/` | `tasks/<ID>/`, with the scope denylist extended to protect it |
+| 4 | TTY approval should not exist | Gone, and what replaced it is documented as weaker |
+| 5 | Everything in one session | `aif run` opens one session; stations are subagents |
+| 6 | Plan and plan-judge are invisible | Visible as subagents; `expects` announces each before it runs |
+| 7 | What does `aif station run` do | Deleted. There is one command |
+| 8 | plan-judge ran on haiku | haiku is gone; two tiers, and a check that the two readers of a station file agree |
+| 9 | Show the expected output per stage | `expects`, static, from the station's own declaration |
+| 10 | Will removing commands break tokenomics | No — the saving was fresh context per station, which subagents keep. Accounting moved to transcripts and got better |
+| 11 | Gates blocked by tooling gaps and a manifest omission | Toolchain probed before the first dollar; plan-judge checks manifest coverage; `_amend-plan` is the bounded escape hatch |
+
+Two defects surfaced that were not in the list and mattered more than most of it:
+the session finishing work outside every gate with nothing recorded (phase 5),
+and `aif doctor` having died silently in every project it ever ran in (phase 6).
 
 - Delete `lib/cmd_station.sh`, `lib/cmd_run.sh`, `lib/cmd_start.sh`; reduce
   `lib/cmd_ticket.sh` to the internal helpers.

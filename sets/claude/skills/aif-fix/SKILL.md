@@ -69,12 +69,21 @@ For a structural finding, propose the split or the question concretely — name 
 would stay and which would move — and let the user decide. When they decide, the change goes
 into `tasks/<ID>/ticket.md`, because the spec station reads the ticket and nothing else.
 
-### 3. Fix the mechanical pile, one at a time
+### 3. Fix the mechanical pile
 
-Show the user each fix as a before/after of the exact field. Keep the meaning identical —
-you are re-expressing an assertion, not choosing a new one. Where splitting one criterion
-into two changes the ids that follow, renumber contiguously from `AC-001`, as the gate
-requires.
+**Prefer re-dispatching the station over editing the artifact yourself.** Hand it the gate's
+objection verbatim and let it rewrite its own output: it has the full instructions and the
+context that produced the artifact, where you have one line of complaint. That is the normal
+path and it is usually cheaper than the argument about whether a hand edit was faithful.
+
+Edit by hand when re-dispatching would be absurd for the size of the fix — a mistyped id, a
+`surface` naming something the spec calls slightly differently — or when the station has
+already been re-dispatched and produced the same defect.
+
+When you do edit, show the user each fix as a before/after of the exact field. Keep the
+meaning identical — you are re-expressing an assertion, not choosing a new one. Where
+splitting one criterion into two changes the ids that follow, renumber contiguously from
+`AC-001`, as the gate requires.
 
 Where a fix would require *deciding* something the artifact did not say — a boundary, a
 status code, an exact literal — stop and ask. An invented literal is an unreviewed decision
@@ -95,11 +104,14 @@ information, not an obstacle.
 
 State the artifact's state plainly, and name the next command without running it:
 
-- gate green → the orchestrator continues from derived state (or `aif run <ID>` for
-  the single step). If `aif run` invoked you, it re-runs the gate itself when you exit — you
-  do not need to do anything except be finished.
-- gate still red for structural reasons → the change belongs in `ticket.md`; `/aif-ticket
-  <ID>` re-opens the interview, and the spec is redone from the amended ticket.
+- gate green → say so and stop. If the `aif` orchestrator invoked you, simply return: it
+  asks `aif _state <ID>` what comes next and re-checks with `aif _gate` itself. Do not
+  dispatch the next station yourself — that decision comes from derived state, not from your
+  memory of what you just fixed.
+- gate still red for structural reasons → the change belongs in `ticket.md`. `aif _rework
+  <ID> "<what should change>"` folds it in as prose, which is what the spec station actually
+  reads, and the spec is redone against it.
+- a person invoked you directly → `aif run <ID>` continues from here.
 
 ## What this skill cannot do — stated so it does not oversell
 

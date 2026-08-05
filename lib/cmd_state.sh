@@ -127,6 +127,19 @@ aif_cmd_state() {
   local dir_rel="$AIF_TASKS_DIR/$ticket"
 
   if [ ! -d "$work" ]; then
+    # A ticket from before tasks/ existed. Say so instead of reporting "no such
+    # ticket" and quietly starting over on top of finished work — the artifacts
+    # are right there, and the fix is one command. Not performed automatically:
+    # moving a directory of someone's committed work is theirs to run and to see
+    # in the diff.
+    if [ -d "$root/.aif/work/$ticket" ]; then
+      jq -n --arg t "$ticket" --arg d "$dir_rel" \
+        --arg cmd "git mv .aif/work/$ticket $AIF_TASKS_DIR/$ticket" \
+        '{ ticket: $t, dir: $d, exists: false, steps: [],
+           next: { kind: "migrate", step: "ticket", command: $cmd,
+                   detail: ("this ticket predates tasks/ — its artifacts are still under .aif/work/" + $t + ". Move them and it resumes where it stood: " + $cmd) } }'
+      return 0
+    fi
     jq -n --arg t "$ticket" --arg d "$dir_rel" \
       '{ ticket: $t, dir: $d, exists: false, steps: [],
          next: { kind: "ticket-init", step: "ticket",

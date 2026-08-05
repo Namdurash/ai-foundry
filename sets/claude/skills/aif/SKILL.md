@@ -57,6 +57,13 @@ aif _ticket-init <ID>
 ```
 Then interview (below).
 
+### `migrate` — the ticket predates `tasks/`
+
+Its artifacts are still under `.aif/work/`. Show the user `next.command`, explain that it
+moves a directory of their committed work, and let them run it — or run it once they say so.
+Do not start the ticket over: a finished spec and an approval are sitting in that directory,
+and scaffolding a new one on top would silently discard them.
+
 ### `human`, step `ticket` — there is no real ticket yet
 
 Interview the user and write `tasks/<ID>/ticket.md`. **Follow the `aif-ticket` skill's
@@ -126,22 +133,20 @@ Say so, summarise what was built, and point the user at the branch to review.
 
 ## Repair, when a gate rejects
 
-A rejection is not a failure to route around. Work it with the user, in this session:
+A rejection is not a failure to route around. **Follow the `aif-fix` skill's procedure** —
+read `.claude/skills/aif-fix/SKILL.md` and run it. It holds the judgement that matters here:
+re-deriving the complaint from the gate itself rather than from stale text, and splitting
+mechanical problems from structural ones. Do not summarise it from memory; the one rule it
+exists to enforce — never make a gate pass by making the artifact worse — is exactly what
+gets lost in a summary.
 
-1. **Re-derive the complaint** — do not trust the text you already printed. Run the gate
-   again yourself: `bash .aif/gates/<GATE>.sh tasks/<ID>`.
-2. **Read the gate script.** The good ones say *why* the rule exists, and that reasoning is
-   what to act on.
-3. **Split the complaints in two.**
-   - *Mechanical* — an assertion joining two clauses, a missing field, prose where a literal
-     belongs. Re-dispatch the station with the gate's objection included in its prompt.
-   - *Structural* — the gate saying the work is too big or the ticket too vague. **Do not
-     make these go away.** Every gate here is a proxy, so there is always a cheap way to turn
-     it green that destroys what it protected: delete six criteria to get under a limit and
-     `spec-form` passes while the spec now describes less than the ticket asked for. Take
-     these back to the user; they are usually the ticket, not the artifact.
-4. **Cap it at three rounds per station.** Past that, re-dispatching is not converging, it is
-   grinding. Stop and say plainly that the ticket probably needs amending.
+Two things it leaves to you:
+
+- **Prefer re-dispatching the station** over editing the artifact by hand, even for a
+  mechanical fix. Pass the gate's objection in the prompt. The station has the full
+  instructions; you have one line of complaint.
+- **Cap it at three rounds per station.** Past that, re-dispatching is not converging, it is
+  grinding. Stop and say plainly that the problem is probably the ticket.
 
 ## What you may and may not run
 

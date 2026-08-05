@@ -4,9 +4,11 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early.** The machine works — `init`, `run`, `doctor`, `profiles`,
-> `test`. What it pours does not exist yet: the set ships a placeholder while the
-> AI SDLC content is decided. See the roadmap.
+> **Status: early, but the machine is whole.** One command drives a ticket from
+> interview to code through six stations and eight gates, metered per station.
+> It has been run against a real project; what that run found is written down in
+> `docs/REBUILD.md` rather than smoothed over. What is still thin: the evals are
+> a smoke test, there is one runner, and the price table ships empty.
 
 ## What it is
 
@@ -114,8 +116,10 @@ The level-0 smoke fixture needs no agents at all — it only proves the wiring
 (base URL, auth, tool-calling). That is deliberate: the harness has to exist
 before the content, or there is no way to tell whether the content works.
 
-**Run evals from a plain terminal.** A child `claude` spawned inside an agent
-session cannot authenticate and every run will 401 — see `docs/FINDINGS.md`.
+If every run comes back 0/N with an authentication error, check *where* you are
+before debugging the harness — a nested `claude` can fail to authenticate in some
+environments. It is not a rule, and nothing here is designed around it; see
+`docs/FINDINGS.md` #7, which used to say it was.
 
 ## Cheatsheet — a ticket through the pipeline
 
@@ -217,11 +221,10 @@ does not cannot be read from outside.
 - **Reject at approval** and it asks what to change, folds that into the ticket,
   and redoes the spec. Approve and it runs plan → tests → code on its own.
 
-A link seed is pulled by an MCP connector you have configured; its contents are
-read as data, never as instructions. **Run it from a real terminal** — the
-stations spawn `claude -p`, which cannot authenticate nested inside a claude
-session (`docs/FINDINGS.md` #7). It resumes: run it again after an approval and
-it skips straight to the build rather than overwriting the approved spec.
+A link is pulled by an MCP connector you have configured; its contents are read
+as data, never as instructions. It resumes: run it again at any point and it
+picks up wherever the ticket actually stands, because the state is derived from
+the gates rather than remembered.
 
 ### Commands
 
@@ -443,12 +446,14 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] Profiles — `anthropic` and `glm`, user-extensible
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
 - [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
-- [x] `aif run` — profile export into an interactive session
 - [x] `aif uninstall` — reverse the manifest, value-guarded
+- [x] The gated cycle: spec → approve → plan → tests → code, eight gates
+- [x] `aif run` — one command, stations as subagents in one visible session
+- [x] Per-station metering from subagent transcripts, into a hash-chained ledger
+- [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook
 - [ ] Homebrew formula and tap
-- [ ] The foundry content itself: which agents implement the AI SDLC
 - [ ] `sets/codex/`
 
 ## License

@@ -5,8 +5,15 @@
 # aif_runner_<runner>_* and never mention --output-format or ANTHROPIC_*.
 #
 # That boundary is what makes a second runner cheap: sets/codex lands as
-# lib/runner_codex.sh implementing the same five functions, and no command
+# lib/runner_codex.sh implementing the same handful of functions, and no command
 # module changes.
+#
+# It shrank when the stations became subagents. `_station` and `_converse` are
+# gone with the bash orchestrator that called them: a station is now dispatched
+# inside the session by the runner's own agent mechanism, so aif no longer needs
+# a way to spawn one. What is left is what aif still does itself — open a
+# session (`_start`) and run an eval (`_eval`) — plus reading the envelope those
+# produce.
 #
 # Sourced by bin/aif; not meant to be executed directly.
 
@@ -41,30 +48,6 @@ aif_runner_claude_start() {
   exec claude
 }
 
-# aif_runner_claude_converse <workdir> <prompt>
-#
-# An interactive claude the caller can RETURN from. The orchestrator (aif run)
-# hands the terminal over for a human touchpoint — the /aif-ticket interview —
-# and then carries on to the next step, so unlike _start this must NOT exec: a
-# replaced process never comes back. A subshell for the cd, so the caller's
-# working directory is left untouched.
-#
-# The profile env is already exported by the caller, so this inherits the right
-# routing. This is interactive, not `claude -p`, so it authenticates the ordinary
-# way — and because aif run is a plain-terminal command, FINDINGS #7 (a nested
-# `claude -p` cannot authenticate) does not apply to it.
-aif_runner_claude_converse() {
-  local workdir="$1" prompt="$2"
-  (
-    cd "$workdir" || exit 70
-    if [ -n "$prompt" ]; then
-      claude "$prompt"
-    else
-      claude
-    fi
-  )
-}
-
 # aif_runner_claude_eval <workdir> <prompt> <max_turns> <budget_usd> <out> <err>
 #
 # One headless run inside a disposable working directory. The caller has already
@@ -93,45 +76,6 @@ aif_runner_claude_eval() {
   )
 }
 
-# aif_runner_claude_station <workdir> <sys-prompt-file> <user-prompt> <model>
-#                           <max-turns> <allowed-tools> <out> <err>
-#
-# One headless station run. This is the instrumented path: because aif invokes
-# claude -p itself, the JSON envelope carries the usage the ledger needs — an
-# in-session subagent would report none. The caller has already exported the
-# profile's environment, so --model opus resolves to whatever the profile maps
-# opus to (glm-5.2 on the glm profile). That remap is what keeps a set
-# model-agnostic while a station still declares its tier.
-aif_runner_claude_station() {
-  local workdir="$1" sys="$2" prompt="$3" model="$4"
-  local max_turns="$5" tools="$6" out="$7" err="$8"
-
-  (
-    cd "$workdir" || exit 70
-    claude -p "$prompt" \
-      --append-system-prompt "$(cat "$sys")" \
-      --model "$model" \
-      --allowedTools "$tools" \
-      --output-format json \
-      --max-turns "$max_turns" \
-      --permission-mode acceptEdits \
-      --setting-sources project,local \
-      >"$out" 2>"$err" </dev/null
-  )
-}
-
-# aif_runner_claude_result_usage <result.json> — the token counts as a JSON
-# object. Tokens, not dollars: total_cost_usd is 0 under subscription auth
-# (FINDINGS #2), so tokens are the durable datum and cost is derived later.
-aif_runner_claude_result_usage() {
-  jq -c '{
-    input_tokens: (.usage.input_tokens // 0),
-    output_tokens: (.usage.output_tokens // 0),
-    cache_read_input_tokens: (.usage.cache_read_input_tokens // 0),
-    cache_creation_input_tokens: (.usage.cache_creation_input_tokens // 0)
-  }' "$1" 2>/dev/null || printf '{}'
-}
-
 # aif_runner_claude_result_ok <result.json>
 #
 # Gate on is_error and nothing else. The envelope reports subtype:"success"
@@ -149,17 +93,6 @@ aif_runner_claude_result_ok() {
 # read this alongside subtype and num_turns, never alone.
 aif_runner_claude_result_error() {
   jq -r '.result // "no result field"' "$1" 2>/dev/null | head -1
-}
-
-# aif_runner_claude_result_subtype <result.json> — the envelope's own label for
-# how the run ended ("success", "error_max_turns", …).
-#
-# For the RECORD only. FINDINGS #2 establishes that subtype reports "success"
-# alongside is_error:true, so nothing may branch on it — but that is an argument
-# against trusting it, not against storing it. Stored, it names a failure mode
-# in one word; withheld, it has to be reconstructed from which keys are missing.
-aif_runner_claude_result_subtype() {
-  jq -r '.subtype // ""' "$1" 2>/dev/null | head -1
 }
 
 # aif_runner_claude_result_cost <result.json> — "cost_usd turns in_tok out_tok".

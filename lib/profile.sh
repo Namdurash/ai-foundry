@@ -129,7 +129,7 @@ aif_profile_secret() {
 #
 # Without the clear, a profile only *adds* to whatever is already exported, so a
 # leftover ANTHROPIC_BASE_URL from another profile — or just sitting in the
-# user's shell — silently wins, and `aif start --profile anthropic` quietly runs
+# user's shell — silently wins, and `aif run --profile anthropic` quietly runs
 # on something else. A profile has to mean the same thing on every machine or it
 # means nothing.
 #

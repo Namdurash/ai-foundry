@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # project.json — how the pipeline verifies THIS project.
-# Discovery and validation, shared by `aif project`, `aif create-ticket`, and
+# Discovery and validation, shared by `aif project`, `aif run`, and
 # `aif doctor`.
 # Sourced by bin/aif; not meant to be executed directly.
 #

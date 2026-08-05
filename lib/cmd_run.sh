@@ -74,7 +74,20 @@ _aif_run() {
   [ -f "$root/.claude/skills/aif/SKILL.md" ] ||
     aif_die "the orchestrator skill is not installed — run 'aif init'"
 
-  printf '%srun%s · profile %s\n\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$profile" >&2
+  # Establish that the gates can actually render verdicts, BEFORE any of this
+  # costs money. On a live ticket the missing piece — a junit reporter — was
+  # discovered at the last gate, after roughly $6.61 of stations had run and the
+  # feature was already written. The whole pipeline rests on the test command
+  # producing a parseable report; that is one command to check and the cheapest
+  # check in the system.
+  # shellcheck source=lib/doctor.sh
+  . "$AIF_ROOT/lib/doctor.sh"
+  if ! aif_doctor_probe "$root"; then
+    printf '\n' >&2
+    aif_die "the test toolchain cannot produce a verdict — fix the above first. Every gate reads that report, so without it the pipeline would spend a full ticket and then be unable to say whether any of it worked."
+  fi
+
+  printf '\n%srun%s · profile %s\n\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$profile" >&2
 
   # The profile's routing is exported into the child, which is also how each
   # station gets its engine: a subagent declaring `model: opus` resolves to

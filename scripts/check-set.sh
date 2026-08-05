@@ -111,6 +111,11 @@ g "implement writes a test"                '{"agent_type":"aif-implement","tool_
 g "implement-careful writes a test"        '{"agent_type":"aif-implement-careful","tool_input":{"file_path":"tests/t.py"}}' deny
 g "implement writes source"                '{"agent_type":"aif-implement","tool_input":{"file_path":"src/a.py"}}' allow
 g "tests writes source"                    '{"agent_type":"aif-tests","tool_input":{"file_path":"src/a.py"}}' deny
+# scope exempts plan-amendments.json from its denylist so an amendment is
+# possible at all; without this rule an implementation could hand-write itself
+# permission for anything, bypassing the caps and the required reason.
+g "implement writes the amendments file"   '{"agent_type":"aif-implement","tool_input":{"file_path":"tasks/T-1/plan-amendments.json"}}' deny
+g "implement writes the plan"              '{"agent_type":"aif-implement","tool_input":{"file_path":"tasks/T-1/plan.md"}}' deny
 g "tests writes a test"                    '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow
 g "an unrelated subagent"                  '{"agent_type":"general-purpose","tool_input":{"file_path":"tests/t.py"}}' allow
 g "legacy claude -p via AIF_STATION"       '{"tool_input":{"file_path":"tests/t.py"}}' deny implement

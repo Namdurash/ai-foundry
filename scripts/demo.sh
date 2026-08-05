@@ -65,6 +65,24 @@ MK
 chmod +x .aif/mkreport.sh
 tmp="$(mktemp)"; jq '.test.command="bash .aif/mkreport.sh" | .test.report.path=".aif/tmp/report.xml"' .aif/project.json > "$tmp" && mv "$tmp" .aif/project.json
 
+note "before anything costs money, aif run establishes that the gates can render"
+note "a verdict at all — it RUNS the test command and checks a report comes out."
+note "On a live ticket that missing piece surfaced at the LAST gate, ~\$6.61 in:"
+if "$AIF" doctor --probe >/dev/null 2>&1; then
+  printf '  %s✓%s %-12s toolchain usable\n' "$grn" "$rst" "doctor --probe"
+else
+  printf '  %s✗%s %-12s reported unusable\n' "$red" "$rst" "doctor --probe"
+fi
+note "and with the runner broken, it refuses rather than spending a ticket first:"
+tmp="$(mktemp)"; jq '.test.command="definitely-not-a-real-command"' .aif/project.json > "$tmp"
+cp .aif/project.json /tmp/aif-demo-proj.bak && mv "$tmp" .aif/project.json
+if "$AIF" doctor --probe >/dev/null 2>&1; then
+  printf '  %s✗%s %-12s said usable with a broken runner\n' "$red" "$rst" "doctor --probe"
+else
+  printf '  %s✓%s %-12s refuses on a broken runner\n' "$grn" "$rst" "doctor --probe"
+fi
+cp /tmp/aif-demo-proj.bak .aif/project.json && rm -f /tmp/aif-demo-proj.bak
+
 # ---------------------------------------------------------------------------
 step "2. start a ticket"
 "$AIF" _ticket-init PROJ-1 >/dev/null
@@ -165,8 +183,21 @@ cat > tasks/PROJ-1/plan.md <<PLAN
 PLAN
 gate "plan form" plan-form PROJ-1 0
 PLH="$(shasum -a 256 tasks/PROJ-1/plan.md | cut -d' ' -f1)"
-jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
+VERDICT='{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}'
+jq -n --arg s "$PLH" "$VERDICT" > tasks/PROJ-1/verdict-plan.json
 gate "plan judge" plan-judge PROJ-1 0
+
+note "the judge also reports files the implementation must edit that the manifest"
+note "does not permit. scope would catch those too — but only after the code was"
+note "written and paid for. Here it costs nothing:"
+jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[{path:"src/api/router.py",why:"the new handler only takes effect once registered here"}]}' > tasks/PROJ-1/verdict-plan.json
+gate "plan judge" plan-judge PROJ-1 1
+
+note "and a verdict that omits the list is not the same claim as an empty one —"
+note "a judge that did not report is a malfunction (exit 3), not a plan defect:"
+jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
+gate "plan judge" plan-judge PROJ-1 3
+jq -n --arg s "$PLH" "$VERDICT" > tasks/PROJ-1/verdict-plan.json
 "$AIF" _commit plan PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -196,7 +227,38 @@ state "all gates pass" done
 note "now break scope — touch a file the plan never named:"
 printf 'x\n' > src/api/sneaky.py
 gate "scope" scope PROJ-1 1
-rm -f src/api/sneaky.py
+
+note "the plan could genuinely not have foreseen it — an import pulls in a"
+note "neighbour, a handler needs registering. That is a gap, not a violation, and"
+note "there is a way through it that is capped and leaves a reason behind:"
+"$AIF" _amend-plan PROJ-1 src/api/sneaky.py "the handler only takes effect once registered here" 2>&1 | head -2
+gate "scope" scope PROJ-1 0
+note "scope names the amendment on the PASS path — a widened manifest that only"
+note "shows up when someone goes looking is the same as no manifest at all:"
+/bin/bash .aif/gates/scope.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
+
+note "what it refuses: a test file, and the pipeline's own record."
+amend() { # <label> <path> — must be refused
+  if "$AIF" _amend-plan PROJ-1 "$2" "because" >/dev/null 2>&1; then
+    printf '  %s✗%s %-28s was ALLOWED\n' "$red" "$rst" "$1"
+  else
+    printf '  %s✓%s %-28s refused\n' "$grn" "$rst" "$1"
+  fi
+}
+amend "amend for a test file" "tests/test_users.py"
+amend "amend for the plan itself" "tasks/PROJ-1/plan.md"
+amend "amend for a gate" ".aif/gates/scope.sh"
+amend "amend for a file not there" "src/api/imaginary.py"
+
+note "and it is capped. Past the cap the plan is not being widened, it is being"
+note "replaced — which is a planning decision, not an implementation one:"
+for n in 2 3 4; do printf 'x\n' > "src/api/extra$n.py"; done
+"$AIF" _amend-plan PROJ-1 src/api/extra2.py "b" >/dev/null 2>&1
+"$AIF" _amend-plan PROJ-1 src/api/extra3.py "c" >/dev/null 2>&1
+amend "the fourth amendment (cap 3)" "src/api/extra4.py"
+
+git checkout -q -- tasks/PROJ-1/ 2>/dev/null || true
+rm -f tasks/PROJ-1/plan-amendments.json src/api/sneaky.py src/api/extra*.py
 
 note "now the denylist, which is a different defence. Above, sneaky.py was caught"
 note "for not being in the plan — so an implementation that simply ADDS itself to"

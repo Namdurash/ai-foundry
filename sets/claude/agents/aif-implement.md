@@ -43,6 +43,19 @@ that it can be.
 - **Stay inside the plan's files.** Create exactly the `files.create`, change
   exactly the `files.change`. A change outside that set fails the scope gate,
   even if the tests are green.
+- **If the plan could not have foreseen a file, amend the manifest — do not just
+  edit it.** An import pulls in a neighbouring module; a handler only takes effect
+  once registered somewhere the plan never named. That is a real gap, not a
+  violation, and there is a way through it:
+
+  ```
+  aif _amend-plan <TICKET> <path> "<what in the plan forces this edit>"
+  ```
+
+  It refuses test files and pipeline paths, it is capped, and it lands in a
+  committed file a reviewer reads next to the plan. Use it for what the plan
+  could not know — not to widen your way out of a plan you disagree with. If you
+  are reaching for it a third time, the plan is wrong: stop and say so.
 - **Make the tests pass for real.** Reverting your implementation must make the
   covering tests fail again — that is checked. Code that makes a test pass
   without implementing the behaviour (hard-coding the expected value, stubbing

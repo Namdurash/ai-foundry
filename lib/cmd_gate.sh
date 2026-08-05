@@ -136,7 +136,40 @@ aif_cmd_gate() {
   done
 
   _aif_gate_record "$work" "$root" "$records"
+  _aif_gate_record_amendments "$work"
   return "$overall"
+}
+
+# _aif_gate_record_amendments <work>
+#
+# Fold any manifest amendment into the ledger, once each. Deliberately here and
+# not in `aif _amend-plan`: an amendment happens DURING the implement station,
+# and a ledger write at that moment would dirty tasks/ — which is on scope's
+# denylist — so scope would then reject the implementation for the bookkeeping of
+# the amendment that permitted it. Same rule as the gate verdicts above:
+# instrumentation must not perturb what it measures.
+#
+# Idempotent by path: re-running a station must not multiply the record.
+_aif_gate_record_amendments() {
+  local work="$1" path why
+  aif_amend_paths "$work" >/dev/null 2>&1 || return 0
+  [ -f "$work/plan-amendments.json" ] || return 0
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if jq -e --arg p "$path" \
+      '[.entries[] | select(.event == "plan-amended" and .path == $p)] | length > 0' \
+      "$(aif_ledger_path "$work")" >/dev/null 2>&1; then
+      continue
+    fi
+    why="$(jq -r --arg p "$path" \
+      '[.amendments[] | select(.path == $p)] | last | .why // ""' \
+      "$work/plan-amendments.json" 2>/dev/null)"
+    aif_ledger_append "$work" "$(jq -n --arg p "$path" --arg w "$why" \
+      '{ event: "plan-amended", path: $p, why: $w }')"
+  done <<EOF
+$(aif_amend_paths "$work")
+EOF
 }
 
 # _aif_gate_record <work> <root> <records>

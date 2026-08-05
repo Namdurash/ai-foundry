@@ -371,7 +371,39 @@ a station's output is. Refusing it would only mean refusing the repair bench.
     intended workflow. It must be documented as a trust assumption in the
     README, not left implied.
 
-### Phase 6 — Gates (independent of the architecture)
+### Phase 6 — Gates — **DONE**
+
+Verified by `scripts/demo.sh`, now 32 assertions: the probe passing on a working
+toolchain and refusing on a broken one, `plan-judge` rejecting a missing manifest
+file and erroring on an omitted list, an amendment being accepted and then named
+on scope's pass path, four kinds of amendment being refused, and the cap holding.
+
+Two things the plan did not anticipate:
+
+- **`aif doctor` had been dying silently for every project.** A skill with no
+  `agent:` line makes `grep` exit 1; under `set -euo pipefail` the failed
+  assignment killed the function on the spot. Output simply stopped after
+  "project.json valid" and the command exited 1 — so the check that exists to
+  catch a skill pointing at a nonexistent agent had never run anywhere. Found
+  because the probe's output went missing; confirmed present on HEAD before this
+  phase.
+- **The amendment could not live in `plan.md`.** `tests.lock` binds to the plan's
+  bytes, so amending the plan would invalidate the frozen tests and `green` would
+  reject the implementation the amendment existed to permit. It goes in
+  `plan-amendments.json`, bound to the plan's hash, which leaves every existing
+  binding intact.
+
+Three consequences of that which each needed handling:
+
+- `scope` must exempt exactly that file from its `tasks/` denylist — by exact
+  path, not the directory, which still holds the plan and the ledger.
+- Which reopens the hole the denylist closed, so `guard.sh` now denies
+  `aif-implement` any write under `tasks/`. `aif _amend-plan` becomes the only
+  honest way in, and it validates and caps.
+- The ledger entry for an amendment is written by `aif _gate`, after the gates
+  run — not by `_amend-plan`, which happens *during* the implement station and
+  would dirty `tasks/` while scope was about to look at it. The same rule as the
+  gate verdicts in phase 3: instrumentation must not perturb what it measures.
 
 - **`doctor` preflights the test toolchain.** Run `test.command`, confirm a
   report appears at `test.report.path` in the declared format, confirm `python3`

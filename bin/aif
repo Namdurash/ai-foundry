@@ -121,6 +121,8 @@ main() {
       . "$AIF_ROOT/lib/ledger.sh"
       # shellcheck source=lib/gates.sh
       . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_amend.sh
+      . "$AIF_ROOT/lib/cmd_amend.sh"
       # shellcheck source=lib/cmd_gate.sh
       . "$AIF_ROOT/lib/cmd_gate.sh"
       aif_cmd_gate ${1+"$@"}
@@ -158,6 +160,15 @@ main() {
       # shellcheck source=lib/cmd_meter.sh
       . "$AIF_ROOT/lib/cmd_meter.sh"
       aif_cmd_meter ${1+"$@"}
+      ;;
+    _amend-plan)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_amend.sh
+      . "$AIF_ROOT/lib/cmd_amend.sh"
+      aif_cmd_amend_plan ${1+"$@"}
       ;;
     _approve)
       # shellcheck source=lib/ledger.sh

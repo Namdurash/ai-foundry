@@ -285,6 +285,49 @@ approving, and the approval, the judge verdict, the plan, and the tests all go
 invalid. There is no "go back" — the derived state simply stops showing them as
 done.
 
+### Before the first dollar
+
+`aif run` runs your test command once and checks a parseable report comes out of
+it, before dispatching anything. `aif doctor --probe` does the same on demand.
+
+A red suite passes this check — the question is "does the runner run and emit a
+report", not "do the tests pass", which at ticket start they had better not. The
+report is the discriminator: a failing suite still writes one, a runner that is
+not installed does not.
+
+This exists because on a live ticket the missing piece — a junit reporter — was
+found by the *last* gate, after roughly $6.61 of stations had run and the feature
+was already written. Every gate reads that report; one command establishes
+whether they can.
+
+`python3` is checked here too. Without it `verify-red` and `green` fall back to
+the suite's exit code alone and cannot tell a legitimately failing suite from a
+broken one. That is a warning, not a refusal: a blunt gate is worse than a sharp
+one and better than none.
+
+### When the plan could not have known
+
+`scope` rejects any file the plan did not name. Sometimes that is correct and
+sometimes the plan simply could not have foreseen it — an import pulls in a
+neighbouring module, a handler only takes effect once registered somewhere.
+
+Two things cover that, at different costs:
+
+- **`plan-judge` looks for it first.** The judge traces what each planned change
+  forces and lists files the implementation would have to edit that the manifest
+  does not permit. Same defect, found before the code is written instead of after.
+- **`aif _amend-plan <ID> <path> "<why>"`** is the escape hatch when it still
+  happens. It writes `tasks/<ID>/plan-amendments.json`, not `plan.md` — amending
+  the plan would invalidate `tests.lock`, which binds to the plan's bytes, so
+  `green` would then reject the implementation the amendment existed to permit.
+
+The hatch is bounded rather than trusted: it refuses test files and pipeline
+paths, it refuses a file that does not exist, it is capped
+(`limits.plan_amendments_max`, default 3), every entry carries a reason, and
+`scope` prints the amendments on its *pass* path — a widened manifest nobody sees
+is the same as no manifest. Past the cap the honest answer is that the plan was
+wrong, and the ticket goes back to planning.
+
 ### What each station cost
 
 Every station is metered. A `SubagentStop` hook reads that subagent's own

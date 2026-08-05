@@ -113,6 +113,16 @@ case "$station" in
     if is_test "$rel"; then
       deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — stop and report it, and the ticket returns to have its tests or spec revised."
     fi
+    case "$rel" in
+      tasks/*)
+        # Including — especially — plan-amendments.json. scope exempts that one
+        # file from its denylist so an amendment can be made at all, which would
+        # otherwise let an implementation hand-write itself permission for
+        # anything. `aif _amend-plan` is the way in: it refuses tests and
+        # pipeline paths, requires a reason, and is capped.
+        deny "the ticket's own record — plan, spec, ledger — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
+        ;;
+    esac
     ;;
   tests)
     if ! is_test "$rel"; then

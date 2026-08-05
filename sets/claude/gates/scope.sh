@@ -32,6 +32,28 @@ root="$(dirname "$(dirname "$project")")"
 
 plan_meta="$(aif_g_meta_or_die "$plan" "plan.md")" || exit $?
 allowed="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []))[]')"
+
+# Amendments: paths the implementation was allowed to add to the manifest at run
+# time, through `aif _amend-plan`, each with a reason. The escape hatch for what
+# the plan could not foresee — an import that pulls in a neighbour, a handler
+# that has to be registered somewhere unnamed.
+#
+# In a separate file rather than in plan.md because tests.lock binds to plan.md's
+# bytes: amending the plan itself would invalidate the frozen tests, and green
+# would reject the implementation the amendment existed to permit.
+#
+# Bound to the plan's hash, so a re-planned ticket does not inherit permissions
+# nobody granted it. And printed below, always — a widened manifest that nobody
+# sees is the same as no manifest.
+amend_file="$work/plan-amendments.json"
+amended=""
+if [ -f "$amend_file" ] &&
+  [ "$(jq -r '.plan_sha256 // ""' "$amend_file" 2>/dev/null)" = "$(aif_g_sha256 "$plan")" ]; then
+  amended="$(jq -r '.amendments[]?.path // empty' "$amend_file" 2>/dev/null)"
+fi
+if [ -n "$amended" ]; then
+  allowed="$(printf '%s\n%s' "$allowed" "$amended")"
+fi
 test_roots="$(jq -r '.test.roots[]?' "$project")"
 max_diff="$(jq -r '.limits.diff_lines_max // 400' "$project")"
 
@@ -74,10 +96,17 @@ changed="$(git -C "$root" diff --name-only HEAD 2>/dev/null || true)"
 created="$(git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true)"
 deleted="$(git -C "$root" diff --name-only --diff-filter=D HEAD 2>/dev/null || true)"
 
+# The amendments file itself is under tasks/, so the denylist would reject the
+# very mechanism that exists to be used. Exempted by exact path — not the whole
+# directory, which still holds the plan and the ledger this gate protects.
+amend_rel="${amend_file#"$root"/}"
+
 viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  if printf '%s' "$p" | grep -qE "$denylist"; then
+  if [ "$p" = "$amend_rel" ]; then
+    continue
+  elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol
 $p is off-limits to any implementation (pipeline, config, or CI)"
   elif under_test_root "$p"; then
@@ -110,4 +139,12 @@ if [ "${added_removed:-0}" -gt "$max_diff" ]; then
   aif_g_reject "the change is $added_removed lines, over the limit of $max_diff — too large for the ticket, or out of scope"
 fi
 
-printf 'scope: change confined to the plan (%s lines)\n' "${added_removed:-0}"
+if [ -n "$amended" ]; then
+  # Loudly, on the pass path. A widened manifest that only shows up when someone
+  # goes looking is the same as an unwidened one being quietly ignored.
+  printf 'scope: change confined to the plan AS AMENDED (%s lines, %s amendment(s))\n' \
+    "${added_removed:-0}" "$(printf '%s\n' "$amended" | grep -c .)"
+  jq -r '.amendments[] | "  + " + .path + ": " + .why' "$amend_file" 2>/dev/null
+else
+  printf 'scope: change confined to the plan (%s lines)\n' "${added_removed:-0}"
+fi

@@ -123,7 +123,13 @@ environments. It is not a rule, and nothing here is designed around it; see
 
 ## Cheatsheet — a ticket through the pipeline
 
-### One-time, per machine (until Homebrew)
+### One-time, per machine
+
+```sh
+brew install Namdurash/tap/aif
+```
+
+Or, to run it straight from a clone:
 
 ```sh
 ln -s /path/to/ai-foundry/bin/aif /opt/homebrew/bin/aif
@@ -453,7 +459,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook
-- [ ] Homebrew formula and tap
+- [x] Homebrew formula and tap — `Namdurash/homebrew-tap`
 - [ ] `sets/codex/`
 
 ## License

@@ -308,6 +308,32 @@ A station that leaves no readable transcript is recorded as `unmetered` rather
 than skipped. An accounting gap that announces itself is recoverable; a silent
 one just makes the total look better than it was.
 
+### Who may write what
+
+A `PreToolUse` hook bounds every writer in a run:
+
+| Writer | May write | Denied |
+|---|---|---|
+| `aif-implement` | code the plan named | test files |
+| `aif-tests` | test files | implementation |
+| the orchestrator | `tasks/` and `.aif/prices.json` | code, tests, gates |
+| a plain `claude` session | everything, as usual | nothing |
+
+The orchestrator rule is the OPES-48 defect made impossible on the easy path: the
+implement station exhausted its turn budget, the session finished the feature
+itself, and no gate ever saw it — the commit looked like any other. Work written
+outside a station is work outside every gate.
+
+The last row matters as much as the others. The guard is active only inside
+`aif run`, which marks the session; a project with aif installed is still an
+ordinary project, and a plain `claude` in it is not policed.
+
+Stated plainly: this matches the Write and Edit tools, so `bash -c 'echo … >
+src/f.py'` walks past it. Matching shell commands would mean parsing shell, which
+fails open in ways nobody notices. The real backstop for code is `scope`, which
+rejects any file the plan did not name regardless of who wrote it; the hook exists
+so the honest-but-helpful path is closed early and by name.
+
 ### What is verified, and what is trusted
 
 Almost everything here is checked by a gate that can be re-run. Three things are

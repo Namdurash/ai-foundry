@@ -97,11 +97,14 @@ else
   bad "aif-implement and aif-implement-careful have drifted — the engine may differ, the instructions may not"
 fi
 
-printf '\nguard hook routes on the payload, then the legacy environment\n'
-guard() { printf '%s' "$2" | env "AIF_STATION=${3:-}" /bin/bash "$ROOT/sets/claude/hooks/guard.sh" 2>&1; }
-g() { # <label> <payload> <deny|allow> [AIF_STATION]
+printf '\nguard hook: station boundaries\n'
+guard() { # <label> <payload> <AIF_STATION> <AIF_RUN>
+  printf '%s' "$2" | env "AIF_STATION=${3:-}" "AIF_RUN=${4:-}" \
+    /bin/bash "$ROOT/sets/claude/hooks/guard.sh" 2>&1
+}
+g() { # <label> <payload> <deny|allow> [AIF_STATION] [AIF_RUN]
   local got=allow
-  guard "$1" "$2" "${4:-}" | grep -q '"deny"' && got=deny
+  guard "$1" "$2" "${4:-}" "${5:-}" | grep -q '"deny"' && got=deny
   if [ "$got" = "$3" ]; then ok "$1 → $got"; else bad "$1 → $got (wanted $3)"; fi
 }
 g "implement writes a test"                '{"agent_type":"aif-implement","tool_input":{"file_path":"tests/t.py"}}' deny
@@ -109,10 +112,26 @@ g "implement-careful writes a test"        '{"agent_type":"aif-implement-careful
 g "implement writes source"                '{"agent_type":"aif-implement","tool_input":{"file_path":"src/a.py"}}' allow
 g "tests writes source"                    '{"agent_type":"aif-tests","tool_input":{"file_path":"src/a.py"}}' deny
 g "tests writes a test"                    '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow
-g "main session, no agent_type"            '{"tool_input":{"file_path":"tests/t.py"}}' allow
 g "an unrelated subagent"                  '{"agent_type":"general-purpose","tool_input":{"file_path":"tests/t.py"}}' allow
 g "legacy claude -p via AIF_STATION"       '{"tool_input":{"file_path":"tests/t.py"}}' deny implement
 g "payload beats a stale environment"      '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow implement
+
+printf '\nguard hook: the orchestrator may dispatch, not write\n'
+# Outside a run the guard must be invisible — a project with aif installed is
+# still an ordinary project.
+g "plain session writes source"            '{"tool_input":{"file_path":"src/a.py"}}' allow "" ""
+g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.py"}}' allow "" ""
+# Inside a run, the orchestrator writes nothing a station owns. This is the
+# OPES-48 defect: implement ran out of turns, the session finished the feature
+# itself, and no gate ever saw it.
+g "orchestrator writes source"             '{"tool_input":{"file_path":"src/a.py"}}' deny "" 1
+g "orchestrator writes a test"             '{"tool_input":{"file_path":"tests/t.py"}}' deny "" 1
+g "orchestrator writes a spec"             '{"tool_input":{"file_path":"tasks/T-1/spec.md"}}' allow "" 1
+g "orchestrator writes the ticket"         '{"tool_input":{"file_path":"tasks/T-1/ticket.md"}}' allow "" 1
+g "orchestrator edits the price table"     '{"tool_input":{"file_path":".aif/prices.json"}}' allow "" 1
+g "orchestrator edits a gate"              '{"tool_input":{"file_path":".aif/gates/green.sh"}}' deny "" 1
+# A station inside a run is still judged as a station, not as the orchestrator.
+g "a station inside a run writes source"   '{"agent_type":"aif-implement","tool_input":{"file_path":"src/a.py"}}' allow "" 1
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then

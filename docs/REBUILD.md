@@ -330,7 +330,30 @@ Departures from the plan:
   what `rm -f "$out" "$err"` used to throw away. Defect #1 is fixed by not
   destroying evidence.
 
-### Phase 5 — Boundaries
+### Phase 5 — Boundaries — **DONE**
+
+The approval half landed in phase 3 (it had to: removing `aif approve` would
+otherwise have broken the chain). What remained was the orchestrator write ban.
+
+Verified by 17 guard assertions in `scripts/check-set.sh`, each checked to fail
+when the rule is broken, and by two live `claude -p` runs in a scratch project:
+inside a run the write was denied and the model correctly explained that code
+must go through a station; outside a run the identical write succeeded.
+
+One design point the plan did not anticipate: **the ban needs a session marker.**
+`guard.sh` runs on every `PreToolUse` in any project that has aif installed. A
+blanket "the main session may not write code" rule would break the project for
+ordinary use — a plain `claude` in it would find its Write tool policed for no
+reason. So `aif run` exports `AIF_RUN=1` and the rule applies only inside a run.
+An exported variable rather than a marker file, because it must describe *this
+session*: a file on disk would outlive the run and police sessions that have
+nothing to do with the pipeline. That hooks inherit the parent's environment was
+measured, not assumed.
+
+`tasks/` is writable by the orchestrator and that is deliberate, not a gap:
+everything there is re-judged against its current bytes by the gate that rejected
+it, so a repair made with the user in front of the artifact is checked exactly as
+a station's output is. Refusing it would only mean refusing the repair bench.
 
 - **`guard.sh` denies `Write|Edit` when `agent_type` is absent** — the
   orchestrator may not write code, only dispatch. Verified discriminator.

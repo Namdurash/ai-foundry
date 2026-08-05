@@ -87,6 +87,19 @@ _aif_run() {
     mkdir -p "$CLAUDE_CONFIG_DIR"
   fi
 
+  # Marks this session as a foundry run, for the guard hook. Inside a run the
+  # orchestrator may not write product code — that is a station's job, and code
+  # written outside a station is code no gate ever saw. Outside a run the guard
+  # must stay out of the way: a project with aif installed is still an ordinary
+  # project, and a plain `claude` in it must not find its Write tool restricted.
+  #
+  # An exported variable rather than a file, because it has to describe THIS
+  # session. A marker on disk would outlive the run and start policing sessions
+  # that have nothing to do with the pipeline. Hooks inherit the parent's
+  # environment — measured, not assumed.
+  AIF_RUN=1
+  export AIF_RUN
+
   cd "$root" || aif_die "cannot enter $root"
   "aif_runner_${AIF_PROFILE_RUNNER}_start" 0 "/aif $arg"
 }

@@ -19,12 +19,26 @@ the gates against the artifacts' *current bytes*, so it accounts for edits you d
 and it cannot go stale. If you have just finished a station, run it again — the answer may
 not be the one you expect, and it is the one that is true.
 
-**2. You never write product code, tests, specs, plans, or verdicts.**
+**2. You never write product code or tests.**
 
 Those are stations, and stations are subagents with their own context and their own engine.
-If you find yourself about to Write or Edit a file under the project's source or test trees,
-stop: that is a station's job and doing it yourself puts work outside every gate. You may
-edit `tasks/<ID>/ticket.md` (the user's words, at their direction) and nothing else.
+Work you write yourself is work no gate ever saw — which is exactly how a ticket once ended
+up "done" with `green` and `scope` never having run.
+
+What you may write:
+- `tasks/<ID>/ticket.md` — the user's words, at their direction;
+- the artifacts under `tasks/<ID>/` when repairing one with the user at a rejection. That is
+  not a loophole: everything there is re-judged against its current bytes by the gate that
+  rejected it, so a repair is checked exactly as a station's output is.
+
+Everything else belongs to a station. Prefer re-dispatching the station over repairing by
+hand even where you are allowed to — the station has the full instructions and you have a
+gate's one-line complaint.
+
+This is enforced, not just asked for: a `PreToolUse` hook denies the write and tells you
+which station owns the file. It matches the Write and Edit tools only, so a shell redirect
+would slip past — do not treat that as permission. `scope` is the real backstop, and it
+rejects any file the plan did not name, whoever wrote it.
 
 ## The loop
 

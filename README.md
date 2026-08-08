@@ -243,6 +243,7 @@ the gates rather than remembered.
 | `aif project init [runner]` | scaffold `.aif/project.json` |
 | `aif project check` | validate it |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
+| `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 
 There is no command per stage. `aif run` opens the orchestrator, which dispatches
@@ -359,6 +360,25 @@ number.
 A station that leaves no readable transcript is recorded as `unmetered` rather
 than skipped. An accounting gap that announces itself is recoverable; a silent
 one just makes the total look better than it was.
+
+`aif cost <ticket>` reads those rows back — one line per station, in pipeline
+order, with attempts, turns and the four token classes. `aif cost` with no ticket
+does the same per ticket, with a grand total. Both refuse to flatter: a station
+whose row carries no price shows its tokens and a dash instead of a dollar
+figure, a total that includes one is marked `>=`, and unmetered attempts are
+counted in the footer rather than dropped. `--json` gives the same roll-up
+unformatted.
+
+Pricing happens when a station is metered, and the ledger is append-only — so
+filling in `.aif/prices.json` prices later runs and never backfills earlier rows.
+
+Nothing records a station's cost unless `.aif/hooks/meter.sh` is registered as a
+`SubagentStop` hook **and is executable**. The runner execs hooks directly, and
+this one is deliberately fail-open (metering must never block a subagent from
+finishing), so a hook that cannot run costs you the whole accounting silently:
+gate rows keep appearing and the ledger looks complete. `aif cost` names that
+case explicitly when it sees gate rows and no station rows; `aif init` repairs
+the mode.
 
 ### Who may write what
 

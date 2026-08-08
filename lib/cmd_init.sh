@@ -260,6 +260,24 @@ aif_cmd_init() {
 $(_aif_set_files "$set_dir")
 EOF
 
+  # Hooks are the only installed files whose EXEC BIT is load-bearing. The runner
+  # execs them directly (settings.json registers them as `type: "command"`),
+  # unlike gates, which aif invokes as `/bin/bash <path>` and which therefore work
+  # at any mode. A hook that arrives without +x fails on every event, and both
+  # hooks fail silently by design: the guard is fail-open, and meter.sh must never
+  # block a subagent from finishing. So the symptom is not an error — it is a
+  # ledger with no cost rows that otherwise looks complete. That is exactly how
+  # metering was off for a whole ticket (meter.sh shipped as mode 644).
+  #
+  # Done here rather than after `cp` because `cp` is not the only path that leaves
+  # a file in place: the `unchanged` branch above skips it entirely, so a project
+  # that already had the 644 copy would never be repaired by a re-init. This pass
+  # is unconditional over what is now on disk, which is the only version of this
+  # that actually fixes an installed project.
+  if [ "$AIF_DRY_RUN" -eq 0 ] && [ -d "$root/.aif/hooks" ]; then
+    find "$root/.aif/hooks" -type f -exec chmod +x {} + 2>/dev/null || true
+  fi
+
   # The set's settings fragment, if it ships one. Model routing never goes here.
   local fragment settings_dest pre_existed clobbers
   settings_dest="$root/.claude/settings.json"

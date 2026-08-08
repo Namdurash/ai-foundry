@@ -262,6 +262,37 @@ for: an interface assumed from its name instead of run once.
 
 ---
 
+## 11. A hook's exec bit is load-bearing, and a fail-open hook loses it silently
+
+`meter.sh` shipped as mode `644`. The runner execs a `type: "command"` hook
+directly, so it failed on every `SubagentStop` — and because the hook is
+deliberately fail-open (metering must never block a subagent from finishing),
+nothing said so. One whole ticket ran with 17 ledger entries, all of them gate
+rows and not one station row, while the ledger looked complete.
+
+Three separate things had to be wrong at once, and each is worth its own note:
+
+- **`cp` preserves mode**, so a 644 in the set propagated to every install. The
+  fix is a `chmod +x` pass over `.aif/hooks/` in `cmd_init`, placed *after* the
+  install loop rather than beside the `cp` — the `unchanged` branch skips `cp`
+  entirely, so a project that already had the bad copy would never be repaired
+  by a re-init.
+- **Gates hid the problem from the tests.** Everything else aif runs is invoked
+  as `/bin/bash <path>`, which works at any mode; `check-set.sh` tested the guard
+  hook that way too. So the one file whose exec bit mattered was the one file
+  nothing verified. The check now asserts the mode itself.
+- **Content hashing cannot see this.** The manifest records sha256, so a
+  mode-only difference is invisible to it — which is why the repair pass has to
+  be unconditional over what is on disk rather than driven by the verdict.
+
+The general lesson is about fail-open by design: it is the right choice here
+(losing the record of work beats losing the work), but it converts every failure
+into missing data that reads as a cheap run. Anything fail-open needs a reader
+that can tell "nothing happened" from "nothing was recorded". `aif cost` does
+that by looking for gate rows next to absent station rows.
+
+---
+
 ## bash 3.2 (what stock macOS ships)
 
 The floor is 3.2 so that `aif` runs on an untouched Mac. The taxes:

@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-AIF_VERSION="0.2.0"
+AIF_VERSION="0.3.0"
 
 # Resolve the install root through any symlinks. Homebrew links bin/aif into
 # libexec, and `readlink -f` does not exist on BSD, so walk the chain by hand.
@@ -51,6 +51,7 @@ commands:
   run           Open the foundry on a ticket, a board link, or a description
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
+  cost          Report what the pipeline spent, per station, from the ledger
   project       Set up or validate .aif/project.json (init | check)
   doctor        Report what is installed and what aif can drive
   profiles      List the available (set, runner, model) profiles
@@ -106,6 +107,13 @@ main() {
       # shellcheck source=lib/cmd_run.sh
       . "$AIF_ROOT/lib/cmd_run.sh"
       aif_cmd_run ${1+"$@"}
+      ;;
+    cost)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/cmd_cost.sh
+      . "$AIF_ROOT/lib/cmd_cost.sh"
+      aif_cmd_cost ${1+"$@"}
       ;;
     _state)
       # shellcheck source=lib/ledger.sh

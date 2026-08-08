@@ -97,6 +97,27 @@ else
   bad "aif-implement and aif-implement-careful have drifted — the engine may differ, the instructions may not"
 fi
 
+printf '\nhooks are executable\n'
+# The one property of these files no other check covers, and the one that broke.
+# Every test below invokes a hook as `/bin/bash <path>`, which works at any mode —
+# so the suite passed for a hook the runner could not execute. Claude Code execs
+# them directly, and both fail silently when it cannot (the guard is fail-open,
+# meter.sh must never block a subagent), so the only symptom is missing ledger
+# rows.
+#
+# This tests the working tree, which on a fresh clone is git's recorded mode — so
+# in CI it is the committed bit that is being checked. `cp` in cmd_init preserves
+# mode, so whatever is asserted here is what every install receives.
+for f in "$ROOT"/sets/claude/hooks/*; do
+  [ -f "$f" ] || continue
+  base="$(basename "$f")"
+  if [ -x "$f" ]; then
+    ok "$base is executable"
+  else
+    bad "$base is not executable — the runner execs hooks directly; it will fail silently on every event (git update-index --chmod=+x sets/claude/hooks/$base)"
+  fi
+done
+
 printf '\nguard hook: station boundaries\n'
 guard() { # <label> <payload> <AIF_STATION> <AIF_RUN>
   printf '%s' "$2" | env "AIF_STATION=${3:-}" "AIF_RUN=${4:-}" \

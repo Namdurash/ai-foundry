@@ -18,7 +18,7 @@
 #     appears in a test
 #   - no implementation was written (the plan's create paths must not exist yet)
 #
-# On success it writes tests.lock, the frozen record of this boundary: the test
+# On success it writes tests.lock.json, the frozen record of this boundary: the test
 # hashes, the implementation hashes at red-time (for green's revert-recheck), and
 # the coverage. That file, not the scattered test output, is what the implement
 # station's precondition binds to.
@@ -92,7 +92,7 @@ fi
 if [ -z "$results" ]; then
   # No parser or no report: fall back to the suite exit code alone. A much weaker
   # gate — it cannot tell a legitimate failure from a broken one — so record the
-  # degradation loudly in tests.lock rather than pretending to per-test rigour.
+  # degradation loudly in tests.lock.json rather than pretending to per-test rigour.
   mode="coarse"
 fi
 
@@ -114,9 +114,13 @@ if [ "$mode" = "per-test" ]; then
     aif_g_error "the pre-existing suite is not green ($pre_red failing) — fix the repo before authoring tests; red is meaningless otherwise"
   fi
 
-  # Each new test as "id<TAB>status<TAB>message".
+  # Each new test as "file<TAB>id<TAB>status<TAB>message". The file travels with
+  # the id because the freeze below has to prove that every test it records as
+  # covered actually resolves to a file it holds — a `covering` list of bare
+  # names that resolve to nothing is what a lock looks like when it is describing
+  # tests it does not have.
   new_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-    '.[] | select((.file // "") as $f | $tf | index($f)) | .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " "))')"
+    '.[] | select((.file // "") as $f | $tf | index($f)) | (.file // "") + "\t" + .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " "))')"
 
   # Two kinds of wrong, and they get different exit codes:
   #   reject (exit 1) — a real test asserting the wrong thing (passes already,
@@ -126,8 +130,9 @@ if [ "$mode" = "per-test" ]; then
   #     same way a judge cannot certify a hallucinated verdict.
   reject=""
   broke=""
-  while IFS="$(printf '\t')" read -r id status msg; do
+  while IFS="$(printf '\t')" read -r file id status msg; do
     [ -n "$id" ] || continue
+    : "$file"
     new_count=$((new_count + 1))
     if [ -n "$broken_re" ] && printf '%s' "$msg" | grep -qE "$broken_re"; then
       broke="$broke
@@ -193,25 +198,98 @@ $(printf '%s' "$spec_meta" | jq -r '.acceptance[].id')
 EOF
 aif_g_report "${cov# }" "coverage"
 
-# --- freeze: write tests.lock ----------------------------------------------
-# Lock the whole test tree, not just the declared files: green must catch logic
-# smuggled into a conftest.py or a fixture that no plan lists. impl_frozen
-# records the implementation as it is NOW (before code) so green can restore it
-# and confirm the tests go red again; create paths do not exist yet, so they are
-# recorded as to-be-created. covering is the new red test ids, for green's
-# revert-recheck to target.
+# --- the project's own checks, for this phase -------------------------------
+# Bound to "red" deliberately: at this moment no implementation exists, so a
+# compiler or a build would fail CORRECTLY and a phase-blind checks list would
+# reject the red phase for being red by design. Only a check that is true of the
+# test files alone belongs here; compilers, linters and builds bind to "green".
+mkdir -p "$root/.aif/tmp"
+check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json")"
+aif_g_report "$check_viol" "checks"
+
+# --- freeze: write tests.lock.json ------------------------------------------
+# The frozen set is the UNION of two things, and it was one for too long:
+#
+#   test.roots      — the whole shared test tree, not just the declared files,
+#                     because green must catch logic smuggled into a conftest.py
+#                     or a fixture that no plan lists. This net is correct and
+#                     stays.
+#   plan.files.tests — THIS ticket's own oracle. A project whose roots point at
+#                     one tree while its tests live beside their sources cast the
+#                     net over the wrong tree entirely: the ticket's tests were
+#                     absent from the lock, so the freeze guarantee — the one
+#                     that stops the implement station editing the oracle it is
+#                     judged against — did not apply to them at all, and nothing
+#                     noticed. The plan already declares these files and
+#                     $test_files has been in scope since line 55.
+#
+# impl_frozen records the implementation as it is NOW (before code) so green can
+# restore it and confirm the tests go red again; create paths do not exist yet,
+# so they are recorded as to-be-created. covering is the new red test ids, for
+# green's revert-recheck to target.
 tests_json="$(
-  while IFS= read -r rootdir; do
-    [ -n "$rootdir" ] || continue
-    [ -d "$root/$rootdir" ] || continue
-    find "$root/$rootdir" -type f 2>/dev/null | while IFS= read -r f; do
-      printf '%s\t%s\n' "${f#"$root"/}" "$(aif_g_sha256 "$f")"
-    done
-  done <<EOF
+  {
+    while IFS= read -r rootdir; do
+      [ -n "$rootdir" ] || continue
+      [ -d "$root/$rootdir" ] || continue
+      find "$root/$rootdir" -type f 2>/dev/null | while IFS= read -r f; do
+        printf '%s\t%s\n' "${f#"$root"/}" "$(aif_g_sha256 "$f")"
+      done
+    done <<EOF
 $(jq -r '.test.roots[]?' "$project")
 EOF
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      [ -f "$root/$f" ] || continue
+      printf '%s\t%s\n' "$f" "$(aif_g_sha256 "$root/$f")"
+    done <<EOF
+$test_files
+EOF
+  } | sort -u
 )"
-covering_json="$(printf '%s' "$new_rows" | cut -f1)"
+covering_json="$(printf '%s' "$new_rows" | cut -f2)"
+
+# --- the freeze must hold what it claims to hold ----------------------------
+# Two invariants over the set just built. Both are hard stops rather than
+# rejections: a lock that does not hold this ticket's oracle is not a weaker
+# lock, it is a lock over the wrong files, and letting it through would record a
+# freeze that guarantees nothing.
+frozen_paths="$(printf '%s' "$tests_json" | cut -f1)"
+in_frozen() {
+  local needle="$1" line
+  while IFS= read -r line; do
+    [ "$line" = "$needle" ] && return 0
+  done <<EOF
+$frozen_paths
+EOF
+  return 1
+}
+
+lock_viol=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  in_frozen "$f" || lock_viol="$lock_viol
+declared test file $f is not in the frozen set — the freeze would not cover this ticket's own oracle"
+done <<EOF
+$test_files
+EOF
+
+if [ "$mode" = "per-test" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    in_frozen "$f" || lock_viol="$lock_viol
+a covered test comes from $f, which is not in the frozen set — the lock would describe tests it does not hold"
+  done <<EOF
+$(printf '%s' "$new_rows" | cut -f1 | sort -u)
+EOF
+fi
+
+lock_viol="$(printf '%s' "${lock_viol# }" | grep -v '^$' | sort -u || true)"
+if [ -n "$lock_viol" ]; then
+  printf 'ERROR  the test freeze would not cover this ticket — check test.roots and the plan:\n' >&2
+  printf '%s\n' "$lock_viol" | sed 's/^/  - /' >&2
+  exit "$AIF_G_ERROR"
+fi
 impl_frozen="$(
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -235,9 +313,15 @@ jq -n \
     tests: rows($tests_raw),
     covering: $covering,
     impl_frozen: rows($impl_raw),
-    impl_created: $create }' >"$work/tests.lock"
+    impl_created: $create }' >"$work/tests.lock.json"
 
-rm -f "$work/.suite.out"
+# The file was called tests.lock until the content stopped being a secret: it is
+# JSON, editors did not highlight it, jq did not pick it up by glob, and diffs
+# read worse for it. The ".lock" signal — generated by the tool, pins resolved
+# state, do not hand-edit — is kept by the name, without lying about the format.
+# A stale one from before the rename is removed rather than left beside its
+# replacement, where a reader would have to guess which is live.
+rm -f "$work/tests.lock" "$work/.suite.out"
 
 if [ "$mode" = "coarse" ]; then
   printf 'verify-red: red (COARSE mode — no per-test detail; install python3)\n'

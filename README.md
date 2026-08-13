@@ -140,10 +140,26 @@ ln -s /path/to/ai-foundry/bin/aif /opt/homebrew/bin/aif
 ```sh
 aif doctor            # what is installed, and what aif can therefore drive
 aif init              # install the set, pick a profile
-aif project init      # detect the runner — then REVIEW .aif/project.json,
-                      # especially test.command and test.roots
+aif project init      # detect the runner, and ask what "done" means here —
+                      # then REVIEW .aif/project.json, especially test.command
+aif project checks    # ask again later, when the Definition of Done moves
 aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?
 ```
+
+`aif project init` asks one question, once: **what must pass besides the tests?**
+It offers the checks it can find — the scripts your `package.json` declares, the
+targets in your `Makefile` — and you confirm, edit or skip each. Nothing is
+auto-written: a wrong guess costs more than a question, and a check that silently
+never runs is indistinguishable from one that passes. Answer nothing and the test
+command is the whole Definition of Done, which is a valid answer and a
+consequential one, so `aif project check` says it out loud.
+
+`test.roots` is the one field whose name invites the wrong reading. It is the
+**smuggling net** over your shared test tree — the tree `green` re-hashes so that
+logic cannot be hidden in a fixture no plan lists. It is *not* where a ticket's
+own tests are declared; the plan says that, and `verify-red` freezes the union of
+the two. A project that pointed `roots` at one tree while its tests lived beside
+their sources froze neither, and nothing noticed.
 
 ### Before the ticket — the analyst
 
@@ -240,7 +256,8 @@ the gates rather than remembered.
 | `aif init [profile]` | install the set; merge, never clobber |
 | `aif uninstall` | reverse the manifest; round-trips clean |
 | `aif profiles` | list the (set, runner, model) profiles |
-| `aif project init [runner]` | scaffold `.aif/project.json` |
+| `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
+| `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
@@ -259,7 +276,7 @@ interface between two parts of aif, not something to learn.
 | `spec-judge` | careful (opus) | `verdict-spec.json` | spec-judge |
 | `plan` | careful (opus) | `plan.md` | plan-form |
 | `plan-judge` | **routine (sonnet)** | `verdict-plan.json` | plan-judge |
-| `tests` | careful (opus) | test files + `tests.lock` | verify-red |
+| `tests` | careful (opus) | test files + `tests.lock.json` | verify-red |
 | `implement` | **by risk** | code | green, scope |
 
 There are two tiers, and the question a tier answers is "do the gates catch this
@@ -286,6 +303,182 @@ Every gate is `gate.sh <work-dir>` → an exit code:
 hallucinated / the repo was already broken". `verify-red`: a real failing test is
 `0`; a `SyntaxError` test is `3` (not a usable oracle); a test that already passes
 is `1`.
+
+### What "done" means here, beyond the tests
+
+`green` used to read exactly one thing to decide whether a station passed:
+`.test.command`. There was no way for a project to say it also has a compiler, a
+linter, a build, or a dependency-integrity check — so a Definition of Done wider
+than "the test command exits 0" could not be expressed and was therefore never
+enforced. A module that did not run on its target runtime shipped through a
+green suite that way, with the type-check and the lint pass established by a
+human during review rather than by the pipeline.
+
+`.aif/project.json` now carries them:
+
+```json
+"checks": [
+  { "name": "typecheck", "command": "…", "phase": ["green"], "required": true },
+  { "name": "lint",      "command": "…", "phase": ["green"], "required": true }
+]
+```
+
+**Every check names a phase, and that is not optional.** The tests station writes
+*failing* tests before any implementation exists — that is its whole purpose — so
+a compiler run at that moment would fail correctly, and a phase-blind check would
+reject the red phase for being red by design. `red` is the tests boundary and
+only a check that is true of the test files alone belongs there; `green` is the
+implement boundary, and compilers, linters and builds go there. It is the same
+distinction `failure_classes` already draws one level down between a legitimate
+failure and a broken one.
+
+`green` runs every check bound to its phase, fails the station if a required one
+does, and each result lands in the ledger by name — so a failure is attributable
+to `typecheck` rather than to "the implement station". `test.command` keeps
+working unchanged.
+
+### The test freeze, and what it actually holds
+
+`verify-red` freezes the test tree into `tasks/<ID>/tests.lock.json`, and `green`
+refuses to accept an implementation unless the tree still hashes to it. That is
+what stops the implement station editing the oracle it is judged against.
+
+The frozen set is the **union** of two things, and for a while it was one:
+
+- `test.roots` — the whole shared test tree, so logic cannot be smuggled into a
+  fixture that no plan lists. This net is correct and stays.
+- the plan's `files.tests` — *this ticket's own oracle*, which the plan has
+  always declared and the freeze ignored.
+
+A project whose `roots` pointed at `__tests__` while its tests lived beside their
+sources in `src/` froze one file unrelated to the ticket and none of the ticket's
+own — so the guarantee did not apply to that ticket at all, and nothing detected
+it. Two invariants now make that a hard stop rather than a silent absence: every
+path in `plan.files.tests` must be in the frozen map, and every entry in
+`covering` must resolve to a file the lock actually holds.
+
+The file was called `tests.lock` and is now `tests.lock.json`. Same meaning —
+generated, pins resolved state, do not hand-edit — without lying about the
+format. Its contents cannot move into `plan.md`: the lock carries `plan_sha256`,
+so writing it into the plan would change the plan's bytes and invalidate the
+binding just recorded, and the hashes cannot be computed at plan time because the
+tests do not exist yet. The plan declares intent; the lock records fact.
+
+### The external surface, and what validates it
+
+Every `because` a planning model writes points *backwards into the spec*:
+"AS-004/AS-007, AC-007 and AC-008". That proves conformance to the specification
+and is structurally incapable of proving conformance to **reality**. On a live
+ticket two decisions asserted the shape of a third-party API from memory — a
+runtime global that does not exist on the target, and a method the real library
+does not have — and every gate passed.
+
+The first fix proposed was a self-declared provenance field (`grounds: {kind:
+"verified", at: "<path>:78"}`) and it was rejected during review, correctly: a
+model that hallucinated a method name will just as readily write `verified`
+beside it, and a judge that sees `verified` relaxes. Self-attestation is not
+verification.
+
+What replaced it asks a different question — not *"prove your claim is true"*,
+which no self-report can answer, but *"what validates this dependency?"*, which
+is a set-coverage question of exactly the same shape as "which criterion covers
+this file":
+
+```json
+"external": [
+  { "name": "the keychain module",  "check": "typecheck" },
+  { "name": "the storage library",  "ac": "AC-004" },
+  { "name": "the crypto global" }
+]
+```
+
+Every name must point at a check from `.aif/project.json` or a criterion from
+`spec.md` — **checked against those files, not against the plan's word for it**,
+so naming a validator you have not got is a rejection. An entry that points at
+neither is a *verification gap*: it is not rejected, because some dependencies
+genuinely cannot be exercised in CI. It is printed at the gate:
+
+```
+UNVALIDATED EXTERNAL SURFACE — no check and no criterion touches these:
+  - the keychain module
+  - the storage library
+  - the crypto global
+```
+
+Three lines, on a ticket whose entire purpose is storing a secret safely. That is
+the conversation that never happened.
+
+Stated plainly: the list is compiled by the same model, so it can omit an entry.
+That is a strictly weaker failure than the rejected design — an omission is an
+oversight a plan review can catch, where writing `verified` without verifying is
+an active falsehood nothing catches.
+
+### Blind spots do not dissolve into the approval
+
+A spec can record two different kinds of sentence, and only one of them is an
+assumption:
+
+- **`assumptions`** — how the system behaves. "Email uniqueness is
+  case-insensitive."
+- **`verification_gaps`** — what this cycle will *not establish*. "The on-device
+  path is not exercised by this suite."
+
+They used to share a list, and therefore a keystroke: a human approved "the API
+is named get/set/delete" and "the target environment is never verified" with one
+click, and after that nothing referred to the second again. The pipeline had
+exactly one place where it acknowledged its own blind spot, and that
+acknowledgement was structurally designed to disappear.
+
+Now the spec files them apart, `spec-judge`'s mandate covers an assumption that
+is really a limit of verification, and `approval.json` carries
+`approved_assumptions` and `acknowledged_gaps` with a separate answer each —
+`aif _approve` refuses to record a gap without one. At the end of the cycle
+`aif _state` re-emits them, together with every unvalidated external dependency,
+as the ticket's **manual verification checklist**. A gap acknowledged once and
+never surfaced again is the same as no gap at all.
+
+aif never learns what "device" means. It learns that a class of statement exists
+which says *"this is not verified"*, and that statements of that class are not
+allowed to vanish quietly.
+
+### Three coverage questions of one shape
+
+`plan-form` asks the same question about three kinds of entity, and the third is
+the one that was missing:
+
+| entity | must be covered by | otherwise |
+|---|---|---|
+| a criterion | a file in the manifest | rejected |
+| a file the plan **creates** | a criterion — or `uncovered[]` | rejected |
+| an **external dependency** | a check or a criterion | printed as a gap |
+
+The middle row catches a blind spot by construction: a file the plan orders into
+existence that no criterion points at. On a live ticket that file was the
+module's public entry point; it threw on import, every consumer was broken, and
+no test noticed because no criterion imported the barrel. Documentation files
+normally land in `uncovered`, which is fine — the point is that the list is seen,
+not that it is empty.
+
+A fourth check is a signal rather than a rule. The plan declares `surface_map`:
+one file set per surface the spec names. Where a criterion's coverage differs
+from its own surface's entry, the gate **flags it and does not reject** — a
+narrower coverage is often correct — and `plan-judge` has to adjudicate each flag
+as `intended` or `drift`. Only `drift` sends the plan back. The case behind it:
+four criteria declared one surface and were mapped to three different file sets,
+and the narrowest of them ended up pinning a standalone function in the test
+runtime instead of the startup path it was written about.
+
+### What the judge examined
+
+`{"pass": true, "findings": []}` is the shape of a thorough pass and also the
+shape of a judge that read nothing; from the artifact alone they are the same
+document. Both verdicts now carry `checked[]` — one line per thing actually
+examined — and on a `risk: high` ticket a verdict with an empty one is rejected.
+It stays optional below high, so a cheap ticket is not taxed for a signal nobody
+will read.
+
+This catches nothing on its own. It makes an under-performing judge visible in
+the artifact instead of indistinguishable from a diligent one.
 
 ### The backward transition — free, no command
 
@@ -328,7 +521,7 @@ Two things cover that, at different costs:
   does not permit. Same defect, found before the code is written instead of after.
 - **`aif _amend-plan <ID> <path> "<why>"`** is the escape hatch when it still
   happens. It writes `tasks/<ID>/plan-amendments.json`, not `plan.md` — amending
-  the plan would invalidate `tests.lock`, which binds to the plan's bytes, so
+  the plan would invalidate `tests.lock.json`, which binds to the plan's bytes, so
   `green` would then reject the implementation the amendment existed to permit.
 
 The hatch is bounded rather than trusted: it refuses test files and pipeline
@@ -421,10 +614,17 @@ because the human now approves inside the session where no terminal exists to
 check for. What replaced it is evidence, not proof. "A person judged this
 complete" is not machine-decidable, and this is where that shows.
 
-**A green suite is not correctness.** `green` proves the frozen tests pass and
-that reverting the implementation makes them red again. It cannot prove the tests
-were the right tests. The oracle is only as good as the spec it came from, which
-is why the human gate sits at the *input*.
+**A green suite is not correctness.** `green` proves the frozen tests pass, that
+the project's own checks pass, and that reverting the implementation makes the
+covering tests red again. It cannot prove the tests were the right tests. The
+oracle is only as good as the spec it came from, which is why the human gate sits
+at the *input*.
+
+**An external dependency behind a fake is not verified by anything here.** The
+plan's `external` list makes that visible and nothing more: an entry with no
+check and no criterion is printed at the gate and re-emitted at close as a manual
+task. Naming a blind spot is not closing it — it only means nobody can say
+afterwards that they did not know.
 
 **At the code boundary, "passes now" weakens to "passed, against an unchanged
 plan".** `green` and `scope` are both relative to a baseline that the accepting
@@ -445,7 +645,9 @@ make check                  # the CLI under bash 3.2, plus the set's own asserti
 `scripts/demo.sh` runs every gate against known-good and known-bad artifacts,
 including the attacks: an implementation that adds itself to the plan, an
 approval that lapses when the spec changes, tests that stop depending on the
-code. No model is called.
+code, a required check that fails, a freeze that does not hold the ticket's own
+oracle, and an approval that accepts a blind spot without saying so. No model is
+called.
 
 ## Requirements
 

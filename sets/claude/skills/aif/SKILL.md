@@ -96,7 +96,14 @@ own words about what was wrong, and it is usually exactly what needs answering.
      already rejected, so re-running it would produce the same verdict. Do not retry blindly:
      something in the ticket or the station's inputs is not giving it what it needs. Say so
      and work it out with the user.
-4. **Say what it cost.** You do not have to measure anything — a `SubagentStop` hook already
+4. **Show what the gate showed you.** A passing gate is not a silent gate. When `plan-form`
+   passes it prints, on the pass path, three things the plan is allowed to have and the user
+   is not allowed to be unaware of: files created with no criterion, an **unvalidated external
+   surface**, and surface drift for the judge. Relay those lines verbatim — do not summarise
+   them away because the gate said `0`. The unvalidated-surface list is the one that matters
+   most: it names dependencies nothing in this run will exercise, on a ticket that is about to
+   be built on them.
+5. **Say what it cost.** You do not have to measure anything — a `SubagentStop` hook already
    recorded the station's tokens, model and turn count into `tasks/<ID>/ledger.json` from its
    own transcript. Read the last entry for that station and report it in one line. If
    `cost_usd` is `null` the model is not in `.aif/prices.json`; report the tokens and say the
@@ -109,14 +116,24 @@ This is the human's decision and it must actually be theirs.
 1. Show the acceptance criteria from `tasks/<ID>/spec.md`'s `aif:meta` — every one.
 2. Show the **assumptions** separately and prominently. These are the things the spec decided
    that the ticket did not say, and they are what the user is really being asked about.
-3. Ask one question: *is anything missing, and do you accept these assumptions?*
-4. **Wait for their actual answer.** Do not proceed on silence, on a topic change, or on
+3. Show the **verification gaps** separately again, under their own heading, and do not blend
+   them into the assumptions. An assumption says how the system behaves; a gap says what this
+   cycle will *not* establish — "nothing here exercises the real device", "a green suite would
+   not prove the file on disk is encrypted". They are different decisions and the pipeline
+   treats them as different decisions.
+4. Ask, and wait for an answer to each:
+   - *is anything missing, and do you accept these assumptions?*
+   - if there are gaps: *do you accept shipping with these unverified?* — asked on its own,
+     answered on its own.
+5. **Wait for their actual answer.** Do not proceed on silence, on a topic change, or on
    your own reading of what they would probably say.
    - Accepted → record it with their own words:
      ```bash
-     aif _approve <ID> --confirmation "<what the user actually said>"
+     aif _approve <ID> --confirmation "<what the user said about the assumptions>" --gaps-confirmation "<what they said about the gaps>"
      ```
-     `--confirmation` is mandatory and it is evidence. Quote them; never compose it for them.
+     `--confirmation` is mandatory and it is evidence. `--gaps-confirmation` is mandatory
+     whenever the spec records any gap, and `aif _approve` refuses without it. Quote them for
+     both; never compose either for them, and never reuse one answer as the other.
    - Rejected → get the reason, then:
      ```bash
      aif _rework <ID> "<their reason>"
@@ -130,6 +147,13 @@ Report `next.detail` verbatim and stop. This is tooling, not work.
 ### `done`
 
 Say so, summarise what was built, and point the user at the branch to review.
+
+Then print `next.checklist` — **every entry, in full, as a checklist they are meant to act
+on.** It is what this run did *not* establish: the verification gaps they acknowledged at
+approval, and every external dependency the plan could point at neither a check nor a
+criterion for. A gap acknowledged once at the start and never mentioned again is the same as
+no gap at all, which is exactly how a module that does not run on its target environment ships
+through eight green gates. If the list is empty, say that too — it is a real answer.
 
 ## Repair, when a gate rejects
 
@@ -162,7 +186,11 @@ its own context and its own engine precisely so that its cost and its reasoning 
   gate; that one is not, because "a person judged this complete" is not machine-decidable.
   The `--confirmation` text is evidence a human answered, not proof. Do not present an
   approved spec as *verified*.
-- **A green suite is not correctness.** `green` proves the frozen tests pass and that
-  reverting the code makes them fail again. It cannot prove the tests were the right tests.
+- **A green suite is not correctness.** `green` proves the frozen tests pass, that the
+  project's own checks pass, and that reverting the code makes the covering tests fail again.
+  It cannot prove the tests were the right tests, and it cannot reach anything the acceptance
+  criteria only exercise through a fake.
+- **An unvalidated external dependency stays unvalidated.** Naming one in the plan's
+  `external` list does not test it; it only means nobody can later say they did not know.
 - **`aif _state` running clean means every gate passes now** — not that the feature is what
   the user wanted. That judgement stayed with them at the approval gate.

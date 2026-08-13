@@ -48,7 +48,7 @@ aif_station_gates() {
 #
 # Three fallbacks, in this order, and each answers a different question:
 #
-#   freezes  — what the station's gate WROTE to record a boundary (tests.lock).
+#   freezes  — what the station's gate WROTE to record a boundary (tests.lock.json).
 #              The next station's precondition binds to that boundary, not to
 #              the scattered files that produced it.
 #   produces — the station's own artifact (spec.md, plan.md).

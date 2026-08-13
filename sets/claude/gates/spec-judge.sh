@@ -39,6 +39,7 @@ fi
 spec_hash="$(aif_g_sha256 "$spec")"
 spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
 spec_ids="$(printf '%s' "$spec_meta" | jq -c '[.acceptance[]?.id]')"
+spec_risk="$(printf '%s' "$spec_meta" | jq -r '.risk // ""')"
 
 # exit 1 (act on the boundary): a stale verdict means re-run the judge. The spec
 # is not wrong, the verdict is old.
@@ -52,7 +53,8 @@ fi
 # as a spec defect and send the author in circles.
 malformed="$(
   jq -r \
-    --argjson spec_ids "$spec_ids" '
+    --argjson spec_ids "$spec_ids" \
+    --arg risk "$spec_risk" '
     [
       (if .subject != "spec.md" then "subject is not spec.md" else empty end),
       (if (.pass | type) != "boolean" then "pass is not a boolean" else empty end),
@@ -70,7 +72,22 @@ malformed="$(
           (if (($f.quote // "") | length) == 0
             then "findings[" + ($i|tostring) + "].quote is empty" else empty end)
         )
-      )
+      ),
+
+      # `findings: []` is the shape of a thorough pass and also the shape of a
+      # judge that read nothing, and from the artifact alone the two are the
+      # same document. On a risk: high ticket that is not a distinction worth
+      # losing, so the judge has to name what it examined. Optional below high:
+      # a cheap ticket should not be taxed for a signal nobody will read.
+      (if $risk == "high" and ((.checked // []) | length) == 0
+        then "checked is empty on a risk: high ticket — a verdict that lists "
+             + "nothing examined cannot be told apart from a judge that ran and "
+             + "read nothing"
+        else empty end),
+      ( (.checked // [])
+        | to_entries[]
+        | select((.value | type) != "string" or (.value | length) == 0)
+        | "checked[" + (.key | tostring) + "] is not a non-empty string" )
     ] | .[]
   ' "$verdict" 2>&1
 )" || aif_g_error "spec-judge: jq failed — $malformed"

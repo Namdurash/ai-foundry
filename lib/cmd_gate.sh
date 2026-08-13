@@ -50,7 +50,7 @@ aif_cmd_gate() {
   # The subject is resolved twice, and it has to be. BEFORE a gate runs it is the
   # station's output as it stands, which is what the unchanged-bytes check
   # compares against. AFTER the gate runs it may be something else entirely: a
-  # freezing gate CREATES the artifact it freezes — verify-red writes tests.lock
+  # freezing gate CREATES the artifact it freezes — verify-red writes tests.lock.json
   # — so a subject resolved up front would be empty exactly for the station whose
   # recorded pass the next station depends on.
   _resolve_subject() {
@@ -137,7 +137,37 @@ aif_cmd_gate() {
 
   _aif_gate_record "$work" "$root" "$records"
   _aif_gate_record_amendments "$work"
+  _aif_gate_record_checks "$root" "$work"
   return "$overall"
+}
+
+# _aif_gate_record_checks <root> <work>
+#
+# Fold the project's own checks into the ledger, one row per check. A gate
+# reports a station as rejected; only this says WHICH part of the Definition of
+# Done failed, and a failure nobody can attribute is one nobody fixes at the
+# right place.
+#
+# The gates leave their record under .aif/tmp/ rather than in the work dir for
+# the same reason the verdicts above are batched: .aif/tmp/ is gitignored, so a
+# record written during the implement station does not appear in scope's diff as
+# the implementation editing the pipeline's own machinery. Consumed and removed
+# here, so a later station cannot re-record a run that already happened.
+_aif_gate_record_checks() {
+  local root="$1" work="$2" file phase
+  for phase in red green; do
+    file="$root/.aif/tmp/checks-$phase.json"
+    [ -f "$file" ] || continue
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      aif_ledger_append "$work" "$entry"
+    done <<EOF
+$(jq -c '.[]? | { event: "check", check: .name, phase: .phase,
+                  result: .result, exit: .exit, required: .required,
+                  reason: .tail }' "$file" 2>/dev/null)
+EOF
+    rm -f "$file"
+  done
 }
 
 # _aif_gate_record_amendments <work>

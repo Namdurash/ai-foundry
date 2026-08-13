@@ -42,11 +42,13 @@ fi
 spec_hash="$(aif_g_sha256 "$spec")"
 spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
 spec_assumptions="$(printf '%s' "$spec_meta" | jq -c '[.assumptions[]?.id] | sort')"
+spec_gaps="$(printf '%s' "$spec_meta" | jq -c '[.verification_gaps[]?.id] | sort')"
 
 violations="$(
   jq -r \
     --arg spec_hash "$spec_hash" \
-    --argjson spec_assumptions "$spec_assumptions" '
+    --argjson spec_assumptions "$spec_assumptions" \
+    --argjson spec_gaps "$spec_gaps" '
     [
       (if .subject_sha256 != $spec_hash
         then "approval is for a different spec — it changed since it was approved; re-approve"
@@ -68,6 +70,27 @@ violations="$(
       # the spec. A spec that grew an assumption after approval is not approved.
       (if ((.approved_assumptions // []) | sort) != $spec_assumptions
         then "approved assumptions do not match the spec — re-approve after the change"
+        else empty end),
+
+      # Accepting a behavioural assumption and accepting a blind spot are
+      # different decisions, and they must not share a keystroke. A ticket whose
+      # own Risk section said "a green suite does not prove the secret is
+      # encrypted on disk" carried that into the spec as an assumption, into the
+      # approval as one id among eight, and out of the pipeline entirely.
+      #
+      # An approval written before this field existed carries no
+      # acknowledged_gaps and stays valid against a spec with no gaps: [] equals
+      # []. Invalidating approvals correctly given under the older rule would be
+      # a lie about what happened.
+      (if ((.acknowledged_gaps // []) | sort) != $spec_gaps
+        then "acknowledged gaps do not match the spec — the human has not "
+             + "accepted this set of unverified blind spots; re-approve"
+        else empty end),
+      (if ($spec_gaps | length) > 0 and ((.gaps_confirmation // "") | length) == 0
+        then "this spec records " + ($spec_gaps | length | tostring)
+             + " verification gap(s) and the approval carries no separate "
+             + "acknowledgement — approving the assumptions is not accepting the "
+             + "blind spots"
         else empty end)
     ] | .[]
   ' "$approval" 2>&1
@@ -75,4 +98,12 @@ violations="$(
 
 aif_g_report "$violations" "approval"
 
-printf 'spec-approve: approved by %s\n' "$(jq -r '.approver' "$approval")"
+printf 'spec-approve: approved by %s' "$(jq -r '.approver' "$approval")"
+if [ "$(printf '%s' "$spec_gaps" | jq 'length')" -gt 0 ]; then
+  printf ', with %s blind spot(s) acknowledged\n' "$(printf '%s' "$spec_gaps" | jq 'length')"
+  jq -r '.acknowledged_gaps[]? | "  ! " + .' "$approval"
+  printf '  Re-emitted at close as the manual verification checklist — a gap that is\n'
+  printf '  acknowledged once and never surfaced again is the same as no gap at all.\n'
+else
+  printf '\n'
+fi

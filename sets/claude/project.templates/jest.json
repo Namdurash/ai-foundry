@@ -10,6 +10,8 @@
     "ac_marker": "AC-[0-9]{3}"
   },
 
+  "checks": [],
+
   "failure_classes": {
     "legitimate": [
       "expect\\(",

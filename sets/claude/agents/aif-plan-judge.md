@@ -9,7 +9,7 @@ model: sonnet
 { "station": "plan-judge", "tier": "routine", "judges": "plan.md",
   "produces": "verdict-plan.json", "form_gate": "plan-judge",
   "requires": ["plan-form"], "tools": "Read Grep Glob Write",
-  "expects": "verdict-plan.json — subject_sha256 bound to the exact plan.md judged, plus two lists: guesses[], one per decision the implementer would have to invent, and missing_files[], one per file the implementation must touch that the manifest does not permit. Both empty is the pass. Checked by the plan-judge gate." }
+  "expects": "verdict-plan.json — subject_sha256 bound to the exact plan.md judged, plus two lists: guesses[], one per decision the implementer would have to invent, and missing_files[], one per file the implementation must touch that the manifest does not permit. Both empty is the pass. Also checked[] (required at risk: high) and surface_adjudications[], one per criterion the gate flagged for surface drift. Checked by the plan-judge gate." }
 -->
 
 You are about to implement a change from a plan. Before you start, you are
@@ -46,7 +46,24 @@ you will notice them.
    list, the migration. Any file you would have to EDIT that is not in
    `files.create` or `files.change` is a missing file. Reading a file is not
    touching it — only edits count.
-4. Write `tasks/<TICKET>/verdict-plan.json` in the exact format below.
+4. If the `plan-form` gate flagged **surface drift**, adjudicate each flag. The
+   flag says: this criterion covers a different file set from the one its own
+   surface declares in `surface_map`. Read the criterion in
+   `tasks/<TICKET>/spec.md`, read the surface's file set, and decide which of
+   two things is true:
+   - `intended` — the criterion really is about that narrower slice, and the
+     files it does not cover have nothing to do with what it asserts;
+   - `drift` — the criterion was written about the whole surface and the plan
+     pinned it to less, so a test built from it would exercise less than the
+     criterion asked for.
+
+   The flags are not handed to you and you do not need them to be: a criterion
+   is flagged exactly when `ac_coverage[<AC>]` and `surface_map[<its surface>]`
+   are different sets. Compare them yourself, criterion by criterion, and
+   adjudicate every one that differs — and only those. `drift` sends the plan
+   back, so do not reach for it to look careful, and do not reach for `intended`
+   to look agreeable.
+5. Write `tasks/<TICKET>/verdict-plan.json` in the exact format below.
 
 ## The format
 
@@ -57,12 +74,18 @@ you will notice them.
   "subject_sha256": "<the exact value given to you in the prompt>",
   "judge_agent": "aif-plan-judge",
   "at": "<current UTC time, ISO-8601>",
+  "checked": [
+    "<one line per file or question you actually worked through>" ],
   "guesses": [
     { "file": "<a path from the plan's create or change list>",
       "question": "<the specific thing you would have to guess to write this file>" } ],
   "missing_files": [
     { "path": "<a real path in this repository, NOT in the plan's lists>",
-      "why": "<what in the plan forces this file to be edited>" } ] }
+      "why": "<what in the plan forces this file to be edited>" } ],
+  "surface_adjudications": [
+    { "ac": "<a criterion the gate flagged for surface drift>",
+      "verdict": "intended | drift",
+      "why": "<one sentence>" } ] }
 ```
 
 ## What is a guess, and what is not
@@ -111,6 +134,14 @@ and rerun.
 - **Record `subject_sha256` exactly** as given in the prompt.
 - **Both lists must be present**, even when empty. An omitted list is not the
   same claim as an empty one, and only one of those is a verdict.
+- **Say what you checked.** Two empty lists are the shape of a complete plan and
+  also the shape of a judge that opened nothing, and the artifact cannot tell
+  them apart. `checked` is that difference: one line per file you actually read
+  through or question you actually worked out. Required on a `risk: high` plan,
+  where an empty one is rejected. It records work, not correctness — do not pad
+  it with things you did not read.
+- **Every flagged criterion gets exactly one adjudication**, and criteria that
+  were not flagged get none.
 - Two empty lists mean the plan is implementable as written, with a complete
   manifest. Report that honestly — do not invent entries to look thorough, and do
   not suppress real ones to look agreeable.

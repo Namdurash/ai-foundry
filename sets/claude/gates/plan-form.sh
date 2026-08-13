@@ -14,6 +14,22 @@
 # It also catches the most common failure of a planning model outright: a plan
 # written against a repository it imagined. Every path to be created must not
 # exist; every path to be changed must.
+#
+# Three coverage questions of one shape are asked here, and they are the same
+# question about three kinds of entity:
+#
+#   a file the plan creates      must be named by a criterion — or declared
+#                                uncovered, where a human can see it;
+#   a surface the spec names     must have one file set, so that two criteria
+#                                on one surface cannot quietly mean two things;
+#   an external dependency       must name what validates it — a check, or a
+#                                criterion that exercises it for real.
+#
+# The last is the one this pipeline lacked. Every `because` in a plan points
+# backwards into the spec, which proves conformance to the SPEC and is
+# structurally incapable of proving conformance to REALITY: on a live ticket two
+# decisions asserted the shape of a third-party API from memory, both were
+# wrong, and every gate passed.
 
 set -uo pipefail
 
@@ -39,13 +55,19 @@ spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
 spec_hash="$(aif_g_sha256 "$spec")"
 files_max="$(jq -r '.limits.plan_files_max // 12' "$project")"
 spec_acs="$(printf '%s' "$spec_meta" | jq -c '[.acceptance[]?.id]')"
+spec_surfaces="$(printf '%s' "$spec_meta" | jq -c '[.surfaces[]?]')"
 spec_risk="$(printf '%s' "$spec_meta" | jq -r '.risk // ""')"
 spec_ticket="$(printf '%s' "$spec_meta" | jq -r '.ticket // ""')"
+# The names a plan may point an external dependency at. Read from the project
+# rather than taken on trust: this is what stops the answer being self-attested.
+check_names="$(jq -c '[.checks[]?.name]' "$project")"
 
 violations="$(
   printf '%s' "$meta" | jq -r \
     --argjson files_max "$files_max" \
     --argjson spec_acs "$spec_acs" \
+    --argjson spec_surfaces "$spec_surfaces" \
+    --argjson check_names "$check_names" \
     --arg spec_hash "$spec_hash" \
     --arg spec_risk "$spec_risk" \
     --arg spec_ticket "$spec_ticket" '
@@ -57,6 +79,9 @@ violations="$(
     | (($m.files.create // []) + ($m.files.change // [])) as $impl
     | ($m.files.tests // []) as $tests
     | ($m.ac_coverage // {}) as $cov
+    | ([ $cov[]? ] | flatten) as $covered
+    | ($m.uncovered // []) as $unc
+    | ($m.surface_map // {}) as $smap
     | [
       (if ($m.schema? // null) != 1
         then "meta.schema must be 1" else empty end),
@@ -138,6 +163,73 @@ violations="$(
               | select(. as $p | ($impl | index($p)) == null)
               | "ac_coverage." + $ac + " names \"" + .
                 + "\", which is not in files.create or files.change" ) )
+      ),
+
+      # ---- a created file no criterion covers ---------------------------
+      # A file the plan orders into existence that no criterion points at is a
+      # blind spot by construction. On a live ticket that file was the module
+      # barrel: it threw on import, so every consumer of the module was broken,
+      # and no test noticed because no criterion imported it. Documentation
+      # files land in `uncovered` and that is fine — the point is that the list
+      # is seen, not that it is empty.
+      ( ($m.files.create // [])[]?
+        | select(. as $p | ($covered | index($p)) == null)
+        | select(. as $p | ($unc | index($p)) == null)
+        | "files.create names \"" + .
+          + "\", which no acceptance criterion covers — give it one, or list it "
+          + "in meta.uncovered so the human sees it" ),
+      ( $unc[]?
+        | select(. as $p | (($m.files.create // []) | index($p)) == null)
+        | "uncovered names \"" + . + "\", which is not in files.create" ),
+      ( $unc[]?
+        | select(. as $p | ($covered | index($p)) != null)
+        | "uncovered names \"" + . + "\", which ac_coverage already covers" ),
+
+      # ---- one surface, one file set ------------------------------------
+      (if ($m | has("surface_map") | not)
+        then "meta.surface_map is required — one file set per surface named in "
+             + "spec.md, declared once, so two criteria on one surface cannot "
+             + "quietly mean two different things"
+        else empty end),
+      ( $spec_surfaces[]?
+        | select(. as $s | ($smap | has($s)) | not)
+        | "surface_map is missing \"" + . + "\", which spec.md names as a surface" ),
+      ( ($smap | keys[]?)
+        | select(. as $s | ($spec_surfaces | index($s)) == null)
+        | "surface_map names \"" + . + "\", which is not a surface in spec.md" ),
+      ( ($smap | to_entries[]?)
+        | .key as $s | .value as $paths
+        | $paths[]?
+        | select(. as $p | ($impl | index($p)) == null)
+        | "surface_map." + $s + " names \"" + .
+          + "\", which is not in files.create or files.change" ),
+
+      # ---- the external surface, and what validates it -------------------
+      # Just an enumeration — not a claim about any of them. aif learns nothing
+      # about what these names mean; it learns that the plan named N external
+      # identifiers and that each must point at a check or a criterion.
+      (if ($m | has("external") | not)
+        then "meta.external is required (may be []) — the third-party modules, "
+             + "runtime globals and system APIs this implementation will touch"
+        else empty end),
+      ( ($m.external // [])
+        | to_entries[]
+        | .key as $i | .value as $e
+        | (
+          (if (($e.name // "") | length) == 0
+            then "external[" + ($i | tostring) + "].name is empty" else empty end),
+          (if ($e.check // null) != null and ($check_names | index($e.check)) == null
+            then "external[" + ($i | tostring) + "].check \"" + ($e.check | tostring)
+                 + "\" is not a check in .aif/project.json"
+                 + (if ($check_names | length) == 0
+                     then " (that project declares none — add one, or name a criterion instead)"
+                     else " — one of: " + ($check_names | join(", ")) end)
+            else empty end),
+          (if ($e.ac // null) != null and ($spec_acs | index($e.ac)) == null
+            then "external[" + ($i | tostring) + "].ac \"" + ($e.ac | tostring)
+                 + "\" is not a criterion in spec.md"
+            else empty end)
+        )
       )
     ]
     | map(select(type == "string"))
@@ -195,3 +287,27 @@ printf 'plan-form: %s implementation file(s), %s test file(s), %s AC covered\n' 
   "$(printf '%s' "$meta" | jq '(.files.create // []) + (.files.change // []) | length')" \
   "$(printf '%s' "$meta" | jq '.files.tests | length')" \
   "$(printf '%s' "$meta" | jq '.ac_coverage | length')"
+
+# --- what passed, and what passed unwatched ---------------------------------
+# On the PASS path, always. Each of these is a hole the plan is allowed to have
+# and a human is not allowed to be unaware of; a list that only appears when
+# someone goes looking is the same as no list. The same rule scope already
+# follows for an amended manifest.
+uncovered="$(printf '%s' "$meta" | jq -r '.uncovered[]? // empty')"
+if [ -n "$uncovered" ]; then
+  printf '  files created with no criterion (the plan says so, on the record):\n'
+  printf '%s\n' "$uncovered" | sed 's/^/    - /'
+fi
+
+gaps="$(aif_g_external_gaps "$meta")"
+if [ -n "$gaps" ]; then
+  printf '  UNVALIDATED EXTERNAL SURFACE — no check and no criterion touches these:\n'
+  printf '%s\n' "$gaps" | sed 's/^/    - /'
+  printf '  Nothing in this run will establish that they behave as the plan assumes.\n'
+fi
+
+drift="$(aif_g_surface_drift "$meta" "$spec_meta")"
+if [ -n "$drift" ]; then
+  printf '  surface drift, for the plan judge to adjudicate:\n'
+  printf '%s\n' "$drift" | awk -F'\t' '{ printf "    - %s (%s): %s\n", $1, $2, $3 }'
+fi

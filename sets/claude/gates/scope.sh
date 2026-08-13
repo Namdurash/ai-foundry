@@ -38,7 +38,7 @@ allowed="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.ch
 # the plan could not foresee — an import that pulls in a neighbour, a handler
 # that has to be registered somewhere unnamed.
 #
-# In a separate file rather than in plan.md because tests.lock binds to plan.md's
+# In a separate file rather than in plan.md because tests.lock.json binds to plan.md's
 # bytes: amending the plan itself would invalidate the frozen tests, and green
 # would reject the implementation the amendment existed to permit.
 #

@@ -88,12 +88,16 @@ aif_cmd_rework() {
 # the design — an approval that could be recorded with no argument would
 # eventually be recorded by accident. See the README's trust assumptions.
 aif_cmd_approve() {
-  local ticket="" confirmation="" approver=""
+  local ticket="" confirmation="" approver="" gaps_confirmation=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --confirmation)
         shift
         confirmation="${1:-}"
+        ;;
+      --gaps-confirmation)
+        shift
+        gaps_confirmation="${1:-}"
         ;;
       --by)
         shift
@@ -132,19 +136,42 @@ aif_cmd_approve() {
   meta="$(aif_meta_json "$spec")"
   hash="$(aif_sha256 "$spec")"
 
+  # A verification gap is not an assumption and must not be accepted as one.
+  # "The API is named get/set/delete" and "the target environment is never
+  # verified" went into one list on a live ticket, and the human approved both
+  # with one keystroke; the second was never referred to again. So the second
+  # kind needs its own answer, in the human's own words, or there is nothing to
+  # record.
+  local gaps
+  gaps="$(printf '%s' "$meta" | jq -c '[.verification_gaps[]?.id]')"
+  if [ "$(printf '%s' "$gaps" | jq 'length')" -gt 0 ] && [ -z "$gaps_confirmation" ]; then
+    aif_err "this spec records verification gaps — things this run will NOT establish:"
+    printf '%s' "$meta" | jq -r '.verification_gaps[] | "  ! " + .id + ": " + .text' >&2
+    aif_die "ask the user about these separately and pass --gaps-confirmation <their words>; accepting a blind spot is not the same decision as accepting an assumption"
+  fi
+
   jq -n \
     --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
+    --arg gc "$gaps_confirmation" \
     --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --argjson assumptions "$(printf '%s' "$meta" | jq -c '[.assumptions[]?.id]')" \
+    --argjson gaps "$gaps" \
     '{ schema: 1, subject: "spec.md", subject_sha256: $s,
        approver: $a, at: $at, channel: "chat", confirmation: $c,
-       approved_assumptions: $assumptions }' \
+       approved_assumptions: $assumptions,
+       acknowledged_gaps: $gaps, gaps_confirmation: $gc }' \
     >"$work/approval.json.tmp" && mv "$work/approval.json.tmp" "$work/approval.json"
 
   aif_ledger_append "$work" "$(jq -n --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
+    --arg gc "$gaps_confirmation" --argjson gaps "$gaps" \
     '{ event: "approve", subject: "spec.md", subject_sha256: $s,
-       approver: $a, channel: "chat", confirmation: $c }')"
+       approver: $a, channel: "chat", confirmation: $c,
+       acknowledged_gaps: $gaps, gaps_confirmation: $gc }')"
 
   printf '%sapproved%s by %s — bound to this spec; edit spec.md and it lapses.\n' \
     "$AIF_C_GREEN" "$AIF_C_RESET" "$approver"
+  if [ "$(printf '%s' "$gaps" | jq 'length')" -gt 0 ]; then
+    printf '%sacknowledged%s %s blind spot(s) — re-emitted as a manual checklist at close.\n' \
+      "$AIF_C_YELLOW" "$AIF_C_RESET" "$(printf '%s' "$gaps" | jq 'length')"
+  fi
 }

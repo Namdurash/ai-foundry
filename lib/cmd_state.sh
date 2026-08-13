@@ -108,6 +108,41 @@ _aif_state_verdict() {
   printf 'done\t%s' "$detail"
 }
 
+# _aif_state_checklist <work> — what this run did NOT establish, as a JSON array
+# of { source, id, text }.
+#
+# Emitted when the ticket is done, and that is the whole point of it. A blind
+# spot acknowledged at approval and never surfaced again is the same as no blind
+# spot: on the ticket that produced this, the spec said in writing that the
+# target environment was never exercised, the human approved it in a list of
+# eight, and no station referred to it afterwards. The pipeline had one place
+# where it acknowledged what it could not see, and that acknowledgement was
+# structurally designed to disappear.
+#
+# Two sources, because gaps arrive at two different moments:
+#   spec.md   — verification_gaps, accepted by the human at approval;
+#   plan.md   — external dependencies the plan could point at no check and no
+#               criterion for. Nothing in the run validated those either.
+_aif_state_checklist() {
+  local work="$1" spec_gaps="[]" plan_gaps="[]"
+
+  if [ -f "$work/spec.md" ]; then
+    spec_gaps="$(aif_meta_json "$work/spec.md" 2>/dev/null |
+      jq -c '[ .verification_gaps[]? | { source: "spec", id: .id, text: .text } ]' 2>/dev/null)"
+  fi
+  if [ -f "$work/plan.md" ]; then
+    plan_gaps="$(aif_meta_json "$work/plan.md" 2>/dev/null |
+      jq -c '[ .external[]?
+               | select((.check // null) == null and (.ac // null) == null)
+               | { source: "plan", id: .name,
+                   text: "external dependency with no check and no criterion — nothing in this run exercised it" } ]' 2>/dev/null)"
+  fi
+
+  [ -n "$spec_gaps" ] || spec_gaps="[]"
+  [ -n "$plan_gaps" ] || plan_gaps="[]"
+  jq -nc --argjson a "$spec_gaps" --argjson b "$plan_gaps" '$a + $b'
+}
+
 aif_cmd_state() {
   local ticket="${1:-}"
   [ -n "$ticket" ] || aif_die "usage: aif _state <ticket>"
@@ -200,7 +235,11 @@ aif_cmd_state() {
 $(_aif_state_steps)
 EOF
 
-  [ -n "$next_json" ] || next_json='{ "kind": "done", "detail": "every gate passes against current bytes" }'
+  if [ -z "$next_json" ]; then
+    next_json="$(jq -n --argjson checklist "$(_aif_state_checklist "$work")" \
+      '{ kind: "done", detail: "every gate passes against current bytes",
+         checklist: $checklist }')"
+  fi
 
   printf '%s' "$steps_json" | jq -s --arg t "$ticket" --arg d "$dir_rel" \
     --argjson next "$next_json" \

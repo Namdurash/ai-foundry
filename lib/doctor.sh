@@ -66,6 +66,20 @@ _aif_doctor_project() {
     else
       printf '  %s %-14s valid\n' "$(aif_ok)" "project.json"
     fi
+
+    # The Definition of Done, reported whichever way it went. An empty checks
+    # list means green will enforce the test command and nothing else — a real
+    # answer, and one worth seeing before a ticket is judged against it rather
+    # than after.
+    local nchecks
+    nchecks="$(jq '(.checks // []) | length' "$config" 2>/dev/null)"
+    if [ "${nchecks:-0}" -eq 0 ]; then
+      printf '  %s %-14s %snone — the test command is the whole Definition of Done (aif project checks)%s\n' \
+        "$(aif_no)" "checks" "$AIF_C_DIM" "$AIF_C_RESET"
+    else
+      printf '  %s %-14s %s\n' "$(aif_ok)" "checks" \
+        "$(jq -r '[.checks[] | .name + " [" + (.phase | join(",")) + "]"] | join(", ")' "$config")"
+    fi
   fi
 
   # Every agent a skill dispatches to must exist, or the fork silently falls

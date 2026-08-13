@@ -128,7 +128,7 @@ aif_ledger_gate_valid() {
 #
 # For gates that cannot be re-run as a live precondition. verify-red asserts the
 # tests are red; once implementation starts that stops holding, so the recorded
-# pass — bound to tests.lock's bytes — IS the precondition, not a re-run.
+# pass — bound to tests.lock.json's bytes — IS the precondition, not a re-run.
 aif_ledger_recorded_pass() {
   local work="$1" gate="$2" ledger result subject recorded actual
   ledger="$(aif_ledger_path "$work")"

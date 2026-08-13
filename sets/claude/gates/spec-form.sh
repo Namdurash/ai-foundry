@@ -97,6 +97,20 @@ violations="$(
         then "meta.surfaces must name at least one surface" else empty end),
       (if ($m | has("assumptions") | not)
         then "meta.assumptions is required (may be [])" else empty end),
+
+      # verification_gaps is a separate list because it holds a separate kind of
+      # statement. An assumption says how the system BEHAVES; a gap says what
+      # this run will NOT establish — "the device path is not exercised by the
+      # suite". Filed together, the second dissolves into the first: a human
+      # approved "the API is named get/set/delete" and "the target environment
+      # is never verified" with one keystroke, and nothing referred to the
+      # second again. aif never learns what "device" means; it learns that
+      # statements of this class exist and are not allowed to disappear.
+      (if ($m | has("verification_gaps") | not)
+        then "meta.verification_gaps is required (may be []) — assumptions that "
+             + "describe a LIMIT OF VERIFICATION rather than a behaviour belong "
+             + "there, and only there"
+        else empty end),
       (if ($m | has("non_goals") | not)
         then "meta.non_goals is required (may be [])" else empty end),
       (if ($acs | length) < 1
@@ -204,7 +218,23 @@ violations="$(
           (if (($as.text? // "") | length) == 0
             then ($as.id // "assumption") + ".text is empty" else empty end)
         )
-      )
+      ),
+
+      ( ($m.verification_gaps // [])
+        | to_entries[]
+        | .key as $i
+        | .value as $vg
+        | (
+          (if ($vg.id // "") | test("^VG-[0-9]{3}$") | not
+            then "verification_gaps[" + ($i | tostring) + "].id must look like VG-001"
+            else empty end),
+          (if (($vg.text? // "") | length) == 0
+            then ($vg.id // "gap") + ".text is empty" else empty end)
+        )
+      ),
+      ( [ ($m.verification_gaps // [])[].id ]
+        | select(length != (unique | length))
+        | "duplicate verification_gap ids" )
     ]
     | map(select(type == "string"))
     | .[]
@@ -213,5 +243,14 @@ violations="$(
 
 aif_g_report "$violations" "spec.md"
 
-printf 'spec-form: %s criteria, all admissible\n' \
+printf 'spec-form: %s criteria, all admissible' \
   "$(printf '%s' "$meta" | jq '.acceptance | length')"
+
+gaps="$(printf '%s' "$meta" | jq '(.verification_gaps // []) | length')"
+if [ "$gaps" -gt 0 ]; then
+  printf ', %s verification gap(s)\n' "$gaps"
+  printf '%s' "$meta" | jq -r '.verification_gaps[] | "  ! " + .id + ": " + .text'
+  printf '  These are not behaviours. They are what this run will NOT establish.\n'
+else
+  printf '\n'
+fi

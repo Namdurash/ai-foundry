@@ -56,6 +56,8 @@ one of these:
 - a judgement word ("valid", "correct", "gracefully") → say what is observable instead
 - `expect` holding prose instead of a literal → name the literal
 - ids out of sequence, a `surface` missing from the surfaces list → correct the reference
+- an assumption that is really a limit of verification → move it to `verification_gaps`
+- a `surface_map` entry missing for a surface the spec names → add the file set
 
 **Structural — the artifact is honest and the gate is telling you the work is too big or
 the input was too vague.** These are the user's call, never yours:
@@ -64,6 +66,14 @@ the input was too vague.** These are the user's call, never yours:
 - a criterion nobody can state a literal for → the ticket never decided that behaviour;
   it needs an answer from the user, not a guess from you
 - the judge found a blocker that is a genuine gap in intent → back to the ticket
+- `external` names a dependency with no check and no criterion → **do not invent either
+  one.** A check name the project does not have is a rejection; a criterion written to be
+  pointed at rather than to be true is worse, because it passes. The honest fixes are: add
+  a real check to `.aif/project.json` with the user, write a criterion that exercises the
+  real dependency, or leave it as a gap and let the human see it at the gate.
+- a criterion the judge adjudicated as surface `drift` → the plan pinned a criterion to less
+  than the surface it was written about. Widening `ac_coverage` to silence the flag is only
+  right if the criterion really is about the wider set; otherwise the planning is wrong.
 
 For a structural finding, propose the split or the question concretely — name which criteria
 would stay and which would move — and let the user decide. When they decide, the change goes

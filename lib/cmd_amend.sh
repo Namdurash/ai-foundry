@@ -9,7 +9,7 @@
 # never named. Without it the only outcomes are "scope rejects correct work" or
 # "go back and re-plan", and the second costs a full planning round for one line.
 #
-# It writes plan-amendments.json, NOT plan.md, and that is not tidiness. tests.lock
+# It writes plan-amendments.json, NOT plan.md, and that is not tidiness. tests.lock.json
 # binds to plan.md's bytes; amending the plan itself would invalidate the frozen
 # tests, so green would then reject the very implementation the amendment was
 # meant to permit. A separate file leaves every existing binding intact.

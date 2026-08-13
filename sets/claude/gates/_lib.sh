@@ -96,6 +96,62 @@ aif_g_meta_or_die() {
   printf '%s' "$meta"
 }
 
+# aif_g_surface_drift <plan-meta> <spec-meta> — echo "AC<TAB>surface<TAB>detail"
+# for every criterion whose file coverage disagrees with the file set its own
+# surface claims.
+#
+# A heuristic, and it is written here once because two gates need the SAME
+# answer: plan-form prints it, plan-judge requires it adjudicated. Recomputed
+# from the artifacts on both sides rather than passed in a file, so there is
+# nothing to go stale and nothing under tasks/ for a live gate to dirty.
+#
+# What it is looking for: four criteria on one live ticket declared the same
+# surface and were mapped to three different file sets. The narrowest of them
+# said "when bootstrap completes, the key is 32 bytes"; the plan narrowed it to
+# the key-generation file alone, so the test called the generator directly and
+# bootstrap never ran — pinning a standalone function in the test runtime, which
+# is the one environment where the missing global happened to exist.
+#
+# NOT a proof and never a rejection on its own. A narrower coverage is often
+# correct; this says only that the plan said two things about one surface.
+aif_g_surface_drift() {
+  local plan_meta="$1" spec_meta="$2"
+  printf '%s' "$spec_meta" | jq -r --argjson plan "$(printf '%s' "$plan_meta" | jq -c .)" '
+    def missing($a; $b): [ $a[]? | select(. as $x | ($b | index($x)) == null) ];
+    ($plan.surface_map // {}) as $smap
+    | ($plan.ac_coverage // {}) as $cov
+    | .acceptance[]?
+    | . as $ac
+    | ($ac.surface // "") as $s
+    | ($smap[$s] // []) as $m
+    | ($cov[$ac.id] // []) as $c
+    | missing($c; $m) as $extra
+    | missing($m; $c) as $narrow
+    | select(($extra | length) > 0 or ($narrow | length) > 0)
+    | $ac.id + "\t" + $s + "\t"
+      + ( [ (if ($narrow | length) > 0
+              then "narrower than its surface by " + ($narrow | join(", ")) else empty end),
+            (if ($extra | length) > 0
+              then "covers " + ($extra | join(", ")) + ", which the surface map does not list"
+              else empty end) ] | join("; ") )
+  ' 2>/dev/null
+}
+
+# aif_g_external_gaps <plan-meta> — echo the name of every declared external
+# dependency that names neither a check nor a criterion.
+#
+# The question is not "prove this claim is true" — a model that invented a method
+# name will just as readily write "verified" beside it, and a judge that sees
+# "verified" relaxes. The question is "what validates this?", which is a
+# set-coverage question with exactly the shape of the uncovered-files check:
+# a file with no criterion is a dependency with no validator.
+aif_g_external_gaps() {
+  printf '%s' "$1" | jq -r '
+    .external[]?
+    | select((.check // null) == null and (.ac // null) == null)
+    | .name' 2>/dev/null
+}
+
 # aif_g_project <work-dir> — path to project.json, walking up from the work dir.
 #
 # Gates are handed a work dir but their configuration lives at the project root,
@@ -113,6 +169,70 @@ aif_g_project() {
     dir="$(dirname "$dir")"
   done
   aif_g_error ".aif/project.json not found — run 'aif project init'"
+}
+
+# aif_g_checks_run <project> <root> <phase> <record> — run the project's checks
+# for one phase. Echoes one violation per line (empty = nothing required
+# failed), and writes <record>: a JSON array of every check that ran, so a
+# failure is attributable to a named check rather than to "the station".
+#
+# This is the rest of the Definition of Done. Before it, `green` read exactly
+# one thing — `.test.command` — so a project whose DoD included a type-check or
+# a lint pass could not express that, and therefore never enforced it. On the
+# ticket that produced this gate, both were green, and that was established by a
+# human during review rather than by the pipeline.
+#
+# aif learns nothing about what any command means. It learns that the project
+# named some commands, which phase each belongs to, and whether a failure is
+# fatal. The knowledge stays on the project side, where it belongs.
+aif_g_checks_run() {
+  local project="$1" root="$2" phase="$3" record="$4"
+  local name cmd required rc out n=0 rows="" viol="" tab
+  tab="$(printf '\t')"
+
+  : >"$record"
+
+  # No checks for this phase is the common case and must cost nothing.
+  if [ "$(jq --arg p "$phase" \
+    '[.checks[]? | select((.phase // []) | index($p))] | length' "$project" 2>/dev/null)" \
+    = "0" ]; then
+    printf '[]' >"$record"
+    return 0
+  fi
+
+  while IFS="$tab" read -r name cmd required; do
+    [ -n "$name" ] || continue
+    n=$((n + 1))
+    out="$(mktemp "${TMPDIR:-/tmp}/aif-check-XXXXXX")"
+    rc=0
+    (cd "$root" && eval "$cmd") >"$out" 2>&1 || rc=$?
+    rows="$rows$name$tab$rc$tab$required$tab$(tail -3 "$out" | tr '\n\t' '  ')
+"
+    if [ "$rc" -ne 0 ]; then
+      if [ "$required" = "true" ]; then
+        viol="$viol
+check \"$name\" failed (exit $rc): $(tail -1 "$out" | tr -d '\r')"
+      else
+        printf 'warn: optional check "%s" failed (exit %s) — recorded, not blocking\n' \
+          "$name" "$rc" >&2
+      fi
+    fi
+    rm -f "$out"
+  done <<EOF
+$(jq -r --arg p "$phase" '.checks[]?
+  | select((.phase // []) | index($p))
+  | [ .name, .command, (if .required == false then "false" else "true" end) ]
+  | @tsv' "$project")
+EOF
+
+  jq -n --arg phase "$phase" --rawfile raw <(printf '%s' "$rows") '
+    $raw | split("\n") | map(select(length > 0) | split("\t"))
+    | map({ phase: $phase, name: .[0], exit: (.[1] | tonumber),
+            required: (.[2] == "true"),
+            result: (if .[1] == "0" then "pass" else "fail" end),
+            tail: (.[3] // "") })' >"$record"
+
+  printf '%s\n' "$viol" | sed '/^[[:space:]]*$/d'
 }
 
 # aif_g_report <violations> <label> — reject with a numbered list, or pass.

@@ -239,9 +239,14 @@ aif_cmd_init() {
     fi
 
     if [ "$AIF_DRY_RUN" -eq 0 ]; then
+      # Backups mirror the project-relative path, not the basename. The set ships
+      # three files called SKILL.md (one per skill directory), so a basename-keyed
+      # backup gave them all one .aif/backups/SKILL.md.orig and --force silently
+      # destroyed two of the three copies it promised to keep.
       if [ "$verdict" = "conflict" ] && [ -f "$dest" ]; then
-        mkdir -p "$root/.aif/backups"
-        cp "$dest" "$root/.aif/backups/$(basename "$rel").orig"
+        local backup="$root/.aif/backups/$rel.orig"
+        mkdir -p "$(dirname "$backup")"
+        cp "$dest" "$backup"
       fi
       mkdir -p "$(dirname "$dest")"
       cp "$src" "$dest"

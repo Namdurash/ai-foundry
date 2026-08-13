@@ -72,6 +72,30 @@ check "the ignore block is intact" \
   "$(grep -c '^\.aif/\(profile\.local\|tmp/\|state/\)$' .gitignore)" "3"
 check "no scratch file left behind" "$(ls -a | grep -c '^\.aif-tmp-')" "0"
 
+# --force is how a project takes an edited file back, and it promises a backup of
+# what it overwrites. The backup was keyed on the BASENAME, so the set's three
+# SKILL.md files (one per skill directory) all wrote the same
+# .aif/backups/SKILL.md.orig — --force destroyed two of the three copies it said
+# it was keeping, and nothing exercised --force at all.
+note "--force takes back files the user edited, and keeps a backup of each. Every"
+note "file the set ships gets one, by its own path — two skills both shipping a"
+note "SKILL.md must not land on the same backup:"
+while IFS= read -r f; do printf '\n# edited by hand\n' >>"$f"; done < <(
+  jq -r '.files[].path' .aif/manifest.json)
+# Counted from what --force says it took, not from the manifest: the manifest
+# also tracks generated files (.aif/profile.local) that the set never ships.
+taken="$("$AIF" init anthropic --force 2>&1 | awk '$1 == "update" || $1 == "create" { print $2 }')"
+n_taken="$(printf '%s\n' "$taken" | grep -c .)"
+check "one backup per file taken" \
+  "$(find .aif/backups -type f -name '*.orig' | wc -l | tr -d ' ')" "$n_taken"
+check "same basename, separate backups" \
+  "$(find .aif/backups -type f -name 'SKILL.md.orig' | wc -l | tr -d ' ')" \
+  "$(find "$AIF_ROOT/sets/claude/skills" -type f -name 'SKILL.md' | wc -l | tr -d ' ')"
+check "every backup is the user's copy" \
+  "$(grep -rl 'edited by hand' .aif/backups | wc -l | tr -d ' ')" "$n_taken"
+check "and the set's copy is back" "$(grep -c 'edited by hand' .aif/foundry.md)" "0"
+rm -rf .aif/backups
+
 # a state-sensitive stub test runner: green only once the implementation exists
 cat > .aif/mkreport.sh <<'MK'
 #!/bin/bash

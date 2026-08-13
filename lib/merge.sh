@@ -44,11 +44,24 @@ aif_block_inject() {
 
   if grep -qF "$begin" "$file"; then
     tmp="$(aif_tmpfile "$file")"
-    awk -v b="$begin" -v e="$end" -v p="$payload" '
-      index($0, b) { print; print p; skip = 1; next }
+    # The payload arrives through the environment, not `-v`: an assignment on
+    # the command line is scanned as an awk string literal, so a multi-line
+    # payload dies with "newline in string" and a backslash in one is read as an
+    # escape. The .gitignore block is multi-line, so every re-init hit this —
+    # and only a re-init, because a first install takes the append path below.
+    # ENVIRON hands the bytes over untouched.
+    if AIF_BLOCK_PAYLOAD="$payload" awk -v b="$begin" -v e="$end" '
+      index($0, b) { print; print ENVIRON["AIF_BLOCK_PAYLOAD"]; skip = 1; next }
       index($0, e) { skip = 0 }
       !skip        { print }
-    ' "$file" >"$tmp" && mv "$tmp" "$file"
+    ' "$file" >"$tmp"; then
+      mv "$tmp" "$file"
+    else
+      # Half a rewritten file is not a .gitignore, and a scratch file left in
+      # the user's repo is ours to clean up, not theirs to find.
+      rm -f "$tmp"
+      return 1
+    fi
   else
     printf '\n%s\n%s\n%s\n' "$begin" "$payload" "$end" >>"$file"
   fi

@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-AIF_VERSION="0.4.0"
+AIF_VERSION="0.4.1"
 
 # Resolve the install root through any symlinks. Homebrew links bin/aif into
 # libexec, and `readlink -f` does not exist on BSD, so walk the chain by hand.

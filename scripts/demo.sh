@@ -57,6 +57,21 @@ git add -A; git commit -qm init >/dev/null
 "$AIF" project init pytest --no-checks >/dev/null
 note "installed the claude set and detected the pytest runner"
 
+# Upgrading a project is a re-init, and a re-init takes a different path through
+# every file aif shares with the user: the marked block is rewritten in place
+# rather than appended. Nothing exercised that path, so a multi-line .gitignore
+# block broke it and only showed up on the second install a user ever ran —
+# after the set had already been copied over and before the manifest recording
+# it was written.
+reinit_rc=0; "$AIF" init anthropic >/dev/null 2>&1 || reinit_rc=$?
+check "re-init exits clean" "$reinit_rc" "0"
+check "manifest survives it" \
+  "$(jq -r '.set_version' .aif/manifest.json 2>/dev/null)" \
+  "$(awk -F= '/^SET_VERSION=/ { print $2 }' "$AIF_ROOT/sets/claude/set.meta")"
+check "the ignore block is intact" \
+  "$(grep -c '^\.aif/\(profile\.local\|tmp/\|state/\)$' .gitignore)" "3"
+check "no scratch file left behind" "$(ls -a | grep -c '^\.aif-tmp-')" "0"
+
 # a state-sensitive stub test runner: green only once the implementation exists
 cat > .aif/mkreport.sh <<'MK'
 #!/bin/bash

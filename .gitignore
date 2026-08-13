@@ -12,3 +12,10 @@
 # Scratch space for harness runs.
 /tmp/
 *.log
+
+# The working vision document — thoughts in progress, processed in-session,
+# not yet a public commitment.
+
+
+#docs
+docs/

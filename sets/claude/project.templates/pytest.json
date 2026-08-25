@@ -12,6 +12,8 @@
 
   "checks": [],
 
+  "explain": { "auto": "approve" },
+
   "failure_classes": {
     "legitimate": [
       "AssertionError",

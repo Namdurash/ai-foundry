@@ -52,6 +52,7 @@ commands:
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
+  explain       Draw how a ticket got here — provenance, assumptions, decisions
   project       Set up or validate .aif/project.json (init | check)
   doctor        Report what is installed and what aif can drive
   profiles      List the available (set, runner, model) profiles
@@ -114,6 +115,11 @@ main() {
       # shellcheck source=lib/cmd_cost.sh
       . "$AIF_ROOT/lib/cmd_cost.sh"
       aif_cmd_cost ${1+"$@"}
+      ;;
+    explain)
+      # shellcheck source=lib/cmd_explain.sh
+      . "$AIF_ROOT/lib/cmd_explain.sh"
+      aif_cmd_explain ${1+"$@"}
       ;;
     _state)
       # shellcheck source=lib/ledger.sh

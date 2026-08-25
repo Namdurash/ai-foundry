@@ -29,6 +29,68 @@ aif_project_config() {
 # level down: a legitimate failure is not a broken one.
 AIF_PROJECT_CHECK_PHASES='["red","green"]'
 
+# What `aif explain` does when the ORCHESTRATOR calls it, as opposed to when a
+# person types it. The moments are the two places in the cycle where a drawing
+# is worth the pause, and they are named rather than numbered so a setting keeps
+# meaning something if the pipeline gains a station:
+#
+#   approve — before the human answers for the assumptions. The default.
+#   plan    — after plan-judge admits the plan, which is the only other place a
+#             human is shown something they did not ask to see.
+#
+# Off by nobody: `never` silences the automatic call, and typing the command by
+# hand still renders. A setting that overrode a person asking a direct question
+# would be a different feature and a worse one.
+AIF_EXPLAIN_DEFAULT="approve"
+
+# aif_explain_auto <root> — never | approve | always.
+#
+# Three layers, most specific first, and the split is not arbitrary: the project
+# file is committed and says what this REPOSITORY does, the user file is not and
+# says what THIS DEVELOPER can afford. "I have the budget for it" is a fact
+# about a person; putting it in a shared file makes it everyone else's setting
+# too.
+aif_explain_auto() {
+  local root="$1" v=""
+
+  case "${AIF_EXPLAIN:-}" in
+    never | approve | always)
+      printf '%s' "$AIF_EXPLAIN"
+      return 0
+      ;;
+    "") ;;
+    *) aif_warn "AIF_EXPLAIN=$AIF_EXPLAIN is not never|approve|always — ignored" ;;
+  esac
+
+  local user_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/aif/config.json"
+  if [ -f "$user_cfg" ]; then
+    v="$(jq -r '.explain.auto // empty' "$user_cfg" 2>/dev/null)"
+    case "$v" in
+      never | approve | always)
+        printf '%s' "$v"
+        return 0
+        ;;
+    esac
+  fi
+
+  v="$(jq -r '.explain.auto // empty' "$(aif_project_config "$root")" 2>/dev/null)"
+  case "$v" in
+    never | approve | always) printf '%s' "$v" ;;
+    *) printf '%s' "$AIF_EXPLAIN_DEFAULT" ;;
+  esac
+}
+
+# aif_explain_enabled <root> <moment> — rc 0 if the orchestrator should draw.
+aif_explain_enabled() {
+  local setting
+  setting="$(aif_explain_auto "$1")"
+  case "$setting" in
+    always) return 0 ;;
+    approve) [ "$2" = "approve" ] ;;
+    *) return 1 ;;
+  esac
+}
+
 # aif_project_validate <file> — echo one violation per line; empty output = valid.
 #
 # Structural only: the keys the gates dereference must exist and be the right
@@ -99,6 +161,21 @@ aif_project_validate() {
       ( (if (.checks // []) | type == "array" then [(.checks // [])[].name] else [] end)
         | select(length != (unique | length))
         | "two checks share a name — a per-check ledger row could not be attributed" ),
+
+      # explain — optional, because a project that never had it must keep
+      # validating. Present and wrong is a different thing from absent: a typo
+      # here silently reverts to the default, which is the failure mode the
+      # phase check above exists to prevent one level up.
+      (if (.explain // {}) | type != "object"
+        then "explain must be an object" else empty end),
+      # Bound first: inside index() the input is the ARRAY, so a bare
+      # .explain.auto there would be read against ["never",…] and error.
+      ( (.explain.auto // "") as $ea
+        | if ($ea | length) > 0
+             and (["never","approve","always"] | index($ea)) == null
+            then "explain.auto \"" + ($ea | tostring)
+                 + "\" is not one of never|approve|always"
+            else empty end ),
 
       (if (.limits | type) != "object" then "limits must be an object" else empty end),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),

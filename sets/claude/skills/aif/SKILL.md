@@ -109,23 +109,54 @@ own words about what was wrong, and it is usually exactly what needs answering.
    `cost_usd` is `null` the model is not in `.aif/prices.json`; report the tokens and say the
    table needs an entry, rather than guessing a figure.
 
+**When the station was `plan-judge` and it passed, draw the plan:**
+
+```bash
+aif explain <ID> --plan --auto plan
+```
+
+Relay the path it prints and move on — do **not** wait for an answer. The plan is the one
+artifact with no human gate after it, and it is also the one the user has to live with; a
+drawing they can open is the difference between that being a choice and being an accident.
+It renders nothing when the project has it off, and that line is the normal answer, not a
+problem to report.
+
 ### `human`, step `approve` — the one gate with no machine backstop
 
 This is the human's decision and it must actually be theirs.
 
-1. Show the acceptance criteria from `tasks/<ID>/spec.md`'s `aif:meta` — every one.
-2. Show the **assumptions** separately and prominently. These are the things the spec decided
-   that the ticket did not say, and they are what the user is really being asked about.
-3. Show the **verification gaps** separately again, under their own heading, and do not blend
+1. **Draw the chain before you ask anything.**
+
+   ```bash
+   aif explain <ID> --spec --auto approve
+   ```
+
+   It prints the path to `tasks/<ID>/explain.md`: what in the ticket each criterion came
+   from, which assumptions it rests on, and what each assumption carries. Give the user that
+   path *before* the list. Eight criteria and six assumptions read as a wall; the same
+   content as a chain is something a person can actually judge, which is the whole point of
+   putting the human here. It costs nothing — no model runs, it is a render of fields the
+   spec already carries and the gate already checked.
+
+   A line saying `explain: off for this project` is that project's setting, not a failure.
+   Carry on without commenting on it.
+2. Show the acceptance criteria from `tasks/<ID>/spec.md`'s `aif:meta` — every one.
+3. Show the **assumptions** separately and prominently, each as the chain it is: the
+   decision, then `because` — what in the ticket left the question open — then `instead_of`,
+   the road not taken, then the criteria that rest on it. The decision on its own is a
+   verdict handed down; the four together are something a person can disagree with, and
+   disagreeing is what they are here for. Where `affects` is empty, say so out loud: nothing
+   in this cycle would fail if that assumption were wrong.
+4. Show the **verification gaps** separately again, under their own heading, and do not blend
    them into the assumptions. An assumption says how the system behaves; a gap says what this
    cycle will *not* establish — "nothing here exercises the real device", "a green suite would
    not prove the file on disk is encrypted". They are different decisions and the pipeline
    treats them as different decisions.
-4. Ask, and wait for an answer to each:
+5. Ask, and wait for an answer to each:
    - *is anything missing, and do you accept these assumptions?*
    - if there are gaps: *do you accept shipping with these unverified?* — asked on its own,
      answered on its own.
-5. **Wait for their actual answer.** Do not proceed on silence, on a topic change, or on
+6. **Wait for their actual answer.** Do not proceed on silence, on a topic change, or on
    your own reading of what they would probably say.
    - Accepted → record it with their own words:
      ```bash
@@ -175,7 +206,13 @@ Two things it leaves to you:
 ## What you may and may not run
 
 You may run `aif _state`, `aif _gate`, `aif _commit`, `aif _ticket-init`, `aif _rework`,
-`aif _approve`, and any gate script directly for diagnosis.
+`aif _approve`, `aif explain`, and any gate script directly for diagnosis.
+
+`aif explain` is safe to run at any point and as often as you like: it writes one generated
+file under `tasks/`, which is on scope's denylist, and it spends nothing. If the user asks
+what a criterion came from or why a decision was made, run it rather than answering from
+your own reading of the artifact — what it draws is what the station wrote, and what you
+would say is a reconstruction.
 
 There is no command that runs a station — that is the Task tool, deliberately. A station has
 its own context and its own engine precisely so that its cost and its reasoning are its own.

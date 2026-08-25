@@ -25,6 +25,23 @@
 # Structured meta fields are English by design: every proxy below is a word
 # list, and per-language conjunction and verb tables would fail in ways nobody
 # predicts. The narrative body is in whatever language the ticket is in.
+#
+# PROVENANCE. Every criterion declares `from`: either a verbatim fragment of
+# ticket.md or the id of the assumption it rests on. The check is a literal
+# substring lookup — no regex, no fuzzy match — and it is the one thing here
+# that reaches past FORM into WHERE THE SCOPE CAME FROM. A criterion that can
+# point at neither a sentence the human wrote nor a decision the spec recorded
+# is scope nobody asked for, and until this field existed there was no place
+# where that showed: spec-judge reads the ticket, but "does the ticket support
+# this" is a judgement, and this is a lookup.
+#
+# The same idea one level down: an assumption declares `because` (what left the
+# question open), `instead_of` (the road not taken) and `affects` (the criteria
+# that rest on it). Those three are not decoration — they are what `aif explain`
+# draws, and it can draw nothing the station did not write. An empty `affects`
+# is NOT rejected: forcing a link would buy a plausible id instead of an honest
+# gap. It is printed on the pass path, the way plan-form prints an unvalidated
+# external surface.
 
 set -uo pipefail
 
@@ -38,8 +55,13 @@ work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: spec-form.sh <work-dir>"
 
 spec="$work/spec.md"
+ticket="$work/ticket.md"
 project="$(aif_g_project "$work")" || exit $?
 meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
+
+# Not a rejection: without the ticket the provenance of every criterion is
+# uncheckable, and a gate that cannot ask its question must not answer it.
+[ -f "$ticket" ] || aif_g_error "ticket.md missing — a spec's provenance cannot be checked without it"
 
 ac_max="$(jq -r '.limits.spec_ac_max // 15' "$project")"
 ticket_re="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' "$project")"
@@ -82,10 +104,15 @@ violations="$(
     | ($m.acceptance // []) as $acs
     | ($m.surfaces // []) as $surfaces
     | ([ $acs[]?.id ]) as $ids
+    | ([ ($m.assumptions // [])[]?.id ]) as $as_ids
     | [
       # ---- envelope ----------------------------------------------------
-      (if ($m.schema? // null) != 1
-        then "meta.schema must be 1" else empty end),
+      (if ($m.schema? // null) != 2
+        then "meta.schema must be 2 — a schema 1 spec predates the provenance "
+             + "fields (acceptance.from, assumptions.because/instead_of/affects, "
+             + "verification_gaps.leaves) and cannot be read as one; re-run the "
+             + "spec station rather than hand-patching the number"
+        else empty end),
       (if (($m.ticket? // "") | test($ticket_re) | not)
         then "meta.ticket \"" + ($m.ticket? // "") + "\" does not match " + $ticket_re
         else empty end),
@@ -202,7 +229,32 @@ violations="$(
           (if (($ac.then? // "") | length) > 160
             then $id + ".then is " + (($ac.then | length) | tostring)
                  + " chars — over 160 suggests more than one check"
-            else empty end)
+            else empty end),
+
+          # ---- provenance ----
+          # Two admissible answers and no third: a fragment of what the human
+          # wrote, or the assumption this criterion rests on. The fragment
+          # itself is looked up in ticket.md below, outside jq.
+          (if ($ac | has("from") | not)
+            then $id + ".from is required — a verbatim fragment of ticket.md, "
+                 + "or the id of the assumption this criterion rests on"
+            else ($ac.from | tostring) as $f
+              | if ($f | length) == 0
+                  then $id + ".from is empty"
+                elif ($f | test("^AS-[0-9]{3}$"))
+                  then (if ($as_ids | index($f)) == null
+                         then $id + ".from names " + $f
+                              + ", which is not an assumption in this spec"
+                         else empty end)
+                elif ($f | length) < 12
+                  then $id + ".from is " + (($f | length) | tostring)
+                       + " chars — too short to locate in the ticket; quote a "
+                       + "phrase, or name the assumption it rests on instead"
+                elif ($f | length) > 200
+                  then $id + ".from is " + (($f | length) | tostring)
+                       + " chars — quote a fragment, not the ticket"
+                else empty end
+            end)
         )
       ),
 
@@ -216,9 +268,38 @@ violations="$(
             then "assumptions[" + ($i | tostring) + "].id must look like AS-001"
             else empty end),
           (if (($as.text? // "") | length) == 0
-            then ($as.id // "assumption") + ".text is empty" else empty end)
+            then ($as.id // "assumption") + ".text is empty" else empty end),
+
+          # The questions a reader asks, in the order they are asked. `text`
+          # answers the second one only, which is why a spec of nothing but
+          # `text` reads as a list of verdicts with no case behind them.
+          #
+          # No apostrophes anywhere in this jq program: it is single-quoted
+          # shell, and one would end it here rather than at the closing quote.
+          (if (($as.because? // "") | length) == 0
+            then ($as.id // "assumption") + ".because is empty — say what in the "
+                 + "ticket left this open, not what you decided about it"
+            else empty end),
+          (if (($as.instead_of? // "") | length) == 0
+            then ($as.id // "assumption") + ".instead_of is empty — name the "
+                 + "alternative you did not take; if there is none, the ticket "
+                 + "already settled this and it is not an assumption"
+            else empty end),
+          (if ($as | has("affects") | not)
+            then ($as.id // "assumption") + ".affects is required (may be []) — "
+                 + "the criteria that rest on this decision"
+            elif (($as.affects | type) != "array")
+            then ($as.id // "assumption") + ".affects must be an array of AC ids"
+            else ( $as.affects[]?
+                   | select(. as $a | ($ids | index($a)) == null)
+                   | ($as.id // "assumption") + ".affects names "
+                     + (. | tostring) + ", which is not a criterion in this spec" )
+            end)
         )
       ),
+      ( [ ($m.assumptions // [])[].id ]
+        | select(length != (unique | length))
+        | "duplicate assumption ids — acceptance.from points at these by id" ),
 
       ( ($m.verification_gaps // [])
         | to_entries[]
@@ -229,7 +310,17 @@ violations="$(
             then "verification_gaps[" + ($i | tostring) + "].id must look like VG-001"
             else empty end),
           (if (($vg.text? // "") | length) == 0
-            then ($vg.id // "gap") + ".text is empty" else empty end)
+            then ($vg.id // "gap") + ".text is empty" else empty end),
+          (if ($vg | has("leaves") | not)
+            then ($vg.id // "gap") + ".leaves is required (may be []) — the "
+                 + "criteria this gap leaves unproven"
+            elif (($vg.leaves | type) != "array")
+            then ($vg.id // "gap") + ".leaves must be an array of AC ids"
+            else ( $vg.leaves[]?
+                   | select(. as $a | ($ids | index($a)) == null)
+                   | ($vg.id // "gap") + ".leaves names " + (. | tostring)
+                     + ", which is not a criterion in this spec" )
+            end)
         )
       ),
       ( [ ($m.verification_gaps // [])[].id ]
@@ -241,7 +332,41 @@ violations="$(
   ' 2>&1
 )" || aif_g_error "spec-form: jq failed — $violations"
 
-aif_g_report "$violations" "spec.md"
+# --- provenance: the quote has to be IN the ticket --------------------------
+#
+# Outside jq because it needs the other file, and a literal lookup rather than
+# grep -F because bash's own case-glob with a quoted variable matches the
+# fragment verbatim — no pattern to escape, no regex to get wrong.
+#
+# Both sides are normalised the same way, and only that way: newlines and tabs
+# to spaces, runs of spaces squeezed, ends trimmed. A quote that wraps a line in
+# ticket.md would otherwise fail a check it should pass, which teaches the
+# station to quote nothing longer than a few words. Nothing else is normalised —
+# no case folding, no punctuation stripping — because a paraphrase must not pass.
+ticket_norm="$(tr '\n\t' '  ' <"$ticket" | tr -s ' ')"
+
+fs_violations=""
+while IFS="$(printf '\t')" read -r ac_id ac_from; do
+  [ -n "$ac_id" ] || continue
+  case "$ac_from" in
+    AS-[0-9][0-9][0-9]) continue ;; # an assumption id; cross-referenced in jq
+  esac
+  from_norm="$(printf '%s' "$ac_from" | tr '\n\t' '  ' | tr -s ' ' |
+    sed 's/^ *//; s/ *$//')"
+  [ -n "$from_norm" ] || continue # empty is already a violation above
+  case "$ticket_norm" in
+    *"$from_norm"*) ;;
+    *)
+      fs_violations="$fs_violations
+$ac_id.from is not in ticket.md verbatim: \"$from_norm\" — quote what the human wrote, or name the assumption this criterion rests on"
+      ;;
+  esac
+done <<EOF
+$(printf '%s' "$meta" | jq -r '.acceptance[]? | select(has("from")) | [.id, (.from | tostring)] | @tsv')
+EOF
+
+all="$(printf '%s\n%s' "$violations" "${fs_violations# }" | grep -v '^$' || true)"
+aif_g_report "$all" "spec.md"
 
 printf 'spec-form: %s criteria, all admissible' \
   "$(printf '%s' "$meta" | jq '.acceptance | length')"
@@ -253,4 +378,18 @@ if [ "$gaps" -gt 0 ]; then
   printf '  These are not behaviours. They are what this run will NOT establish.\n'
 else
   printf '\n'
+fi
+
+# --- what passed, and what passed resting on nothing ------------------------
+# On the PASS path, always, for the same reason plan-form prints its unvalidated
+# external surface: an assumption no criterion depends on is one the suite will
+# never contradict, however wrong it is. Not a rejection — forcing a link would
+# buy a plausible AC id instead of an honest gap — but not silent either.
+floating="$(printf '%s' "$meta" |
+  jq -r '.assumptions[]? | select((.affects // []) | length == 0)
+         | "    - " + .id + ": " + .text')"
+if [ -n "$floating" ]; then
+  printf '  ASSUMPTIONS THAT REST ON NOTHING — no criterion depends on these:\n'
+  printf '%s\n' "$floating"
+  printf '  Nothing in this cycle would fail if they were wrong.\n'
 fi

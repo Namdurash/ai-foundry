@@ -82,9 +82,13 @@ violations="$(
     | ([ $cov[]? ] | flatten) as $covered
     | ($m.uncovered // []) as $unc
     | ($m.surface_map // {}) as $smap
+    | ([ ($m.decisions // [])[]?.id ]) as $d_ids
     | [
-      (if ($m.schema? // null) != 1
-        then "meta.schema must be 1" else empty end),
+      (if ($m.schema? // null) != 2
+        then "meta.schema must be 2 — a schema 1 plan predates decisions.because "
+             + "and decisions.serves and cannot be read as one; re-run the plan "
+             + "station rather than hand-patching the number"
+        else empty end),
       (if ($m.ticket? // "") != $spec_ticket
         then "meta.ticket \"" + ($m.ticket? // "")
              + "\" does not match spec.md (" + $spec_ticket + ")" else empty end),
@@ -143,7 +147,35 @@ violations="$(
             | (hedges | map(select(. as $h | $s | startswith($h))))
             | select(length > 0)
             | ($d.id // "decision") + ".statement hedges (\"" + .[0]
-              + "\") — state the decision, do not weigh it" )
+              + "\") — state the decision, do not weigh it" ),
+
+          # Why it exists, and what it is for. A statement alone crosses the
+          # boundary as a verdict: the implementer obeys it and the human
+          # cannot follow it. These two fields are the whole chain.
+          (if (($d.because // "") | length) == 0
+            then ($d.id // "decision") + ".because is empty — name what forced "
+                 + "this decision, in one clause"
+            else empty end),
+          (if ($d | has("rejected")) and (($d.rejected // "") | length) == 0
+            then ($d.id // "decision") + ".rejected is present but empty — drop "
+                 + "the key or name the alternative"
+            else empty end),
+          (if ($d | has("serves") | not)
+            then ($d.id // "decision") + ".serves is required (may be []) — the "
+                 + "criteria this decision exists for, or the decisions that "
+                 + "rest on it"
+            elif (($d.serves | type) != "array")
+            then ($d.id // "decision") + ".serves must be an array of AC or D ids"
+            else ( $d.serves[]?
+                   | select(. as $x | ($spec_acs | index($x)) == null
+                                  and ($d_ids | index($x)) == null)
+                   | ($d.id // "decision") + ".serves names " + (. | tostring)
+                     + ", which is neither a criterion in spec.md nor a decision "
+                     + "in this plan" ),
+                 ( $d.serves[]?
+                   | select(. == ($d.id // ""))
+                   | ($d.id // "decision") + ".serves names itself" )
+            end)
         )
       ),
 
@@ -304,6 +336,15 @@ if [ -n "$gaps" ]; then
   printf '  UNVALIDATED EXTERNAL SURFACE — no check and no criterion touches these:\n'
   printf '%s\n' "$gaps" | sed 's/^/    - /'
   printf '  Nothing in this run will establish that they behave as the plan assumes.\n'
+fi
+
+idle="$(printf '%s' "$meta" |
+  jq -r '.decisions[]? | select((.serves // []) | length == 0)
+         | "    - " + .id + ": " + .statement')"
+if [ -n "$idle" ]; then
+  printf '  DECISIONS THAT SERVE NO CRITERION — the spec did not ask for these:\n'
+  printf '%s\n' "$idle"
+  printf '  Each is either scope nobody asked for, or a preference with a decision id.\n'
 fi
 
 drift="$(aif_g_surface_drift "$meta" "$spec_meta")"

@@ -261,6 +261,7 @@ the gates rather than remembered.
 | `aif project check` | validate it |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
+| `aif explain <ticket>` | draw how it got here — provenance, assumptions, decisions |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 
 There is no command per stage. `aif run` opens the orchestrator, which dispatches
@@ -440,6 +441,72 @@ never surfaced again is the same as no gap at all.
 aif never learns what "device" means. It learns that a class of statement exists
 which says *"this is not verified"*, and that statements of that class are not
 allowed to vanish quietly.
+
+### How a ticket got here, drawn
+
+The artifacts are written for gates, and it shows. A spec is a list of criteria,
+a list of assumptions and a list of gaps; every entry is admissible and none of
+them says *where it came from*. The human at the approval gate is handed eight
+sentences and asked to judge them, with the reasoning that produced each one
+already discarded along with the station's context.
+
+So each station now records the chain while it decides, in fields the gate
+checks afterwards:
+
+| field | in | says |
+|---|---|---|
+| `acceptance[].from` | spec | a **verbatim** fragment of `ticket.md`, or the assumption this criterion rests on |
+| `assumptions[].because` | spec | what in the ticket left the question open |
+| `assumptions[].instead_of` | spec | the road not taken |
+| `assumptions[].affects` | spec | the criteria that rest on the decision |
+| `verification_gaps[].leaves` | spec | the criteria a gap leaves unproven |
+| `decisions[].because` | plan | what forced the decision |
+| `decisions[].serves` | plan | the criteria it exists for |
+
+`from` is the load-bearing one, and it is a lookup rather than a judgement:
+`spec-form` searches `ticket.md` for the fragment literally, so a paraphrase is
+a rejection and an invented quote is a rejection. A criterion that can point at
+neither a sentence the human wrote nor a decision the spec recorded is scope
+nobody asked for — and before this field there was no place where that showed.
+
+Then `aif explain <ticket>` draws it:
+
+```sh
+aif explain TICK-1                  # → tasks/TICK-1/explain.md, mermaid
+aif explain TICK-1 --format tree    # the same chain, in the terminal
+```
+
+**It runs no model and costs nothing.** That is the design, not an
+optimisation: a picture of "how the agent got here" drawn *afterwards, by a
+model reading the finished artifact* is a plausible story about the artifact
+rather than a record of anything, and it would buy the reader a confidence no
+gate had earned. This renders only fields a station wrote while deciding and a
+gate checked after. It can draw nothing that was not written, and nothing it
+draws is unchecked. The generated file records the `sha256` of the artifacts it
+came from, so a stale drawing reads as stale rather than as wrong.
+
+Two things are printed on the **pass** path rather than rejected, for the same
+reason `plan-form` prints an unvalidated external surface: an assumption whose
+`affects` is empty (no criterion depends on it, so nothing in the cycle would
+fail if it were wrong) and a decision that serves no criterion. Forcing either
+to point somewhere would buy a plausible id in place of an honest gap.
+
+The orchestrator draws the spec at the approval gate, and the plan once
+`plan-judge` admits it — the plan being the artifact with no human gate after
+it. What that is worth in tokens is nothing; what it is worth in attention is a
+setting:
+
+```json
+{ "explain": { "auto": "approve" } }
+```
+
+`approve` (the default) draws at the approval gate, `always` also draws the
+plan, `never` leaves it to you. `.aif/project.json` holds what the *repository*
+does; `~/.config/aif/config.json` and `AIF_EXPLAIN=never|approve|always`
+override it per developer, because "I have the budget for this" is a fact about
+a person and does not belong in a shared file. None of the three can stop a
+human who types the command: a setting that overrode a direct question would be
+a different feature and a worse one.
 
 ### Three coverage questions of one shape
 
@@ -678,6 +745,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] The gated cycle: spec → approve → plan → tests → code, eight gates
 - [x] `aif run` — one command, stations as subagents in one visible session
 - [x] Per-station metering from subagent transcripts, into a hash-chained ledger
+- [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

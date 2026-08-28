@@ -44,7 +44,7 @@ aif_cmd_gate() {
   aif_station_meta "$root" "$station" >/dev/null 2>&1 ||
     aif_die "no such station: $station"
 
-  local tab subject_line subject hash
+  local tab subject_line subject hash subject_key rest
   tab="$(printf '\t')"
 
   # The subject is resolved twice, and it has to be. BEFORE a gate runs it is the
@@ -57,10 +57,13 @@ aif_cmd_gate() {
     subject_line="$(aif_station_subject "$root" "$station" "$work")"
     if [ -n "$subject_line" ]; then
       subject="${subject_line%%"$tab"*}"
-      hash="${subject_line#*"$tab"}"
+      rest="${subject_line#*"$tab"}"
+      hash="${rest%%"$tab"*}"
+      subject_key="${rest#*"$tab"}"
     else
       subject=""
       hash=""
+      subject_key=""
     fi
   }
   _resolve_subject
@@ -85,7 +88,14 @@ aif_cmd_gate() {
     # cost tokens and moved nothing. Observed live before this check existed: a
     # spec attempt that burned 2599 output tokens over 5 turns and rewrote
     # nothing, then produced complaints identical to the previous round.
-    if [ -n "$hash" ]; then
+    #
+    # Only for a `produces` subject — the station's own output. The tests
+    # station's subject is tests.lock.json, which only its GATE writes; the
+    # implement station's is plan.md, which an earlier station wrote. Keying the
+    # guard to those measured files the station never touches, so a genuine
+    # rewrite looked like "nothing changed" and the check fired forever, with no
+    # force flag. Both deadlocks were hit live on OPES-63.
+    if [ -n "$hash" ] && [ "$subject_key" = "produces" ]; then
       last="$(aif_ledger_gate_last "$work" "$gate")"
       last_result="${last%%|*}"
       last_sha="${last#*|}"

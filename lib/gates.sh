@@ -44,7 +44,7 @@ aif_station_gates() {
 }
 
 # aif_station_subject <root> <station> <work> — the artifact a gate result binds
-# to, echoed as "<relative-path>\t<sha256>", or empty when there is none.
+# to, echoed as "<relative-path>\t<sha256>\t<key>", or empty when there is none.
 #
 # Three fallbacks, in this order, and each answers a different question:
 #
@@ -58,6 +58,13 @@ aif_station_gates() {
 #              plan is what the verdict must lapse with. Without this the
 #              verdict binds to nothing, and a pass recorded against nothing
 #              can never be invalidated — which is the same as not recording it.
+#
+# The key travels with the answer because the caller's no-progress guard must
+# know it: only a `produces` subject is the station's own output, so only there
+# does "unchanged bytes" mean "the station rewrote nothing". A freezes subject
+# is written by the GATE, a binds subject by an EARLIER station — comparing
+# either across attempts measures a file the station never touches, and that
+# deadlocked two stations permanently (defects 2 and 4 of the gate-defect set).
 aif_station_subject() {
   local root="$1" station="$2" work="$3"
   local meta subject key
@@ -65,7 +72,7 @@ aif_station_subject() {
   for key in freezes produces binds; do
     subject="$(printf '%s' "$meta" | jq -r --arg k "$key" '.[$k] // empty')"
     if [ -n "$subject" ] && [ -f "$work/$subject" ]; then
-      printf '%s\t%s' "$subject" "$(aif_sha256 "$work/$subject")"
+      printf '%s\t%s\t%s' "$subject" "$(aif_sha256 "$work/$subject")" "$key"
       return 0
     fi
   done

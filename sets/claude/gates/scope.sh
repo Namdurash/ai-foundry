@@ -101,10 +101,21 @@ deleted="$(git -C "$root" diff --name-only --diff-filter=D HEAD 2>/dev/null || t
 # directory, which still holds the plan and the ledger this gate protects.
 amend_rel="${amend_file#"$root"/}"
 
+# The ledger too, and for the same reason: aif itself writes it. A failed
+# attempt's verdicts are recorded the moment the gate rejects — between two aif
+# commits — so on the retry the ledger sits modified in the very diff this gate
+# reads, and the pipeline's own bookkeeping reads as the implementation editing
+# its record. The hook's cost rows are staged out of the diff entirely
+# (.aif/tmp/, folded in by `aif _gate`); this carve-out covers the verdicts,
+# which must land when they happen or a crash loses the attempt. Tamper
+# evidence does not thin: the ledger is hash-chained and committed, and the
+# guard hook still refuses any station that tries to write it.
+ledger_rel="${work#"$root"/}/ledger.json"
+
 viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  if [ "$p" = "$amend_rel" ]; then
+  if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ]; then
     continue
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol
@@ -134,7 +145,10 @@ aif_g_report "${viol# }" "scope"
 
 # A green diff can still be a rewrite. Cap the size: a small model that changed
 # 2000 lines to pass three tests has done something other than the ticket.
-added_removed="$(git -C "$root" diff --numstat HEAD 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
+# tasks/ is excluded from the count — the ledger and the amendments file are
+# machine-written bookkeeping, and rows recorded for a failed attempt must not
+# eat the budget of the retry that fixes it.
+added_removed="$(git -C "$root" diff --numstat HEAD -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
 if [ "${added_removed:-0}" -gt "$max_diff" ]; then
   aif_g_reject "the change is $added_removed lines, over the limit of $max_diff — too large for the ticket, or out of scope"
 fi

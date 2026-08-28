@@ -114,6 +114,7 @@ aif_cmd_gate() {
     if [ "$rc" -eq 3 ]; then
       records="$records$gate$tab""error$tab$subject$tab$hash$tab$(printf '%s' "$out" | head -1)
 "
+      _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
       aif_err "$gate could not render a verdict — that is the environment, not the artifact:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
@@ -135,10 +136,53 @@ aif_cmd_gate() {
     printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$out" | head -1)"
   done
 
+  _aif_gate_record_meter "$root" "$work"
   _aif_gate_record "$work" "$root" "$records"
   _aif_gate_record_amendments "$work"
   _aif_gate_record_checks "$root" "$work"
   return "$overall"
+}
+
+# _aif_gate_record_meter <root> <work>
+#
+# Fold the staged station-cost rows into the ledger. The SubagentStop hook
+# stages them under .aif/tmp/ (gitignored) because it fires between the last
+# commit and this gate run — a ledger write at that moment shows up in scope's
+# diff as the implementation editing the pipeline's own record, and scope
+# rejected correct work for it on two live tickets. Folded here, after the
+# gates have run, exactly like the checks record below.
+#
+# Folded BEFORE the gate verdicts, so the ledger reads chronologically: the
+# station ran, then its gates judged it. attempt is numbered as each row lands,
+# counting the rows already in the ledger — two staged attempts of one station
+# therefore number correctly, in file order.
+#
+# Idempotent by agent id: a row whose agent_id the ledger already holds is
+# dropped, so a crash between hook and fold neither loses nor doubles a row.
+# A row with no agent id cannot be identified and is appended as it is.
+_aif_gate_record_meter() {
+  local root="$1" work="$2" ticket file entry agent_id station attempt
+  ticket="$(basename "$work")"
+  file="$root/.aif/tmp/meter-$ticket.jsonl"
+  [ -f "$file" ] || return 0
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    printf '%s' "$entry" | jq -e . >/dev/null 2>&1 || continue
+    agent_id="$(printf '%s' "$entry" | jq -r '.agent_id // ""')"
+    if [ -n "$agent_id" ] && jq -e --arg id "$agent_id" \
+      '[.entries[] | select(.agent_id == $id)] | length > 0' \
+      "$(aif_ledger_path "$work")" >/dev/null 2>&1; then
+      continue
+    fi
+    station="$(printf '%s' "$entry" | jq -r '.station // ""')"
+    attempt=$(($(jq --arg s "$station" \
+      '[.entries[] | select(.station == $s)] | length' \
+      "$(aif_ledger_path "$work")" 2>/dev/null || printf 0) + 1))
+    aif_ledger_append "$work" \
+      "$(printf '%s' "$entry" | jq --argjson a "$attempt" '. + { attempt: $a }')"
+  done <"$file"
+  rm -f "$file"
 }
 
 # _aif_gate_record_checks <root> <work>

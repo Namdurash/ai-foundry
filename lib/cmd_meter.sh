@@ -22,6 +22,32 @@
 #   - `message.usage` REPEATS per content block. One measured file had 36 rows
 #     for 14 real requests. Dedupe by message.id.
 #   - some entries carry `model: "<synthetic>"`. They are not billed.
+#
+# The row is STAGED, not appended: it goes to gitignored .aif/tmp/, and
+# `aif _gate` folds it into the ledger after the gates have run. The hook fires
+# when a subagent finishes — for the implement station that is after the
+# tests-station commit and before scope diffs the tree, so a ledger write at
+# that moment appears in scope's diff as the implementation editing the
+# pipeline's own record, and scope rejects correct work. The gate verdicts are
+# batched for exactly this reason (see cmd_gate.sh); this is the same rule one
+# writer over: instrumentation must not perturb what it measures.
+
+# _aif_meter_stage_file <root> <ticket> — where this ticket's rows wait.
+_aif_meter_stage_file() {
+  printf '%s/.aif/tmp/meter-%s.jsonl' "$1" "$2"
+}
+
+# _aif_meter_stage <root> <ticket> <entry-json>
+#
+# One JSON line per station attempt. A plain append, no lock: each write is a
+# single short line under O_APPEND, and the fold — not this file — is where
+# ordering and idempotency are decided.
+_aif_meter_stage() {
+  local root="$1" ticket="$2" entry="$3" file
+  file="$(_aif_meter_stage_file "$root" "$ticket")"
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  printf '%s\n' "$(printf '%s' "$entry" | jq -c .)" >>"$file"
+}
 
 # _aif_meter_rollup <transcript> — token totals for one subagent, as JSON.
 _aif_meter_rollup() {
@@ -102,22 +128,22 @@ aif_cmd_meter() {
   # station that ran and left no measurable trace is exactly the hole this whole
   # phase exists to close, so it goes in the ledger as "unmetered" rather than
   # quietly vanishing and making the totals look better than they are.
-  local rollup model usage turns cost attempt
+  #
+  # attempt is NOT stamped here: it counts ledger rows, and this row will not
+  # reach the ledger until the fold. The fold numbers each row as it lands, so
+  # two staged attempts of one station cannot both claim the same number.
+  local rollup model usage turns cost
   if [ -n "$transcript" ] && [ -f "$transcript" ]; then
     rollup="$(_aif_meter_rollup "$transcript")"
   else
     rollup=""
   fi
 
-  attempt=$(($(jq --arg s "$station" \
-    '[.entries[] | select(.station == $s)] | length' \
-    "$(aif_ledger_path "$work")" 2>/dev/null || printf 0) + 1))
-
   if [ -z "$rollup" ] || [ "$rollup" = "null" ]; then
-    aif_ledger_append "$work" "$(jq -n \
-      --arg s "$station" --argjson a "$attempt" --arg ag "$agent_type" \
+    _aif_meter_stage "$root" "$ticket" "$(jq -n \
+      --arg s "$station" --arg ag "$agent_type" \
       --arg id "$agent_id" --arg sum "$summary" --arg t "${transcript:-none}" \
-      '{ station: $s, attempt: $a, agent: $ag, agent_id: $id,
+      '{ station: $s, agent: $ag, agent_id: $id,
          result: "unmetered", reason: ("no readable transcript at " + $t),
          summary: $sum }')"
     aif_err "meter: could not read a transcript for $station — recorded as unmetered"
@@ -129,11 +155,11 @@ aif_cmd_meter() {
   turns="$(printf '%s' "$rollup" | jq -r '.turns')"
   cost="$(_aif_meter_cost "$root/.aif/prices.json" "$model" "$usage")"
 
-  aif_ledger_append "$work" "$(jq -n \
-    --arg s "$station" --argjson a "$attempt" --arg ag "$agent_type" \
+  _aif_meter_stage "$root" "$ticket" "$(jq -n \
+    --arg s "$station" --arg ag "$agent_type" \
     --arg id "$agent_id" --arg m "$model" --argjson u "$usage" \
     --argjson t "$turns" --argjson c "$cost" --arg sum "$summary" \
-    '{ station: $s, attempt: $a, agent: $ag, agent_id: $id, model: $m,
+    '{ station: $s, agent: $ag, agent_id: $id, model: $m,
        usage: $u, num_turns: $t,
        cost_usd: $c,
        cost_source: (if $c == null then "tokens-only" else "priced" end),

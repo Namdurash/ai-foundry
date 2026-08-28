@@ -175,29 +175,37 @@ state "fresh ticket" spec
 
 # ---------------------------------------------------------------------------
 step "3. SPECIFICATION boundary  —  spec-form → spec-judge → human"
-cat > tasks/PROJ-1/spec.md <<'SPEC'
+TH="$(shasum -a 256 tasks/PROJ-1/ticket.md | cut -d' ' -f1)"
+cat > tasks/PROJ-1/spec.md <<SPEC
 <!-- aif:meta
-{ "schema": 1, "ticket": "PROJ-1", "lang": "en", "risk": "low",
+{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$TH", "lang": "en", "risk": "low",
   "surfaces": ["POST /api/users"],
   "acceptance": [
     { "id": "AC-001", "surface": "POST /api/users",
       "given": "a user with that email already exists",
       "when": "the same email is posted",
-      "then": "responds with status", "expect": 409 } ],
-  "assumptions": [ { "id": "AS-001", "text": "email uniqueness is case-insensitive" } ],
+      "then": "responds with status", "expect": 409,
+      "from": "an email that is already taken" } ],
+  "assumptions": [
+    { "id": "AS-001", "text": "email uniqueness is case-insensitive",
+      "because": "the ticket does not say how letter case is treated",
+      "instead_of": "matching the address byte-for-byte",
+      "affects": ["AC-001"] } ],
   "verification_gaps": [
-    { "id": "VG-001", "text": "two simultaneous posts of the same email are not exercised by this suite" } ],
+    { "id": "VG-001", "text": "two simultaneous posts of the same email are not exercised by this suite",
+      "leaves": [] } ],
   "non_goals": ["password reset"] }
 -->
 # PROJ-1 — reject duplicate registration
 SPEC
 gate "spec form" spec-form PROJ-1 0
 
-note "now the same gate on a BAD spec (vague expect, two assertions):"
+note "now the same gate on a BAD spec (vague expect, two assertions, no provenance):"
 mkdir -p tasks/BAD
+printf 'reject duplicate registration on POST /x\n' > tasks/BAD/ticket.md
 cat > tasks/BAD/spec.md <<'SPEC'
 <!-- aif:meta
-{ "schema": 1, "ticket": "BAD-1", "lang": "en", "risk": "low", "surfaces": ["POST /x"],
+{ "schema": 2, "ticket": "BAD-1", "lang": "en", "risk": "low", "surfaces": ["POST /x"],
   "acceptance": [ { "id": "AC-001", "surface": "POST /x", "given": "a", "when": "b",
     "then": "works properly and writes a log", "expect": "as expected" } ],
   "assumptions": [], "verification_gaps": [], "non_goals": [] }
@@ -230,18 +238,36 @@ note "NOT establish. Filed together, the second disappears into the first — on
 note "live ticket a human approved both with one keystroke, and nothing referred"
 note "to the blind spot again:"
 "$AIF" _ticket-init GAP-1 >/dev/null
-cat > tasks/GAP-1/spec.md <<'SPEC'
+cat > tasks/GAP-1/ticket.md <<'TICKET'
 <!-- aif:meta
-{ "schema": 1, "ticket": "GAP-1", "lang": "en", "risk": "high",
+{ "schema": 1, "ticket": "GAP-1", "lang": "en", "risk": "high" }
+-->
+# GAP-1 — encrypt stored secrets
+
+Secrets are stored in plain text today. Store them encrypted at rest, and keep
+reads working.
+TICKET
+GTH="$(shasum -a 256 tasks/GAP-1/ticket.md | cut -d' ' -f1)"
+cat > tasks/GAP-1/spec.md <<SPEC
+<!-- aif:meta
+{ "schema": 2, "ticket": "GAP-1", "ticket_sha256": "$GTH", "lang": "en", "risk": "high",
   "surfaces": ["secret storage"],
   "acceptance": [
     { "id": "AC-001", "surface": "secret storage",
       "given": "a stored secret", "when": "it is read back",
-      "then": "returns the value", "expect": "s3cret" } ],
-  "assumptions": [ { "id": "AS-001", "text": "one process reads the store at a time" } ],
+      "then": "returns the value", "expect": "s3cret",
+      "from": "Store them encrypted at rest" } ],
+  "assumptions": [
+    { "id": "AS-001", "text": "one process reads the store at a time",
+      "because": "the ticket does not say whether readers overlap",
+      "instead_of": "locking the store for concurrent readers",
+      "affects": ["AC-001"] } ],
   "verification_gaps": [
-    { "id": "VG-001", "text": "the on-device encrypted path is not exercised by this suite" } ],
+    { "id": "VG-001", "text": "the on-device encrypted path is not exercised by this suite",
+      "leaves": ["AC-001"] } ],
   "non_goals": [] }
+-->
+# GAP-1 — encrypt stored secrets
 SPEC
 gate "spec form" spec-form GAP-1 0
 GH="$(shasum -a 256 tasks/GAP-1/spec.md | cut -d' ' -f1)"
@@ -274,9 +300,12 @@ step "4. PLAN boundary  —  plan-form → plan-judge (on the routine tier)"
 SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
 cat > tasks/PROJ-1/plan.md <<PLAN
 <!-- aif:meta
-{ "schema": 1, "ticket": "PROJ-1", "spec_sha256": "$SH", "risk": "low",
+{ "schema": 2, "ticket": "PROJ-1", "spec_sha256": "$SH", "risk": "low",
   "files": { "create": [], "change": ["src/api/users.py"], "tests": ["tests/test_users.py"] },
-  "decisions": [ { "id": "D-001", "statement": "Return 409 when the email already exists." } ],
+  "decisions": [
+    { "id": "D-001", "statement": "Return 409 when the email already exists.",
+      "because": "AC-001 names 409 as the observable refusal",
+      "serves": ["AC-001"] } ],
   "ac_coverage": { "AC-001": ["src/api/users.py"] },
   "surface_map": { "POST /api/users": ["src/api/users.py"] },
   "uncovered": [],
@@ -356,6 +385,14 @@ note "a judge that did not report is a malfunction (exit 3), not a plan defect:"
 jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
 gate "plan judge" plan-judge PROJ-1 3
 jq -n --arg s "$PLH" "$VERDICT" > tasks/PROJ-1/verdict-plan.json
+
+note "the plan gates run ONCE, here, and their pass is RECORDED. One of their"
+note "premises — every files.create path must not exist YET — is exactly what the"
+note "implement station is later paid to falsify, so re-running them against a"
+note "finished ticket would reject a correct plan forever. The state machine"
+note "trusts the record while the plan's bytes and its spec binding hold:"
+sgate plan PROJ-1 0
+sgate plan-judge PROJ-1 0
 "$AIF" _commit plan PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -465,14 +502,14 @@ rm -f tasks/PROJ-1/plan-amendments.json src/api/sneaky.py src/api/extra*.py
 note "now the denylist, which is a different defence. Above, sneaky.py was caught"
 note "for not being in the plan — so an implementation that simply ADDS itself to"
 note "the plan would walk straight through. Here it does exactly that: it lists"
-note "the plan and the ledger as files it may change, then edits the ledger. Every"
-note "changed file is now permitted, and only the denylist is left standing:"
+note "the plan itself as a file it may change, then rewrites it. Every changed"
+note "file is now permitted, and only the denylist is left standing. (The ledger"
+note "is the one tasks/ file scope exempts — aif itself writes verdicts there"
+note "between commits; the hash chain, git, and the guard hook police it.)"
 cp tasks/PROJ-1/plan.md /tmp/aif-demo-plan.bak
-perl -pi -e 's{"change": \["src/api/users\.py"\]}{"change": ["src/api/users.py", "tasks/PROJ-1/plan.md", "tasks/PROJ-1/ledger.json"]}' tasks/PROJ-1/plan.md
-printf '{"tampered":true}\n' > tasks/PROJ-1/ledger.json
+perl -pi -e 's{"change": \["src/api/users\.py"\]}{"change": ["src/api/users.py", "tasks/PROJ-1/plan.md"]}' tasks/PROJ-1/plan.md
 gate "scope" scope PROJ-1 1
 cp /tmp/aif-demo-plan.bak tasks/PROJ-1/plan.md
-git checkout -q -- tasks/PROJ-1/ledger.json
 
 # ---------------------------------------------------------------------------
 step "7. ACCOUNTING  —  what a station cost, from its own transcript"
@@ -489,42 +526,61 @@ TR="$DEMO/agent-demo.jsonl"
   printf '{"type":"assistant","message":{"id":"ms","model":"<synthetic>","usage":{"input_tokens":9999,"output_tokens":9999,"cache_read_input_tokens":9999,"cache_creation_input_tokens":9999}}}\n'
 } > "$TR"
 
-meter() { # <agent_type> <transcript>
-  jq -n --arg a "$1" --arg t "$2" \
-    '{agent_type:$a, agent_id:"demo", agent_transcript_path:$t, last_assistant_message:"done"}' |
+meter() { # <agent_type> <transcript> <agent-id>
+  jq -n --arg a "$1" --arg t "$2" --arg id "$3" \
+    '{agent_type:$a, agent_id:$id, agent_transcript_path:$t, last_assistant_message:"done"}' |
     "$AIF" _meter 2>/dev/null
 }
+STAGE=".aif/tmp/meter-PROJ-1.jsonl"
 
+note "the hook does not write the ledger. The ledger lives under tasks/, which"
+note "scope diffs — a cost row written mid-flight read as the implementation"
+note "editing the pipeline's own record, and scope rejected correct work on two"
+note "live tickets. So the row is STAGED under gitignored .aif/tmp/, and the"
+note "next 'aif _gate' folds it in after its gates have run."
+note ""
 note "the transcript repeats usage per content block and carries a <synthetic>"
 note "row; counted naively that is 3x the output tokens plus 9999 unbilled ones:"
-meter aif-plan "$TR"
-last_plan() { jq -r --arg k "$1" '[.entries[]|select(.station=="plan")]|last|.[$k]//"null"' tasks/PROJ-1/ledger.json; }
-check "deduped output tokens" "$(jq -r '[.entries[]|select(.station=="plan")]|last|.usage.output_tokens' tasks/PROJ-1/ledger.json)" "140"
-check "turns, not content blocks" "$(last_plan num_turns)" "2"
-check "unpriced model → null cost" "$(last_plan cost_usd)" "null"
+meter aif-plan "$TR" demo-1
+last_staged() { jq -s -r --arg k "$1" '[.[]|select(.station=="plan")]|last|.[$k]//"null"' "$STAGE"; }
+check "deduped output tokens" "$(jq -s -r '[.[]|select(.station=="plan")]|last|.usage.output_tokens' "$STAGE")" "140"
+check "turns, not content blocks" "$(last_staged num_turns)" "2"
+check "unpriced model → null cost" "$(last_staged cost_usd)" "null"
 
 note "now with a price table (1/5/0.1/1.25 per MTok): 15 + 700 + 300 + 62.5 = \$0.0010775"
 jq '.models={"demo-model":{"input":1,"output":5,"cache_read":0.1,"cache_write":1.25}}' \
   .aif/prices.json > .aif/p.tmp && mv .aif/p.tmp .aif/prices.json
-meter aif-plan "$TR"
-check "priced from tokens" "$(last_plan cost_usd)" "0.0010775"
+meter aif-plan "$TR" demo-2
+check "priced from tokens" "$(last_staged cost_usd)" "0.0010775"
 
 note "a station that left no transcript is RECORDED as unmetered, never skipped —"
 note "a gap that announces itself is recoverable; a silent one flatters the total:"
-meter aif-tests "/nonexistent.jsonl"
-check "missing transcript" "$(jq -r '[.entries[]|select(.station=="tests" and .result=="unmetered")]|length' tasks/PROJ-1/ledger.json)" "1"
+meter aif-tests "/nonexistent.jsonl" demo-3
+check "missing transcript" "$(jq -s '[.[]|select(.station=="tests" and .result=="unmetered")]|length' "$STAGE")" "1"
 
 note "a subagent that is not a station is not a pipeline cost:"
-BEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
-meter general-purpose "$TR"
-check "unrelated subagent ignored" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$BEFORE"
+BEFORE=$(jq -s 'length' "$STAGE")
+meter general-purpose "$TR" demo-4
+check "unrelated subagent ignored" "$(jq -s 'length' "$STAGE")" "$BEFORE"
 
-note "subagents finish whenever they finish, so the append is locked. Eight at"
-note "once, and the hash chain still has to verify end to end:"
-BEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
-for _ in 1 2 3 4 5 6 7 8; do meter aif-spec "$TR" & done
+note "subagents finish whenever they finish. Eight at once, every row lands:"
+BEFORE=$(jq -s 'length' "$STAGE")
+for n in 1 2 3 4 5 6 7 8; do meter aif-spec "$TR" "race-$n" & done
 wait
-check "no row lost to a race" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((BEFORE + 8))"
+check "no row lost to a race" "$(jq -s 'length' "$STAGE")" "$((BEFORE + 8))"
+
+note "the fold: the next gate run moves the staged rows into the ledger after"
+note "its own gates have run — numbered as each row lands, idempotent by agent"
+note "id, so a crash between hook and fold neither loses nor doubles a row:"
+NSTAGED=$(jq -s 'length' "$STAGE")
+LBEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
+"$AIF" _gate spec PROJ-1 >/dev/null 2>&1
+check "rows folded (+1 gate verdict)" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((LBEFORE + NSTAGED + 1))"
+check "stage file consumed" "$(test -f "$STAGE" && echo present || echo gone)" "gone"
+meter aif-plan "$TR" demo-1
+LBEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
+"$AIF" _gate spec PROJ-1 >/dev/null 2>&1
+check "a replayed row folds once" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((LBEFORE + 1))"
 
 N=$(jq '.entries|length' tasks/PROJ-1/ledger.json); BROKEN=0; i=1
 while [ "$i" -lt "$N" ]; do

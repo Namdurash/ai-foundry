@@ -78,7 +78,7 @@ _aif_state_verdict() {
 
     if [ "$source" = "recorded" ]; then
       if ! aif_ledger_recorded_pass "$work" "$gate"; then
-        printf 'blocked\t%s has no recorded pass bound to the current artifact' "$gate"
+        printf 'blocked\t%s has no recorded pass bound to the current bytes — the artifact, or something it binds to, has changed since it passed' "$gate"
         return 0
       fi
       detail="$gate recorded"

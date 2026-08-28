@@ -123,8 +123,56 @@ aif_ledger_gate_valid() {
   [ "$latest" = "pass|$cur" ]
 }
 
+# _aif_ledger_bindings_ok <work> <subject> — rc 0 iff every binding INSIDE the
+# subject still names the current bytes of the artifact it points at.
+#
+# A recorded pass whose subject is unchanged can still be stale: tests.lock.json
+# carries plan_sha256 precisely so that a lock frozen against an older plan is
+# detectable, and _state did not look. On a live ticket that failed OPEN — the
+# state machine reported tests done and routed a round-one lock, with wrong AC
+# numbering and a declared test file that did not exist, straight to implement.
+# Matching the subject's own hash proves the artifact did not change; only
+# following the bindings inside it proves its premises did not either.
+#
+# Two shapes of subject, one rule. A JSON artifact carries its bindings at the
+# top level; a markdown artifact carries them in its aif:meta block. The field
+# names are the map: plan_sha256 binds to plan.md, spec_sha256 to spec.md,
+# ticket_sha256 to ticket.md, and a subject/subject_sha256 pair (a judge's
+# verdict) binds to whatever file it names. A binding present but pointing at
+# missing or different bytes fails CLOSED — a subject with no bindings at all
+# passes, which is the status quo for artifacts that never claimed any.
+_aif_ledger_bindings_ok() {
+  local work="$1" subject="$2" file="$1/$2"
+  local doc pair field target recorded
+
+  case "$subject" in
+    *.json) doc="$(cat "$file" 2>/dev/null)" ;;
+    *) doc="$(aif_meta_json "$file" 2>/dev/null)" ;;
+  esac
+  [ -n "$doc" ] || return 0
+  printf '%s' "$doc" | jq -e . >/dev/null 2>&1 || return 0
+
+  for pair in plan_sha256:plan.md spec_sha256:spec.md ticket_sha256:ticket.md; do
+    field="${pair%%:*}"
+    target="${pair#*:}"
+    recorded="$(printf '%s' "$doc" | jq -r --arg k "$field" '.[$k] // ""')"
+    [ -n "$recorded" ] || continue
+    [ -f "$work/$target" ] || return 1
+    [ "$recorded" = "$(aif_sha256 "$work/$target")" ] || return 1
+  done
+
+  target="$(printf '%s' "$doc" | jq -r '.subject // ""')"
+  recorded="$(printf '%s' "$doc" | jq -r '.subject_sha256 // ""')"
+  if [ -n "$target" ] && [ -n "$recorded" ]; then
+    [ -f "$work/$target" ] || return 1
+    [ "$recorded" = "$(aif_sha256 "$work/$target")" ] || return 1
+  fi
+  return 0
+}
+
 # aif_ledger_recorded_pass <work> <gate> — rc 0 iff the latest entry for this
-# gate is a pass whose subject artifact still hashes to the recorded value.
+# gate is a pass whose subject artifact still hashes to the recorded value, AND
+# whose subject's own bindings still hold (see _aif_ledger_bindings_ok).
 #
 # For gates that cannot be re-run as a live precondition. verify-red asserts the
 # tests are red; once implementation starts that stops holding, so the recorded
@@ -142,5 +190,7 @@ aif_ledger_recorded_pass() {
 
   [ -n "$subject" ] && [ -f "$work/$subject" ] || return 1
   actual="$(aif_sha256 "$work/$subject")"
-  [ "$actual" = "$recorded" ]
+  [ "$actual" = "$recorded" ] || return 1
+
+  _aif_ledger_bindings_ok "$work" "$subject"
 }

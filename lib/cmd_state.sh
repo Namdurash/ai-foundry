@@ -131,12 +131,17 @@ _aif_state_verdict() {
 # where it acknowledged what it could not see, and that acknowledgement was
 # structurally designed to disappear.
 #
-# Two sources, because gaps arrive at two different moments:
-#   spec.md   — verification_gaps, accepted by the human at approval;
-#   plan.md   — external dependencies the plan could point at no check and no
-#               criterion for. Nothing in the run validated those either.
+# Three sources, because gaps arrive at three different moments:
+#   spec.md         — verification_gaps, accepted by the human at approval;
+#   plan.md         — external dependencies the plan could point at no check
+#                     and no criterion for. Nothing in the run validated those.
+#   tests.lock.json — tests green at freeze: on a reworked ticket an earlier
+#                     round already implemented their criteria, so this run
+#                     accepted them without ever seeing a red-to-green
+#                     transition. The suite says they pass; nothing here says
+#                     they ever depended on the code.
 _aif_state_checklist() {
-  local work="$1" spec_gaps="[]" plan_gaps="[]"
+  local work="$1" spec_gaps="[]" plan_gaps="[]" test_gaps="[]"
 
   if [ -f "$work/spec.md" ]; then
     spec_gaps="$(aif_meta_json "$work/spec.md" 2>/dev/null |
@@ -149,10 +154,17 @@ _aif_state_checklist() {
                | { source: "plan", id: .name,
                    text: "external dependency with no check and no criterion — nothing in this run exercised it" } ]' 2>/dev/null)"
   fi
+  if [ -f "$work/tests.lock.json" ]; then
+    test_gaps="$(jq -c '[ .green_at_freeze[]?
+               | { source: "tests", id: .,
+                   text: "green at freeze — never proven red; this run accepted its criterion without a red-to-green transition" } ]' \
+      "$work/tests.lock.json" 2>/dev/null)"
+  fi
 
   [ -n "$spec_gaps" ] || spec_gaps="[]"
   [ -n "$plan_gaps" ] || plan_gaps="[]"
-  jq -nc --argjson a "$spec_gaps" --argjson b "$plan_gaps" '$a + $b'
+  [ -n "$test_gaps" ] || test_gaps="[]"
+  jq -nc --argjson a "$spec_gaps" --argjson b "$plan_gaps" --argjson c "$test_gaps" '$a + $b + $c'
 }
 
 aif_cmd_state() {

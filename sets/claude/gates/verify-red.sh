@@ -11,17 +11,32 @@
 #
 #   - the pre-existing suite is green (a repo already broken makes "red"
 #     meaningless) → exit 3 if not
-#   - each new test is present in the report AND failing
-#   - each failure is a legitimate class (assertion, missing module), not a
-#     broken one (syntax, collection error) → exit 3 if broken
+#   - each new test is present in the report, and each failing one fails for a
+#     legitimate class (assertion, missing module), not a broken one (syntax,
+#     collection error) → exit 3 if broken
 #   - every acceptance criterion is covered by a test, and its expected literal
 #     appears in a test
 #   - no implementation was written (the plan's create paths must not exist yet)
 #
+# A new test that PASSES at freeze is not rejected. On a second round — a
+# reworked ticket whose earlier round already implemented some criteria — the
+# honest test for a built criterion is green before this round's implementation
+# exists, and demanding red there is jointly unsatisfiable with demanding
+# coverage: include the file and N tests "pass already", exclude it and M
+# criteria are "not referenced". The one workaround is an artificial
+# precondition that breaks the built behaviour so the test can fail first —
+# manufactured evidence, which is worse than a recorded gap. So a green test is
+# recorded in tests.lock.json as green_at_freeze — "green at freeze, never
+# proven red" — excluded from `covering` (green's revert-recheck must not
+# target a test that never depended on this round's code), and re-surfaced on
+# the closing checklist. If EVERY new test is green, that is still a rejection:
+# nothing red remains, so either the ticket is already done or the tests assert
+# nothing.
+#
 # On success it writes tests.lock.json, the frozen record of this boundary: the test
-# hashes, the implementation hashes at red-time (for green's revert-recheck), and
-# the coverage. That file, not the scattered test output, is what the implement
-# station's precondition binds to.
+# hashes, the implementation hashes at red-time (for green's revert-recheck), the
+# coverage, and the green-at-freeze list. That file, not the scattered test
+# output, is what the implement station's precondition binds to.
 
 set -uo pipefail
 
@@ -98,6 +113,9 @@ fi
 
 new_count=0
 new_rows=""
+green_ids=""
+green_count=0
+red_count=0
 if [ "$mode" = "per-test" ]; then
   # jq emits plain rows; classification happens in bash against the project's
   # failure-class patterns. Keeping the jq single-line and pattern-free is what
@@ -122,14 +140,19 @@ if [ "$mode" = "per-test" ]; then
   new_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
     '.[] | select((.file // "") as $f | $tf | index($f)) | (.file // "") + "\t" + .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " "))')"
 
-  # Two kinds of wrong, and they get different exit codes:
-  #   reject (exit 1) — a real test asserting the wrong thing (passes already,
-  #     or is skipped). The test-author rewrites it.
+  # Three kinds of outcome, and they part ways here:
+  #   reject (exit 1) — a real test asserting the wrong thing (skipped, since a
+  #     skip is the cheapest way to make red disappear). The test-author
+  #     rewrites it.
   #   broke  (exit 3) — not a usable oracle at all (syntax/collection error, or
   #     an error we cannot classify). verify-red cannot certify it as red, the
   #     same way a judge cannot certify a hallucinated verdict.
+  #   green  (recorded) — passes at freeze. On a second round that is the
+  #     honest test for an already-implemented criterion; see the header. It is
+  #     kept, named in the lock, and kept OUT of covering.
   reject=""
   broke=""
+  green_ids=""
   while IFS="$(printf '\t')" read -r file id status msg; do
     [ -n "$id" ] || continue
     : "$file"
@@ -138,8 +161,8 @@ if [ "$mode" = "per-test" ]; then
       broke="$broke
 $id failed for a broken reason, not a missing feature — it is not a usable test"
     elif [ "$status" = "pass" ]; then
-      reject="$reject
-$id passes already — nothing to implement, or it asserts nothing"
+      green_ids="$green_ids
+$id"
     elif [ "$status" = "skipped" ]; then
       reject="$reject
 $id is skipped — a skipped test is not a red test"
@@ -160,6 +183,13 @@ EOF
     exit "$AIF_G_ERROR"
   fi
   aif_g_report "${reject# }" "tests"
+
+  green_ids="$(printf '%s' "${green_ids# }" | grep -v '^$' || true)"
+  green_count="$(printf '%s' "$green_ids" | grep -c . || true)"
+  red_count=$((new_count - green_count))
+  if [ "$red_count" -eq 0 ]; then
+    aif_g_reject "all $new_count new test(s) are already green — nothing red remains to implement; either the ticket is already done, or the tests assert nothing"
+  fi
 else
   # coarse: the suite as a whole must be observably non-green.
   if grep -qiE 'passed|ok|0 failed' "$work/.suite.out" && ! grep -qiE 'fail|error' "$work/.suite.out"; then
@@ -225,8 +255,10 @@ aif_g_report "$check_viol" "checks"
 #
 # impl_frozen records the implementation as it is NOW (before code) so green can
 # restore it and confirm the tests go red again; create paths do not exist yet,
-# so they are recorded as to-be-created. covering is the new red test ids, for
-# green's revert-recheck to target.
+# so they are recorded as to-be-created. covering is the new RED test ids, for
+# green's revert-recheck to target; a test green at freeze goes to
+# green_at_freeze instead — reverting this round's code was never going to turn
+# it red, and demanding that would accuse an honest test on a second round.
 tests_json="$(
   {
     while IFS= read -r rootdir; do
@@ -247,7 +279,7 @@ $test_files
 EOF
   } | sort -u
 )"
-covering_json="$(printf '%s' "$new_rows" | cut -f2)"
+covering_json="$(printf '%s' "$new_rows" | awk -F'\t' '$3 != "pass" { print $2 }')"
 
 # --- the freeze must hold what it claims to hold ----------------------------
 # Two invariants over the set just built. Both are hard stops rather than
@@ -306,12 +338,14 @@ jq -n \
   --rawfile tests_raw <(printf '%s' "$tests_json") \
   --rawfile impl_raw <(printf '%s' "$impl_frozen") \
   --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" \
-  --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" '
+  --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
     | map({ (.[0]): .[1] }) | add // {};
   { schema: 1, plan_sha256: $plan_hash, mode: $mode, at: $at,
     tests: rows($tests_raw),
     covering: $covering,
+    green_at_freeze: $green,
     impl_frozen: rows($impl_raw),
     impl_created: $create }' >"$work/tests.lock.json"
 
@@ -327,5 +361,12 @@ if [ "$mode" = "coarse" ]; then
   printf 'verify-red: red (COARSE mode — no per-test detail; install python3)\n'
 else
   printf 'verify-red: %s new test(s) red for the right reason, all criteria covered\n' \
-    "$new_count"
+    "$red_count"
+  if [ "$green_count" -gt 0 ]; then
+    # On the PASS path, always — the same rule the other gates follow for what
+    # they allowed. A degradation only readable out of a lock file is silent.
+    printf '  ! GREEN AT FREEZE — never proven red, an earlier round already implemented these:\n'
+    printf '%s\n' "$green_ids" | sed 's/^/    - /'
+    printf '  Excluded from the revert-recheck; re-emitted on the closing checklist.\n'
+  fi
 fi

@@ -65,11 +65,13 @@ meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
 
 ac_max="$(jq -r '.limits.spec_ac_max // 15' "$project")"
 ticket_re="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' "$project")"
+ticket_hash="$(aif_g_sha256 "$ticket")"
 
 violations="$(
   printf '%s' "$meta" | jq -r \
     --argjson ac_max "$ac_max" \
-    --arg ticket_re "$ticket_re" '
+    --arg ticket_re "$ticket_re" \
+    --arg ticket_hash "$ticket_hash" '
 
     # Words that signal a judgement rather than an observation. Not exhaustive
     # and cannot be: this raises the floor, it does not establish falsifiability.
@@ -115,6 +117,19 @@ violations="$(
         else empty end),
       (if (($m.ticket? // "") | test($ticket_re) | not)
         then "meta.ticket \"" + ($m.ticket? // "") + "\" does not match " + $ticket_re
+        else empty end),
+
+      # The binding that makes a rework lapse everything downstream on its own:
+      # any edit to ticket.md — a rework appended at approve, a clarification,
+      # any route at all — breaks this match, the spec stops passing, and the
+      # judge verdict and the human approval below it fall with it. Before this
+      # field a reworked ticket kept an approval nobody granted for the new
+      # content. The value arrives in the dispatch prompt; the station copies
+      # it, exactly as the plan copies spec_sha256.
+      (if ($m.ticket_sha256? // "") != $ticket_hash
+        then "meta.ticket_sha256 does not match ticket.md as it is now — the "
+             + "spec was written against a different ticket (or predates the "
+             + "binding); re-run the spec station"
         else empty end),
       (if ($m.lang? // "") == ""
         then "meta.lang is required" else empty end),

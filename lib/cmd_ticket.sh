@@ -56,6 +56,13 @@ EOF
 # prose — not in a side channel the spec never opens. The first rejection opens
 # the heading; later ones stack under it, so the spec sees the full history of
 # asks rather than only the latest.
+#
+# Nothing here resets any state, and that is the design, not an omission: the
+# spec records ticket_sha256, so the append below changes the ticket's bytes
+# and the spec stops passing spec-form on its own — taking the judge verdict
+# and the human approval down with it, through the same binding chain every
+# other backward transition already uses. An explicit reset would be a second
+# mechanism to keep honest; the edit itself is the reset.
 aif_cmd_rework() {
   local ticket="${1:-}" reason="${2:-}"
   [ -n "$ticket" ] && [ -n "$reason" ] || aif_die "usage: aif _rework <ticket> <reason>"
@@ -69,7 +76,7 @@ aif_cmd_rework() {
     printf '\n%s\n\n' "$heading" >>"$tm"
   fi
   printf -- '- %s\n' "$reason" >>"$tm"
-  printf '%srework noted%s in %s/%s/ticket.md — the spec is redone against it.\n' \
+  printf '%srework noted%s in %s/%s/ticket.md — the ticket'\''s bytes changed, so the spec, its verdict and the approval have lapsed; the spec is redone against it.\n' \
     "$AIF_C_YELLOW" "$AIF_C_RESET" "$AIF_TASKS_DIR" "$ticket"
 }
 

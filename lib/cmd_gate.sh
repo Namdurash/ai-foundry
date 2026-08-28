@@ -72,6 +72,24 @@ aif_cmd_gate() {
   gates="$(aif_station_gates "$root" "$station")"
   [ -n "$gates" ] || aif_die "station '$station' declares no gates — nothing to check"
 
+  # What the station rewrites, hashed ONCE, before any gate runs: this is the
+  # state the station left, and it is what every verdict of this run is a
+  # verdict on. Empty for stations without a `rewrites` declaration.
+  local rewrites_line rewrites_kind rewrites_hash rewrites_what
+  rewrites_line="$(aif_station_rewrites "$root" "$station" "$work")"
+  if [ -n "$rewrites_line" ]; then
+    rewrites_kind="${rewrites_line%%"$tab"*}"
+    rewrites_hash="${rewrites_line#*"$tab"}"
+  else
+    rewrites_kind=""
+    rewrites_hash=""
+  fi
+  case "$rewrites_kind" in
+    plan.files.tests) rewrites_what="the declared test files are" ;;
+    diff) rewrites_what="the working-tree diff is" ;;
+    *) rewrites_what="its output is" ;;
+  esac
+
   # Verdicts are collected here and written to the ledger only after every gate
   # has run. Recording as we go looks harmless and is not: the ledger lives under
   # tasks/, tasks/ is on scope's denylist, and scope diffs the working tree — so
@@ -89,13 +107,30 @@ aif_cmd_gate() {
     # spec attempt that burned 2599 output tokens over 5 turns and rewrote
     # nothing, then produced complaints identical to the previous round.
     #
-    # Only for a `produces` subject — the station's own output. The tests
-    # station's subject is tests.lock.json, which only its GATE writes; the
-    # implement station's is plan.md, which an earlier station wrote. Keying the
-    # guard to those measured files the station never touches, so a genuine
-    # rewrite looked like "nothing changed" and the check fired forever, with no
-    # force flag. Both deadlocks were hit live on OPES-63.
-    if [ -n "$hash" ] && [ "$subject_key" = "produces" ]; then
+    # The guard is keyed to what the station REWRITES, and that is two cases:
+    #
+    #   rewrites declared — the station's real output lives outside the work
+    #     dir (tests rewrite the plan's test files, implement rewrites the
+    #     working tree), so attempts are compared by the rewrites hash recorded
+    #     on the last verdict. A row from before the field existed has none,
+    #     and no comparison is made — fail open, never a false deadlock.
+    #   produces subject — the station's own artifact; unchanged bytes there
+    #     mean the station rewrote nothing.
+    #
+    # A freezes or binds subject without a rewrites declaration gets NO guard:
+    # those files are written by the gate or by an earlier station, and keying
+    # the guard to a file the station never touches deadlocked two stations
+    # permanently (live on OPES-63, no force flag).
+    if [ -n "$rewrites_hash" ]; then
+      last="$(aif_ledger_gate_last_rewrites "$work" "$gate")"
+      last_result="${last%%|*}"
+      last_sha="${last#*|}"
+      if [ "$last_result" = "fail" ] && [ -n "$last_sha" ] && [ "$last_sha" = "$rewrites_hash" ]; then
+        aif_err "$station changed nothing since $gate last rejected it — $rewrites_what byte-for-byte identical."
+        aif_err "The gate can only return the same verdict. Check the station's instructions or the ticket before re-running."
+        return 4
+      fi
+    elif [ -n "$hash" ] && [ "$subject_key" = "produces" ]; then
       last="$(aif_ledger_gate_last "$work" "$gate")"
       last_result="${last%%|*}"
       last_sha="${last#*|}"
@@ -122,7 +157,7 @@ aif_cmd_gate() {
     _resolve_subject
 
     if [ "$rc" -eq 3 ]; then
-      records="$records$gate$tab""error$tab$subject$tab$hash$tab$(printf '%s' "$out" | head -1)
+      records="$records$gate$tab""error$tab$subject$tab$hash$tab$rewrites_hash$tab$(printf '%s' "$out" | head -1)
 "
       _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
@@ -131,7 +166,7 @@ aif_cmd_gate() {
       return 3
     fi
 
-    records="$records$gate$tab$([ "$rc" -eq 0 ] && printf pass || printf fail)$tab$subject$tab$hash$tab$(printf '%s' "$out" | head -1)
+    records="$records$gate$tab$([ "$rc" -eq 0 ] && printf pass || printf fail)$tab$subject$tab$hash$tab$rewrites_hash$tab$(printf '%s' "$out" | head -1)
 "
 
     if [ "$rc" -ne 0 ]; then
@@ -261,15 +296,17 @@ EOF
 # Append the collected verdicts, one ledger row each. Called once, after every
 # gate has run — see the comment on `records` above for why that ordering is not
 # a detail. Each record carries its own subject and hash, because a freezing gate
-# changes what the subject is by running.
+# changes what the subject is by running. The rewrites hash sits before the
+# reason in each record line, because the reason is a gate's own words and only
+# the last field may contain anything.
 _aif_gate_record() {
   local work="$1" root="$2" records="$3"
-  local gate result subject hash reason tab
+  local gate result subject hash rsha reason tab
   tab="$(printf '\t')"
-  while IFS="$tab" read -r gate result subject hash reason; do
+  while IFS="$tab" read -r gate result subject hash rsha reason; do
     [ -n "$gate" ] || continue
     aif_ledger_gate "$work" "$gate" "$result" "$subject" "$hash" \
-      "$(aif_sha256 "$(aif_gate_path "$root" "$gate")")" "$reason"
+      "$(aif_sha256 "$(aif_gate_path "$root" "$gate")")" "$reason" "$rsha"
   done <<EOF
 $records
 EOF

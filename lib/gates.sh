@@ -78,6 +78,67 @@ aif_station_subject() {
   done
 }
 
+# aif_station_rewrites <root> <station> <work> — what the station actually
+# rewrites between attempts, echoed as "<kind>\t<sha256>", or empty when the
+# station declares no `rewrites` (or its inputs are not there to hash).
+#
+# This is the no-progress guard's subject for the stations whose gate subject
+# is NOT their own output. The tests station rewrites the files the plan names
+# in files.tests; the implement station rewrites the working tree, so its
+# subject is the diff since the last commit — tasks/ excluded, because the
+# ledger legitimately moves between commits and bookkeeping noise must not
+# read as progress. Two kinds, declared per station:
+#
+#   plan.files.tests — hash over each declared test file's current bytes
+#                      (an absent file hashes as absent, so creating it counts
+#                      as a rewrite too);
+#   diff             — hash over the tracked diff against HEAD plus the
+#                      content of untracked files, tasks/ excluded from both.
+aif_station_rewrites() {
+  local root="$1" station="$2" work="$3"
+  local kind hash f
+  kind="$(aif_station_meta "$root" "$station" 2>/dev/null | jq -r '.rewrites // empty')"
+  [ -n "$kind" ] || return 0
+
+  case "$kind" in
+    plan.files.tests)
+      [ -f "$work/plan.md" ] || return 0
+      hash="$(
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          if [ -f "$root/$f" ]; then
+            printf '%s\t%s\n' "$f" "$(aif_sha256 "$root/$f")"
+          else
+            printf '%s\tabsent\n' "$f"
+          fi
+        done <<EOF
+$(aif_meta_json "$work/plan.md" | jq -r '.files.tests[]? // empty')
+EOF
+      )"
+      hash="$(printf '%s' "$hash" | aif_sha256_stdin)"
+      ;;
+    diff)
+      [ -d "$root/.git" ] || return 0
+      hash="$(
+        {
+          git -C "$root" diff HEAD -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null
+          git -C "$root" ls-files --others --exclude-standard -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null |
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              printf '%s\t%s\n' "$f" "$(aif_sha256 "$root/$f")"
+            done
+        } | aif_sha256_stdin
+      )"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  [ -n "$hash" ] || return 0
+  printf '%s\t%s' "$kind" "$hash"
+}
+
 # aif_station_agent <root> <station> <work> — the subagent that runs this
 # station, resolving the per-ticket tier when the station declares one.
 #

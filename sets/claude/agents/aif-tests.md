@@ -9,6 +9,7 @@ model: opus
 { "station": "tests", "tier": "careful", "form_gate": "verify-red", "freezes": "tests.lock.json",
   "requires": ["plan-form", "plan-judge"],
   "tools": "Read Grep Glob Write Edit",
+  "rewrites": "plan.files.tests",
   "expects": "test files under the project's test roots, one per acceptance criterion and marked with its AC id — red, and red because an assertion failed rather than because the suite cannot run. verify-red checks that and freezes the tree into tests.lock.json." }
 -->
 

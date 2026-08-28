@@ -85,13 +85,37 @@ aif_ledger_append() {
   trap - EXIT INT TERM
 }
 
-# aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason>
+# aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason> [rewrites_sha]
+#
+# rewrites_sha, when given, is the hash of what the station REWRITES (its test
+# files, its working-tree diff — see aif_station_rewrites). Recorded beside the
+# subject so the no-progress guard can compare attempts of a station whose
+# gate subject is not its own output. Absent from the row when empty, so older
+# ledgers and stations without a rewrites declaration are unchanged.
 aif_ledger_gate() {
   aif_ledger_append "$1" "$(jq -n \
     --arg gate "$2" --arg result "$3" --arg subject "$4" \
-    --arg ssha "$5" --arg gsha "$6" --arg reason "$7" \
+    --arg ssha "$5" --arg gsha "$6" --arg reason "$7" --arg rsha "${8:-}" \
     '{ gate: $gate, result: $result, subject: $subject,
-       subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }')"
+       subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }
+     + (if $rsha == "" then {} else { rewrites_sha256: $rsha } end)')"
+}
+
+# aif_ledger_gate_last_rewrites <work> <gate> — "<result>|<rewrites_sha256>"
+# for the latest entry this gate wrote, or "none|" if it has never run here.
+# The rewrites half is empty for rows recorded before the field existed, which
+# the caller must read as "nothing to compare" — never as a match.
+aif_ledger_gate_last_rewrites() {
+  local ledger
+  ledger="$(aif_ledger_path "$1")"
+  [ -f "$ledger" ] || {
+    printf 'none|'
+    return 0
+  }
+  jq -r --arg g "$2" \
+    '[.entries[] | select(.gate == $g)] | last
+     | if . == null then "none|" else (.result + "|" + (.rewrites_sha256 // "")) end' \
+    "$ledger"
 }
 
 # aif_ledger_gate_last <work> <gate> — "<result>|<subject_sha256>" for the latest

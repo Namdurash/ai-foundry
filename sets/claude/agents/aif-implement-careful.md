@@ -12,6 +12,7 @@ model: opus
   "tools": "Read Grep Glob Write Edit Bash",
   "agents": { "routine": "aif-implement", "careful": "aif-implement-careful" },
   "binds": "plan.md",
+  "rewrites": "diff",
   "expects": "code under the plan's files.create and files.change, and nothing else. green checks the suite passes and that reverting the code makes the covering tests red again; scope checks the diff stayed inside the manifest." }
 -->
 

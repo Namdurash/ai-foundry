@@ -701,6 +701,13 @@ plan invalidates them — but editing the source afterwards does not re-open the
 gate. Nothing cheap fixes this; the evidence a revert-recheck needs is destroyed
 by the commit that preserves the work.
 
+**The plan boundary is recorded for the same reason.** `plan-form` asserts that
+every `files.create` path does not exist *yet* — a premise the implement station
+is later paid to falsify. So the plan gates run once, at plan time, and the
+recorded pass holds while the plan's bytes and its `spec_sha256` binding hold.
+Editing the spec still lapses the plan automatically; finishing the ticket no
+longer un-approves the plan that shaped it.
+
 ### Offline, no tokens
 
 ```sh

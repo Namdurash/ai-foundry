@@ -21,10 +21,17 @@
 #
 # source is "live" or "recorded", and the distinction is not an optimisation. It
 # separates gates that assert something about an artifact as it now stands from
-# gates whose truth is relative to a BASELINE THAT MOVES. The three of the second
-# kind are all at the code end of the pipeline, and each fails differently if
-# re-run:
+# gates whose truth is relative to a BASELINE THAT MOVES. Each of the second
+# kind fails differently if re-run:
 #
+#   - plan-form asserts, among else, that every files.create path does not
+#     exist yet. The implement station then creates exactly those paths — that
+#     is what files.create is for — so a re-run rejects a finished ticket and
+#     routes it back to planning, forever. A plan is written against the
+#     repository AS IT STOOD at plan time; only then is the check meaningful.
+#   - plan-judge's verdict binds to the plan's bytes, which do not move — but
+#     it runs on a model, so "re-run on every state query" was never on the
+#     table; it is recorded for the same reason the code gates are.
 #   - verify-red asserts the tests are RED. That stops being true the moment
 #     implementation begins, so a re-run reports failure on a step that succeeded.
 #   - scope asserts the diff since the last commit stayed inside the plan. Once
@@ -36,11 +43,16 @@
 #     depended on the code. A false accusation, from a correct gate.
 #
 # For these, the RECORDED pass — bound to the bytes that were judged — is the
-# verdict, and it lapses the same way every other binding does: implement's
-# verdicts bind to plan.md, so a changed plan invalidates them.
+# verdict, and it lapses the same way every other binding does: the pass is
+# invalid the moment its subject's hash moves, and aif_ledger_recorded_pass
+# also follows the bindings INSIDE the subject — so editing spec.md lapses the
+# recorded plan pass through the plan's own spec_sha256, without anyone
+# re-running a gate. verify-red's "create paths must not exist yet" check
+# stays live at the tests boundary as the net for files created out-of-band
+# between plan and implement.
 #
-# What this costs, stated plainly: at the code boundary "passes now" becomes
-# "passed, against a plan that has not changed since". Editing the source after
+# What this costs, stated plainly: at these boundaries "passes now" becomes
+# "passed, against inputs that have not changed since". Editing the source after
 # acceptance does not re-open the gate. Nothing cheap fixes that — the evidence
 # a revert-recheck needs is destroyed by the commit that preserves the work.
 _aif_state_steps() {
@@ -48,8 +60,8 @@ _aif_state_steps() {
 spec	station	spec-form:live
 spec-judge	station	spec-judge:live
 approve	human	spec-approve:live
-plan	station	plan-form:live
-plan-judge	station	plan-judge:live
+plan	station	plan-form:recorded
+plan-judge	station	plan-judge:recorded
 tests	station	verify-red:recorded
 implement	station	green:recorded scope:recorded
 EOF

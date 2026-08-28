@@ -57,16 +57,18 @@ fi
 test_roots="$(jq -r '.test.roots[]?' "$project")"
 max_diff="$(jq -r '.limits.diff_lines_max // 400' "$project")"
 
-# Paths no implementation may touch, whatever the plan says. Anchored so they
-# match from the repo root only.
+# Paths no implementation may touch, whatever the plan says. The list itself is
+# AIF_G_DENYLIST in _lib.sh — one list, shared with plan-form, which refuses
+# the same paths at plan time so this gate stays the backstop rather than the
+# first place the disagreement surfaces.
 #
-# tasks/ is on this list and is load-bearing: it holds the ticket, the spec, the
+# tasks/ is on that list and is load-bearing: it holds the ticket, the spec, the
 # plan and the ledger for every ticket including this one. An implementation
 # permitted to write there could widen its own plan's file list — the very thing
 # this gate exists to check — or edit the record of what it did. It is the
 # pipeline's own machinery, and it lives at the project root rather than under
 # .aif/ (see lib/paths.sh), so it needs naming separately.
-denylist='^\.aif/|^tasks/|^\.claude/|^\.github/|^\.gitlab-ci|^project\.json$|^\.aif/project\.json$|^\.gitignore$|(^|/)package-lock\.json$|(^|/)yarn\.lock$|(^|/)poetry\.lock$|(^|/)Cargo\.lock$|(^|/)go\.sum$'
+denylist="$AIF_G_DENYLIST"
 
 in_set() {
   # is $1 present in the newline list on stdin?

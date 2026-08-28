@@ -21,6 +21,25 @@ AIF_G_PASS=0
 AIF_G_REJECT=1
 AIF_G_ERROR=3
 
+# Paths no implementation may touch, whatever the plan says: the pipeline's own
+# machinery, config, CI, and the dependency lockfiles. Anchored so they match
+# from the repo root only.
+#
+# ONE list, TWO gates, and that is the point of it living here. plan-form
+# rejects a manifest path matching it at plan time, where the fix costs a
+# re-plan; scope holds the same line against the diff after the code exists, as
+# the backstop. When the two lists were one gate's private constant they
+# disagreed: a plan named yarn.lock in files.change, both plan gates accepted
+# it, and scope would then have rejected the implementation for doing exactly
+# what the approved plan permitted.
+#
+# The lockfiles are refused deliberately, not incidentally. A sanctioned route
+# for dependency changes is a policy question this list does not answer; until
+# it is answered the foundry refuses them loudly at plan time instead of after
+# the implementation is written and paid for.
+# shellcheck disable=SC2034
+AIF_G_DENYLIST='^\.aif/|^tasks/|^\.claude/|^\.github/|^\.gitlab-ci|^project\.json$|^\.aif/project\.json$|^\.gitignore$|(^|/)package-lock\.json$|(^|/)yarn\.lock$|(^|/)poetry\.lock$|(^|/)Cargo\.lock$|(^|/)go\.sum$'
+
 aif_g_reject() {
   printf 'REJECT %s\n' "$*" >&2
   exit "$AIF_G_REJECT"

@@ -269,11 +269,29 @@ violations="$(
   ' 2>&1
 )" || aif_g_error "plan-form: jq failed — $violations"
 
+# --- the manifest may not name what no implementation may touch -------------
+#
+# The same denylist scope later holds against the diff, applied here to the
+# plan's own lists — create, change and tests alike. A plan that names a denied
+# path is wrong NOW, at the cost of a re-plan; caught only by scope it is wrong
+# after the implementation exists and has been paid for, and the two gates
+# disagreeing is exactly how an approved plan once permitted yarn.lock that
+# scope would then have rejected.
+fs_violations=""
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if printf '%s' "$p" | grep -qE "$AIF_G_DENYLIST"; then
+    fs_violations="$fs_violations
+the manifest names \"$p\", which no implementation may touch (pipeline, config, CI, or a dependency lockfile) — scope would reject the very work this plan orders; plan around it"
+  fi
+done <<EOF
+$(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.tests // []))[]? // empty')
+EOF
+
 # --- checks that need the filesystem, so they cannot live in jq -------------
 #
 # A plan written against an imagined repository is the most common planning
 # failure and it is entirely mechanical to catch.
-fs_violations=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   if [ -e "$root/$p" ]; then

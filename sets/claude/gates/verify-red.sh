@@ -198,11 +198,17 @@ else
 fi
 
 # --- coverage: every criterion has a test, with its literal present ---------
+# A fully-backticked expect is the spec-form convention for a domain literal
+# that collides with the vague-word list (`error` the union value). The
+# backticks are the declaration, not part of the value — strip them, so the
+# tests assert the bare literal.
 cov=""
 while IFS= read -r ac; do
   [ -n "$ac" ] || continue
   local_hit=0
-  expect="$(printf '%s' "$spec_meta" | jq -r --arg id "$ac" '.acceptance[] | select(.id==$id) | .expect | tostring')"
+  expect="$(printf '%s' "$spec_meta" | jq -r --arg id "$ac" \
+    '.acceptance[] | select(.id==$id) | .expect | tostring
+     | if test("^`[^`]+`$") then .[1:-1] else . end')"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qF "$ac" "$root/$f" 2>/dev/null && local_hit=1

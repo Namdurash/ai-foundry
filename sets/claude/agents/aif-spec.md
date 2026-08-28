@@ -92,6 +92,15 @@ is rejected and you will be asked to redo it, so satisfy them the first time.
 - **No judgement words** anywhere in `then` or `expect`: appropriate, correct,
   properly, reasonable, valid, gracefully, robust, secure, efficient, works,
   handled. Say what is observable instead.
+
+  A **domain literal** that happens to collide with that list — a union value
+  named `error`, a status string `invalid` — is not a judgement, and backticks
+  are how you say so: text inside backticks is read as a literal and skipped by
+  every prose check. In `then`, backtick the token: ``sets status to `error` ``.
+  In `expect`, wrap the whole value: ``"expect": "`error`"`` — the gates strip
+  the wrapping backticks, so the value the tests assert is the bare literal.
+  Backtick only real code-level identifiers and values; backticking prose to
+  smuggle a judgement past the gate defeats the criterion, not the check.
 - **Ids run AC-001, AC-002, …** contiguously. Every `surface` in a criterion
   appears in the top-level `surfaces` list.
 - **Every criterion says where it came from.** `from` is either a **verbatim

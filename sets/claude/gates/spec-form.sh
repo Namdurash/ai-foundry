@@ -94,12 +94,21 @@ violations="$(
     def pad3: tostring
       | if length == 1 then "00" + . elif length == 2 then "0" + . else . end;
 
+    # A backticked token is a LITERAL, not prose, and no prose check may read
+    # inside it. The list above bans "error" as a judgement — and "error" is
+    # also a real value of a real union in real product code, which a criterion
+    # must be able to name. Backticks are the escape: text inside them is
+    # dropped before the vague words, the assertion verbs and the conjunctions
+    # are counted, so a domain literal can never trip a lint aimed at
+    # judgement. The same rule exempts a fully-backticked expect below.
+    def strip_lit: gsub("`[^`]*`"; " ");
+
     def vague_hits($s):
-      ($s | ascii_downcase) as $t
+      ($s | strip_lit | ascii_downcase) as $t
       | [ vague[] | select(. as $w | $t | test("\\b" + $w + "\\b")) ];
 
     def verb_hits($s):
-      ($s | ascii_downcase) as $t
+      ($s | strip_lit | ascii_downcase) as $t
       | [ verbs[] | select(. as $w | $t | test("\\b" + $w + "\\b")) ];
 
     . as $m
@@ -198,6 +207,10 @@ violations="$(
           # ---- falsifiability proxy ----
           # A literal expected value is what a test can assert against. Prose
           # here is the single most common way an AC becomes untestable.
+          # A fully-backticked expect is a literal by declaration — `error` the
+          # union value, not "error" the judgement — and skips the vague-word
+          # check entirely. The gates that read expect later strip the wrapping
+          # backticks, so the value the tests assert carries none.
           (if ($ac | has("expect") | not)
             then $id + ".expect is required — a test needs a literal to assert"
             else
@@ -207,9 +220,13 @@ violations="$(
                 elif ($t == "string" and (($ac.expect | split(" ") | length) > 4))
                   then $id + ".expect is prose (" + ($ac.expect | split(" ") | length | tostring)
                        + " words) — use a literal value"
-                elif ($t == "string" and ((vague_hits($ac.expect) | length) > 0))
+                elif ($t == "string"
+                      and (($ac.expect | test("^`[^`]+`$")) | not)
+                      and ((vague_hits($ac.expect) | length) > 0))
                   then $id + ".expect contains judgement word(s): "
                        + (vague_hits($ac.expect) | join(", "))
+                       + " — a domain literal that happens to be on the list is "
+                       + "written wrapped in backticks"
                 else empty end
             end),
 
@@ -237,7 +254,7 @@ violations="$(
                 else empty end
             else empty end),
 
-          (if (($ac.then? // "") | test("\\b(and|or)\\b|;|&&"))
+          (if (($ac.then? // "") | strip_lit | test("\\b(and|or)\\b|;|&&"))
             then $id + ".then joins clauses — one criterion, one check"
             else empty end),
 

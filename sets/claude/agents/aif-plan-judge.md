@@ -9,6 +9,7 @@ model: sonnet
 { "station": "plan-judge", "tier": "routine", "judges": "plan.md",
   "produces": "verdict-plan.json", "form_gate": "plan-judge",
   "requires": ["plan-form"], "tools": "Read Grep Glob Write",
+  "dispatch": { "subject_sha256": "plan.md" },
   "expects": "verdict-plan.json — subject_sha256 bound to the exact plan.md judged, plus two lists: guesses[], one per decision the implementer would have to invent, and missing_files[], one per file the implementation must touch that the manifest does not permit. Both empty is the pass. Also checked[] (required at risk: high) and surface_adjudications[], one per criterion the gate flagged for surface drift. Checked by the plan-judge gate." }
 -->
 

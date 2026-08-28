@@ -82,6 +82,16 @@ own words about what was wrong, and it is usually exactly what needs answering.
 2. **Dispatch `next.agent` as a subagent** via the Task tool, with `subagent_type` set to
    exactly that name. Give it the ticket id and tell it its working directory is the project
    root. Do not paraphrase its instructions — they are its own system prompt.
+
+   **Pass `next.bindings` into the prompt verbatim.** Each entry is a hash the station must
+   copy into its artifact exactly as given — one line per key, e.g.
+   `subject_sha256: <value>`. This is part of the dispatch contract, not a courtesy: the
+   judges have no Bash tool and physically cannot hash a file, so a dispatch without the
+   value is a station that cannot produce a valid verdict. Never compute these hashes
+   yourself and never alter what `_state` returned — the gate verifies the recorded value
+   against the real bytes, so a wrong one is caught, but a *stale* one you cached from an
+   earlier `_state` call wastes the whole station run. If `bindings` is `{}`, there is
+   nothing to pass.
 3. **Check it:**
    ```bash
    aif _gate <station> <ID>

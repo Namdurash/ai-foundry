@@ -120,6 +120,42 @@ _aif_state_verdict() {
   printf 'done\t%s' "$detail"
 }
 
+# _aif_state_bindings <root> <step> <work> — the hashes a station's dispatch
+# prompt must carry, as a JSON object { field: sha256 }.
+#
+# A station that must copy a hash into its artifact cannot always compute one:
+# the judges have Read and Write and no Bash, so subject_sha256 — the binding
+# that makes their verdict falsifiable — is physically out of their reach, and
+# every judge run was rejected until the orchestrator happened to supply it.
+# This completes that dispatch contract: the station's aif:meta declares, in
+# `dispatch`, which field binds to which artifact; _state computes the hash of
+# the artifact AS IT STANDS AT DISPATCH and hands it to the orchestrator in
+# `next`, which passes it into the prompt verbatim. Nothing about trust
+# changes — the gate still verifies the recorded value against the real bytes,
+# so a station that copies the wrong hash is caught exactly as before.
+#
+# An artifact not there yet is omitted rather than hashed as nothing: the
+# station that needs it has a `requires` unmet, and _state will not route
+# there anyway.
+_aif_state_bindings() {
+  local root="$1" step="$2" work="$3"
+  local meta out="{}" field file tab
+  meta="$(aif_station_meta "$root" "$step" 2>/dev/null)" || {
+    printf '{}'
+    return 0
+  }
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r field file; do
+    [ -n "$field" ] && [ -n "$file" ] || continue
+    [ -f "$work/$file" ] || continue
+    out="$(printf '%s' "$out" |
+      jq -c --arg k "$field" --arg v "$(aif_sha256 "$work/$file")" '. + { ($k): $v }')"
+  done <<EOF
+$(printf '%s' "$meta" | jq -r '.dispatch // {} | to_entries[] | [.key, .value] | @tsv' 2>/dev/null)
+EOF
+  printf '%s' "$out"
+}
+
 # _aif_state_checklist <work> — what this run did NOT establish, as a JSON array
 # of { source, id, text }.
 #
@@ -254,7 +290,8 @@ aif_cmd_state() {
     agent="$(aif_station_agent "$root" "$step" "$work")"
     expects="$(aif_station_meta "$root" "$step" | jq -r '.expects // ""')"
     next_json="$(jq -n --arg s "$step" --arg a "$agent" --arg e "$expects" --arg d "$detail" \
-      '{ kind: "station", step: $s, agent: $a, expects: $e, detail: $d }')"
+      --argjson b "$(_aif_state_bindings "$root" "$step" "$work")" \
+      '{ kind: "station", step: $s, agent: $a, expects: $e, bindings: $b, detail: $d }')"
   done <<EOF
 $(_aif_state_steps)
 EOF

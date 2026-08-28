@@ -9,6 +9,7 @@ model: opus
 { "station": "spec-judge", "tier": "careful", "judges": "spec.md",
   "produces": "verdict-spec.json", "form_gate": "spec-judge",
   "requires": ["spec-form"], "tools": "Read Write",
+  "dispatch": { "subject_sha256": "spec.md" },
   "expects": "verdict-spec.json — subject_sha256 bound to the exact spec.md judged, pass true|false, findings[] naming each blocker, and checked[] naming what was actually examined (required at risk: high). Checked by the spec-judge gate." }
 -->
 

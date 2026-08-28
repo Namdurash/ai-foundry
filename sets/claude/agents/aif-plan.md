@@ -9,6 +9,7 @@ model: opus
 { "station": "plan", "tier": "careful", "produces": "plan.md", "form_gate": "plan-form",
   "requires": ["spec-form", "spec-judge", "spec-approve"],
   "tools": "Read Grep Glob Write Edit",
+  "dispatch": { "spec_sha256": "spec.md" },
   "expects": "plan.md — an aif:meta block carrying spec_sha256, files.create/change/tests (the manifest scope enforces), decisions[] with a statement, a because and what it serves, ac_coverage mapping every criterion to files, surface_map, uncovered, and external[] naming what validates each third-party dependency. Checked by plan-form." }
 -->
 

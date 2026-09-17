@@ -87,7 +87,10 @@ aif_project_root() {
   local dir
   dir="$(pwd -P)"
   while [ "$dir" != "/" ]; do
-    if [ -d "$dir/.git" ]; then
+    # -e, not -d: in a git WORKTREE .git is a file pointing at the main
+    # repository, and a directory test would walk straight past the checkout
+    # `aif work` is running in and resolve every path to the developer's tree.
+    if [ -e "$dir/.git" ]; then
       printf '%s' "$dir"
       return 0
     fi

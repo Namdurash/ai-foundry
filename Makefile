@@ -4,7 +4,7 @@ SHELL := /bin/bash
 # same standard as the CLI itself.
 SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) \
                  $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh) \
-                 scripts/check-set.sh scripts/check-cycle.sh
+                 scripts/check-set.sh scripts/check-cycle.sh scripts/check-work.sh
 
 .PHONY: help lint fmt check
 
@@ -31,4 +31,5 @@ check:
 	@/bin/bash bin/aif help >/dev/null
 	@/bin/bash scripts/check-set.sh
 	@/bin/bash scripts/check-cycle.sh
+	@/bin/bash scripts/check-work.sh
 	@echo "ok"

@@ -95,9 +95,16 @@ aif_cmd_rework() {
 # the design — an approval that could be recorded with no argument would
 # eventually be recorded by accident. See the README's trust assumptions.
 aif_cmd_approve() {
-  local ticket="" confirmation="" approver="" gaps_confirmation=""
+  local ticket="" confirmation="" approver="" gaps_confirmation="" channel="chat"
   while [ $# -gt 0 ]; do
     case "$1" in
+      --channel)
+        # chat — a person answered in the session that asked. worker — `aif work`
+        # recorded its own policy at this boundary, headless. Recorded so a
+        # reader of approval.json can tell a human's word from a machine's.
+        shift
+        channel="${1:-chat}"
+        ;;
       --confirmation)
         shift
         confirmation="${1:-}"
@@ -159,20 +166,20 @@ aif_cmd_approve() {
 
   jq -n \
     --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
-    --arg gc "$gaps_confirmation" \
+    --arg gc "$gaps_confirmation" --arg ch "$channel" \
     --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --argjson assumptions "$(printf '%s' "$meta" | jq -c '[.assumptions[]?.id]')" \
     --argjson gaps "$gaps" \
     '{ schema: 1, subject: "spec.md", subject_sha256: $s,
-       approver: $a, at: $at, channel: "chat", confirmation: $c,
+       approver: $a, at: $at, channel: $ch, confirmation: $c,
        approved_assumptions: $assumptions,
        acknowledged_gaps: $gaps, gaps_confirmation: $gc }' \
     >"$work/approval.json.tmp" && mv "$work/approval.json.tmp" "$work/approval.json"
 
   aif_ledger_append "$work" "$(jq -n --arg s "$hash" --arg a "$approver" --arg c "$confirmation" \
-    --arg gc "$gaps_confirmation" --argjson gaps "$gaps" \
+    --arg gc "$gaps_confirmation" --argjson gaps "$gaps" --arg ch "$channel" \
     '{ event: "approve", subject: "spec.md", subject_sha256: $s,
-       approver: $a, channel: "chat", confirmation: $c,
+       approver: $a, channel: $ch, confirmation: $c,
        acknowledged_gaps: $gaps, gaps_confirmation: $gc }')"
 
   printf '%sapproved%s by %s — bound to this spec; edit spec.md and it lapses.\n' \

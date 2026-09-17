@@ -148,7 +148,7 @@ jq -r '.impl_frozen | to_entries[] | .key' "$lock" | while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   # The frozen content is not stored, only its hash — so revert by checking out
   # the committed version if git is present, else skip with a recorded caveat.
-  if [ -d "$root/.git" ]; then
+  if [ -e "$root/.git" ]; then
     git -C "$scratch" checkout -q -- "$rel" 2>/dev/null || true
   fi
 done
@@ -158,7 +158,7 @@ jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
 done
 
 recheck_ok=1
-if [ -d "$root/.git" ] && aif_g_have python3; then
+if [ -e "$root/.git" ] && aif_g_have python3; then
   (cd "$scratch" && eval "$test_cmd") >"$scratch/.out" 2>&1 || true
   if [ -f "$scratch/$report_path" ]; then
     reverted="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"

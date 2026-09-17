@@ -48,6 +48,7 @@ ${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
 usage: aif <command> [options]
 
 commands:
+  work          Build a ticket headless on its own branch — no questions asked
   run           Open the foundry on a ticket, a board link, or a description
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
@@ -108,6 +109,21 @@ main() {
       # shellcheck source=lib/cmd_run.sh
       . "$AIF_ROOT/lib/cmd_run.sh"
       aif_cmd_run ${1+"$@"}
+      ;;
+    work)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_amend.sh
+      . "$AIF_ROOT/lib/cmd_amend.sh"
+      # shellcheck source=lib/cmd_gate.sh
+      . "$AIF_ROOT/lib/cmd_gate.sh"
+      # shellcheck source=lib/cmd_meter.sh
+      . "$AIF_ROOT/lib/cmd_meter.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
+      aif_cmd_work ${1+"$@"}
       ;;
     cost)
       # shellcheck source=lib/ledger.sh

@@ -118,7 +118,7 @@ EOF
       hash="$(printf '%s' "$hash" | aif_sha256_stdin)"
       ;;
     diff)
-      [ -d "$root/.git" ] || return 0
+      [ -e "$root/.git" ] || return 0
       hash="$(
         {
           git -C "$root" diff HEAD -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null

@@ -76,8 +76,21 @@ Model routing is deliberately absent from every file above — it is exported at
 ### Running it
 
 ```sh
-aif run TICK-1               # the pipeline, on this project's profile
+aif work TICK-1              # build it headless, on its own branch — no questions
+aif run TICK-1               # the same pipeline, in a session you can watch
 ```
+
+`aif work` is the worker: one ticket, one git worktree (`.aif/worktrees/TICK-1`
+on branch `aif/TICK-1`), one budget, and **no question at any boundary**. The
+ticket's bytes are hashed and committed at intake and stay frozen for the run;
+every station runs as `claude -p` with its own prompt and tools; every gate
+verdict is recorded; a rejection is retried with the gate's complaint in the
+prompt, up to `limits.attempts_max`, and a station that will not converge stops
+the run with a report rather than a conversation. What comes back is
+`tasks/TICK-1/report.md` — what was built, what was decided, what was not
+verified, what it cost — beside the diff, which is the one place a reviewer has
+enough context to judge it. Run several tickets at once: each gets its own
+worktree. The offline walk of the whole thing is `scripts/check-work.sh`.
 
 `aif run` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
@@ -259,6 +272,7 @@ the gates rather than remembered.
 | `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
 | `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it |
+| `aif work <ticket>` | build a ticket headless on its own branch, no questions; `--clean` removes the worktree |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
 | `aif explain <ticket>` | draw how it got here — provenance, assumptions, decisions |

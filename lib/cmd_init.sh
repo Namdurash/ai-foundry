@@ -369,13 +369,14 @@ EOF
     # committed), .aif/tmp/ (gates' scratch — a test report left there would
     # otherwise trip scope's denylist and land in a station commit), and
     # .aif/state/ (which ticket this session is on, written by `aif _state` for
-    # the metering hook to read — session-local, and meaningless to anyone else).
+    # the metering hook to read — session-local, and meaningless to anyone else),
+    # and .aif/worktrees/ (where `aif work` checks a ticket out to build it).
     # One call, because a second aif_block_inject would replace the block rather
     # than extend it.
     aif_block_inject "$root/.gitignore" \
       "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
-      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s' \
-        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/")"
+      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s\n# worker checkouts — one per ticket, disposable (aif work)\n%s' \
+        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/" ".aif/worktrees/")"
 
     printf '%s\n' "$profile" | aif_write_file "$root/$AIF_PROFILE_STATE"
     # Ours, so the ledger owns it too, even though no set ships it.

@@ -28,7 +28,8 @@ project="$(aif_g_project "$work")" || exit $?
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"
-[ -d "$root/.git" ] || aif_g_error "scope needs git — the baseline is the last committed station"
+# -e: a git worktree has a .git FILE, and the worker runs in one.
+[ -e "$root/.git" ] || aif_g_error "scope needs git — the baseline is the last committed station"
 
 plan_meta="$(aif_g_meta_or_die "$plan" "plan.md")" || exit $?
 allowed="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []))[]')"

@@ -56,13 +56,15 @@ violations="$(
       # channel says how the approval was given. A pre-chat approval.json carries
       # tty:true and no channel; it stays valid, because invalidating approvals
       # that were correctly given under the older rule would be a lie about what
-      # happened.
+      # happened. worker is `aif work` recording its own policy, headless —
+      # admitted, and named, so a reader can tell it from a human answer.
       (if (.channel // (if (.tty // false) == true then "tty" else "" end)) as $c
-          | ($c != "chat" and $c != "tty")
-        then "approval.channel must be chat or tty — it must say how the approval was given"
+          | ($c != "chat" and $c != "tty" and $c != "worker")
+        then "approval.channel must be chat, tty or worker — it must say how the approval was given"
         else empty end),
-      (if (.channel // "") == "chat" and ((.confirmation // "") | length) == 0
-        then "a chat approval must carry the approvers own words in approval.confirmation"
+      (if ((.channel // "") == "chat" or (.channel // "") == "worker")
+          and ((.confirmation // "") | length) == 0
+        then "a chat or worker approval must say in approval.confirmation what was accepted, and by whom"
         else empty end),
       (if (.approver // "") == "" then "approval.approver is empty" else empty end),
       (if (.at // "") == "" then "approval.at is empty" else empty end),

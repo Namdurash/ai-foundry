@@ -323,7 +323,7 @@ aif_cmd_commit() {
 
   local root
   root="$(aif_require_project)"
-  [ -d "$root/.git" ] || return 0
+  [ -e "$root/.git" ] || return 0
 
   git -C "$root" add -A >/dev/null 2>&1 || true
   if git -C "$root" diff --cached --quiet 2>/dev/null; then

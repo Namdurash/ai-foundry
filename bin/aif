@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-AIF_VERSION="0.4.2"
+AIF_VERSION="0.5.0"
 
 # Resolve the install root through any symlinks. Homebrew links bin/aif into
 # libexec, and `readlink -f` does not exist on BSD, so walk the chain by hand.
@@ -51,7 +51,6 @@ commands:
   work          Build the next Ready ticket (or a named one) headless — no questions asked
   board         The board: next-ready, move, comment, create, status, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
-  run           Open the foundry on a ticket in a session you can watch
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
@@ -63,19 +62,23 @@ commands:
   version       Print the version
   help          Print this message
 
-'run' is the whole pipeline. There is no command per stage: the stages are
-subagents inside the session it opens, so you can watch them work.
+'work' is the whole dev pipeline: it takes a ready ticket and comes back with a
+branch and a report, without asking anything. The roles that decide what to
+build are skills — /aif-po, /aif-ba, /aif-pjm — and /aif-setup says which of
+them can run on this machine.
 EOF
 }
 
-# Commands prefixed with _ are the orchestrator's, not the user's. They are the
-# machinery the skill calls: derive state, run gates, record, commit.
+# Commands prefixed with _ are the worker's and the skills', not the user's:
+# run a gate, record a binding, commit an accepted stage, scaffold a ticket,
+# judge one ready, meter a subagent, widen a plan's manifest.
 #
-# They exist as commands rather than living inside the skill because each one is
-# something a model must not decide. `_state` says which station runs next, and
-# if that answer came from the model's judgement the pipeline would have opinions
-# where it needs preconditions. Deliberately absent from the help above: they are
-# an interface between two parts of aif, not a surface to learn.
+# They exist as commands rather than inside their callers because each one is
+# something a model must not decide or must not carry. `_record` writes the
+# hash a station was once asked to copy; `_gate` renders and records a verdict;
+# `_ready` is the one Definition of Ready the analyst and the worker share.
+# Deliberately absent from the help above: they are an interface between two
+# parts of aif, not a surface to learn.
 
 main() {
   local cmd="${1:-help}"
@@ -107,11 +110,6 @@ main() {
       . "$AIF_ROOT/lib/cmd_project.sh"
       aif_cmd_project ${1+"$@"}
       ;;
-    run)
-      # shellcheck source=lib/cmd_run.sh
-      . "$AIF_ROOT/lib/cmd_run.sh"
-      aif_cmd_run ${1+"$@"}
-      ;;
     work)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
@@ -127,6 +125,8 @@ main() {
       . "$AIF_ROOT/lib/secret.sh"
       # shellcheck source=lib/board.sh
       . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/run.sh
+      . "$AIF_ROOT/lib/run.sh"
       # shellcheck source=lib/cmd_work.sh
       . "$AIF_ROOT/lib/cmd_work.sh"
       aif_cmd_work ${1+"$@"}
@@ -161,14 +161,12 @@ main() {
       . "$AIF_ROOT/lib/cmd_explain.sh"
       aif_cmd_explain ${1+"$@"}
       ;;
-    _state)
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
+    _record)
       # shellcheck source=lib/gates.sh
       . "$AIF_ROOT/lib/gates.sh"
-      # shellcheck source=lib/cmd_state.sh
-      . "$AIF_ROOT/lib/cmd_state.sh"
-      aif_cmd_state ${1+"$@"}
+      # shellcheck source=lib/cmd_record.sh
+      . "$AIF_ROOT/lib/cmd_record.sh"
+      aif_cmd_record ${1+"$@"}
       ;;
     _gate)
       # shellcheck source=lib/ledger.sh

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# `aif work <ticket>` — the worker: one ticket, one worktree, one budget, no
+# `aif work [<ticket>]` — the worker: one ticket, one worktree, one budget, no
 # questions. Sourced by bin/aif; not meant to be executed directly.
 #
 # This is the machine half of the foundry (docs/REBUILD-3.md §3). The human
@@ -13,32 +13,28 @@
 #
 # Shape:
 #
-#   preflight   profile, runner, toolchain — before the first token (cmd_run.sh
-#               learned this at ~$6.61 on a live ticket)
+#   preflight   profile, runner, board, toolchain — before the first token
+#               (the old `aif run` learned the last one at ~$6.61 on a live
+#               ticket, at the LAST gate)
+#   board       the card moves to In Progress before anything is spent
 #   worktree    git worktree add .aif/worktrees/<ID> -b aif/<ID>. A disposable
 #               checkout of its own: nothing a station writes reaches the
-#               developer's tree until they merge the branch, which is what
-#               makes bypassPermissions safe for the stations (runner_claude.sh)
-#   intake      the ticket's bytes are hashed and committed. From here the
-#               inputs are FROZEN for the run's lifetime — a ticket edited on
-#               the board mid-run changes nothing here, and the report says
-#               which bytes were built. That one rule is what lets the
-#               backward-lapsing hash cascade of earlier sets be deleted
-#   loop        `aif _state` says what is next (bash decides) — the ready gate
-#               first, then the stations; the worker
-#               dispatches the station as `claude -p` with the station's own
-#               prompt (model dispatches); `aif _gate` judges the output and
-#               records the verdict; `aif _commit` seals the accepted step.
-#               A rejection is a RETRY with the gate's complaint in the prompt,
-#               up to limits.attempts_max — never a conversation
-#   report      tasks/<ID>/report.md: what was built, what was decided, what
-#               was not verified, what it cost. The human reviews this next to
-#               the diff, which is the one place they have enough context to
-#
-# Every station is metered from its own envelope (runner_claude.sh) and staged
-# for `aif _gate` to fold, exactly like the SubagentStop hook's rows: a ledger
-# write between commits would appear in scope's diff as the implementation
-# editing the pipeline's own record.
+#               developer's tree until they merge the branch
+#   intake      the ticket's bytes are hashed, recorded and committed. From
+#               here the inputs are FROZEN for the run's lifetime — a ticket
+#               edited on the board mid-run changes nothing here, and the
+#               report says which bytes were built. That one rule is what let
+#               the backward-lapsing hash cascade be deleted (lib/run.sh)
+#   loop        the run record says which stage is next; the worker dispatches
+#               that station as `claude -p` with the station's own prompt,
+#               `aif _record` stamps the binding (never the model), `aif _gate`
+#               judges and records the verdict, `aif _commit` seals it and the
+#               stage advances. A rejection is a RETRY with the gate's
+#               complaint in the prompt, up to limits.attempts_max — never a
+#               conversation
+#   report      tasks/<ID>/report.md and the station transcripts, committed to
+#               the branch and posted to the card. The human reviews that next
+#               to the diff, which is the one place they have enough context
 #
 # Exit: 0 built · 1 stopped, needs a human (the report says why) · 3 the
 # environment cannot run a ticket at all (nothing was spent).
@@ -79,10 +75,9 @@ _aif_work_say() {
   printf '%s%-9s%s %s\n' "$AIF_C_DIM" "$1" "$AIF_C_RESET" "$2" >&2
 }
 
-# _aif_work_preflight <root> <profile> — load and export the profile, and refuse
-# to start on a project whose gates could not render a verdict. Everything here
-# runs before the worktree exists, because none of it depends on the ticket and
-# all of it is cheaper than the first station.
+# _aif_work_preflight <root> <profile> — everything that can refuse a run
+# before it costs anything: the project's config, the stations, the runner and
+# its credential, the board as configured, and the test toolchain.
 _aif_work_preflight() {
   local root="$1" profile="$2"
   local project problems
@@ -99,15 +94,6 @@ _aif_work_preflight() {
   [ -f "$root/.claude/agents/aif-implement.md" ] ||
     aif_die "the stations are not installed — run 'aif init'"
 
-  # The board, before the first token. A token that expired since setup stops
-  # the run here with one line, not as a card that quietly never moved after
-  # the work was done.
-  if ! aif_board_check "$root" >/dev/null 2>&1; then
-    aif_board_check "$root" >&2 || true
-    aif_err "the board is not reachable as configured — fix that first (aif board check)"
-    exit 3
-  fi
-
   aif_profile_load "$profile"
   # shellcheck source=lib/runner_claude.sh
   . "$AIF_ROOT/lib/runner_claude.sh"
@@ -117,6 +103,15 @@ _aif_work_preflight() {
     if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
       aif_die "$AIF_PROFILE_SECRET_VAR is not set — export it to use profile '$profile'"
     fi
+  fi
+
+  # The board, before the first token. A token that expired since setup stops
+  # the run here with one line, not as a card that quietly never moved after
+  # the work was done.
+  if ! aif_board_check "$root" >/dev/null 2>&1; then
+    aif_board_check "$root" >&2 || true
+    aif_err "the board is not reachable as configured — fix that first (aif board check)"
+    exit 3
   fi
 
   # shellcheck source=lib/doctor.sh
@@ -140,14 +135,14 @@ _aif_work_preflight() {
 # Created on first use, reused on a resume. The branch is aif/<ticket>; a branch
 # that already exists (an earlier run, a review in progress) is checked out
 # rather than recreated, so a second `aif work` on the same ticket continues
-# where the first stopped — `aif _state` derives where that is.
+# where the first stopped — the run record says where that is.
 _aif_work_worktree() {
   local root="$1" ticket="$2"
   local wt branch
   wt="$root/$AIF_WORK_WORKTREES/$ticket"
   branch="aif/$ticket"
 
-  if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
+  if [ -e "$wt/.git" ]; then
     printf '%s' "$wt"
     return 0
   fi
@@ -167,14 +162,19 @@ _aif_work_worktree() {
   printf '%s' "$wt"
 }
 
-# _aif_work_intake <root> <wt> <ticket> — freeze the ticket into the run.
+# _aif_work_intake <root> <wt> <ticket> — carry the ticket in, judge it ready,
+# and open (or resume) the run record.
 #
-# The ticket may sit uncommitted in the developer's tree (the analyst wrote it
-# a minute ago); a worktree checks out commits, so it would not be there. Copy
-# it over, hash it, commit it. From this point the run reads only the worktree.
+# This is the seam the whole design rests on. After it, the ticket's bytes do
+# not move for the life of the run: the plan is made for them, the tests freeze
+# against the plan, and the report says which bytes were built. A card edited
+# while the worker runs changes the NEXT run, not this one.
+#
+# rc 0 ready · 1 there is no ticket to build · 2 the ticket is not ready, and
+# AIF_WORK_NOT_READY holds the gate's own lines.
 _aif_work_intake() {
   local root="$1" wt="$2" ticket="$3"
-  local work src base
+  local work src base rc=0 out
 
   work="$(aif_task_dir "$wt" "$ticket")"
   src="$(aif_task_dir "$root" "$ticket")"
@@ -188,44 +188,61 @@ _aif_work_intake() {
       aif_err "could not pull $ticket from the board — nothing was built."
       return 1
     }
-  fi
-
-  if [ ! -f "$work/ticket.md" ] && [ -f "$src/ticket.md" ] && [ "$src" != "$work" ]; then
+  elif [ ! -f "$work/ticket.md" ] && [ -f "$src/ticket.md" ] && [ "$src" != "$work" ]; then
     mkdir -p "$work"
     cp -R "$src/." "$work/"
   fi
+
   [ -f "$work/ticket.md" ] || {
     aif_err "no ticket: $AIF_TASKS_DIR/$ticket/ticket.md does not exist."
     aif_err "The worker builds tickets; it does not write them. Write one with /aif-ba, then run this again."
     return 1
   }
-  if grep -q "Describe the need in your own words" "$work/ticket.md" 2>/dev/null; then
-    aif_err "the ticket is still the scaffold stub — nothing to build."
-    return 1
-  fi
   [ -f "$(aif_ledger_path "$work")" ] || aif_ledger_init "$work" "$ticket"
 
-  # The Definition of Ready, recorded. The same gate the analyst ran; its
-  # verdict is bound to the ticket's bytes at intake, so the ledger says what
-  # was judged buildable rather than only that a build was attempted. A
-  # refusal is not handled here: the loop asks `_state`, which runs the same
-  # gate and hands back every line of its complaint for the report.
-  local rc=0 out
+  # The Definition of Ready — the same gate the analyst ran, against the bytes
+  # this run is about to freeze. Recorded either way: the ledger says what was
+  # judged buildable, not merely that a build was attempted.
   out="$(aif_gate_run "$wt" ready "$work")" || rc=$?
   [ "$rc" -ne 127 ] || aif_die "the ready gate is not installed in this project — run 'aif init'"
   aif_ledger_gate "$work" ready "$([ "$rc" -eq 0 ] && printf pass || printf fail)" \
     ticket.md "$(aif_sha256 "$work/ticket.md")" "$(aif_sha256 "$(aif_gate_path "$wt" ready)")" \
     "$(printf '%s' "$out" | head -1)"
+  if [ "$rc" -ne 0 ]; then
+    # Every line of the gate's output is a question for the analyst's
+    # conversation. The worker reports them verbatim and guesses at none.
+    printf '%s\n' "$out" >&2
+    AIF_WORK_NOT_READY="$out"
+    return 2
+  fi
 
   base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
-  jq -n --arg t "$ticket" --arg sha "$(aif_sha256 "$work/ticket.md")" \
-    --arg br "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')" \
-    --arg base "$base" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    --arg wt "${wt#"$root"/}" \
-    '{ schema: 1, ticket: $t, ticket_sha256: $sha, branch: $br, base: $base,
-       worktree: $wt, started_at: $at, status: "running", dispatches: 0,
-       finished_at: null, why: null }' >"$work/run.json.tmp" &&
-    mv "$work/run.json.tmp" "$work/run.json"
+  if [ -f "$(aif_run_path "$work")" ] && aif_run_resumable "$work"; then
+    # The ticket has not moved since the last run stopped. Keep the stage; give
+    # it a fresh attempt count and a fresh budget, because this is a new
+    # invocation and the caps are per-invocation.
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+    aif_run_update "$work" \
+      '.attempts = {} | .dispatches = 0 | .spent_usd = 0 | .status = "running"
+       | .why = null | .finished_at = null | .started_at = $at | .base = $base' \
+      --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base"
+    _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run"
+  else
+    if [ -f "$(aif_run_path "$work")" ]; then
+      _aif_work_say "restart" "the ticket changed since the last run — the plan below it no longer answers it"
+    fi
+    aif_run_init "$work" "$ticket" \
+      "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')" \
+      "$base" "${wt#"$root"/}"
+  fi
+
+  # Which ticket a metering hook's row belongs to. The worker meters from the
+  # envelope directly, so this is for a session that spawns an aif-* subagent
+  # of its own — fresh here, which is when it can be.
+  local pointer
+  pointer="$(aif_current_ticket_file "$wt")"
+  mkdir -p "$(dirname "$pointer")" 2>/dev/null || true
+  printf '%s\n' "$ticket" >"$pointer" 2>/dev/null || true
 
   git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
@@ -245,21 +262,26 @@ _aif_work_frontmatter() {
   ' "$1/.claude/agents/$2.md"
 }
 
-# _aif_work_dispatch <wt> <ticket> <station> <agent> <bindings-json> <complaint>
-#                    <budget-left> <envelope-out>
+# _aif_work_dispatch <wt> <ticket> <station> <agent> <complaint> <budget-left>
+#                    <envelope-out>
 #
 # One station run. Writes the envelope to <envelope-out>, stages the cost row
 # for `aif _gate` to fold, and returns 0 when the runner produced an envelope
 # at all — the outcome of the station is read from the envelope by the caller,
 # because a failed station is a recorded attempt, not an aborted one.
 #
+# The prompt carries no hash. It used to: the state machine computed one and
+# the station was asked to copy it verbatim into its output. `aif _record`
+# stamps it afterwards instead, so the model writes content and the tool writes
+# provenance (lib/cmd_record.sh).
+#
 # AIF_WORK_STATION_CMD is the offline seam: when set, that command runs in
 # place of the runner with the same arguments the runner would get, plus the
 # station and ticket first. scripts/check-work.sh drives the whole worker
 # through it with hand-written artifacts, the way demo.sh drives the gates.
 _aif_work_dispatch() {
-  local wt="$1" ticket="$2" station="$3" agent="$4" bindings="$5" complaint="$6"
-  local budget_left="$7" out="$8"
+  local wt="$1" ticket="$2" station="$3" agent="$4" complaint="$5"
+  local budget_left="$6" out="$7"
   local project sys prompt model tools max_turns err rc=0
   project="$(aif_project_config "$wt")"
 
@@ -270,12 +292,6 @@ _aif_work_dispatch() {
   [ -n "$tools" ] || tools="Read,Grep,Glob,Write,Edit"
 
   prompt="Ticket $ticket. Your working directory is the project root. Follow your instructions exactly: read the inputs they name under $AIF_TASKS_DIR/$ticket/ and produce what they specify, nothing else. Nobody will answer a question — decide from the ticket and the repository, and record what you decided in the fields your instructions provide for it."
-  if [ -n "$bindings" ] && [ "$bindings" != "{}" ]; then
-    prompt="$prompt
-
-Record these values exactly as given, in the fields named (do not compute or alter them):
-$(printf '%s' "$bindings" | jq -r 'to_entries[] | "  " + .key + ": " + .value')"
-  fi
   if [ -n "$complaint" ]; then
     prompt="$prompt
 
@@ -287,10 +303,9 @@ $complaint"
   err="$(mktemp "${TMPDIR:-/tmp}/aif-err-XXXXXX")"
   aif_meta_body "$wt/.claude/agents/$agent.md" >"$sys"
 
-  # The guard hook reads these: inside a run the station may write only what
-  # its station owns (guard.sh, the AIF_STATION route), and the session may not
-  # write product code at all (AIF_RUN).
-  export AIF_STATION="$station" AIF_RUN=1
+  # The guard hook reads this: a station may write only what its station owns
+  # (sets/claude/hooks/guard.sh).
+  export AIF_STATION="$station"
 
   _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns"
   if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
@@ -310,9 +325,10 @@ $complaint"
   fi
   rm -f "$err"
 
-  # Stage the cost row. Same shape as the SubagentStop hook's, plus
-  # mode: "headless" so a reader can tell which route metered it, and subtype,
-  # recorded and never branched on (docs/FINDINGS.md #2).
+  # Stage the cost row for `aif _gate` to fold into the ledger after the gates
+  # have run. Written here and folded there for the reason every other piece of
+  # this bookkeeping is: the ledger lives under tasks/, scope diffs the working
+  # tree, and instrumentation must not perturb what it measures.
   local usage turns cost summary subtype model_ran result
   usage="$("aif_runner_${AIF_PROFILE_RUNNER}_result_usage" "$out")"
   turns="$(jq -r '.num_turns // 0' "$out")"
@@ -334,45 +350,67 @@ $complaint"
   return 0
 }
 
-# _aif_work_report <root> <wt> <ticket> <status> <why> <started> <dispatches>
+# _aif_work_keep_envelope <wt> <ticket> <n> <station> <envelope>
+#
+# The station's own account of what it did, kept rather than deleted. The bash
+# orchestrator this replaces wrote each station's reasoning to a temp file and
+# removed it, so a $1.27 planning step reported one line and nothing else
+# (docs/REBUILD.md, defect #1).
+#
+# Staged under gitignored .aif/tmp/ while the run is live and moved into
+# tasks/<ID>/stations/ at the end: a new file under tasks/ mid-run would show
+# up in scope's diff as the implementation writing the pipeline's own record.
+_aif_work_keep_envelope() {
+  local wt="$1" ticket="$2" n="$3" station="$4" env="$5" dir
+  dir="$wt/.aif/tmp/stations-$ticket"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  cp "$env" "$dir/$(printf '%02d' "$n")-$station.json" 2>/dev/null || true
+}
+
+# _aif_work_report <root> <wt> <ticket> <status> <why> <started>
 #
 # The artifact the human reviews. Everything in it is read from files the run
-# wrote — the ledger, the plan, the state walk — never narrated. Written to
-# tasks/<ID>/report.md and committed, so it travels with the branch; also
-# printed, because the terminal that launched the worker is where the
-# developer looks first.
+# wrote — the ledger, the run record, the ticket, the plan — never narrated.
 _aif_work_report() {
-  local root="$1" wt="$2" ticket="$3" status="$4" why="$5" started="$6" dispatches="$7"
-  local work ledger run state report base diffstat="" mins
+  local root="$1" wt="$2" ticket="$3" status="$4" why="$5" started="$6"
+  local work ledger run report base diffstat="" mins checklist stations
   work="$(aif_task_dir "$wt" "$ticket")"
   ledger="$(aif_ledger_path "$work")"
-  run="$work/run.json"
+  run="$(aif_run_path "$work")"
   report="$work/report.md"
 
-  # Fold anything still staged (a station that ran but whose gate never got to
-  # run, e.g. on a runner error) so the report and the ledger agree.
+  # Fold anything still staged (a station whose gate never got to run) so the
+  # report and the ledger agree.
   _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
 
-  state="$("$AIF_ROOT/bin/aif" _state "$ticket" 2>/dev/null || printf '{}')"
+  # And move the kept transcripts in, now that no gate will diff the tree again.
+  stations="$wt/.aif/tmp/stations-$ticket"
+  if [ -d "$stations" ]; then
+    mkdir -p "$work/stations"
+    cp "$stations"/*.json "$work/stations/" 2>/dev/null || true
+    rm -rf "$stations"
+  fi
+
   base="$(jq -r '.base // "none"' "$run" 2>/dev/null)"
   if [ "$base" != "none" ]; then
     diffstat="$(git -C "$wt" diff --shortstat "$base" HEAD -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null | sed 's/^ *//')"
   fi
   [ -n "$diffstat" ] || diffstat="no code changed"
   mins=$((($(date +%s) - started) / 60))
+  checklist="$(aif_run_checklist "$work")"
 
-  jq --arg st "$status" --arg why "$why" --argjson d "$dispatches" \
-    --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '.status = $st | .why = (if $why == "" then null else $why end)
-     | .dispatches = $d | .finished_at = $at' "$run" >"$run.tmp" && mv "$run.tmp" "$run"
+  jq --arg st "$status" --arg why "$why" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.status = $st | .why = (if $why == "" then null else $why end) | .finished_at = $at' \
+    "$run" >"$run.tmp" && mv "$run.tmp" "$run"
 
   # Everything written here is markdown: the backticks are code spans, not
   # command substitution, and the single quotes are what keeps them that way.
   # shellcheck disable=SC2016
   {
     printf '# %s — %s\n\n' "$ticket" "$status"
-    printf -- '- branch `%s` · %s · %s min · %s dispatch(es)\n' \
-      "$(jq -r '.branch' "$run")" "$diffstat" "$mins" "$dispatches"
+    printf -- '- branch `%s` · %s · %s min · %s dispatch(es) · stage `%s`\n' \
+      "$(jq -r '.branch' "$run")" "$diffstat" "$mins" \
+      "$(jq -r '.dispatches' "$run")" "$(jq -r '.stage' "$run")"
     printf -- '- built against `ticket.md` sha256 `%s`\n' "$(jq -r '.ticket_sha256' "$run")"
     if [ -f "$work/ticket.md" ] && [ "$(aif_sha256 "$work/ticket.md")" != "$(jq -r '.ticket_sha256' "$run")" ]; then
       printf -- '- **the ticket changed after intake** — this run built the bytes above, not the current file\n'
@@ -394,14 +432,15 @@ _aif_work_report() {
         + ( ($g | map(.cost_usd // empty) | add) as $c
             | if $c == null then "tokens only" else "$" + ($c | tostring) end ) + " |"
     ' "$ledger" 2>/dev/null
-    printf '\n_Costs are derived from `.aif/prices.json`; a model missing there prints "tokens only". Tokens are always recorded._\n'
+    printf '\n_Costs come from `.aif/prices.json`; a model missing there prints "tokens only". Tokens are always recorded. Each station'"'"'s own account of what it did is kept in `stations/`._\n'
 
     if [ -f "$work/plan.md" ]; then
       printf '\n## Decisions the plan made\n\n'
       aif_meta_json "$work/plan.md" | jq -r '
-        .decisions[]? | "- **" + .id + "** " + .statement
+        (.decisions // []) | if length == 0 then "- none recorded" else
+        .[] | "- **" + .id + "** " + .statement
           + "\n  - because: " + (.because // "—")
-          + (if ((.rejected // "") | length) > 0 then "\n  - rather than: " + .rejected else "" end)' 2>/dev/null
+          + (if ((.rejected // "") | length) > 0 then "\n  - rather than: " + .rejected else "" end) end' 2>/dev/null
     fi
     printf '\n## Decided with the analyst\n\n'
     aif_meta_json "$work/ticket.md" | jq -r '
@@ -411,12 +450,15 @@ _aif_work_report() {
         + (if (.kind // "") == "architecture" then " _(architecture)_" else "" end) end' 2>/dev/null
 
     printf '\n## Not verified by this run\n\n'
-    printf '%s' "$state" | jq -r '
-      (.next.checklist // []) | if length == 0
+    printf '%s' "$checklist" | jq -r '
+      if length == 0
         then "- nothing recorded — every criterion was exercised, and the plan named no unvalidated dependency"
         else .[] | "- [ ] **" + .source + " " + .id + "** " + .text end' 2>/dev/null
-    printf '\n## Steps\n\n'
-    printf '%s' "$state" | jq -r '.steps[]? | "- " + .step + ": " + .state + (if .detail != "" then " — " + .detail else "" end)' 2>/dev/null
+
+    printf '\n## Gates\n\n'
+    jq -r '[ .entries[] | select(.gate != null) ] | if length == 0 then "- none ran" else
+      .[] | "- " + .gate + ": " + .result + (if (.reason // "") != "" then " — " + .reason else "" end) end' \
+      "$ledger" 2>/dev/null
     printf '\n---\n_Written by `aif work`. Review the diff on the branch; merge when it is what you meant, or send the ticket back through the analyst with what was wrong._\n'
   } >"$report.tmp" && mv "$report.tmp" "$report"
 
@@ -465,11 +507,11 @@ aif_cmd_work() {
 
   if [ "$clean" -eq 1 ]; then
     [ -n "$ticket" ] || aif_die "usage: aif work <ticket> --clean"
-    local wt="$root/$AIF_WORK_WORKTREES/$ticket"
-    [ -e "$wt" ] || aif_die "no worktree for $ticket at ${wt#"$root"/}"
-    git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+    local wt_c="$root/$AIF_WORK_WORKTREES/$ticket"
+    [ -e "$wt_c" ] || aif_die "no worktree for $ticket at ${wt_c#"$root"/}"
+    git -C "$root" worktree remove --force "$wt_c" >/dev/null 2>&1 || rm -rf "$wt_c"
     git -C "$root" worktree prune >/dev/null 2>&1 || true
-    printf '%sremoved%s %s — branch aif/%s is untouched\n' "$AIF_C_GREEN" "$AIF_C_RESET" "${wt#"$root"/}" "$ticket"
+    printf '%sremoved%s %s — branch aif/%s is untouched\n' "$AIF_C_GREEN" "$AIF_C_RESET" "${wt_c#"$root"/}" "$ticket"
     return 0
   fi
 
@@ -513,15 +555,32 @@ aif_cmd_work() {
   fi
   _aif_work_say "worktree" "${wt#"$root"/}"
 
-  _aif_work_intake "$root" "$wt" "$ticket" || {
+  local intake_rc=0
+  AIF_WORK_NOT_READY=""
+  _aif_work_intake "$root" "$wt" "$ticket" || intake_rc=$?
+  if [ "$intake_rc" -ne 0 ]; then
+    # Not ready, or no ticket at all. Either way nothing has been spent, and
+    # the card goes where a human will see it with the reason attached.
+    local nr="$wt/.aif/tmp/not-ready-$ticket.md"
+    mkdir -p "$(dirname "$nr")" 2>/dev/null || true
+    {
+      printf '# %s — not ready\n\n' "$ticket"
+      printf 'The worker refused the ticket at intake and spent nothing. Each line below\n'
+      printf 'is a question for the analyst (/aif-ba), not a defect in the build:\n\n'
+      printf '%s\n' "${AIF_WORK_NOT_READY:-the ticket does not exist in this checkout}" | sed 's/^/    /'
+    } >"$nr"
+    (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$nr" >/dev/null) || true
     (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
+    rm -f "$nr"
+    _aif_work_say "board" "$ticket → needs_human, the gate's questions posted"
     exit 1
-  }
+  fi
 
-  local project attempts_max run_max dispatches_max started
+  local work project attempts_max run_max dispatches_max started
+  work="$(aif_task_dir "$wt" "$ticket")"
   project="$(aif_project_config "$wt")"
   attempts_max="$(jq -r '.limits.attempts_max // 3' "$project")"
-  dispatches_max="$(jq -r '.limits.run_dispatches_max // 21' "$project")"
+  dispatches_max="$(jq -r '.limits.run_dispatches_max // 12' "$project")"
   [ -n "$max_minutes" ] || max_minutes="$(jq -r '.limits.run_max_minutes // 120' "$project")"
   [ -n "$budget" ] || budget="$(jq -r '.limits.run_budget_usd // 20' "$project")"
   run_max=$((max_minutes * 60))
@@ -530,12 +589,14 @@ aif_cmd_work() {
   printf '\n%swork%s %s · profile %s · budget $%s · ≤%s min\n\n' \
     "$AIF_C_BOLD" "$AIF_C_RESET" "$ticket" "$profile" "$budget" "$max_minutes" >&2
 
-  # The loop. `_state` is asked before every step and obeyed; the worker keeps
-  # only two things of its own — how many times it has dispatched the station
-  # it is on, and how much it has spent.
-  local state kind step agent bindings expects detail
-  local cur_station="" cur_attempts=0 complaint="" dispatches=0 spent=0
-  local out rc status="" why="" gate_out
+  # The loop. The run record says which stage is next and the station's own
+  # agent file says what checks it; the worker keeps only what is true of THIS
+  # invocation — how many times it has dispatched, and how much it has spent.
+  # Note on the run-record filters below: every $-sign in them is jq's variable,
+  # bound by the --arg flags that follow the filter. The single quotes are what
+  # keeps the shell out of them, hence a disable on each.
+  local stage agent expects complaint="" status="" why="" gate_out
+  local dispatches=0 spent=0 attempts out rc
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -552,135 +613,103 @@ aif_cmd_work() {
       break
     fi
 
-    state="$("$AIF_ROOT/bin/aif" _state "$ticket" 2>/dev/null)" || {
+    stage="$(aif_run_get "$work" '.stage')"
+    if [ "$stage" = "done" ] || [ -z "$stage" ]; then
+      status="built"
+      break
+    fi
+
+    agent="$(aif_station_agent "$wt" "$stage" "$work" 2>/dev/null)"
+    [ -n "$agent" ] || {
       status="stopped"
-      why="aif _state could not derive the ticket's state."
+      why="no station is installed for the stage '$stage' — run 'aif init'"
       break
     }
-    kind="$(printf '%s' "$state" | jq -r '.next.kind')"
-    step="$(printf '%s' "$state" | jq -r '.next.step // ""')"
-    detail="$(printf '%s' "$state" | jq -r '.next.detail // ""')"
 
-    case "$kind" in
-      done)
-        status="built"
-        break
-        ;;
-      station)
-        agent="$(printf '%s' "$state" | jq -r '.next.agent')"
-        bindings="$(printf '%s' "$state" | jq -c '.next.bindings // {}')"
-        expects="$(printf '%s' "$state" | jq -r '.next.expects // ""')"
-
-        if [ "$step" != "$cur_station" ]; then
-          cur_station="$step"
-          cur_attempts=0
-          complaint=""
-        fi
-        if [ "$cur_attempts" -ge "$attempts_max" ]; then
-          status="stopped"
-          why="$step was rejected $cur_attempts time(s) in a row (limits.attempts_max). Last complaint:
+    attempts="$(aif_run_attempts "$work" "$stage")"
+    if [ "$attempts" -ge "$attempts_max" ]; then
+      status="stopped"
+      why="$stage was rejected $attempts time(s) in a row (limits.attempts_max). Last complaint:
 $complaint"
-          break
-        fi
-        cur_attempts=$((cur_attempts + 1))
-        dispatches=$((dispatches + 1))
-        [ -z "$expects" ] || _aif_work_say "expects" "$expects"
+      break
+    fi
 
-        out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
-        rc=0
-        _aif_work_dispatch "$wt" "$ticket" "$step" "$agent" "$bindings" "$complaint" \
-          "$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')" \
-          "$out" || rc=$?
-        if [ "$rc" -eq 3 ]; then
-          rm -f "$out"
-          status="stopped"
-          why="the runner could not run the $step station (no envelope) — the environment, not the ticket."
-          break
-        fi
-        spent="$(awk -v s="$spent" -v c="$(jq -r '.total_cost_usd // 0' "$out")" 'BEGIN { printf "%.4f", s + c }')"
-        if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
-          _aif_work_say "station" "$step ended with an error: $("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
-        fi
-        rm -f "$out"
+    expects="$(aif_station_meta "$wt" "$stage" 2>/dev/null | jq -r '.expects // ""')"
+    [ -z "$expects" ] || _aif_work_say "expects" "$expects"
 
-        if awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
-          status="stopped"
-          why="budget: spent \$$spent of \$$budget (as reported by the runner)."
-          break
-        fi
+    dispatches=$((dispatches + 1))
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+    aif_run_update "$work" \
+      '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1)' \
+      --arg s "$stage" --argjson d "$dispatches"
 
-        rc=0
-        "$AIF_ROOT/bin/aif" _gate "$step" "$ticket" >"$gate_out" 2>&1 || rc=$?
-        case "$rc" in
-          0)
-            _aif_work_say "gate" "$step admitted — $(grep -m1 '✓' "$gate_out" | sed 's/.*✓ //')"
-            "$AIF_ROOT/bin/aif" _commit "$step" "$ticket" >/dev/null 2>&1 || true
-            complaint=""
-            ;;
-          1)
-            complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | head -40)"
-            _aif_work_say "gate" "$step rejected (attempt $cur_attempts/$attempts_max) — retrying with the complaint"
-            ;;
-          3)
-            status="stopped"
-            why="a gate could not render a verdict on $step — the environment, not the ticket:
+    out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+    rc=0
+    _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
+      "$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')" \
+      "$out" || rc=$?
+    if [ "$rc" -eq 3 ]; then
+      rm -f "$out"
+      status="stopped"
+      why="the runner could not run the $stage station (no envelope) — the environment, not the ticket."
+      break
+    fi
+    _aif_work_keep_envelope "$wt" "$ticket" "$dispatches" "$stage" "$out"
+    spent="$(awk -v s="$spent" -v c="$(jq -r '.total_cost_usd // 0' "$out")" 'BEGIN { printf "%.4f", s + c }')"
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+    aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
+    if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
+      _aif_work_say "station" "$stage ended with an error: $("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
+    fi
+    rm -f "$out"
+
+    if awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
+      status="stopped"
+      why="budget: spent \$$spent of \$$budget (as reported by the runner)."
+      break
+    fi
+
+    # The tool writes the provenance the station was never asked to carry.
+    "$AIF_ROOT/bin/aif" _record "$stage" "$ticket" >/dev/null 2>&1 || true
+
+    rc=0
+    "$AIF_ROOT/bin/aif" _gate "$stage" "$ticket" >"$gate_out" 2>&1 || rc=$?
+    case "$rc" in
+      0)
+        _aif_work_say "gate" "$stage admitted — $(grep -m1 '✓' "$gate_out" | sed 's/.*✓ //')"
+        "$AIF_ROOT/bin/aif" _commit "$stage" "$ticket" >/dev/null 2>&1 || true
+        complaint=""
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+        aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"
+        ;;
+      1)
+        complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | head -40)"
+        _aif_work_say "gate" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — retrying with the complaint"
+        ;;
+      3)
+        status="stopped"
+        why="a gate could not render a verdict on $stage — the environment, not the ticket:
 $(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | head -20)"
-            break
-            ;;
-          4)
-            status="stopped"
-            why="$step rewrote nothing since its last rejection — the same verdict would repeat. The station is not getting what it needs from the ticket."
-            break
-            ;;
-          *)
-            status="stopped"
-            why="aif _gate $step exited $rc:
-$(head -20 "$gate_out")"
-            break
-            ;;
-        esac
-        ;;
-      not-ready)
-        # The Definition of Ready refused the ticket. Every line of the gate's
-        # output is a question for the analyst's conversation — the worker
-        # reports them verbatim and does not guess at one.
-        status="stopped"
-        why="the ticket is not ready — it goes back to the analyst (/aif-ba):
-$detail"
-        break
-        ;;
-      human)
-        status="stopped"
-        why="the ticket needs a person before it can be built: $detail"
-        break
-        ;;
-      migrate | ticket-init)
-        status="stopped"
-        why="$detail"
-        break
-        ;;
-      blocked)
-        status="stopped"
-        why="a gate is broken, not the ticket: $detail"
         break
         ;;
       *)
         status="stopped"
-        why="aif _state returned an unknown next.kind: $kind"
+        why="aif _gate $stage exited $rc:
+$(head -20 "$gate_out")"
         break
         ;;
     esac
   done
   rm -f "$gate_out"
 
-  _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started" "$dispatches"
+  _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started"
 
   # The report goes where the human looks — the card — and the card moves to
   # where the human decides: Review when it is built, Needs Human when it is
   # not. Loud on failure, with the exact command to do it by hand; the work is
   # on the branch either way, and the exit code says what the work is.
   local col report_path
-  report_path="$(aif_task_dir "$wt" "$ticket")/report.md"
+  report_path="$work/report.md"
   col=review
   [ "$status" = "built" ] || col=needs_human
   if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then

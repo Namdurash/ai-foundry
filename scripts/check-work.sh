@@ -86,10 +86,11 @@ row() { # <id> <file> <green?>
   fi
 }
 body="$(row t0 tests/t0.py 1)"
-if [ -f tests/t1.py ]; then
-  g=0; grep -q impl1 src/app.py 2>/dev/null && g=1
-  body="$body$(row t1 tests/t1.py "$g")"
-fi
+for n in 1 2 3; do
+  [ -f "tests/t$n.py" ] || continue
+  g=0; grep -q "impl$n" src/app.py 2>/dev/null && g=1
+  body="$body$(row "t$n" "tests/t$n.py" "$g")"
+done
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
   chmod +x .aif/suite.sh
@@ -114,43 +115,50 @@ cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 set -u
 station="$1" ticket="$2" wt="$3" prompt="$5" out="${10}"
 work="$wt/tasks/$ticket"
-bind() { printf '%s\n' "$prompt" | awk -v k="$1" '$1 == k":" { print $2; exit }'; }
 count_file="$wt/.aif/tmp/fake-$station.count"
 mkdir -p "$wt/.aif/tmp"
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); printf '%s' "$n" >"$count_file"
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 
+# The criteria the ticket actually carries — so a reworked ticket with a new
+# criterion produces a plan and a test for it, exactly as a real station would.
+acs="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' | jq -r '.acceptance[].id')"
+nums="$(printf '%s\n' "$acs" | sed 's/AC-00//')"
+tests_json="$(printf '%s\n' "$nums" | jq -R 'select(length>0) | "tests/t" + . + ".py"' | jq -sc .)"
+
 case "$station" in
   plan)
     change='["src/app.py"]'
     if [ "${FAKE_PLAN_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then change='["src/nowhere.py"]'; fi
+    cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" \
+      'map({ key: ., value: $c }) | from_entries')"
     cat >"$work/plan.md" <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "$ticket", "ticket_sha256": "$(bind ticket_sha256)", "risk": "low",
-  "files": { "create": [], "change": $change, "tests": ["tests/t1.py"] },
+{ "schema": 2, "ticket": "$ticket", "risk": "low",
+  "files": { "create": [], "change": $change, "tests": $tests_json },
   "decisions": [
-    { "id": "D-001", "statement": "Write the marker from the app module.",
-      "because": "AC-001 is about the app's own output", "serves": ["AC-001"] } ],
-  "ac_coverage": { "AC-001": $change },
+    { "id": "D-001", "statement": "Write the markers from the app module.",
+      "because": "every criterion is about the app's own output", "serves": [] } ],
+  "ac_coverage": $cov,
   "uncovered": [],
-  "surface_map": { "export": $change },
   "external": [] }
 -->
 # $ticket — plan (attempt $n)
 PLAN
     ;;
-  plan-judge)
-    jq -n --arg s "$(bind subject_sha256)" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,
-      judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}' >"$work/verdict-plan.json"
-    ;;
   tests)
-    printf '# AC-001 asserts impl1\n' >"$wt/tests/t1.py"
+    for i in $nums; do
+      [ -n "$i" ] || continue
+      printf '# AC-00%s asserts impl%s\n' "$i" "$i" >"$wt/tests/t$i.py"
+    done
     ;;
   implement)
     if [ "${FAKE_STALL:-0}" = 1 ]; then
       printf 'def users():\n    return []  # wrong\n' >"$wt/src/app.py"
     else
-      printf 'def users():\n    return []  # impl1\n' >"$wt/src/app.py"
+      body=""
+      for i in $nums; do [ -n "$i" ] && body="$body impl$i"; done
+      printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
     fi
     ;;
 esac
@@ -174,7 +182,7 @@ ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
   "acceptance": [
     { "id": "AC-001", "surface": "export",
       "given": "users exist", "when": "the export runs",
-      "then": "writes the marker", "expect": "impl1" } ],
+      "then": "writes the marker", "expect": "impl1" }${3:-} ],
   "open": ${2:-[]},
   "decided": [
     { "question": "may the export be deferred to a queue?", "answer": "no — synchronous", "by": "default" } ],
@@ -202,14 +210,20 @@ eq "report says built" "$(head -1 tasks/AIF-1/report.md 2>/dev/null)" "# AIF-1 �
 eq "run.json status" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
 eq "run.json froze the ticket's hash" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
-eq "four stations metered, headless" \
-  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' tasks/AIF-1/ledger.json)" "4"
+eq "three stations metered, headless" \
+  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' tasks/AIF-1/ledger.json)" "3"
 eq "station rows carry the model that ran" \
   "$(jq -r '[.entries[] | select(.station == "plan")] | last | .model' tasks/AIF-1/ledger.json)" "fake-model"
 eq "the ready gate's pass is in the ledger" \
   "$(jq -r '[.entries[] | select(.gate == "ready")] | length > 0' tasks/AIF-1/ledger.json 2>/dev/null || echo skip)" "true"
 eq "one commit per accepted station, plus intake and report" \
-  "$(git log --format=%s | grep -c '^aif: ')" "6"
+  "$(git log --format=%s | grep -c '^aif: ')" "5"
+eq "the run record reached done" "$(jq -r '.stage' tasks/AIF-1/run.json)" "done"
+eq "the tool wrote the plan's binding, not the model" \
+  "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
+  "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
+eq "each station left its own account behind" \
+  "$(find tasks/AIF-1/stations -name '*.json' | wc -l | tr -d ' ')" "3"
 eq "the report shows what fell to a default, beside the code" \
   "$(grep -c 'by default, not by the human' tasks/AIF-1/report.md)" "1"
 eq "the report carries the gap as a checklist item" \
@@ -228,8 +242,8 @@ FAKE_PLAN_BAD_FIRST=1 "$AIF" work AIF-2 --no-worktree >"$OUT/run2.out" 2>&1 || r
 eq "exit 0 — built after the retry" "$rc" "0"
 eq "plan was dispatched twice" \
   "$(jq '[.entries[] | select(.station == "plan")] | length' tasks/AIF-2/ledger.json)" "2"
-eq "plan-form recorded a fail then a pass" \
-  "$(jq -r '[.entries[] | select(.gate == "plan-form") | .result] | join(",")' tasks/AIF-2/ledger.json)" "fail,pass"
+eq "the plan gate recorded a fail then a pass" \
+  "$(jq -r '[.entries[] | select(.gate == "plan") | .result] | join(",")' tasks/AIF-2/ledger.json)" "fail,pass"
 eq "the second attempt saw the complaint" "$(grep -c 'attempt 2' tasks/AIF-2/plan.md)" "1"
 eq "the report counts both attempts" \
   "$(grep -E '^\| plan \|' tasks/AIF-2/report.md | awk -F'|' '{ gsub(/ /,"",$3); print $3 }')" "2"
@@ -250,8 +264,12 @@ git add -A && git commit -qm "open question" >/dev/null
 rc=0
 "$AIF" work AIF-6 --no-worktree >"$OUT/run6.out" 2>&1 || rc=$?
 eq "an open question: exit 1 — back to the analyst" "$rc" "1"
-eq "the report names the question and its default" \
-  "$(grep -c 'open question Q-001.*default: no' tasks/AIF-6/report.md)" "1"
+# Nothing was spent, so there is no run to report on — the card carries the
+# gate's own questions instead, which is where the analyst reads them.
+eq "the card carries the question and its default" \
+  "$("$AIF" board show AIF-6 --json | jq -r '.comments[0].text' | grep -c 'open question Q-001.*default: no')" "1"
+eq "and no report was written for a run that never started" \
+  "$(test -f tasks/AIF-6/report.md && echo yes || echo no)" "no"
 eq "no station ran on it" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-6/ledger.json)" "0"
 
 # =============================== 4. worktree =================================
@@ -289,6 +307,49 @@ eq "the report says why" "$(grep -c 'rewrote nothing\|rejected .* time' tasks/AI
 eq "the accepted stations are committed, the failed one is not" \
   "$(git log --format=%s | grep -c '^aif: implement AIF-5')" "0"
 eq "run.json status" "$(jq -r '.status' tasks/AIF-5/run.json)" "stopped"
+
+# =============================== 6. the second round =========================
+# What the retired check-cycle.sh guarded, on the only driver there now is: a
+# rework over a FINISHED ticket. Six of the ten defects of the 0.4.1 set lived
+# on this route, and every fixture used to start clean.
+printf '\n6. a rework over a finished ticket\n'
+fresh_project "$SANDBOX/p6"
+ticket_for AIF-1
+git add -A && git commit -qm "ticket" >/dev/null
+"$AIF" work AIF-1 --no-worktree >"$OUT/r1.out" 2>&1
+eq "round one is built" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
+
+# A resume with the ticket UNCHANGED keeps the stage rather than rebuilding.
+"$AIF" work AIF-1 --no-worktree >"$OUT/r1b.out" 2>&1
+eq "an unchanged ticket resumes at done, and dispatches nothing" \
+  "$(jq -r '.dispatches' tasks/AIF-1/run.json)" "0"
+eq "it says so" "$(grep -c 'resume.*done' "$OUT/r1b.out")" "1"
+
+# Now the analyst adds a criterion. Nothing is reset by hand: the run record
+# was bound to the ticket's bytes, and they moved.
+ticket_for AIF-1 '[]' ',
+    { "id": "AC-002", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl2" }'
+rm -f .aif/tmp/fake-*.count
+"$AIF" work AIF-1 --no-worktree >"$OUT/r2.out" 2>&1
+rc=$?
+eq "round two is built" "$rc" "0"
+eq "the reworked ticket restarted the run, it did not resume" \
+  "$(grep -c 'restart.*the ticket changed' "$OUT/r2.out")" "1"
+eq "the plan was remade for both criteria" \
+  "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ac_coverage | keys | join(",")')" "AC-001,AC-002"
+eq "and rebound to the new ticket" \
+  "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
+  "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
+eq "the round-one test was green at freeze, never proven red" \
+  "$(jq -c '.green_at_freeze' tasks/AIF-1/tests.lock.json)" '["t1"]'
+eq "so only the new test is covering" \
+  "$(jq -c '.covering' tasks/AIF-1/tests.lock.json)" '["t2"]'
+eq "and the report says the green-at-freeze test was never proven red" \
+  "$(grep -c 'tests t1' tasks/AIF-1/report.md)" "1"
+eq "the ticket's own gap is on the checklist too" \
+  "$(grep -c 'ticket VG-001' tasks/AIF-1/report.md)" "1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

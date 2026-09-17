@@ -68,6 +68,25 @@ aif_meta_body() {
   awk 'body { print } /^-->$/ { body = 1 }' "$1"
 }
 
+# aif_meta_replace <file> <json> — rewrite the aif:meta block in place.
+#
+# How `aif _record` stamps a binding into an artifact a model wrote: the model
+# owns the content, the tool owns the provenance, and neither has to trust the
+# other to copy 64 hex characters correctly (see lib/cmd_record.sh).
+#
+# The JSON is re-serialised by jq rather than patched textually — a regex over
+# someone else's JSON is how a working artifact becomes an unparseable one.
+aif_meta_replace() {
+  local file="$1" json="$2" tmp
+  tmp="$(aif_tmpfile "$file")"
+  {
+    printf '<!-- aif:meta\n'
+    printf '%s' "$json" | jq .
+    printf -- '-->\n'
+    aif_meta_body "$file"
+  } >"$tmp" && mv "$tmp" "$file"
+}
+
 # aif_meta_get <file> <key> [default] — read one KEY=VALUE line.
 #
 # Parsed, never sourced. Sets and evals are the things you eventually accept

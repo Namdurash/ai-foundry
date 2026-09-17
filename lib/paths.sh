@@ -25,6 +25,16 @@ AIF_PROFILE_STATE=".aif/profile.local"
 # shellcheck disable=SC2034
 AIF_TASKS_DIR="tasks"
 
+# Where the product partner's requests live, relative to the project root.
+#
+# Parallel to tasks/, and deliberately not inside it: a request is what a
+# human decided is worth wanting, before any ticket exists. It has no id, no
+# ledger, no gate and nothing derives from it — the analyst reads one and cuts
+# tickets from it. Committed, like tasks/: it is the record of why the work
+# exists.
+# shellcheck disable=SC2034
+AIF_REQUESTS_DIR="requests"
+
 # aif_task_dir <root> <ticket> — where this ticket's artifacts live.
 #
 # One place, because the path is dereferenced by the CLI, the gates, the
@@ -40,11 +50,12 @@ aif_task_dir() {
 # one: it knows the agent, the transcript and the cwd, but nothing about the
 # foundry. This pointer supplies it.
 #
-# Written by `aif _state`, which is not an arbitrary choice — the orchestrator
-# calls _state immediately before every dispatch, by its own protocol, so the
-# pointer is fresh exactly when a subagent is about to run. Writing it in
-# `aif run` instead would be wrong: `aif run` may be handed a board link or a
-# sentence and legitimately not know the ticket id yet.
+# Written by `aif work` at intake, which is the moment the ticket id is first
+# certain — a run may have been handed nothing at all and taken the top of the
+# board's Ready column. The worker itself meters from each station's own
+# envelope and does not read this; it is for a session that spawns an aif-*
+# subagent of its own, where the SubagentStop payload carries an agent and a
+# transcript but nothing about which ticket they belong to.
 #
 # Session-local and gitignored: it says where one developer is, not anything
 # about the project.

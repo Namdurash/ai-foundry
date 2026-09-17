@@ -95,7 +95,7 @@ aif_cmd_meter() {
   # spawned for something else is not a pipeline cost, and the ticket-critic is
   # advisory rather than a station.
   case "$agent_type" in
-    aif-ticket-critic | "") return 0 ;;
+    "") return 0 ;;
     aif-*) ;;
     *) return 0 ;;
   esac

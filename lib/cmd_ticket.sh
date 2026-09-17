@@ -63,7 +63,7 @@ EOF
 # `aif _ready <ticket>` — the Definition of Ready, as the analyst sees it.
 #
 # A thin wrapper over the installed `ready` gate — the SAME script the worker
-# runs at intake (`lib/cmd_state.sh`), so the two cannot disagree. Prints the
+# runs at intake (`lib/cmd_work.sh`), so the two cannot disagree. Prints the
 # gate's own words: a pass with what was decided by default, or one reason per
 # line, each of which is the next question to put to the human.
 aif_cmd_ready() {

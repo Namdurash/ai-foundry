@@ -11,7 +11,7 @@
 # That makes `aif` a requirement, unlike the gates, which run in CI with no aif
 # on the box (docs/FINDINGS.md #7a). The requirement is fair here: this hook only
 # has anything to do inside a session, and the supported way to open one is
-# `aif run`, which means aif was on PATH a moment ago. When it is not, the hook
+# `aif work`, which means aif was on PATH a moment ago. When it is not, the hook
 # says so rather than silently accounting for nothing — an accounting gap that
 # announces itself is recoverable, one that does not is how a ledger ends up
 # flattering.

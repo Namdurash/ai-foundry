@@ -5,8 +5,8 @@ and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
 > **Status: early, but the machine is whole.** The analyst writes a ticket's
-> criteria with you; one command then builds it headless through four stations
-> and six gates, metered per station, and never asks a question. It has been run
+> criteria with you; one command then builds it headless through three stations
+> and five gates, metered per station, and never asks a question. It has been run
 > against a real project; what that run found is written down in
 > `docs/REBUILD.md` rather than smoothed over. What is still thin: the evals are
 > a smoke test, there is one runner, and the price table ships empty.
@@ -72,13 +72,13 @@ removed only while they still hold the value we wrote, because deleting by key
 name alone is how an uninstaller takes away the setting you actually wanted.
 
 Model routing is deliberately absent from every file above — it is exported at
-`aif run` time instead. See `docs/FINDINGS.md`.
+`aif work` time instead. See `docs/FINDINGS.md`.
 
 ### Running it
 
 ```sh
-aif work TICK-1              # build it headless, on its own branch — no questions
-aif run TICK-1               # the same pipeline, in a session you can watch
+aif work                     # build the top of the board's Ready column
+aif work TICK-1              # …or this one, headless, on its own branch
 ```
 
 `aif work` is the worker: one ticket, one git worktree (`.aif/worktrees/TICK-1`
@@ -93,14 +93,14 @@ verified, what it cost — beside the diff, which is the one place a reviewer ha
 enough context to judge it. Run several tickets at once: each gets its own
 worktree. The offline walk of the whole thing is `scripts/check-work.sh`.
 
-`aif run` is the entry point for anything other than your default provider.
+`aif work` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
 the project is not on the profile's model** — it uses whatever the project
 already had. That is deliberate: the alternative is a routing setting that might
 be ignored, which puts you on a model you did not choose without telling you.
 
-The same export is how each station gets its engine: a station is a subagent
-declaring `model: opus`, and the profile decides what `opus` resolves to
+The same export is how each station gets its engine: a station's agent file
+declares `model: opus`, and the profile decides what `opus` resolves to
 (`glm-5.2` on the `glm` profile). The set stays model-agnostic while a station
 still says how much engine it needs.
 
@@ -183,6 +183,23 @@ logic cannot be hidden in a fixture no plan lists. It is *not* where a ticket's
 own tests are declared; the plan says that, and `verify-red` freezes the union of
 the two. A project that pointed `roots` at one tree while its tests lived beside
 their sources froze neither, and nothing noticed.
+
+### Before the ticket — the product partner
+
+**`/aif-po`** is a thinking partner, not a form: what is wrong today, who feels
+it and how often, what should be true after, what is the *smallest* version that
+changes that, what is deliberately out. It pushes back where a request arrives
+larger than its problem, and it says plainly where the machine's tests will not
+prove correctness — money, auth, concurrency, a real device.
+
+It writes `requests/<slug>.md` and stops. It does **not** write criteria, does
+not read the codebase, and decides nothing: feasibility is the analyst's, and a
+product decision made quietly is one nobody made. `requests/` sits beside
+`tasks/` and is committed — it is the record of *why* the work exists.
+
+Five minutes or an hour; the user decides when there is enough. This is the one
+part of the foundry with no gate and nothing downstream that can be lied to,
+which is deliberate: it is the thinking, and thinking does not pass a lint.
 
 ### Before the build — the analyst
 
@@ -276,25 +293,24 @@ the API succeeded *and* the six columns exist. The test toolchain is `?` until
 board check again before the first token, so an expired token stops the run with
 one line instead of a card that never moved.
 
-### When a gate rejects — the repair bench
+### When a gate rejects
 
-**`/aif-fix <ID> [station]`** is the other half of a rejection. It re-derives the
-complaints by running the gate itself, explains each one from the gate's own
-reasoning, and then splits them in two: *mechanical* problems (an assertion that
-joins two clauses, a missing verb, prose where a literal belongs) it fixes in the
-artifact with you; *structural* ones it refuses to fix, because they are the gate
-saying the work is too big or the ticket too vague.
+Nothing opens a conversation. The worker hands the gate's complaint back to the
+same station, verbatim, in the next prompt, and lets it try again — up to
+`limits.attempts_max`. A station that will not converge stops the run, and the
+report says which stage, how many attempts, and what the gate said last.
 
-That refusal is the point. Every gate here is a proxy, so there is always a cheap
-way to turn it green that destroys what it was protecting — delete six criteria to
-get under a limit and `ready` passes while the ticket now says less than you
-asked for. `/aif-fix` will not do that; it takes the split back to you and the
-change lands in `ticket.md`, with the analyst, where the plan will actually read
-it.
+That is the whole repair mechanism, and it replaced a skill (`/aif-fix`) that
+split complaints into *mechanical* and *structural* and took the second kind
+back to you mid-run. The split was real; the cost was that every rejection
+became a conversation. What survives it is the rule it existed to enforce —
+**never make a gate pass by making the artifact worse** — which is now
+structural rather than advisory: the `ready` gate is the only one that can be
+satisfied by saying less, and it runs before the run starts, with the analyst
+and you.
 
-Inside `aif run` this is what the orchestrator does on a rejection, in the session,
-with you present — the same split, the same refusal to make a structural
-complaint go away.
+A rejection that is really the ticket's fault surfaces as a stopped run, and it
+goes back to `/aif-ba`.
 
 ### A ticket, in order
 
@@ -304,40 +320,35 @@ Ticket ── ready ── plan ── tests ── code
 ```
 
 ```sh
-aif work TICK-1                     # ready → plan → tests → code, headless, on aif/TICK-1
-aif run TICK-1                      # the same cycle in a session you can watch
-aif run https://jira/…              # …from a board card, or a sentence
+aif work                            # the top of Ready: ready → plan → tests → code
+aif work TICK-1                     # …or this ticket, headless, on aif/TICK-1
 ```
 
 **One command, and there is no command per stage.** `aif work` is the worker:
-it asks `aif _state` what is next, dispatches that station as `claude -p` with
-the station's own prompt, judges the output with `aif _gate`, commits what was
-admitted, and retries a rejection with the gate's complaint in the prompt.
-`aif run` opens the same cycle as an interactive session on the orchestrator
-skill, with the stations as **subagents**, for when you want to watch.
+it reads the run record for the stage, dispatches that station as `claude -p`
+with the station's own prompt, stamps the binding with `aif _record`, judges the
+output with `aif _gate`, commits what was admitted, and retries a rejection with
+the gate's complaint in the prompt. Each station's own account of what it did is
+kept in `tasks/<ID>/stations/` and committed — the orchestrator this replaced
+wrote that to a temp file and deleted it.
 
-With a ticket id, work **resumes wherever that ticket actually stands**. Nothing
-records "we are at the plan stage": the state is derived by running the gates
-against the artifacts' current bytes, so it accounts for edits nobody told it
-about and cannot go stale. Edit `ticket.md` and the plan bound to it lapses on
-its own, with nothing to undo.
+Run it twice and it **resumes**. The run record says which stage was reached,
+and it is bound to the ticket's bytes at intake: unchanged, the run picks up
+where it stopped; changed, it starts over, because a plan made for an older
+ticket no longer answers the question. That one comparison replaced a hash
+cascade that lapsed backwards through five artifacts.
 
-The orchestrator does not decide what runs next either — it asks `aif _state`,
-which is bash. That is deliberate: if "what runs next" were the model's
-judgement, the pipeline would have opinions where it needs preconditions.
-
-`aif run` drives the whole pipeline and puts the human where a human belongs.
-There are no silent branches — every run either opens `claude` for you or says
-what it is doing, because a command that sometimes talks to you and sometimes
-does not cannot be read from outside.
+No model decides what runs next. The stage order is a list in bash
+(`lib/run.sh`), each station declares the gate that checks it, and the worker
+obeys both — if "what runs next" were the model's judgement, the pipeline would
+have opinions where it needs preconditions.
 
 - **The ready gate always runs first.** A ticket that is not ready — an open
   question, a criterion with no literal, the scaffold stub — stops the worker
   at intake with the gate's own lines in the report, and nothing is spent.
 - **A rejection is a retry, not a conversation.** The worker hands the gate's
   complaint back to the station, up to `limits.attempts_max`; a station that
-  will not converge stops the run with a report saying so. In `aif run` the
-  same rejection opens `/aif-fix` with you present.
+  will not converge stops the run with a report saying so.
 - **Wrong at review goes back to the analyst.** Change the criteria with
   `/aif-ba`; the plan bound to the old ticket lapses on its own and the next
   `aif work` re-plans.
@@ -361,23 +372,24 @@ the gates rather than remembered.
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
-| `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
 | `aif explain <ticket>` | draw how it got here — criteria, decisions, gaps, and the plan's reasoning |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 
-There is no command per stage. The worker and the orchestrator call a small
-internal surface (`aif _state`, `_gate`, `_commit`, `_ready`, `_ticket-init`,
-…) that is not listed in `--help` — it is an interface between two parts of aif,
-not something to learn.
+There is no command per stage. The worker and the skills call a small internal
+surface (`aif _gate`, `_record`, `_commit`, `_ready`, `_ticket-init`,
+`_amend-plan`, `_meter`) that is not listed in `--help` — it is an interface
+between two parts of aif, not something to learn. Each one is something a model
+must not decide or must not carry: `_record` writes the hash a station was once
+asked to copy, `_gate` renders and records a verdict, `_ready` is the one
+Definition of Ready the analyst and the worker share.
 
 ### Stations and their model tier
 
 | station | tier | produces | its gate(s) |
 |---|---|---|---|
 | *(the ticket)* | — | `ticket.md`, by the analyst with you | ready |
-| `plan` | careful (opus) | `plan.md` | plan-form |
-| `plan-judge` | **routine (sonnet)** | `verdict-plan.json` | plan-judge |
+| `plan` | careful (opus) | `plan.md` | plan |
 | `tests` | careful (opus) | test files + `tests.lock.json` | verify-red |
 | `implement` | **by risk** | code | green, scope |
 
@@ -401,8 +413,10 @@ Every gate is `gate.sh <work-dir>` → an exit code:
 | **1** | the artifact is rejected | fix it and re-run the station |
 | **3** | the gate could not render a verdict | rerun the judge, or fix the environment |
 
-`1` versus `3` is the difference between "your plan has a blocker" and "the judge
-hallucinated / the repo was already broken". `verify-red`: a real failing test is
+`1` versus `3` is the difference between "your plan has a blocker" and "the repo
+was already broken". The worker retries a `1` with the gate's complaint in the
+prompt; it stops on a `3`, because editing the artifact cannot fix the
+environment. `verify-red`: a real failing test is
 `0`; a `SyntaxError` test is `3` (not a usable oracle); a test that already passes
 is `1`.
 
@@ -534,7 +548,7 @@ acknowledgement was structurally designed to disappear.
 
 Now the ticket files them apart: the `ready` gate prints what was decided by
 default on its pass path, and a gap must say which criteria it leaves unproven.
-At the end of the cycle `aif _state` re-emits the gaps, together with every
+At the end of the cycle the report re-emits the gaps, together with every
 unvalidated external dependency and every test that was green at freeze, as the
 ticket's **manual verification checklist** — and `aif work` puts that list in
 the report beside the diff. A gap acknowledged once and
@@ -582,13 +596,13 @@ draws is unchecked. The generated file records the `sha256` of the artifacts it
 came from, so a stale drawing reads as stale rather than as wrong.
 
 Two things are printed on the **pass** path rather than rejected, for the same
-reason `plan-form` prints an unvalidated external surface: a question decided by
+reason the plan gate prints an unvalidated external surface: a question decided by
 default rather than by you, and a plan decision that serves no criterion.
 Forcing either to look settled would buy a plausible line in place of an honest
 gap.
 
 The analyst draws the ticket when it is ready, while you are still in the room,
-and the orchestrator draws the plan once `plan-judge` admits it. What that is
+and you can draw the plan yourself once it is admitted. What that is
 worth in tokens is nothing; what it is worth in attention is a setting:
 
 ```json
@@ -605,8 +619,8 @@ a different feature and a worse one.
 
 ### Three coverage questions of one shape
 
-`plan-form` asks the same question about three kinds of entity, and the third is
-the one that was missing:
+The plan gate asks the same question about three kinds of entity, and the third
+is the one that was missing:
 
 | entity | must be covered by | otherwise |
 |---|---|---|
@@ -621,26 +635,14 @@ no test noticed because no criterion imported the barrel. Documentation files
 normally land in `uncovered`, which is fine — the point is that the list is seen,
 not that it is empty.
 
-A fourth check is a signal rather than a rule. The plan declares `surface_map`:
-one file set per surface the ticket names. Where a criterion's coverage differs
-from its own surface's entry, the gate **flags it and does not reject** — a
-narrower coverage is often correct — and `plan-judge` has to adjudicate each flag
-as `intended` or `drift`. Only `drift` sends the plan back. The case behind it:
-four criteria declared one surface and were mapped to three different file sets,
-and the narrowest of them ended up pinning a standalone function in the test
-runtime instead of the startup path it was written about.
-
-### What the judge examined
-
-`{"pass": true, "findings": []}` is the shape of a thorough pass and also the
-shape of a judge that read nothing; from the artifact alone they are the same
-document. Both verdicts now carry `checked[]` — one line per thing actually
-examined — and on a `risk: high` ticket a verdict with an empty one is rejected.
-It stays optional below high, so a cheap ticket is not taxed for a signal nobody
-will read.
-
-This catches nothing on its own. It makes an under-performing judge visible in
-the artifact instead of indistinguishable from a diligent one.
+There used to be a fourth, and a whole station to adjudicate it: the plan
+declared a `surface_map`, the gate flagged a criterion whose coverage differed
+from its surface, and a `plan-judge` station decided each flag as `intended` or
+`drift`. It is gone, with the rest of the form lint. What judges a plan now is
+the **outcome** — tests that will not go green, or a diff that leaves the
+manifest — and either sends the run back to the plan station inside a budget.
+That is cheaper than a second model reading the first one's prose, and it
+cannot be satisfied by agreeing.
 
 ### The backward transition — free, no command
 
@@ -653,7 +655,7 @@ plan to lapse with it.
 
 ### Before the first dollar
 
-`aif run` runs your test command once and checks a parseable report comes out of
+`aif work` runs your test command once and checks a parseable report comes out of
 it, before dispatching anything. `aif doctor --probe` does the same on demand.
 
 A red suite passes this check — the question is "does the runner run and emit a
@@ -677,13 +679,7 @@ one and better than none.
 sometimes the plan simply could not have foreseen it — an import pulls in a
 neighbouring module, a handler only takes effect once registered somewhere.
 
-Two things cover that, at different costs:
-
-- **`plan-judge` looks for it first.** The judge traces what each planned change
-  forces and lists files the implementation would have to edit that the manifest
-  does not permit. Same defect, found before the code is written instead of after.
-- **`aif _amend-plan <ID> <path> "<why>"`** is the escape hatch when it still
-  happens. It writes `tasks/<ID>/plan-amendments.json`, not `plan.md` — amending
+- **`aif _amend-plan <ID> <path> "<why>"`** is the escape hatch. It writes `tasks/<ID>/plan-amendments.json`, not `plan.md` — amending
   the plan would invalidate `tests.lock.json`, which binds to the plan's bytes, so
   `green` would then reject the implementation the amendment existed to permit.
 
@@ -696,8 +692,8 @@ wrong, and the ticket goes back to planning.
 
 ### What each station cost
 
-Every station is metered. A `SubagentStop` hook reads that subagent's own
-transcript, rolls up its four token classes, and appends a row to
+Every station is metered from its own `claude -p` envelope: four token classes,
+a turn count and the model that actually ran, appended as a row to
 `tasks/<ID>/ledger.json` — one row per attempt, never updated in place, because
 overwriting a row is how rework disappears from a metric that exists to count it.
 
@@ -744,17 +740,20 @@ A `PreToolUse` hook bounds every writer in a run:
 |---|---|---|
 | `aif-implement` | code the plan named | test files |
 | `aif-tests` | test files | implementation |
-| the orchestrator | `tasks/` and `.aif/prices.json` | code, tests, gates |
 | a plain `claude` session | everything, as usual | nothing |
 
-The orchestrator rule is the OPES-48 defect made impossible on the easy path: the
-implement station exhausted its turn budget, the session finished the feature
-itself, and no gate ever saw it — the commit looked like any other. Work written
-outside a station is work outside every gate.
+The last row matters as much as the others. The guard binds to a **station**,
+not to a session: a project with aif installed is still an ordinary project, and
+a plain `claude` in it is not policed. There used to be a third rule — an
+orchestrator session may not write product code — which existed because a
+session dispatched the stations while a human watched, and once finished a
+feature itself after a station ran out of turns. There is no such session now;
+the worker is a subprocess and the only writers are stations.
 
-The last row matters as much as the others. The guard is active only inside
-`aif run`, which marks the session; a project with aif installed is still an
-ordinary project, and a plain `claude` in it is not policed.
+Whether the hook fires at all inside a worker run is **unverified** — the
+stations run under `--permission-mode bypassPermissions`, and no probe has yet
+watched it deny one (`docs/FINDINGS.md` #12). `scope` and `green` are the
+backstops either way.
 
 Stated plainly: this matches the Write and Edit tools, so `bash -c 'echo … >
 src/f.py'` walks past it. Matching shell commands would mean parsing shell, which
@@ -798,12 +797,12 @@ plan invalidates them — but editing the source afterwards does not re-open the
 gate. Nothing cheap fixes this; the evidence a revert-recheck needs is destroyed
 by the commit that preserves the work.
 
-**The plan boundary is recorded for the same reason.** `plan-form` asserts that
+**The plan boundary is recorded for the same reason.** The plan gate asserts that
 every `files.create` path does not exist *yet* — a premise the implement station
 is later paid to falsify. So the plan gates run once, at plan time, and the
-recorded pass holds while the plan's bytes and its `ticket_sha256` binding
-hold. Editing the ticket still lapses the plan automatically; finishing the
-ticket no longer invalidates the plan that shaped it.
+recorded pass holds for the life of the run. A ticket edited between runs does
+not lapse it artifact by artifact — it restarts the run, which is the one
+comparison that replaced the cascade.
 
 ### Offline, no tokens
 
@@ -851,8 +850,8 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] `/aif-ba` — the analyst writes the criteria with you; `aif _ready` is the one Definition of Ready
 - [x] `aif work` — one ticket, one worktree, one budget, no questions
 - [x] The board — `aif board` over `local` and `trello`, `/aif-pjm` as its policy, `aif secret`, `aif doctor` per role, `/aif-setup`
-- [x] `aif run` — the same cycle in a visible session, stations as subagents
-- [x] Per-station metering from subagent transcripts, into a hash-chained ledger
+- [x] Per-station metering from each station's envelope, into a hash-chained ledger
+- [x] `/aif-po` — the product partner, and `requests/` as what the analyst cuts from
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals

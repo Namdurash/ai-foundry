@@ -59,7 +59,7 @@ test_roots="$(jq -r '.test.roots[]?' "$project")"
 max_diff="$(jq -r '.limits.diff_lines_max // 400' "$project")"
 
 # Paths no implementation may touch, whatever the plan says. The list itself is
-# AIF_G_DENYLIST in _lib.sh — one list, shared with plan-form, which refuses
+# AIF_G_DENYLIST in _lib.sh — one list, shared with the plan gate, which refuses
 # the same paths at plan time so this gate stays the backstop rather than the
 # first place the disagreement surfaces.
 #
@@ -104,21 +104,23 @@ deleted="$(git -C "$root" diff --name-only --diff-filter=D HEAD 2>/dev/null || t
 # directory, which still holds the plan and the ledger this gate protects.
 amend_rel="${amend_file#"$root"/}"
 
-# The ledger too, and for the same reason: aif itself writes it. A failed
-# attempt's verdicts are recorded the moment the gate rejects — between two aif
-# commits — so on the retry the ledger sits modified in the very diff this gate
-# reads, and the pipeline's own bookkeeping reads as the implementation editing
-# its record. The hook's cost rows are staged out of the diff entirely
-# (.aif/tmp/, folded in by `aif _gate`); this carve-out covers the verdicts,
-# which must land when they happen or a crash loses the attempt. Tamper
-# evidence does not thin: the ledger is hash-chained and committed, and the
-# guard hook still refuses any station that tries to write it.
+# The ledger and the run record too, and for the same reason: aif itself writes
+# them, between two aif commits. A failed attempt's verdicts are recorded the
+# moment the gate rejects, and the run record's attempt count and spend are
+# updated before the station is dispatched — so on a retry both sit modified in
+# the very diff this gate reads, and the pipeline's own bookkeeping reads as the
+# implementation editing its record. The hook's cost rows are staged out of the
+# diff entirely (.aif/tmp/, folded in by `aif _gate`); these two must land when
+# they happen or a crash loses the attempt. Tamper evidence does not thin: the
+# ledger is hash-chained, both are committed, and the guard hook still refuses
+# any station that tries to write under tasks/.
 ledger_rel="${work#"$root"/}/ledger.json"
+run_rel="${work#"$root"/}/run.json"
 
 viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ]; then
+  if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ] || [ "$p" = "$run_rel" ]; then
     continue
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol

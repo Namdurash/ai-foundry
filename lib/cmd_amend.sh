@@ -80,7 +80,7 @@ aif_cmd_amend_plan() {
   fi
 
   # A path that does not exist is a plan for an imagined repository, which is the
-  # same defect plan-form catches for files.change. Creating NEW files is what
+  # same defect the plan gate catches for files.change. Creating NEW files is what
   # files.create is for and belongs in the plan, not here.
   [ -e "$root/$path" ] ||
     aif_die "'$path' does not exist. An amendment widens the manifest to a file the implementation must EDIT; a file that has to be created belongs in the plan's files.create, which means re-planning."

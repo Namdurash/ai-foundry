@@ -368,7 +368,7 @@ EOF
     # All patterns in one managed block: the profile (per-developer, never
     # committed), .aif/tmp/ (gates' scratch — a test report left there would
     # otherwise trip scope's denylist and land in a station commit), and
-    # .aif/state/ (which ticket this session is on, written by `aif _state` for
+    # .aif/state/ (which ticket a run is on, written by `aif work` at intake for
     # the metering hook to read — session-local, and meaningless to anyone else),
     # .aif/worktrees/ (where `aif work` checks a ticket out to build it), and
     # .aif/board/ (the local board's cards — coordination state for this
@@ -403,7 +403,7 @@ EOF
 
   if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
     printf '\n'
-    aif_warn "$AIF_PROFILE_SECRET_VAR is not set — export it before running aif run"
+    aif_warn "$AIF_PROFILE_SECRET_VAR is not set — export it before running aif work"
   fi
 
   [ "$conflicts" -eq 0 ]

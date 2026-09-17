@@ -49,7 +49,7 @@ printf '\nstation declarations\n'
 for f in "$AGENTS"/aif-*.md; do
   base="$(basename "$f")"
   meta="$(aif_meta_json "$f")"
-  [ -n "$meta" ] || continue # not a station (aif-ticket-critic)
+  [ -n "$meta" ] || continue # not a station — no aif:meta block
 
   if ! printf '%s' "$meta" | jq -e . >/dev/null 2>&1; then
     bad "$base: aif:meta is not valid JSON"
@@ -72,7 +72,7 @@ for f in "$AGENTS"/aif-*.md; do
   case "$tier" in
     risk)
       # Tiered per ticket, so one file cannot carry the answer: the two variants
-      # do, and the worker picks by the ticket's risk.
+      # do, and `aif work` picks by the ticket's risk.
       case "$base" in
         *-careful.md) want="$(tier_model careful)" ;;
         *) want="$(tier_model routine)" ;;
@@ -119,13 +119,13 @@ for f in "$ROOT"/sets/claude/hooks/*; do
 done
 
 printf '\nguard hook: station boundaries\n'
-guard() { # <label> <payload> <AIF_STATION> <AIF_RUN>
-  printf '%s' "$2" | env "AIF_STATION=${3:-}" "AIF_RUN=${4:-}" \
+guard() { # <label> <payload> <AIF_STATION>
+  printf '%s' "$2" | env "AIF_STATION=${3:-}" \
     /bin/bash "$ROOT/sets/claude/hooks/guard.sh" 2>&1
 }
-g() { # <label> <payload> <deny|allow> [AIF_STATION] [AIF_RUN]
+g() { # <label> <payload> <deny|allow> [AIF_STATION]
   local got=allow
-  guard "$1" "$2" "${4:-}" "${5:-}" | grep -q '"deny"' && got=deny
+  guard "$1" "$2" "${4:-}" | grep -q '"deny"' && got=deny
   if [ "$got" = "$3" ]; then ok "$1 → $got"; else bad "$1 → $got (wanted $3)"; fi
 }
 g "implement writes a test"                '{"agent_type":"aif-implement","tool_input":{"file_path":"tests/t.py"}}' deny
@@ -139,25 +139,19 @@ g "implement writes the amendments file"   '{"agent_type":"aif-implement","tool_
 g "implement writes the plan"              '{"agent_type":"aif-implement","tool_input":{"file_path":"tasks/T-1/plan.md"}}' deny
 g "tests writes a test"                    '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow
 g "an unrelated subagent"                  '{"agent_type":"general-purpose","tool_input":{"file_path":"tests/t.py"}}' allow
-g "legacy claude -p via AIF_STATION"       '{"tool_input":{"file_path":"tests/t.py"}}' deny implement
+g "a station via AIF_STATION (the live route)" '{"tool_input":{"file_path":"tests/t.py"}}' deny implement
 g "payload beats a stale environment"      '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow implement
 
-printf '\nguard hook: the orchestrator may dispatch, not write\n'
-# Outside a run the guard must be invisible — a project with aif installed is
-# still an ordinary project.
-g "plain session writes source"            '{"tool_input":{"file_path":"src/a.py"}}' allow "" ""
-g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.py"}}' allow "" ""
-# Inside a run, the orchestrator writes nothing a station owns. This is the
-# OPES-48 defect: implement ran out of turns, the session finished the feature
-# itself, and no gate ever saw it.
-g "orchestrator writes source"             '{"tool_input":{"file_path":"src/a.py"}}' deny "" 1
-g "orchestrator writes a test"             '{"tool_input":{"file_path":"tests/t.py"}}' deny "" 1
-g "orchestrator writes a plan"             '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow "" 1
-g "orchestrator writes the ticket"         '{"tool_input":{"file_path":"tasks/T-1/ticket.md"}}' allow "" 1
-g "orchestrator edits the price table"     '{"tool_input":{"file_path":".aif/prices.json"}}' allow "" 1
-g "orchestrator edits a gate"              '{"tool_input":{"file_path":".aif/gates/green.sh"}}' deny "" 1
-# A station inside a run is still judged as a station, not as the orchestrator.
-g "a station inside a run writes source"   '{"agent_type":"aif-implement","tool_input":{"file_path":"src/a.py"}}' allow "" 1
+printf '\nguard hook: a plain session is not policed\n'
+# The guard binds to a STATION, not to a session. A project with aif installed
+# is still an ordinary project, and a `claude` in it must find its Write tool
+# exactly as it would anywhere. The orchestrator ban that used to live here
+# went with the orchestrator: there is no session that dispatches stations any
+# more, so there is no session to police.
+g "plain session writes source"            '{"tool_input":{"file_path":"src/a.py"}}' allow ""
+g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.py"}}' allow ""
+g "plain session writes a plan"            '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow ""
+g "plain session edits a gate"             '{"tool_input":{"file_path":".aif/gates/green.sh"}}' allow ""
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then

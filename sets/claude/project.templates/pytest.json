@@ -38,8 +38,10 @@
     "diff_lines_max": 400,
     "attempts_max": 3,
     "plan_amendments_max": 3,
-    "revisions_max": 5,
-    "station_max_turns": 30
+    "station_max_turns": 30,
+    "run_dispatches_max": 12,
+    "run_max_minutes": 120,
+    "run_budget_usd": 20
   },
 
   "risk_rules": [

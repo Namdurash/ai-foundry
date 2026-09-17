@@ -116,7 +116,7 @@ tmp="$(mktemp)"; jq '.test.command="bash .aif/mkreport.sh" | .test.report.path="
 note "and project.json now carries a second thing that must hold besides the tests:"
 note "a check, bound to the green phase. green runs it; the ledger records it by name."
 
-note "before anything costs money, aif run establishes that the gates can render"
+note "before anything costs money, aif work establishes that the gates can render"
 note "a verdict at all — it RUNS the test command and checks a report comes out."
 note "On a live ticket that missing piece surfaced at the LAST gate, ~\$6.61 in:"
 if "$AIF" doctor --probe >/dev/null 2>&1; then
@@ -164,14 +164,6 @@ TICKET
 note "and replaced the stub with a real ticket. The criteria are IN the ticket —"
 note "the analyst writes them with the human (/aif-ba); no station re-derives them."
 
-state() { # <label> <expected next.step>
-  local got; got="$("$AIF" _state PROJ-1 | jq -r '.next.step // .next.kind')"
-  if [ "$got" = "$2" ]; then
-    printf '  %s✓%s %-12s next: %s\n' "$grn" "$rst" "_state" "$got"
-  else
-    printf '  %s✗%s %-12s next: %s (wanted %s)\n' "$red" "$rst" "_state" "$got" "$2"
-  fi
-}
 sgate() { # <station> <ticket> <expected-exit> — check a station the way the
   # worker does: every gate it declares, recorded in the ledger.
   local out rc=0
@@ -183,9 +175,9 @@ sgate() { # <station> <ticket> <expected-exit> — check a station the way the
   fi
 }
 
-note "the state machine derives what is next by running the gates, so it cannot"
-note "be stale — and the worker obeys it rather than deciding for itself:"
-state "a ready ticket" plan
+note "this script is about what the GATES decide. Which stage runs next, and"
+note "when a run resumes or restarts, is the run record's — scripts/check-work.sh"
+note "drives that end to end through a scripted runner."
 
 # ---------------------------------------------------------------------------
 step "3. READY  —  the Definition of Ready, one gate with two callers"
@@ -218,103 +210,91 @@ note "the backward transition, for free: append a question to the ticket and"
 note "the plan below it will lapse on its own — no 'go back' command needed."
 
 # ---------------------------------------------------------------------------
-step "4. PLAN boundary  —  plan-form → plan-judge (on the routine tier)"
+step "4. PLAN boundary  —  one gate, and the outcome as the judge"
 SH="$(shasum -a 256 tasks/PROJ-1/ticket.md | cut -d' ' -f1)"
-cat > tasks/PROJ-1/plan.md <<PLAN
+plan_write() { # <ticket-sha> <create> <change> <cov> <extra-json>
+  cat > tasks/PROJ-1/plan.md <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$SH", "risk": "low",
-  "files": { "create": [], "change": ["src/api/users.py"], "tests": ["tests/test_users.py"] },
+{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$1", "risk": "low",
+  "files": { "create": $2, "change": $3, "tests": ["tests/test_users.py"] },
   "decisions": [
     { "id": "D-001", "statement": "Return 409 when the email already exists.",
       "because": "AC-001 names 409 as the observable refusal",
       "serves": ["AC-001"] } ],
-  "ac_coverage": { "AC-001": ["src/api/users.py"] },
-  "surface_map": { "POST /api/users": ["src/api/users.py"] },
+  "ac_coverage": $4,
   "uncovered": [],
-  "external": [] }
+  "external": []${5:-} }
 -->
 # PROJ-1 — plan
 PLAN
-gate "plan form" plan-form PROJ-1 0
-note "three coverage questions of one shape are asked of a plan, about three"
-note "kinds of thing. First: a file the plan orders into existence that no"
-note "criterion points at is a blind spot by construction. On a live ticket that"
-note "file was the module barrel — it threw on import, and no test noticed:"
-cp tasks/PROJ-1/plan.md /tmp/aif-demo-plan1.bak
-plan_edit() { # <jq filter> — rewrite the plan's meta block in place
+}
+plan_edit() { # <jq filter> — rewrite the plan's meta block.
+  # Not a regex over the file: `aif _record` rewrites the block through jq, so
+  # the plan's formatting is jq's from that point on and a text substitution
+  # silently stops matching. Editing the JSON as JSON cannot drift that way.
   local meta rest
   meta="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/PROJ-1/plan.md | sed '1d;$d' | jq -c "$1")"
   rest="$(awk 'body { print } /^-->$/ { body = 1 }' tasks/PROJ-1/plan.md)"
   { printf '<!-- aif:meta\n%s\n-->\n' "$meta"; printf '%s\n' "$rest"; } > tasks/PROJ-1/plan.md
 }
-plan_edit '.files.create=["src/api/index.py"]'
-gate "plan form" plan-form PROJ-1 1
+
+plan_write "$SH" '[]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
+gate "plan" plan PROJ-1 0
+
+note "the plan is DATA three later gates dereference — files.tests is what"
+note "verify-red runs, files.create/change is what scope permits, ac_coverage is"
+note "the map from a criterion to the files that serve it. So the gate checks"
+note "that it parses, binds and names the repository as it actually is:"
+plan_write "$SH" '["src/api/users.py"]' '[]' '{ "AC-001": ["src/api/users.py"] }'
+gate "plan" plan PROJ-1 1
+/bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
+
+note "and a file the plan orders into existence that no criterion points at is a"
+note "blind spot by construction — on a live ticket that file was the module"
+note "barrel, it threw on import, and no test noticed:"
+plan_write "$SH" '["src/api/index.py"]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
+gate "plan" plan PROJ-1 1
 note "the way through is not to invent a criterion — it is to say so, in a list"
-note "the human is shown at the gate:"
-plan_edit '.uncovered=["src/api/index.py"]'
-gate "plan form" plan-form PROJ-1 0
-/bin/bash .aif/gates/plan-form.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
-cp /tmp/aif-demo-plan1.bak tasks/PROJ-1/plan.md
+note "the human is shown on the pass path:"
+plan_edit '.uncovered = ["src/api/index.py"]'
+gate "plan" plan PROJ-1 0
+/bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
 
 note "second: the external surface. Every 'because' a planning model writes"
-note "points BACKWARDS into the ticket — which proves conformance to the ticket and"
-note "is structurally incapable of proving conformance to reality. So the plan"
+note "points BACKWARDS into the ticket — which proves conformance to the criteria"
+note "and is structurally incapable of proving conformance to reality. So the plan"
 note "enumerates what it will touch outside the repo, and each entry names what"
 note "validates it. A name that matches no check is caught against project.json:"
-plan_edit '.external=[{name:"the mail provider SDK",check:"no-such-check"}]'
-gate "plan form" plan-form PROJ-1 1
+plan_write "$SH" '[]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }' \
+  ', "external": [{ "name": "the mail provider SDK", "check": "no-such-check" }]'
+gate "plan" plan PROJ-1 1
 note "and an entry nothing validates is not rejected — it is SHOWN. Some things"
 note "genuinely cannot be exercised in CI; what is not acceptable is not knowing:"
-plan_edit '.external=[{name:"the mail provider SDK"}]'
-gate "plan form" plan-form PROJ-1 0
-/bin/bash .aif/gates/plan-form.sh tasks/PROJ-1 2>&1 | tail -3 | sed 's/^/  /'
-cp /tmp/aif-demo-plan1.bak tasks/PROJ-1/plan.md
+plan_write "$SH" '[]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }' \
+  ', "external": [{ "name": "the mail provider SDK" }]'
+gate "plan" plan PROJ-1 0
+/bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -3 | sed 's/^/  /'
 
-note "third: one surface, one file set. Four criteria on one live ticket declared"
-note "the same surface and were mapped to three different file sets; the narrowest"
-note "pinned a standalone function instead of the startup path it was written for."
-note "That is a drift signal, not a proof — so it routes to the judge:"
-printf 'def send():\n    return None\n' > src/api/mailer.py
-plan_edit '.files.change=["src/api/users.py","src/api/mailer.py"]
-  | .surface_map={"POST /api/users":["src/api/users.py","src/api/mailer.py"]}'
-gate "plan form" plan-form PROJ-1 0
-/bin/bash .aif/gates/plan-form.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
-DPLH="$(shasum -a 256 tasks/PROJ-1/plan.md | cut -d' ' -f1)"
-note "a verdict that ignores the flag is not a verdict — the judge has to decide:"
-jq -n --arg s "$DPLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}' > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 3
-note "it can say the narrowing is intended, and the plan proceeds:"
-jq -n --arg s "$DPLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[],surface_adjudications:[{ac:"AC-001",verdict:"intended",why:"the mailer is not on the conflict path"}]}' > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 0
-note "or that it is drift — and then it is the PLAN that is wrong, not the flag:"
-jq -n --arg s "$DPLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[],surface_adjudications:[{ac:"AC-001",verdict:"drift",why:"the criterion is about the whole POST path, not one file"}]}' > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 1
-cp /tmp/aif-demo-plan1.bak tasks/PROJ-1/plan.md; rm -f /tmp/aif-demo-plan1.bak src/api/mailer.py
+note "a plan-judge station used to read this plan at the implementer's level and"
+note "list what it would have to guess, and a 372-line form gate used to lint the"
+note "wording of every decision. Both are gone. What judges a plan now is the"
+note "OUTCOME: tests that will not go green, or a diff that leaves the manifest —"
+note "and either sends the run back to the plan station inside a budget."
 
-PLH="$(shasum -a 256 tasks/PROJ-1/plan.md | cut -d' ' -f1)"
-VERDICT='{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}'
-jq -n --arg s "$PLH" "$VERDICT" > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 0
+plan_write "$SH" '[]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
+note "the binding is written by the TOOL, not by the model. aif _record stamps"
+note "ticket_sha256 from the ticket's real bytes after the station returns, so no"
+note "run is ever wasted on a mistyped hash:"
+plan_edit '.ticket_sha256 = "0000"'
+gate "plan" plan PROJ-1 1
+"$AIF" _record plan PROJ-1 2>&1 | sed 's/^/  /'
+gate "plan" plan PROJ-1 0
 
-note "the judge also reports files the implementation must edit that the manifest"
-note "does not permit. scope would catch those too — but only after the code was"
-note "written and paid for. Here it costs nothing:"
-jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[{path:"src/api/router.py",why:"the new handler only takes effect once registered here"}]}' > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 1
-
-note "and a verdict that omits the list is not the same claim as an empty one —"
-note "a judge that did not report is a malfunction (exit 3), not a plan defect:"
-jq -n --arg s "$PLH" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,judge_agent:"aif-plan-judge",at:"t",guesses:[]}' > tasks/PROJ-1/verdict-plan.json
-gate "plan judge" plan-judge PROJ-1 3
-jq -n --arg s "$PLH" "$VERDICT" > tasks/PROJ-1/verdict-plan.json
-
-note "the plan gates run ONCE, here, and their pass is RECORDED. One of their"
-note "premises — every files.create path must not exist YET — is exactly what the"
-note "implement station is later paid to falsify, so re-running them against a"
-note "finished ticket would reject a correct plan forever. The state machine"
-note "trusts the record while the plan's bytes and its ticket binding hold:"
+note "the plan gate's pass is RECORDED, here, once. One of its premises — every"
+note "files.create path must not exist YET — is exactly what the implement station"
+note "is later paid to falsify, so re-running it against a finished ticket would"
+note "reject a correct plan forever:"
 sgate plan PROJ-1 0
-sgate plan-judge PROJ-1 0
 "$AIF" _commit plan PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -382,8 +362,9 @@ cp /tmp/aif-demo-lock.bak tasks/PROJ-1/tests.lock.json && rm -f /tmp/aif-demo-lo
 note "and at close, what this run did NOT establish comes back as a checklist."
 note "The blind spot was recorded once, with the analyst; a pipeline that never"
 note "mentions it again has the same blind spot as one that never named it:"
-check "the gap is re-emitted at close" \
-  "$("$AIF" _state PROJ-1 | jq -r '.next.checklist[] | .source + ":" + .id')" "ticket:VG-001"
+check "the gap is carried to the checklist" \
+  "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/PROJ-1/ticket.md | sed '1d;$d' |
+     jq -r '.verification_gaps[] | "ticket:" + .id')" "ticket:VG-001"
 
 note "now break scope — touch a file the plan never named:"
 printf 'x\n' > src/api/sneaky.py
@@ -429,7 +410,7 @@ note "file is now permitted, and only the denylist is left standing. (The ledger
 note "is the one tasks/ file scope exempts — aif itself writes verdicts there"
 note "between commits; the hash chain, git, and the guard hook police it.)"
 cp tasks/PROJ-1/plan.md /tmp/aif-demo-plan.bak
-perl -pi -e 's{"change": \["src/api/users\.py"\]}{"change": ["src/api/users.py", "tasks/PROJ-1/plan.md"]}' tasks/PROJ-1/plan.md
+plan_edit '.files.change += ["tasks/PROJ-1/plan.md"]'
 gate "scope" scope PROJ-1 1
 cp /tmp/aif-demo-plan.bak tasks/PROJ-1/plan.md
 
@@ -454,6 +435,11 @@ meter() { # <agent_type> <transcript> <agent-id>
     "$AIF" _meter 2>/dev/null
 }
 STAGE=".aif/tmp/meter-PROJ-1.jsonl"
+
+# Which ticket a staged row belongs to. `aif work` writes this at intake; this
+# script drives the gates directly, so it writes it the same way the worker
+# would — the hook has no other way to know, and says so rather than guessing.
+mkdir -p .aif/state && printf 'PROJ-1\n' > .aif/state/current
 
 note "the hook does not write the ledger. The ledger lives under tasks/, which"
 note "scope diffs — a cost row written mid-flight read as the implementation"
@@ -516,12 +502,14 @@ git checkout -q -- tasks/PROJ-1/ledger.json 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 step "done"
-printf '  The pipeline ran end to end: %sTicket → Spec → Plan → Tests → Code%s,\n' "$bold" "$rst"
-printf '  every boundary machine-checked, no model called.\n\n'
-printf '  %sTo run it live%s (needs an authenticated claude in a real terminal):\n' "$bold" "$rst"
-printf '    %saif run PROJ-1%s\n\n' "$dim" "$rst"
-printf '  One command. It opens a session on the orchestrator, which interviews you,\n'
-printf '  dispatches each station as a subagent, and runs these same gates between\n'
-printf '  them — asking %saif _state%s what comes next rather than deciding itself.\n\n' "$dim" "$rst"
+printf '  Every gate ran against known-good and known-bad artifacts: %sReady → Plan →\n' "$bold"
+printf '  Tests → Code%s, and the attacks on each, with no model called.\n\n' "$rst"
+printf '  %sTo run it live%s (needs an authenticated claude):\n' "$bold" "$rst"
+printf '    %s/aif-ba PROJ-1 "…"%s   write the criteria with the analyst\n' "$dim" "$rst"
+printf '    %saif work%s              build the top of Ready, headless, no questions\n\n' "$dim" "$rst"
+printf '  The worker dispatches each station as its own %sclaude -p%s, runs these same\n' "$dim" "$rst"
+printf '  gates between them, retries a rejection with the gate'"'"'s complaint, and comes\n'
+printf '  back with a branch and a report. It never asks anything.\n\n'
+printf '  %sscripts/check-work.sh%s drives that loop end to end, offline.\n\n' "$dim" "$rst"
 
 rm -rf "$DEMO"

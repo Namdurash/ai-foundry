@@ -25,7 +25,7 @@ AIF_G_ERROR=3
 # machinery, config, CI, and the dependency lockfiles. Anchored so they match
 # from the repo root only.
 #
-# ONE list, TWO gates, and that is the point of it living here. plan-form
+# ONE list, TWO gates, and that is the point of it living here. The plan gate
 # rejects a manifest path matching it at plan time, where the fix costs a
 # re-plan; scope holds the same line against the diff after the code exists, as
 # the backstop. When the two lists were one gate's private constant they
@@ -113,47 +113,6 @@ aif_g_meta_or_die() {
   fi
 
   printf '%s' "$meta"
-}
-
-# aif_g_surface_drift <plan-meta> <ticket-meta> — echo "AC<TAB>surface<TAB>detail"
-# for every criterion whose file coverage disagrees with the file set its own
-# surface claims.
-#
-# A heuristic, and it is written here once because two gates need the SAME
-# answer: plan-form prints it, plan-judge requires it adjudicated. Recomputed
-# from the artifacts on both sides rather than passed in a file, so there is
-# nothing to go stale and nothing under tasks/ for a live gate to dirty.
-#
-# What it is looking for: four criteria on one live ticket declared the same
-# surface and were mapped to three different file sets. The narrowest of them
-# said "when bootstrap completes, the key is 32 bytes"; the plan narrowed it to
-# the key-generation file alone, so the test called the generator directly and
-# bootstrap never ran — pinning a standalone function in the test runtime, which
-# is the one environment where the missing global happened to exist.
-#
-# NOT a proof and never a rejection on its own. A narrower coverage is often
-# correct; this says only that the plan said two things about one surface.
-aif_g_surface_drift() {
-  local plan_meta="$1" spec_meta="$2"
-  printf '%s' "$spec_meta" | jq -r --argjson plan "$(printf '%s' "$plan_meta" | jq -c .)" '
-    def missing($a; $b): [ $a[]? | select(. as $x | ($b | index($x)) == null) ];
-    ($plan.surface_map // {}) as $smap
-    | ($plan.ac_coverage // {}) as $cov
-    | .acceptance[]?
-    | . as $ac
-    | ($ac.surface // "") as $s
-    | ($smap[$s] // []) as $m
-    | ($cov[$ac.id] // []) as $c
-    | missing($c; $m) as $extra
-    | missing($m; $c) as $narrow
-    | select(($extra | length) > 0 or ($narrow | length) > 0)
-    | $ac.id + "\t" + $s + "\t"
-      + ( [ (if ($narrow | length) > 0
-              then "narrower than its surface by " + ($narrow | join(", ")) else empty end),
-            (if ($extra | length) > 0
-              then "covers " + ($extra | join(", ")) + ", which the surface map does not list"
-              else empty end) ] | join("; ") )
-  ' 2>/dev/null
 }
 
 # aif_g_external_gaps <plan-meta> — echo the name of every declared external

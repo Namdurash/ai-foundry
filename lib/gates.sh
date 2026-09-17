@@ -55,16 +55,11 @@ aif_station_gates() {
 #   binds    — for a station that writes no artifact into the work dir at all.
 #              implement writes CODE, so there is nothing here to hash; but its
 #              scope verdict is relative to the plan's file manifest, so the
-#              plan is what the verdict must lapse with. Without this the
-#              verdict binds to nothing, and a pass recorded against nothing
-#              can never be invalidated — which is the same as not recording it.
+#              plan is what the verdict is recorded against.
 #
-# The key travels with the answer because the caller's no-progress guard must
-# know it: only a `produces` subject is the station's own output, so only there
-# does "unchanged bytes" mean "the station rewrote nothing". A freezes subject
-# is written by the GATE, a binds subject by an EARLIER station — comparing
-# either across attempts measures a file the station never touches, and that
-# deadlocked two stations permanently (defects 2 and 4 of the gate-defect set).
+# The key travels with the answer so a reader of the ledger can tell whose
+# bytes a verdict was recorded against: the station's own output, the artifact
+# its gate froze, or an artifact an earlier station wrote.
 aif_station_subject() {
   local root="$1" station="$2" work="$3"
   local meta subject key
@@ -78,73 +73,13 @@ aif_station_subject() {
   done
 }
 
-# aif_station_rewrites <root> <station> <work> — what the station actually
-# rewrites between attempts, echoed as "<kind>\t<sha256>", or empty when the
-# station declares no `rewrites` (or its inputs are not there to hash).
-#
-# This is the no-progress guard's subject for the stations whose gate subject
-# is NOT their own output. The tests station rewrites the files the plan names
-# in files.tests; the implement station rewrites the working tree, so its
-# subject is the diff since the last commit — tasks/ excluded, because the
-# ledger legitimately moves between commits and bookkeeping noise must not
-# read as progress. Two kinds, declared per station:
-#
-#   plan.files.tests — hash over each declared test file's current bytes
-#                      (an absent file hashes as absent, so creating it counts
-#                      as a rewrite too);
-#   diff             — hash over the tracked diff against HEAD plus the
-#                      content of untracked files, tasks/ excluded from both.
-aif_station_rewrites() {
-  local root="$1" station="$2" work="$3"
-  local kind hash f
-  kind="$(aif_station_meta "$root" "$station" 2>/dev/null | jq -r '.rewrites // empty')"
-  [ -n "$kind" ] || return 0
-
-  case "$kind" in
-    plan.files.tests)
-      [ -f "$work/plan.md" ] || return 0
-      hash="$(
-        while IFS= read -r f; do
-          [ -n "$f" ] || continue
-          if [ -f "$root/$f" ]; then
-            printf '%s\t%s\n' "$f" "$(aif_sha256 "$root/$f")"
-          else
-            printf '%s\tabsent\n' "$f"
-          fi
-        done <<EOF
-$(aif_meta_json "$work/plan.md" | jq -r '.files.tests[]? // empty')
-EOF
-      )"
-      hash="$(printf '%s' "$hash" | aif_sha256_stdin)"
-      ;;
-    diff)
-      [ -e "$root/.git" ] || return 0
-      hash="$(
-        {
-          git -C "$root" diff HEAD -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null
-          git -C "$root" ls-files --others --exclude-standard -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null |
-            while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              printf '%s\t%s\n' "$f" "$(aif_sha256 "$root/$f")"
-            done
-        } | aif_sha256_stdin
-      )"
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-
-  [ -n "$hash" ] || return 0
-  printf '%s\t%s' "$kind" "$hash"
-}
-
 # aif_station_agent <root> <station> <work> — the subagent that runs this
 # station, resolving the per-ticket tier when the station declares one.
 #
-# A station whose tier is "risk" cannot name one agent: a subagent's model comes
-# from static frontmatter, so the two engines are two agent files and the choice
-# is made here, from the ticket's risk — the human's call, made with the analyst.
+# A station whose tier is "risk" cannot name one agent: the model comes from
+# the agent file's static frontmatter, so the two engines are two agent files
+# and the choice is made here, from the ticket's risk — the human's call, made
+# with the analyst.
 aif_station_agent() {
   local root="$1" station="$2" work="$3"
   local meta tier risk

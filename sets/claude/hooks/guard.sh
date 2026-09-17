@@ -3,27 +3,25 @@
 # PreToolUse guard. Denies a writer from writing where it must not:
 #
 #   - the implement station may not touch tests, the test station may not touch
-#     implementation;
-#   - the orchestrator may not write product code at all, because code written
-#     outside a station is code no gate ever saw.
+#     implementation.
 #
 # Which station is running arrives by one of two routes, and both are live:
 #
-#   - agent_type in the hook payload, when the station runs as a SUBAGENT. This
-#     is the real signal — Claude Code puts agent_type (and agent_id) in the
-#     payload only for calls originating inside a subagent, and omits the keys
-#     entirely for the main session. Measured, not assumed.
-#   - AIF_STATION in the environment, a leftover from when a station ran as
-#     `claude -p`. That path is gone; the fallback is kept only so an older
-#     installed set keeps working, and goes when nothing can set it.
+#   - agent_type in the hook payload, when a station runs as a SUBAGENT. No
+#     path in the foundry takes that route today; it is kept because a second
+#     runner may, and because it is the more precise signal when present.
+#   - AIF_STATION in the environment, exported by `aif work` around the
+#     station's `claude -p`. This is the LIVE route: the worker runs each
+#     station as its own headless process, so the marker that process inherits
+#     is what says which station it is.
 #
 # The payload wins when both are present: it describes the call actually being
 # made, whereas an inherited environment variable describes an ancestor.
 #
-# AIF_RUN, exported by `aif run`, says this session IS a foundry run. Without it
-# the hook does nothing beyond the station rules — a project with aif installed
-# is still an ordinary project, and a plain `claude` in it must not find its
-# Write tool policed.
+# There used to be a third rule — an orchestrator session may not write product
+# code — guarding a `claude` session that dispatched the stations as subagents
+# while a human watched. There is no such session now: the worker is a
+# subprocess and the only writers are stations, so the rule went with it.
 #
 # This is a speed bump on the lazy path, not a security boundary. green's
 # hash-lock is the real arbiter — it catches a defeated oracle after the fact.
@@ -49,10 +47,10 @@ station="$(printf '%s' "$payload" |
   jq -r '.agent_type // "" | sub("^aif-"; "") | sub("-(routine|careful)$"; "")' 2>/dev/null)"
 [ -n "$station" ] || station="${AIF_STATION:-}"
 
-# Not a station and not inside a foundry run: nothing to guard. This is the
-# ordinary case — a project with aif installed is still an ordinary project, and
-# a plain `claude` in it must not find its Write tool policed.
-[ -n "$station" ] || [ "${AIF_RUN:-}" = "1" ] || exit 0
+# Not a station: nothing to guard. This is the ordinary case — a project with
+# aif installed is still an ordinary project, and a plain `claude` in it must
+# not find its Write tool policed.
+[ -n "$station" ] || exit 0
 
 path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] || exit 0
@@ -79,39 +77,20 @@ is_test() {
 }
 
 # ---------------------------------------------------------------------------
-# The orchestrator: inside a run, and not a subagent.
-#
-# It may not write product code. This is the defect that started the rebuild:
-# on OPES-48 the implement station exhausted its turn budget, and the session
-# then finished the feature itself, in-session — outside green, outside scope,
-# and with nothing in the ledger to say it had happened. The commit looked like
-# any other.
-#
-# What it MAY write is tasks/, and that is not a loophole: everything there is
-# gated against its current bytes by ready, plan-form and the judges, so a
-# repair made with the user in front of the artifact is checked exactly as a
-# station's output would be. Refusing it would only mean refusing the repair
-# bench.
-#
-# Honest limits, since a guard that oversells itself is worse than none:
-#   - this matches Write/Edit tools only. `bash -c 'echo … > src/f.py'` walks
-#     straight past it. Matching Bash would mean parsing shell, which is
+# The station boundaries. Honest limits, since a guard that oversells itself is
+# worse than none:
+#   - this matches the Write and Edit tools only. `bash -c 'echo … > src/f.py'`
+#     walks straight past it. Matching Bash would mean parsing shell, which is
 #     fragile enough to fail open in ways nobody notices.
 #   - the real backstop for code is scope, which diffs against the last commit
-#     and rejects any file the plan did not name, whoever wrote it. This hook
-#     exists so the honest-but-helpful path is closed early and by name, not so
-#     the determined one is impossible.
-if [ -z "$station" ]; then
-  case "$rel" in
-    tasks/* | .aif/prices.json) exit 0 ;;
-  esac
-  deny "you are the orchestrator, not a station. Code, tests, plans and verdicts are written by subagents, so that a gate sees them — dispatch the station that owns this file instead. What you may write: anything under tasks/ (the ticket, and the gated artifacts when repairing one with the user) and .aif/prices.json."
-fi
-
+#     and rejects any file the plan did not name, whoever wrote it, and green,
+#     which re-hashes the frozen test tree. This hook exists so the
+#     honest-but-helpful path is closed early and BY NAME — a model told only
+#     "no" gets creative; a model told "no, do X instead" does X.
 case "$station" in
   implement)
     if is_test "$rel"; then
-      deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — stop and report it, and the ticket returns to have its tests or spec revised."
+      deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — stop and say so; the ticket goes back to the analyst to have its criteria revised."
     fi
     case "$rel" in
       tasks/*)
@@ -120,7 +99,7 @@ case "$station" in
         # otherwise let an implementation hand-write itself permission for
         # anything. `aif _amend-plan` is the way in: it refuses tests and
         # pipeline paths, requires a reason, and is capped.
-        deny "the ticket's own record — plan, ledger — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
+        deny "the ticket's own record — the ticket, the plan, the ledger, the run — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
         ;;
     esac
     ;;

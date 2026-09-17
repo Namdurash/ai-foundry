@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # project.json — how the pipeline verifies THIS project.
-# Discovery and validation, shared by `aif project`, `aif run`, and
+# Discovery and validation, shared by `aif project`, `aif work`, and
 # `aif doctor`.
 # Sourced by bin/aif; not meant to be executed directly.
 #
@@ -37,7 +37,7 @@ AIF_PROJECT_CHECK_PHASES='["red","green"]'
 #   ready — when the analyst has the ticket ready and the human is still in the
 #           room to read it. The default. (`approve` is the older name for the
 #           same moment and is still accepted.)
-#   plan  — after plan-judge admits the plan.
+#   plan  — after the plan gate admits the plan.
 #
 # Off by nobody: `never` silences the automatic call, and typing the command by
 # hand still renders. A setting that overrode a person asking a direct question

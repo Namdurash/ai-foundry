@@ -213,7 +213,7 @@ printf 'ready: %s criteria · %s decided · %s gap(s)\n' "$n_ac" "$n_dec" "$n_ga
 
 # On the PASS path, always: what was decided by default rather than by the
 # human is exactly what a reviewer must not be unaware of. Same rule as
-# plan-form's unvalidated surface and scope's amendments.
+# the plan gate's unvalidated surface and scope's amendments.
 defaults="$(printf '%s' "$meta" | jq -r '.decided[]? | select(.by == "default") | "    - " + .question + " → " + .answer')"
 if [ -n "$defaults" ]; then
   printf '  DECIDED BY DEFAULT — the human did not answer these; the analyst took the default:\n'

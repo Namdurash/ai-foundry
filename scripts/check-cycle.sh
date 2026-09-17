@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# scripts/check-cycle.sh — the SECOND-ROUND eval: rework → re-spec → re-plan →
-# re-tests → done, on a half-implemented ticket. Deterministic, offline, free.
+# scripts/check-cycle.sh — the SECOND-ROUND eval: rework → re-plan → re-tests →
+# done, on a half-implemented ticket. Deterministic, offline, free.
 #
 # Six of the ten defects of the 0.4.1 set lived on exactly this route, and no
 # eval walked it: every fixture used to start clean, so a gate that was only
@@ -18,7 +18,9 @@
 #   5  a test green at freeze is recorded, kept out of covering, and
 #      re-surfaced on the closing checklist
 #   6  _state hands the dispatch bindings the stations must copy
-#   8  a rework lapses the spec, the verdict and the approval on its own
+#   8  a rework — an edit to the ticket's criteria — lapses the plan on its
+#      own, through the plan's ticket_sha256, and the ready gate re-judges the
+#      edited ticket on its current bytes
 #   10 a finished first round still reaches done, and the second round's plan
 #      names the file the first round created — as files.change, honestly
 #
@@ -60,6 +62,7 @@ sgate() { # <station> <expected-exit> <label>
   fi
 }
 nextof() { "$AIF" _state AIF-1 | jq -r '.next.step // .next.kind'; }
+nextkind() { "$AIF" _state AIF-1 | jq -r '.next.kind'; }
 binding() { "$AIF" _state AIF-1 | jq -r --arg k "$1" '.next.bindings[$k] // ""'; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -120,81 +123,71 @@ jq '.test.command = "bash .aif/suite.sh"
 printf '\nround one — a clean run to done\n'
 
 "$AIF" _ticket-init AIF-1 >/dev/null
-cat > tasks/AIF-1/ticket.md <<'TICKET'
+eq "state: the scaffold stub is not a ticket" "$(nextof)" "ticket"
+
+# write_ticket <extra-criterion-json-or-empty> — the analyst's output: criteria
+# in the ticket, one question decided by default, one recorded gap.
+write_ticket() {
+  cat > tasks/AIF-1/ticket.md <<TICKET
 <!-- aif:meta
-{ "schema": 1, "ticket": "AIF-1", "lang": "en", "risk": "low" }
+{ "schema": 2, "ticket": "AIF-1", "lang": "en", "risk": "low",
+  "surfaces": ["export"],
+  "acceptance": [
+    { "id": "AC-001", "surface": "export",
+      "given": "users exist", "when": "the export runs",
+      "then": "writes the marker", "expect": "impl1" },
+    { "id": "AC-002", "surface": "export",
+      "given": "the module is imported", "when": "the export runs",
+      "then": "writes the module marker", "expect": "impl2" }${1:-} ],
+  "open": [],
+  "decided": [
+    { "question": "may the export be deferred to a queue?", "answer": "no — synchronous", "by": "default" } ],
+  "verification_gaps": [
+    { "id": "VG-001", "text": "nothing here runs against a real user list", "leaves": ["AC-001"] } ],
+  "non_goals": [] }
 -->
 # AIF-1 — one-command user export
 
 Support needs a one-command export: write the current user list through a
 new export module, so it can be pulled without touching the database.
 TICKET
-
-eq "state: fresh ticket routes to spec" "$(nextof)" "spec"
-
-# The dispatch contract (defect 6/8): the hash the spec must copy arrives in
-# next.bindings — the harness consumes it exactly as the orchestrator would.
-TH="$(binding ticket_sha256)"
-eq "bindings carry ticket_sha256 for spec" "$TH" "$(sha tasks/AIF-1/ticket.md)"
-
-write_spec_v1() {
-  cat > tasks/AIF-1/spec.md <<SPEC
-<!-- aif:meta
-{ "schema": 2, "ticket": "AIF-1", "ticket_sha256": "$TH", "lang": "en", "risk": "low",
-  "surfaces": ["export"],
-  "acceptance": [
-    { "id": "AC-001", "surface": "export",
-      "given": "users exist", "when": "the export runs",
-      "then": "writes the marker", "expect": "impl1",
-      "from": "write the current user list" },
-    { "id": "AC-002", "surface": "export",
-      "given": "the module is imported", "when": "the export runs",
-      "then": "writes the module marker", "expect": "impl2",
-      "from": "new export module" } ],
-  "assumptions": [], "verification_gaps": [], "non_goals": [] }
--->
-# AIF-1 — spec
-SPEC
 }
-write_spec_v1
-sgate spec 0 "spec-form admits the spec"
-"$AIF" _commit spec AIF-1 >/dev/null
+write_ticket
+eq "state: a ready ticket routes to plan" "$(nextof)" "plan"
 
-eq "state: spec done routes to spec-judge" "$(nextof)" "spec-judge"
-SJ="$(binding subject_sha256)"
-eq "bindings carry the judged spec's hash" "$SJ" "$(sha tasks/AIF-1/spec.md)"
-jq -n --arg s "$SJ" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,
-  judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[],checked:["both criteria against the ticket"]}' \
-  > tasks/AIF-1/verdict-spec.json
-sgate spec-judge 0 "spec-judge verdict admitted"
-"$AIF" _commit spec-judge AIF-1 >/dev/null
+# The Definition of Ready is one gate with two callers. Here, the analyst's.
+rc=0; out="$("$AIF" _ready AIF-1 2>&1)" || rc=$?
+eq "_ready passes the analyst's ticket" "$rc" "0"
+eq "and says what was decided by default" "$(printf '%s' "$out" | grep -c 'DECIDED BY DEFAULT')" "1"
 
-eq "state: judged spec waits on the human" "$(nextof)" "approve"
-"$AIF" _approve AIF-1 --confirmation "yes, that is the whole ask" >/dev/null 2>&1
-eq "state: approval routes to plan" "$(nextof)" "plan"
+# The dispatch contract (defect 6/8): the hash the plan must copy arrives in
+# next.bindings — the harness consumes it exactly as the worker would.
+TH="$(binding ticket_sha256)"
+eq "bindings carry ticket_sha256 for plan" "$TH" "$(sha tasks/AIF-1/ticket.md)"
 
-SPH="$(binding spec_sha256)"
-eq "bindings carry spec_sha256 for plan" "$SPH" "$(sha tasks/AIF-1/spec.md)"
-cat > tasks/AIF-1/plan.md <<PLAN
+write_plan() { # <ticket-hash> <create-json> <change-json> <tests-json> <ac_coverage-json> <title>
+  cat > tasks/AIF-1/plan.md <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "AIF-1", "spec_sha256": "$SPH", "risk": "low",
-  "files": { "create": ["src/export.py"], "change": ["src/app.py"],
-             "tests": ["tests/t1.py", "tests/t2.py"] },
+{ "schema": 2, "ticket": "AIF-1", "ticket_sha256": "$1", "risk": "low",
+  "files": { "create": $2, "change": $3, "tests": $4 },
   "decisions": [
     { "id": "D-001", "statement": "Write the export through a dedicated module.",
       "because": "the ticket asks for a module the app does not have",
       "serves": ["AC-002"] } ],
-  "ac_coverage": { "AC-001": ["src/app.py", "src/export.py"],
-                   "AC-002": ["src/app.py", "src/export.py"] },
+  "ac_coverage": $5,
   "uncovered": [],
   "surface_map": { "export": ["src/app.py", "src/export.py"] },
   "external": [] }
 -->
-# AIF-1 — plan, round one
+# AIF-1 — $6
 PLAN
+}
+write_plan "$TH" '["src/export.py"]' '["src/app.py"]' '["tests/t1.py", "tests/t2.py"]' \
+  '{ "AC-001": ["src/app.py", "src/export.py"], "AC-002": ["src/app.py", "src/export.py"] }' "plan, round one"
 sgate plan 0 "plan-form admits the round-one plan (files.create not there yet)"
 eq "state: plan recorded routes to plan-judge" "$(nextof)" "plan-judge"
 PJ="$(binding subject_sha256)"
+eq "bindings carry the judged plan's hash" "$PJ" "$(sha tasks/AIF-1/plan.md)"
 jq -n --arg s "$PJ" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,
   judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}' \
   > tasks/AIF-1/verdict-plan.json
@@ -243,73 +236,42 @@ if [ -f .aif/tmp/meter-AIF-1.jsonl ]; then bad "stage file not consumed"; else o
 "$AIF" _commit implement AIF-1 >/dev/null
 
 eq "state: round one reaches done" "$(nextof)" "done"
-eq "round-one checklist is empty" \
-  "$("$AIF" _state AIF-1 | jq -c '.next.checklist')" "[]"
+eq "round-one checklist carries the ticket's gap" \
+  "$("$AIF" _state AIF-1 | jq -c '[.next.checklist[] | .source + ":" + .id]')" '["ticket:VG-001"]'
 
 # =============================== ROUND TWO ==================================
 printf '\nround two — rework over the finished work\n'
 
-"$AIF" _rework AIF-1 "the export must also write a manifest line" >/dev/null
-eq "rework lapses spec, verdict and approval (state back to spec)" "$(nextof)" "spec"
+# The reviewer wanted a manifest line. The analyst adds a criterion; nothing
+# else is touched, and nothing is reset by hand.
+write_ticket ',
+    { "id": "AC-003", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl3" }'
+eq "rework lapses the plan on its own (state back to plan)" "$(nextof)" "plan"
+
+# And a ticket edited into an UNREADY state is caught by the same gate, live —
+# the worker would report it, not guess at it.
+cp tasks/AIF-1/ticket.md /tmp/aif-cycle-ticket.bak
+tmp="$(mktemp)"
+meta="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/ticket.md | sed '1d;$d' |
+  jq -c '.open = [{ id: "Q-001", question: "should the manifest be signed?", default: "no" }]')"
+rest="$(awk 'body { print } /^-->$/ { body = 1 }' tasks/AIF-1/ticket.md)"
+{ printf '<!-- aif:meta\n%s\n-->\n' "$meta"; printf '%s\n' "$rest"; } > tasks/AIF-1/ticket.md
+eq "an open question makes the ticket not-ready" "$(nextkind)" "not-ready"
+eq "and the question is in the detail, with its default" \
+  "$("$AIF" _state AIF-1 | jq -r '.next.detail' | grep -c 'open question Q-001.*default: no')" "1"
+cp /tmp/aif-cycle-ticket.bak tasks/AIF-1/ticket.md; rm -f /tmp/aif-cycle-ticket.bak
+eq "answered, it is ready again" "$(nextof)" "plan"
 
 TH="$(binding ticket_sha256)"
 eq "bindings carry the reworked ticket's hash" "$TH" "$(sha tasks/AIF-1/ticket.md)"
-cat > tasks/AIF-1/spec.md <<SPEC
-<!-- aif:meta
-{ "schema": 2, "ticket": "AIF-1", "ticket_sha256": "$TH", "lang": "en", "risk": "low",
-  "surfaces": ["export"],
-  "acceptance": [
-    { "id": "AC-001", "surface": "export",
-      "given": "users exist", "when": "the export runs",
-      "then": "writes the marker", "expect": "impl1",
-      "from": "write the current user list" },
-    { "id": "AC-002", "surface": "export",
-      "given": "the module is imported", "when": "the export runs",
-      "then": "writes the module marker", "expect": "impl2",
-      "from": "new export module" },
-    { "id": "AC-003", "surface": "export",
-      "given": "the export ran", "when": "the output is read",
-      "then": "writes the manifest marker", "expect": "impl3",
-      "from": "also write a manifest line" } ],
-  "assumptions": [], "verification_gaps": [], "non_goals": [] }
--->
-# AIF-1 — spec, round two
-SPEC
-sgate spec 0 "spec-form admits the round-two spec"
-"$AIF" _commit spec AIF-1 >/dev/null
-
-SJ="$(binding subject_sha256)"
-jq -n --arg s "$SJ" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,
-  judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[],checked:["all three criteria"]}' \
-  > tasks/AIF-1/verdict-spec.json
-sgate spec-judge 0 "round-two verdict admitted"
-"$AIF" _commit spec-judge AIF-1 >/dev/null
-eq "state: the lapsed approval is asked for again" "$(nextof)" "approve"
-"$AIF" _approve AIF-1 --confirmation "yes, with the manifest line" >/dev/null 2>&1
-
-eq "state: routes to plan" "$(nextof)" "plan"
-SPH="$(binding spec_sha256)"
 # Defect 10's route: the file round one CREATED is named honestly as
 # files.change — it exists now, and this plan is written against the
 # repository as it stands.
-cat > tasks/AIF-1/plan.md <<PLAN
-<!-- aif:meta
-{ "schema": 2, "ticket": "AIF-1", "spec_sha256": "$SPH", "risk": "low",
-  "files": { "create": [], "change": ["src/app.py", "src/export.py"],
-             "tests": ["tests/t1.py", "tests/t2.py", "tests/t3.py"] },
-  "decisions": [
-    { "id": "D-001", "statement": "Append the manifest marker from the existing app module.",
-      "because": "AC-003 is about the output the app already writes",
-      "serves": ["AC-003"] } ],
-  "ac_coverage": { "AC-001": ["src/app.py", "src/export.py"],
-                   "AC-002": ["src/app.py", "src/export.py"],
-                   "AC-003": ["src/app.py", "src/export.py"] },
-  "uncovered": [],
-  "surface_map": { "export": ["src/app.py", "src/export.py"] },
-  "external": [] }
--->
-# AIF-1 — plan, round two
-PLAN
+write_plan "$TH" '[]' '["src/app.py", "src/export.py"]' '["tests/t1.py", "tests/t2.py", "tests/t3.py"]' \
+  '{ "AC-001": ["src/app.py", "src/export.py"], "AC-002": ["src/app.py", "src/export.py"], "AC-003": ["src/app.py", "src/export.py"] }' \
+  "plan, round two"
 sgate plan 0 "plan-form admits the round-two plan (created file now in files.change)"
 PJ="$(binding subject_sha256)"
 jq -n --arg s "$PJ" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,
@@ -339,6 +301,10 @@ eq "state: round two reaches done" "$(nextof)" "done"
 eq "the closing checklist carries the green-at-freeze tests" \
   "$("$AIF" _state AIF-1 | jq -c '[.next.checklist[] | select(.source == "tests") | .id] | sort')" \
   '["t1","t2"]'
+
+# The drawing: what the ticket decided by default is visible in it, at no cost.
+eq "explain draws the default decision" \
+  "$("$AIF" explain AIF-1 --ticket --format tree | grep -c 'BY DEFAULT')" "1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

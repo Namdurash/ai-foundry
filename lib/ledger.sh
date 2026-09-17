@@ -160,9 +160,10 @@ aif_ledger_gate_valid() {
 #
 # Two shapes of subject, one rule. A JSON artifact carries its bindings at the
 # top level; a markdown artifact carries them in its aif:meta block. The field
-# names are the map: plan_sha256 binds to plan.md, spec_sha256 to spec.md,
-# ticket_sha256 to ticket.md, and a subject/subject_sha256 pair (a judge's
-# verdict) binds to whatever file it names. A binding present but pointing at
+# names are the map: plan_sha256 binds to plan.md, ticket_sha256 to ticket.md
+# (spec_sha256 to spec.md, for a ticket from before the spec station was
+# retired), and a subject/subject_sha256 pair (a judge's verdict) binds to
+# whatever file it names. A binding present but pointing at
 # missing or different bytes fails CLOSED — a subject with no bindings at all
 # passes, which is the status quo for artifacts that never claimed any.
 _aif_ledger_bindings_ok() {

@@ -140,7 +140,20 @@ step "2. start a ticket"
 note "scaffolded tasks/PROJ-1/ (ticket.md + ledger.json)"
 cat > tasks/PROJ-1/ticket.md <<'TICKET'
 <!-- aif:meta
-{ "schema": 1, "ticket": "PROJ-1", "lang": "en", "risk": "low" }
+{ "schema": 2, "ticket": "PROJ-1", "lang": "en", "risk": "low",
+  "surfaces": ["POST /api/users"],
+  "acceptance": [
+    { "id": "AC-001", "surface": "POST /api/users",
+      "given": "a user with that email already exists",
+      "when": "the same email is posted",
+      "then": "responds with status", "expect": 409 } ],
+  "open": [],
+  "decided": [
+    { "question": "is email uniqueness case-insensitive?", "answer": "yes", "by": "default" } ],
+  "verification_gaps": [
+    { "id": "VG-001", "text": "two simultaneous posts of the same email are not exercised by this suite",
+      "leaves": [] } ],
+  "non_goals": ["password reset"] }
 -->
 # PROJ-1 — reject duplicate registration
 
@@ -148,7 +161,8 @@ Registering with an email that is already taken currently succeeds and creates a
 second account. It should be refused, and the caller should be able to tell that
 refusal apart from a validation error.
 TICKET
-note "and replaced the stub with a real ticket (live: the interview does this)"
+note "and replaced the stub with a real ticket. The criteria are IN the ticket —"
+note "the analyst writes them with the human (/aif-ba); no station re-derives them."
 
 state() { # <label> <expected next.step>
   local got; got="$("$AIF" _state PROJ-1 | jq -r '.next.step // .next.kind')"
@@ -159,7 +173,7 @@ state() { # <label> <expected next.step>
   fi
 }
 sgate() { # <station> <ticket> <expected-exit> — check a station the way the
-  # orchestrator does: every gate it declares, recorded in the ledger.
+  # worker does: every gate it declares, recorded in the ledger.
   local out rc=0
   out="$("$AIF" _gate "$1" "$2" 2>&1)" || rc=$?
   if [ "$rc" -eq "$3" ]; then
@@ -170,137 +184,45 @@ sgate() { # <station> <ticket> <expected-exit> — check a station the way the
 }
 
 note "the state machine derives what is next by running the gates, so it cannot"
-note "be stale — and the orchestrator obeys it rather than deciding for itself:"
-state "fresh ticket" spec
+note "be stale — and the worker obeys it rather than deciding for itself:"
+state "a ready ticket" plan
 
 # ---------------------------------------------------------------------------
-step "3. SPECIFICATION boundary  —  spec-form → spec-judge → human"
-TH="$(shasum -a 256 tasks/PROJ-1/ticket.md | cut -d' ' -f1)"
-cat > tasks/PROJ-1/spec.md <<SPEC
-<!-- aif:meta
-{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$TH", "lang": "en", "risk": "low",
-  "surfaces": ["POST /api/users"],
-  "acceptance": [
-    { "id": "AC-001", "surface": "POST /api/users",
-      "given": "a user with that email already exists",
-      "when": "the same email is posted",
-      "then": "responds with status", "expect": 409,
-      "from": "an email that is already taken" } ],
-  "assumptions": [
-    { "id": "AS-001", "text": "email uniqueness is case-insensitive",
-      "because": "the ticket does not say how letter case is treated",
-      "instead_of": "matching the address byte-for-byte",
-      "affects": ["AC-001"] } ],
-  "verification_gaps": [
-    { "id": "VG-001", "text": "two simultaneous posts of the same email are not exercised by this suite",
-      "leaves": [] } ],
-  "non_goals": ["password reset"] }
--->
-# PROJ-1 — reject duplicate registration
-SPEC
-gate "spec form" spec-form PROJ-1 0
+step "3. READY  —  the Definition of Ready, one gate with two callers"
+note "the analyst runs it at the end of the conversation, the worker at intake."
+note "One script, so what the analyst passed is what the worker accepts:"
+gate "ready" ready PROJ-1 0
+/bin/bash .aif/gates/ready.sh tasks/PROJ-1 2>&1 | tail -4 | sed 's/^/  /'
+note "what it printed matters: a question the human did not answer was decided"
+note "by DEFAULT, and that is said on the pass path — never silently."
 
-note "now the same gate on a BAD spec (vague expect, two assertions, no provenance):"
+note "now the same gate on a ticket that is NOT ready — an expect that is prose,"
+note "and a product question still open:"
 mkdir -p tasks/BAD
-printf 'reject duplicate registration on POST /x\n' > tasks/BAD/ticket.md
-cat > tasks/BAD/spec.md <<'SPEC'
+cat > tasks/BAD/ticket.md <<'TICKET'
 <!-- aif:meta
-{ "schema": 2, "ticket": "BAD-1", "lang": "en", "risk": "low", "surfaces": ["POST /x"],
+{ "schema": 2, "ticket": "BAD", "lang": "en", "risk": "low", "surfaces": ["POST /x"],
   "acceptance": [ { "id": "AC-001", "surface": "POST /x", "given": "a", "when": "b",
-    "then": "works properly and writes a log", "expect": "as expected" } ],
-  "assumptions": [], "verification_gaps": [], "non_goals": [] }
+    "then": "responds", "expect": "as expected" } ],
+  "open": [ { "id": "Q-001", "question": "reject or merge a duplicate?", "default": "reject" } ],
+  "decided": [], "verification_gaps": [], "non_goals": [] }
 -->
-SPEC
-gate "spec form" spec-form BAD 1
-
-note "judge verdict (hand-written; live: the aif-spec-judge subagent):"
-SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
-jq -n --arg s "$SH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[]}' > tasks/PROJ-1/verdict-spec.json
-gate "spec judge" spec-judge PROJ-1 0
-state "spec judged, not approved" approve
-
-note "human approval (hand-written; live: the orchestrator asks you in chat):"
-jq -n --arg s "$SH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",channel:"chat",confirmation:"yes, that is what I meant",approved_assumptions:["AS-001"],acknowledged_gaps:["VG-001"],gaps_confirmation:"understood, we will try the race by hand"}' > tasks/PROJ-1/approval.json
-gate "spec approve" spec-approve PROJ-1 0
-
-note "the backward transition, for free: append one line to spec.md and the"
-note "approval below it lapses on its own — no 'go back' command needed:"
-cp tasks/PROJ-1/spec.md /tmp/aif-demo-spec.bak
-printf '\nan edit after approval\n' >> tasks/PROJ-1/spec.md
-gate "spec approve" spec-approve PROJ-1 1
-cp /tmp/aif-demo-spec.bak tasks/PROJ-1/spec.md; rm -f /tmp/aif-demo-spec.bak
-
-# ---------------------------------------------------------------------------
-step "3b. the blind spot that must not dissolve into the approval"
-note "an assumption says how the system BEHAVES. A sentence saying the device"
-note "path is not exercised by the suite says something else: what this run will"
-note "NOT establish. Filed together, the second disappears into the first — on a"
-note "live ticket a human approved both with one keystroke, and nothing referred"
-note "to the blind spot again:"
-"$AIF" _ticket-init GAP-1 >/dev/null
-cat > tasks/GAP-1/ticket.md <<'TICKET'
-<!-- aif:meta
-{ "schema": 1, "ticket": "GAP-1", "lang": "en", "risk": "high" }
--->
-# GAP-1 — encrypt stored secrets
-
-Secrets are stored in plain text today. Store them encrypted at rest, and keep
-reads working.
+# BAD — a ticket nobody finished
 TICKET
-GTH="$(shasum -a 256 tasks/GAP-1/ticket.md | cut -d' ' -f1)"
-cat > tasks/GAP-1/spec.md <<SPEC
-<!-- aif:meta
-{ "schema": 2, "ticket": "GAP-1", "ticket_sha256": "$GTH", "lang": "en", "risk": "high",
-  "surfaces": ["secret storage"],
-  "acceptance": [
-    { "id": "AC-001", "surface": "secret storage",
-      "given": "a stored secret", "when": "it is read back",
-      "then": "returns the value", "expect": "s3cret",
-      "from": "Store them encrypted at rest" } ],
-  "assumptions": [
-    { "id": "AS-001", "text": "one process reads the store at a time",
-      "because": "the ticket does not say whether readers overlap",
-      "instead_of": "locking the store for concurrent readers",
-      "affects": ["AC-001"] } ],
-  "verification_gaps": [
-    { "id": "VG-001", "text": "the on-device encrypted path is not exercised by this suite",
-      "leaves": ["AC-001"] } ],
-  "non_goals": [] }
--->
-# GAP-1 — encrypt stored secrets
-SPEC
-gate "spec form" spec-form GAP-1 0
-GH="$(shasum -a 256 tasks/GAP-1/spec.md | cut -d' ' -f1)"
-note "and on a risk: high ticket, findings: [] is the shape of a thorough pass"
-note "and also the shape of a judge that read nothing. From the artifact alone"
-note "those are the same document, so the judge has to name what it examined:"
-jq -n --arg s "$GH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[]}' > tasks/GAP-1/verdict-spec.json
-gate "spec judge" spec-judge GAP-1 3
-jq -n --arg s "$GH" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[],checked:["AC-001 against the ticket text","the assumption list for silent decisions"]}' > tasks/GAP-1/verdict-spec.json
-gate "spec judge" spec-judge GAP-1 0
+gate "ready" ready BAD 1
+/bin/bash .aif/gates/ready.sh tasks/BAD 2>&1 | tail -2 | sed 's/^/  /'
+note "each line is the analyst's next question — or, at intake, the worker's"
+note "report. The worker never guesses at one."
 
-note "an approval that accepts the assumptions and says nothing about the gap:"
-jq -n --arg s "$GH" '{schema:1,subject:"spec.md",subject_sha256:$s,approver:"Demo",at:"t",channel:"chat",confirmation:"fine",approved_assumptions:["AS-001"]}' > tasks/GAP-1/approval.json
-gate "spec approve" spec-approve GAP-1 1
-note "and aif refuses to record one — accepting a blind spot is its own decision:"
-if "$AIF" _approve GAP-1 --confirmation "fine" >/dev/null 2>&1; then
-  printf '  %s✗%s %-28s recorded it anyway
-' "$red" "$rst" "approve without the gap"
-else
-  printf '  %s✓%s %-28s refused
-' "$grn" "$rst" "approve without the gap"
-fi
-"$AIF" _approve GAP-1 --confirmation "fine" \
-  --gaps-confirmation "yes — I accept nothing here tests the real device" >/dev/null
-gate "spec approve" spec-approve GAP-1 0
-check "the gap is on the record"   "$(jq -r '.acknowledged_gaps | join(",")' tasks/GAP-1/approval.json)" "VG-001"
+note "the backward transition, for free: append a question to the ticket and"
+note "the plan below it will lapse on its own — no 'go back' command needed."
 
 # ---------------------------------------------------------------------------
 step "4. PLAN boundary  —  plan-form → plan-judge (on the routine tier)"
-SH="$(shasum -a 256 tasks/PROJ-1/spec.md | cut -d' ' -f1)"
+SH="$(shasum -a 256 tasks/PROJ-1/ticket.md | cut -d' ' -f1)"
 cat > tasks/PROJ-1/plan.md <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "PROJ-1", "spec_sha256": "$SH", "risk": "low",
+{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$SH", "risk": "low",
   "files": { "create": [], "change": ["src/api/users.py"], "tests": ["tests/test_users.py"] },
   "decisions": [
     { "id": "D-001", "statement": "Return 409 when the email already exists.",
@@ -335,7 +257,7 @@ gate "plan form" plan-form PROJ-1 0
 cp /tmp/aif-demo-plan1.bak tasks/PROJ-1/plan.md
 
 note "second: the external surface. Every 'because' a planning model writes"
-note "points BACKWARDS into the spec — which proves conformance to the spec and"
+note "points BACKWARDS into the ticket — which proves conformance to the ticket and"
 note "is structurally incapable of proving conformance to reality. So the plan"
 note "enumerates what it will touch outside the repo, and each entry names what"
 note "validates it. A name that matches no check is caught against project.json:"
@@ -390,7 +312,7 @@ note "the plan gates run ONCE, here, and their pass is RECORDED. One of their"
 note "premises — every files.create path must not exist YET — is exactly what the"
 note "implement station is later paid to falsify, so re-running them against a"
 note "finished ticket would reject a correct plan forever. The state machine"
-note "trusts the record while the plan's bytes and its spec binding hold:"
+note "trusts the record while the plan's bytes and its ticket binding hold:"
 sgate plan PROJ-1 0
 sgate plan-judge PROJ-1 0
 "$AIF" _commit plan PROJ-1 >/dev/null
@@ -458,10 +380,10 @@ gate "green" green PROJ-1 3
 cp /tmp/aif-demo-lock.bak tasks/PROJ-1/tests.lock.json && rm -f /tmp/aif-demo-lock.bak
 
 note "and at close, what this run did NOT establish comes back as a checklist."
-note "The blind spot was acknowledged once at approval; a pipeline that never"
+note "The blind spot was recorded once, with the analyst; a pipeline that never"
 note "mentions it again has the same blind spot as one that never named it:"
 check "the gap is re-emitted at close" \
-  "$("$AIF" _state PROJ-1 | jq -r '.next.checklist[] | .source + ":" + .id')" "spec:VG-001"
+  "$("$AIF" _state PROJ-1 | jq -r '.next.checklist[] | .source + ":" + .id')" "ticket:VG-001"
 
 note "now break scope — touch a file the plan never named:"
 printf 'x\n' > src/api/sneaky.py
@@ -565,7 +487,7 @@ check "unrelated subagent ignored" "$(jq -s 'length' "$STAGE")" "$BEFORE"
 
 note "subagents finish whenever they finish. Eight at once, every row lands:"
 BEFORE=$(jq -s 'length' "$STAGE")
-for n in 1 2 3 4 5 6 7 8; do meter aif-spec "$TR" "race-$n" & done
+for n in 1 2 3 4 5 6 7 8; do meter aif-plan "$TR" "race-$n" & done
 wait
 check "no row lost to a race" "$(jq -s 'length' "$STAGE")" "$((BEFORE + 8))"
 
@@ -574,12 +496,12 @@ note "its own gates have run — numbered as each row lands, idempotent by agent
 note "id, so a crash between hook and fold neither loses nor doubles a row:"
 NSTAGED=$(jq -s 'length' "$STAGE")
 LBEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
-"$AIF" _gate spec PROJ-1 >/dev/null 2>&1
+"$AIF" _gate plan PROJ-1 >/dev/null 2>&1
 check "rows folded (+1 gate verdict)" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((LBEFORE + NSTAGED + 1))"
 check "stage file consumed" "$(test -f "$STAGE" && echo present || echo gone)" "gone"
 meter aif-plan "$TR" demo-1
 LBEFORE=$(jq '.entries|length' tasks/PROJ-1/ledger.json)
-"$AIF" _gate spec PROJ-1 >/dev/null 2>&1
+"$AIF" _gate plan PROJ-1 >/dev/null 2>&1
 check "a replayed row folds once" "$(jq '.entries|length' tasks/PROJ-1/ledger.json)" "$((LBEFORE + 1))"
 
 N=$(jq '.entries|length' tasks/PROJ-1/ledger.json); BROKEN=0; i=1

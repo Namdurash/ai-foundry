@@ -72,7 +72,7 @@ for f in "$AGENTS"/aif-*.md; do
   case "$tier" in
     risk)
       # Tiered per ticket, so one file cannot carry the answer: the two variants
-      # do, and the orchestrator picks by the spec's risk.
+      # do, and the worker picks by the ticket's risk.
       case "$base" in
         *-careful.md) want="$(tier_model careful)" ;;
         *) want="$(tier_model routine)" ;;
@@ -152,7 +152,7 @@ g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.
 # itself, and no gate ever saw it.
 g "orchestrator writes source"             '{"tool_input":{"file_path":"src/a.py"}}' deny "" 1
 g "orchestrator writes a test"             '{"tool_input":{"file_path":"tests/t.py"}}' deny "" 1
-g "orchestrator writes a spec"             '{"tool_input":{"file_path":"tasks/T-1/spec.md"}}' allow "" 1
+g "orchestrator writes a plan"             '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow "" 1
 g "orchestrator writes the ticket"         '{"tool_input":{"file_path":"tasks/T-1/ticket.md"}}' allow "" 1
 g "orchestrator edits the price table"     '{"tool_input":{"file_path":".aif/prices.json"}}' allow "" 1
 g "orchestrator edits a gate"              '{"tool_input":{"file_path":".aif/gates/green.sh"}}' deny "" 1

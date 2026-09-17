@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Gate: plan-form — is the plan a distillate, and does it bind to the spec?
+# Gate: plan-form — is the plan a distillate, and does it bind to the ticket?
 #
 # The plan is the artifact that lets implementation run on a cheap model. Two
 # things have to hold for that, and both are checkable here:
 #
-#   1. It binds to the exact spec it was written from (spec_sha256). Without
-#      that, editing the spec later leaves a plan that looks valid and is not.
+#   1. It binds to the exact ticket it was written from (ticket_sha256).
+#      Without that, editing the ticket later leaves a plan that looks valid
+#      and is not.
 #   2. It is a distillate of decisions, not a trace of the debate. The natural
 #      way to prompt for a plan produces exactly the trace, so the byte cap and
 #      the banned headings are load-bearing, not tidiness.
@@ -20,13 +21,13 @@
 #
 #   a file the plan creates      must be named by a criterion — or declared
 #                                uncovered, where a human can see it;
-#   a surface the spec names     must have one file set, so that two criteria
+#   a surface the ticket names   must have one file set, so that two criteria
 #                                on one surface cannot quietly mean two things;
 #   an external dependency       must name what validates it — a check, or a
 #                                criterion that exercises it for real.
 #
 # The last is the one this pipeline lacked. Every `because` in a plan points
-# backwards into the spec, which proves conformance to the SPEC and is
+# backwards into the ticket, which proves conformance to the TICKET and is
 # structurally incapable of proving conformance to REALITY: on a live ticket two
 # decisions asserted the shape of a third-party API from memory, both were
 # wrong, and every gate passed.
@@ -43,16 +44,16 @@ work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: plan-form.sh <work-dir>"
 
 plan="$work/plan.md"
-spec="$work/spec.md"
+ticket="$work/ticket.md"
 project="$(aif_g_project "$work")" || exit $?
 root="$(dirname "$(dirname "$project")")"
 
-[ -f "$spec" ] || aif_g_error "spec.md missing — plan cannot be checked without it"
+[ -f "$ticket" ] || aif_g_error "ticket.md missing — plan cannot be checked without it"
 
 meta="$(aif_g_meta_or_die "$plan" "plan.md")" || exit $?
-spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
+spec_meta="$(aif_g_meta_or_die "$ticket" "ticket.md")" || exit $?
 
-spec_hash="$(aif_g_sha256 "$spec")"
+spec_hash="$(aif_g_sha256 "$ticket")"
 files_max="$(jq -r '.limits.plan_files_max // 12' "$project")"
 spec_acs="$(printf '%s' "$spec_meta" | jq -c '[.acceptance[]?.id]')"
 spec_surfaces="$(printf '%s' "$spec_meta" | jq -c '[.surfaces[]?]')"
@@ -91,16 +92,16 @@ violations="$(
         else empty end),
       (if ($m.ticket? // "") != $spec_ticket
         then "meta.ticket \"" + ($m.ticket? // "")
-             + "\" does not match spec.md (" + $spec_ticket + ")" else empty end),
+             + "\" does not match ticket.md (" + $spec_ticket + ")" else empty end),
 
       # The binding that makes backward transitions work for free: change the
-      # spec and this stops matching, which invalidates the plan automatically.
-      (if ($m.spec_sha256? // "") != $spec_hash
-        then "meta.spec_sha256 does not match spec.md as it is now — the plan "
-             + "was written against a different spec" else empty end),
+      # ticket and this stops matching, which invalidates the plan automatically.
+      (if ($m.ticket_sha256? // "") != $spec_hash
+        then "meta.ticket_sha256 does not match ticket.md as it is now — the plan "
+             + "was written against a different ticket" else empty end),
 
       (if ($m.risk? // "") != $spec_risk
-        then "meta.risk \"" + ($m.risk? // "") + "\" contradicts spec.md ("
+        then "meta.risk \"" + ($m.risk? // "") + "\" contradicts ticket.md ("
              + $spec_risk + ")" else empty end),
 
       # ---- the file contract -------------------------------------------
@@ -170,7 +171,7 @@ violations="$(
                    | select(. as $x | ($spec_acs | index($x)) == null
                                   and ($d_ids | index($x)) == null)
                    | ($d.id // "decision") + ".serves names " + (. | tostring)
-                     + ", which is neither a criterion in spec.md nor a decision "
+                     + ", which is neither a criterion in ticket.md nor a decision "
                      + "in this plan" ),
                  ( $d.serves[]?
                    | select(. == ($d.id // ""))
@@ -185,7 +186,7 @@ violations="$(
         | "ac_coverage is missing " + . + " — every criterion needs a file that serves it" ),
       ( ($cov | keys[]?)
         | select(. as $ac | ($spec_acs | index($ac)) == null)
-        | "ac_coverage names " + . + ", which is not in spec.md" ),
+        | "ac_coverage names " + . + ", which is not in ticket.md" ),
       ( ($cov | to_entries[]?)
         | .key as $ac | .value as $paths
         | ( if ($paths | length) == 0
@@ -220,15 +221,15 @@ violations="$(
       # ---- one surface, one file set ------------------------------------
       (if ($m | has("surface_map") | not)
         then "meta.surface_map is required — one file set per surface named in "
-             + "spec.md, declared once, so two criteria on one surface cannot "
+             + "ticket.md, declared once, so two criteria on one surface cannot "
              + "quietly mean two different things"
         else empty end),
       ( $spec_surfaces[]?
         | select(. as $s | ($smap | has($s)) | not)
-        | "surface_map is missing \"" + . + "\", which spec.md names as a surface" ),
+        | "surface_map is missing \"" + . + "\", which ticket.md names as a surface" ),
       ( ($smap | keys[]?)
         | select(. as $s | ($spec_surfaces | index($s)) == null)
-        | "surface_map names \"" + . + "\", which is not a surface in spec.md" ),
+        | "surface_map names \"" + . + "\", which is not a surface in ticket.md" ),
       ( ($smap | to_entries[]?)
         | .key as $s | .value as $paths
         | $paths[]?
@@ -259,7 +260,7 @@ violations="$(
             else empty end),
           (if ($e.ac // null) != null and ($spec_acs | index($e.ac)) == null
             then "external[" + ($i | tostring) + "].ac \"" + ($e.ac | tostring)
-                 + "\" is not a criterion in spec.md"
+                 + "\" is not a criterion in ticket.md"
             else empty end)
         )
       )
@@ -360,7 +361,7 @@ idle="$(printf '%s' "$meta" |
   jq -r '.decisions[]? | select((.serves // []) | length == 0)
          | "    - " + .id + ": " + .statement')"
 if [ -n "$idle" ]; then
-  printf '  DECISIONS THAT SERVE NO CRITERION — the spec did not ask for these:\n'
+  printf '  DECISIONS THAT SERVE NO CRITERION — the ticket did not ask for these:\n'
   printf '%s\n' "$idle"
   printf '  Each is either scope nobody asked for, or a preference with a decision id.\n'
 fi

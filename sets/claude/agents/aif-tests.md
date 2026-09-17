@@ -23,8 +23,8 @@ later means the code satisfies the specification and not merely itself.
 
 ## Your task
 
-1. Read `tasks/<TICKET>/spec.md` (the acceptance criteria) and
-   `tasks/<TICKET>/plan.md` (the file layout and decisions).
+1. Read `tasks/<TICKET>/ticket.md` (the acceptance criteria, in its `aif:meta`
+   block) and `tasks/<TICKET>/plan.md` (the file layout and decisions).
 2. Write the test files named in the plan's `files.tests`. Write nothing else —
    in particular, do not create or modify any file in the plan's `files.create`
    or `files.change`. Those belong to the implementation station.
@@ -61,7 +61,7 @@ Run the suite (the project's test command) and read the output. Confirm:
 If a test fails for the wrong reason, fix the test until it fails for the right
 one. If you find you cannot write a failing test for a criterion — because the
 criterion is not actually falsifiable — stop and say so, rather than writing a
-test that asserts nothing. That is a defect in the specification, and it is
+test that asserts nothing. That is a defect in the ticket's criteria, and it is
 better surfaced than papered over.
 
 ## A criterion that is already implemented

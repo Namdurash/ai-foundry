@@ -24,7 +24,8 @@
 #               the board mid-run changes nothing here, and the report says
 #               which bytes were built. That one rule is what lets the
 #               backward-lapsing hash cascade of earlier sets be deleted
-#   loop        `aif _state` says what is next (bash decides); the worker
+#   loop        `aif _state` says what is next (bash decides) — the ready gate
+#               first, then the stations; the worker
 #               dispatches the station as `claude -p` with the station's own
 #               prompt (model dispatches); `aif _gate` judges the output and
 #               records the verdict; `aif _commit` seals the accepted step.
@@ -170,7 +171,7 @@ _aif_work_intake() {
   fi
   [ -f "$work/ticket.md" ] || {
     aif_err "no ticket: $AIF_TASKS_DIR/$ticket/ticket.md does not exist."
-    aif_err "The worker builds tickets; it does not write them. Write one with /aif-ticket, then run this again."
+    aif_err "The worker builds tickets; it does not write them. Write one with /aif-ba, then run this again."
     return 1
   }
   if grep -q "Describe the need in your own words" "$work/ticket.md" 2>/dev/null; then
@@ -178,6 +179,18 @@ _aif_work_intake() {
     return 1
   fi
   [ -f "$(aif_ledger_path "$work")" ] || aif_ledger_init "$work" "$ticket"
+
+  # The Definition of Ready, recorded. The same gate the analyst ran; its
+  # verdict is bound to the ticket's bytes at intake, so the ledger says what
+  # was judged buildable rather than only that a build was attempted. A
+  # refusal is not handled here: the loop asks `_state`, which runs the same
+  # gate and hands back every line of its complaint for the report.
+  local rc=0 out
+  out="$(aif_gate_run "$wt" ready "$work")" || rc=$?
+  [ "$rc" -ne 127 ] || aif_die "the ready gate is not installed in this project — run 'aif init'"
+  aif_ledger_gate "$work" ready "$([ "$rc" -eq 0 ] && printf pass || printf fail)" \
+    ticket.md "$(aif_sha256 "$work/ticket.md")" "$(aif_sha256 "$(aif_gate_path "$wt" ready)")" \
+    "$(printf '%s' "$out" | head -1)"
 
   base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
   jq -n --arg t "$ticket" --arg sha "$(aif_sha256 "$work/ticket.md")" \
@@ -365,14 +378,12 @@ _aif_work_report() {
           + "\n  - because: " + (.because // "—")
           + (if ((.rejected // "") | length) > 0 then "\n  - rather than: " + .rejected else "" end)' 2>/dev/null
     fi
-    if [ -f "$work/spec.md" ]; then
-      printf '\n## Assumptions the specification made\n\n'
-      aif_meta_json "$work/spec.md" | jq -r '
-        (.assumptions // []) | if length == 0 then "- none recorded" else
-        .[] | "- **" + .id + "** " + .text
-          + "\n  - because: " + (.because // "—")
-          + "\n  - instead of: " + (.instead_of // "—") end' 2>/dev/null
-    fi
+    printf '\n## Decided with the analyst\n\n'
+    aif_meta_json "$work/ticket.md" | jq -r '
+      (.decided // []) | if length == 0 then "- nothing was left open" else
+      .[] | "- " + (if .by == "default" then "**by default, not by the human:** " else "" end)
+        + .question + " → " + .answer
+        + (if (.kind // "") == "architecture" then " _(architecture)_" else "" end) end' 2>/dev/null
 
     printf '\n## Not verified by this run\n\n'
     printf '%s' "$state" | jq -r '
@@ -476,7 +487,7 @@ aif_cmd_work() {
   # only two things of its own — how many times it has dispatched the station
   # it is on, and how much it has spent.
   local state kind step agent bindings expects detail
-  local cur_station="" cur_attempts=0 complaint="" dispatches=0 spent=0 approved=0
+  local cur_station="" cur_attempts=0 complaint="" dispatches=0 spent=0
   local out rc status="" why="" gate_out
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
@@ -582,41 +593,19 @@ $(head -20 "$gate_out")"
             ;;
         esac
         ;;
+      not-ready)
+        # The Definition of Ready refused the ticket. Every line of the gate's
+        # output is a question for the analyst's conversation — the worker
+        # reports them verbatim and does not guess at one.
+        status="stopped"
+        why="the ticket is not ready — it goes back to the analyst (/aif-ba):
+$detail"
+        break
+        ;;
       human)
-        case "$step" in
-          approve)
-            # The one human boundary the older set kept mid-run. Headless, it is
-            # recorded as what it is — the worker's policy, not a person's word —
-            # and everything the person would have been shown goes in the report.
-            #
-            # Recorded once. If _state still says approve after that, the gate
-            # is refusing what was recorded, and recording it again would loop
-            # forever — that is a stop with the gate's own reason.
-            if [ "$approved" -eq 1 ]; then
-              status="stopped"
-              why="the approval was recorded and the spec-approve gate still refuses it: $detail"
-              break
-            fi
-            approved=1
-            if "$AIF_ROOT/bin/aif" _approve "$ticket" --by "aif work" --channel worker \
-              --confirmation "auto-approved by aif work (headless): no human at this boundary; the assumptions are listed in report.md for review beside the code" \
-              --gaps-confirmation "acknowledged by aif work (headless): the gaps are carried to the report's checklist" \
-              >"$gate_out" 2>&1; then
-              _aif_work_say "approve" "recorded as the worker's policy, not a person's — see the report"
-              "$AIF_ROOT/bin/aif" _commit approve "$ticket" >/dev/null 2>&1 || true
-            else
-              status="stopped"
-              why="could not record the approval:
-$(head -5 "$gate_out")"
-              break
-            fi
-            ;;
-          *)
-            status="stopped"
-            why="the ticket needs a person before it can be built: $detail"
-            break
-            ;;
-        esac
+        status="stopped"
+        why="the ticket needs a person before it can be built: $detail"
+        break
         ;;
       migrate | ticket-init)
         status="stopped"

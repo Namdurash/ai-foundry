@@ -1,6 +1,6 @@
 ---
 name: aif-fix
-description: Walk a human through a rejected foundry artifact — read the gate's complaints, explain why each one was raised, fix what is mechanically fixable, and send the rest back upstream where it belongs. Use when a gate has rejected spec.md, plan.md, tests or code, when a station is rejected during `aif run`, or when the user invokes /aif-fix. Not for writing a ticket from scratch — that is aif-ticket.
+description: Walk a human through a rejected foundry artifact — read the gate's complaints, explain why each one was raised, fix what is mechanically fixable, and send the rest back upstream where it belongs. Use when a gate has rejected plan.md, tests or code, when a station is rejected during `aif run`, or when the user invokes /aif-fix. Not for writing or reworking a ticket — that is aif-ba.
 ---
 
 # aif-fix — the repair bench at a gate
@@ -16,7 +16,7 @@ produced, so that the artifact's own gate will pass against real content.
 
 **Never make the gate pass by making the artifact worse.**
 
-Every gate here is a *proxy*. `spec-form` counts criteria and matches verbs; it cannot see
+Every gate here is a *proxy*. `ready` checks that every criterion carries a literal; it cannot see
 meaning. So there is always a cheap way to satisfy it that destroys the thing it was
 protecting — delete six acceptance criteria to get under a limit, replace a real assertion
 with a trivially true one, water down a `then` until it says nothing. Each of those turns a
@@ -52,12 +52,11 @@ one of these:
 
 **Mechanical — the content is right, its form is wrong.** Fix these in the artifact:
 - an assertion that joins two checks with "and"/"or" → split into two criteria
-- a `then` with no assertion verb, or with two → rewrite to one verb from the gate's list
 - a judgement word ("valid", "correct", "gracefully") → say what is observable instead
 - `expect` holding prose instead of a literal → name the literal
 - ids out of sequence, a `surface` missing from the surfaces list → correct the reference
 - an assumption that is really a limit of verification → move it to `verification_gaps`
-- a `surface_map` entry missing for a surface the spec names → add the file set
+- a `surface_map` entry missing for a surface the ticket names → add the file set
 
 **Structural — the artifact is honest and the gate is telling you the work is too big or
 the input was too vague.** These are the user's call, never yours:
@@ -77,7 +76,7 @@ the input was too vague.** These are the user's call, never yours:
 
 For a structural finding, propose the split or the question concretely — name which criteria
 would stay and which would move — and let the user decide. When they decide, the change goes
-into `tasks/<ID>/ticket.md`, because the spec station reads the ticket and nothing else.
+into `tasks/<ID>/ticket.md`, with the `aif-ba` skill, because the plan reads the ticket's criteria and nothing else.
 
 ### 3. Fix the mechanical pile
 
@@ -87,7 +86,7 @@ context that produced the artifact, where you have one line of complaint. That i
 path and it is usually cheaper than the argument about whether a hand edit was faithful.
 
 Edit by hand when re-dispatching would be absurd for the size of the fix — a mistyped id, a
-`surface` naming something the spec calls slightly differently — or when the station has
+`surface` naming something the ticket calls slightly differently — or when the station has
 already been re-dispatched and produced the same defect.
 
 When you do edit, show the user each fix as a before/after of the exact field. Keep the
@@ -118,16 +117,15 @@ State the artifact's state plainly, and name the next command without running it
   asks `aif _state <ID>` what comes next and re-checks with `aif _gate` itself. Do not
   dispatch the next station yourself — that decision comes from derived state, not from your
   memory of what you just fixed.
-- gate still red for structural reasons → the change belongs in `ticket.md`. `aif _rework
-  <ID> "<what should change>"` folds it in as prose, which is what the spec station actually
-  reads, and the spec is redone against it.
+- gate still red for structural reasons → the change belongs in `ticket.md`: rework it with
+  the `aif-ba` skill, run `aif _ready`, and the plan bound to the old ticket lapses on its own.
 - a person invoked you directly → `aif run <ID>` continues from here.
 
 ## What this skill cannot do — stated so it does not oversell
 
 - It cannot tell whether the artifact describes the **right** thing to build. Every gate here
-  checks form; `spec-judge` and the human approval gate are what stand between a
-  well-formed spec and a correct one, and both are still downstream.
+  checks form; the criteria the human wrote with the analyst are the only statement of intent,
+  and nothing downstream re-asks it.
 - It cannot rescue a bad ticket. Where the rejection traces to an unclear or oversized
   ticket, the honest outcome of this skill is a change to `ticket.md` and a re-run — not a
   patched artifact.

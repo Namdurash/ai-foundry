@@ -1,6 +1,6 @@
 ---
 name: aif
-description: Drive a ticket through the AI Foundry's gated cycle — ticket, spec, human approval, plan, tests, code — dispatching each stage as a subagent and checking it against the machine gates. Use when the user wants to start or continue foundry work on a ticket, hands over a board link or a ticket id, or invokes /aif. This is the orchestrator; it never writes the product code itself.
+description: Drive a ticket through the AI Foundry's gated cycle in a session you can watch — ready, plan, tests, code — dispatching each stage as a subagent and checking it against the machine gates. Use when the user wants to watch foundry work on a ticket in-session rather than run `aif work` headless, or invokes /aif. This is the orchestrator; it never writes the product code itself.
 ---
 
 # aif — the orchestrator
@@ -26,7 +26,7 @@ Work you write yourself is work no gate ever saw — which is exactly how a tick
 up "done" with `green` and `scope` never having run.
 
 What you may write:
-- `tasks/<ID>/ticket.md` — the user's words, at their direction;
+- `tasks/<ID>/ticket.md` — with the user, following the `aif-ba` skill;
 - the artifacts under `tasks/<ID>/` when repairing one with the user at a rejection. That is
   not a loophole: everything there is re-judged against its current bytes by the gate that
   rejected it, so a repair is checked exactly as a station's output is.
@@ -66,13 +66,17 @@ and scaffolding a new one on top would silently discard them.
 
 ### `human`, step `ticket` — there is no real ticket yet
 
-Interview the user and write `tasks/<ID>/ticket.md`. **Follow the `aif-ticket` skill's
-procedure exactly** — read `.claude/skills/aif-ticket/SKILL.md` and run it, including the
-`aif-ticket-critic` pass and the user's confirmation of the exact wording. Do not improvise a
-shorter interview; the quality of this file decides how much every later stage has to guess.
+Write `tasks/<ID>/ticket.md` with the user. **Follow the `aif-ba` skill's procedure
+exactly** — read `.claude/skills/aif-ba/SKILL.md` and run it: the repository first, the
+criteria with the user, every open question with a default, `aif _ready` until it passes.
 
-If a `## Rework requested at approve` section is present, read it first — it is the user's
-own words about what was wrong, and it is usually exactly what needs answering.
+### `not-ready` — the ticket exists but the Definition of Ready refuses it
+
+`next.detail` is the ready gate's own output: one line per problem, and the lines that
+start with `open question` are product questions with a proposed default. Take them to the
+user as one batch, exactly as the `aif-ba` skill does at its step 4, record the answers in
+the ticket's `decided` list, fix anything else the gate named, and loop. Do not dispatch
+anything until `_state` stops saying `not-ready`.
 
 ### `station` — dispatch the subagent
 
@@ -131,56 +135,6 @@ drawing they can open is the difference between that being a choice and being an
 It renders nothing when the project has it off, and that line is the normal answer, not a
 problem to report.
 
-### `human`, step `approve` — the one gate with no machine backstop
-
-This is the human's decision and it must actually be theirs.
-
-1. **Draw the chain before you ask anything.**
-
-   ```bash
-   aif explain <ID> --spec --auto approve
-   ```
-
-   It prints the path to `tasks/<ID>/explain.md`: what in the ticket each criterion came
-   from, which assumptions it rests on, and what each assumption carries. Give the user that
-   path *before* the list. Eight criteria and six assumptions read as a wall; the same
-   content as a chain is something a person can actually judge, which is the whole point of
-   putting the human here. It costs nothing — no model runs, it is a render of fields the
-   spec already carries and the gate already checked.
-
-   A line saying `explain: off for this project` is that project's setting, not a failure.
-   Carry on without commenting on it.
-2. Show the acceptance criteria from `tasks/<ID>/spec.md`'s `aif:meta` — every one.
-3. Show the **assumptions** separately and prominently, each as the chain it is: the
-   decision, then `because` — what in the ticket left the question open — then `instead_of`,
-   the road not taken, then the criteria that rest on it. The decision on its own is a
-   verdict handed down; the four together are something a person can disagree with, and
-   disagreeing is what they are here for. Where `affects` is empty, say so out loud: nothing
-   in this cycle would fail if that assumption were wrong.
-4. Show the **verification gaps** separately again, under their own heading, and do not blend
-   them into the assumptions. An assumption says how the system behaves; a gap says what this
-   cycle will *not* establish — "nothing here exercises the real device", "a green suite would
-   not prove the file on disk is encrypted". They are different decisions and the pipeline
-   treats them as different decisions.
-5. Ask, and wait for an answer to each:
-   - *is anything missing, and do you accept these assumptions?*
-   - if there are gaps: *do you accept shipping with these unverified?* — asked on its own,
-     answered on its own.
-6. **Wait for their actual answer.** Do not proceed on silence, on a topic change, or on
-   your own reading of what they would probably say.
-   - Accepted → record it with their own words:
-     ```bash
-     aif _approve <ID> --confirmation "<what the user said about the assumptions>" --gaps-confirmation "<what they said about the gaps>"
-     ```
-     `--confirmation` is mandatory and it is evidence. `--gaps-confirmation` is mandatory
-     whenever the spec records any gap, and `aif _approve` refuses without it. Quote them for
-     both; never compose either for them, and never reuse one answer as the other.
-   - Rejected → get the reason, then:
-     ```bash
-     aif _rework <ID> "<their reason>"
-     ```
-     That appends it to the ticket, and the spec is redone against it. Loop.
-
 ### `blocked` — a gate broke
 
 Report `next.detail` verbatim and stop. This is tooling, not work.
@@ -190,8 +144,8 @@ Report `next.detail` verbatim and stop. This is tooling, not work.
 Say so, summarise what was built, and point the user at the branch to review.
 
 Then print `next.checklist` — **every entry, in full, as a checklist they are meant to act
-on.** It is what this run did *not* establish: the verification gaps they acknowledged at
-approval, and every external dependency the plan could point at neither a check nor a
+on.** It is what this run did *not* establish: the verification gaps the analyst recorded
+with them, and every external dependency the plan could point at neither a check nor a
 criterion for. A gap acknowledged once at the start and never mentioned again is the same as
 no gap at all, which is exactly how a module that does not run on its target environment ships
 through eight green gates. If the list is empty, say that too — it is a real answer.
@@ -215,8 +169,8 @@ Two things it leaves to you:
 
 ## What you may and may not run
 
-You may run `aif _state`, `aif _gate`, `aif _commit`, `aif _ticket-init`, `aif _rework`,
-`aif _approve`, `aif explain`, and any gate script directly for diagnosis.
+You may run `aif _state`, `aif _gate`, `aif _commit`, `aif _ticket-init`, `aif _ready`,
+`aif explain`, and any gate script directly for diagnosis.
 
 `aif explain` is safe to run at any point and as often as you like: it writes one generated
 file under `tasks/`, which is on scope's denylist, and it spends nothing. If the user asks
@@ -229,10 +183,9 @@ its own context and its own engine precisely so that its cost and its reasoning 
 
 ## Honest limits — say these when they come up
 
-- **The approval is trusted, not verified.** Everything else in this pipeline is checked by a
-  gate; that one is not, because "a person judged this complete" is not machine-decidable.
-  The `--confirmation` text is evidence a human answered, not proof. Do not present an
-  approved spec as *verified*.
+- **The criteria are the human's, not verified.** Everything downstream checks that the
+  code matches the criteria; nothing checks that the criteria match the intent. That stayed
+  with the user in the analyst's conversation, which is the point of holding it there.
 - **A green suite is not correctness.** `green` proves the frozen tests pass, that the
   project's own checks pass, and that reverting the code makes the covering tests fail again.
   It cannot prove the tests were the right tests, and it cannot reach anything the acceptance
@@ -240,4 +193,4 @@ its own context and its own engine precisely so that its cost and its reasoning 
 - **An unvalidated external dependency stays unvalidated.** Naming one in the plan's
   `external` list does not test it; it only means nobody can later say they did not know.
 - **`aif _state` running clean means every gate passes now** — not that the feature is what
-  the user wanted. That judgement stayed with them at the approval gate.
+  the user wanted. That judgement stayed with them when the criteria were written.

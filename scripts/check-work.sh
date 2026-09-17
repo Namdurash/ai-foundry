@@ -16,8 +16,8 @@
 #      headless, committed once per accepted station, and a report on the branch
 #   2  a rejection is retried with the gate's complaint in the prompt, and both
 #      attempts are in the ledger
-#   3  the approve boundary is recorded as the worker's policy, channel: worker
-#   4  a stub ticket stops at intake with nothing spent
+#   3  a ticket that is not ready — a stub, or an open question — stops at
+#      intake with nothing spent, and the report carries the gate's questions
 #   5  the worktree path: the run lands on aif/<ID> in .aif/worktrees/<ID>,
 #      the developer's checkout is untouched, and --clean removes the checkout
 #      but not the branch
@@ -121,38 +121,12 @@ n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); printf '%s' "$n" >"$cou
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 
 case "$station" in
-  spec)
-    cat >"$work/spec.md" <<SPEC
-<!-- aif:meta
-{ "schema": 2, "ticket": "$ticket", "ticket_sha256": "$(bind ticket_sha256)", "lang": "en", "risk": "low",
-  "surfaces": ["export"],
-  "acceptance": [
-    { "id": "AC-001", "surface": "export",
-      "given": "users exist", "when": "the export runs",
-      "then": "writes the marker", "expect": "impl1",
-      "from": "write the current user list" } ],
-  "assumptions": [
-    { "id": "AS-001", "text": "the export is synchronous",
-      "because": "the ticket does not say whether it may be deferred",
-      "instead_of": "queueing it", "affects": ["AC-001"] } ],
-  "verification_gaps": [
-    { "id": "VG-001", "text": "nothing here runs against a real user list", "leaves": ["AC-001"] } ],
-  "non_goals": [] }
--->
-# $ticket — spec
-SPEC
-    ;;
-  spec-judge)
-    jq -n --arg s "$(bind subject_sha256)" '{schema:1,gate:"spec-judge",subject:"spec.md",subject_sha256:$s,
-      judge_agent:"aif-spec-judge",at:"t",pass:true,findings:[],checked:["AC-001 against the ticket"]}' \
-      >"$work/verdict-spec.json"
-    ;;
   plan)
     change='["src/app.py"]'
     if [ "${FAKE_PLAN_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then change='["src/nowhere.py"]'; fi
     cat >"$work/plan.md" <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "$ticket", "spec_sha256": "$(bind spec_sha256)", "risk": "low",
+{ "schema": 2, "ticket": "$ticket", "ticket_sha256": "$(bind ticket_sha256)", "risk": "low",
   "files": { "create": [], "change": $change, "tests": ["tests/t1.py"] },
   "decisions": [
     { "id": "D-001", "statement": "Write the marker from the app module.",
@@ -190,11 +164,23 @@ FAKE
 chmod +x "$SANDBOX/fake-station.sh"
 export AIF_WORK_STATION_CMD="$SANDBOX/fake-station.sh"
 
-ticket_for() { # <id> — a real ticket, committed
+ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
+  # ticket, one question decided by default, one recorded gap.
   "$AIF" _ticket-init "$1" >/dev/null
   cat >"tasks/$1/ticket.md" <<TICKET
 <!-- aif:meta
-{ "schema": 1, "ticket": "$1", "lang": "en", "risk": "low" }
+{ "schema": 2, "ticket": "$1", "lang": "en", "risk": "low",
+  "surfaces": ["export"],
+  "acceptance": [
+    { "id": "AC-001", "surface": "export",
+      "given": "users exist", "when": "the export runs",
+      "then": "writes the marker", "expect": "impl1" } ],
+  "open": ${2:-[]},
+  "decided": [
+    { "question": "may the export be deferred to a queue?", "answer": "no — synchronous", "by": "default" } ],
+  "verification_gaps": [
+    { "id": "VG-001", "text": "nothing here runs against a real user list", "leaves": ["AC-001"] } ],
+  "non_goals": [] }
 -->
 # $1 — one-command user export
 
@@ -216,18 +202,18 @@ eq "report says built" "$(head -1 tasks/AIF-1/report.md 2>/dev/null)" "# AIF-1 �
 eq "run.json status" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
 eq "run.json froze the ticket's hash" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
-eq "six stations metered, headless" \
-  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' tasks/AIF-1/ledger.json)" "6"
+eq "four stations metered, headless" \
+  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' tasks/AIF-1/ledger.json)" "4"
 eq "station rows carry the model that ran" \
   "$(jq -r '[.entries[] | select(.station == "plan")] | last | .model' tasks/AIF-1/ledger.json)" "fake-model"
-eq "the approval is the worker's, and says so" \
-  "$(jq -r '.channel + "/" + .approver' tasks/AIF-1/approval.json)" "worker/aif work"
+eq "the ready gate's pass is in the ledger" \
+  "$(jq -r '[.entries[] | select(.gate == "ready")] | length > 0' tasks/AIF-1/ledger.json 2>/dev/null || echo skip)" "true"
 eq "one commit per accepted station, plus intake and report" \
-  "$(git log --format=%s | grep -c '^aif: ')" "9"
-eq "the report lists the assumption beside the code" \
-  "$(grep -c 'AS-001' tasks/AIF-1/report.md)" "1"
+  "$(git log --format=%s | grep -c '^aif: ')" "6"
+eq "the report shows what fell to a default, beside the code" \
+  "$(grep -c 'by default, not by the human' tasks/AIF-1/report.md)" "1"
 eq "the report carries the gap as a checklist item" \
-  "$(grep -c '^- \[ \] \*\*spec VG-001' tasks/AIF-1/report.md)" "1"
+  "$(grep -c '^- \[ \] \*\*ticket VG-001' tasks/AIF-1/report.md)" "1"
 eq "the tree is clean after the run" "$(git status --porcelain | wc -l | tr -d ' ')" "0"
 eq "nothing staged is left behind" "$(find .aif/tmp -name 'meter-*.jsonl' 2>/dev/null | wc -l | tr -d ' ')" "0"
 if grep -q "the runner produced no envelope" "$OUT/run1.out"; then bad "runner errors in output"; fi
@@ -248,16 +234,25 @@ eq "the second attempt saw the complaint" "$(grep -c 'attempt 2' tasks/AIF-2/pla
 eq "the report counts both attempts" \
   "$(grep -E '^\| plan \|' tasks/AIF-2/report.md | awk -F'|' '{ gsub(/ /,"",$3); print $3 }')" "2"
 
-# =============================== 3. stub =====================================
-printf '\n3. a stub ticket stops at intake, nothing spent\n'
+# =============================== 3. not ready ================================
+printf '\n3. a ticket that is not ready stops at intake, nothing spent\n'
 fresh_project "$SANDBOX/p3"
 "$AIF" _ticket-init AIF-3 >/dev/null
 git add -A && git commit -qm "stub" >/dev/null
 rc=0
 "$AIF" work AIF-3 --no-worktree >"$OUT/run3.out" 2>&1 || rc=$?
-eq "exit 1 — needs a person" "$rc" "1"
+eq "a stub: exit 1 — needs a person" "$rc" "1"
 eq "says why" "$(grep -c 'scaffold stub' "$OUT/run3.out")" "1"
 eq "no station ran" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-3/ledger.json)" "0"
+
+ticket_for AIF-6 '[{ "id": "Q-001", "question": "should the export be signed?", "default": "no", "affects": ["AC-001"] }]'
+git add -A && git commit -qm "open question" >/dev/null
+rc=0
+"$AIF" work AIF-6 --no-worktree >"$OUT/run6.out" 2>&1 || rc=$?
+eq "an open question: exit 1 — back to the analyst" "$rc" "1"
+eq "the report names the question and its default" \
+  "$(grep -c 'open question Q-001.*default: no' tasks/AIF-6/report.md)" "1"
+eq "no station ran on it" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-6/ledger.json)" "0"
 
 # =============================== 4. worktree =================================
 printf '\n4. the worktree path\n'

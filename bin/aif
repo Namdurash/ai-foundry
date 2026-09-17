@@ -175,14 +175,14 @@ main() {
       . "$AIF_ROOT/lib/cmd_ticket.sh"
       aif_cmd_ticket_init ${1+"$@"}
       ;;
-    _rework)
+    _ready)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
       # shellcheck source=lib/gates.sh
       . "$AIF_ROOT/lib/gates.sh"
       # shellcheck source=lib/cmd_ticket.sh
       . "$AIF_ROOT/lib/cmd_ticket.sh"
-      aif_cmd_rework ${1+"$@"}
+      aif_cmd_ready ${1+"$@"}
       ;;
     _meter)
       # shellcheck source=lib/ledger.sh
@@ -199,15 +199,6 @@ main() {
       # shellcheck source=lib/cmd_amend.sh
       . "$AIF_ROOT/lib/cmd_amend.sh"
       aif_cmd_amend_plan ${1+"$@"}
-      ;;
-    _approve)
-      # shellcheck source=lib/ledger.sh
-      . "$AIF_ROOT/lib/ledger.sh"
-      # shellcheck source=lib/gates.sh
-      . "$AIF_ROOT/lib/gates.sh"
-      # shellcheck source=lib/cmd_ticket.sh
-      . "$AIF_ROOT/lib/cmd_ticket.sh"
-      aif_cmd_approve ${1+"$@"}
       ;;
     doctor)
       # shellcheck source=lib/doctor.sh

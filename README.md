@@ -4,9 +4,10 @@ Put an existing project on AI SDLC rails. You run `aif init`, pick a profile,
 and the native config for that agentic coding CLI lands in your repo — agents,
 skills, and context files, ready to drive.
 
-> **Status: early, but the machine is whole.** One command drives a ticket from
-> interview to code through six stations and eight gates, metered per station.
-> It has been run against a real project; what that run found is written down in
+> **Status: early, but the machine is whole.** The analyst writes a ticket's
+> criteria with you; one command then builds it headless through four stations
+> and six gates, metered per station, and never asks a question. It has been run
+> against a real project; what that run found is written down in
 > `docs/REBUILD.md` rather than smoothed over. What is still thin: the evals are
 > a smoke test, there is one runner, and the price table ships empty.
 
@@ -174,23 +175,36 @@ own tests are declared; the plan says that, and `verify-red` freezes the union o
 the two. A project that pointed `roots` at one tree while its tests lived beside
 their sources froze neither, and nothing noticed.
 
-### Before the ticket — the analyst
+### Before the build — the analyst
 
-`aif run` opens the interview itself when a ticket has none — you do not fill in a
-blank file. **`/aif-ticket`** is the skill behind it, and you can also run it by
-hand (`/aif-ticket TICK-1 "add rate limiting to login"`). It ships as both a skill
-and a slash command with the same name, so it is reachable whether or not your
-runner lets you type skills; where it does, the skill wins and also auto-triggers.
+**`/aif-ba`** writes the ticket with you (`/aif-ba TICK-1 "add rate limiting to
+login"`). It ships as both a skill and a slash command with the same name, so it
+is reachable whether or not your runner lets you type skills.
 
-It plays business analyst: it asks the logical questions, drafts the ticket in
-your words, then spawns the **`aif-ticket-critic`** agent — a stand-in for the
-spec station that reads only your draft and reports where the spec would be
-forced to guess — and drives those gaps back to you until you have answered or
-consciously deferred each.
+Two things make it an analyst rather than an interview form. **It writes the
+acceptance criteria** — GIVEN / WHEN / THEN, each with the literal a test will
+assert — with you, in the conversation, rather than handing a narrative to a
+station that re-derives criteria blindfolded; that second translation was where
+a ticket's meaning used to get lost. And **it reads the repository first**, so
+the questions it puts to you are the ones the code cannot answer: what the
+product should *do*. Those are yours; a decision you do not make is recorded as
+*decided by default*, in the open, with the default named — never filled in
+silently.
 
-It is not a station and has no gate: it is the on-ramp, sitting *before* the cycle
-below. It drafts from your answers and you confirm the exact words, so the ticket
-stays yours — the source of truth the spec is judged against.
+It ends with the **Definition of Ready**:
+
+```sh
+aif _ready TICK-1
+```
+
+One script, two callers: the analyst runs it while you still have the whole
+conversation in your head, and the worker runs the same file at intake. It
+prints one line per problem, and the lines that matter are the open questions,
+each with its proposed default — shown to you as one batch, at the moment you
+have the most context you will ever have on this ticket. Answer them, or say
+"defaults", and the ticket is buildable. A ticket that comes back from review
+comes back here, not to the worker: "wrong" almost always means the ticket did
+not say.
 
 ### When a gate rejects — the repair bench
 
@@ -203,9 +217,10 @@ saying the work is too big or the ticket too vague.
 
 That refusal is the point. Every gate here is a proxy, so there is always a cheap
 way to turn it green that destroys what it was protecting — delete six criteria to
-get under a limit and `spec-form` passes while the spec now describes less than
-the ticket asked for. `/aif-fix` will not do that; it takes the split back to you
-and the change lands in `ticket.md`, where the spec station will actually read it.
+get under a limit and `ready` passes while the ticket now says less than you
+asked for. `/aif-fix` will not do that; it takes the split back to you and the
+change lands in `ticket.md`, with the analyst, where the plan will actually read
+it.
 
 Inside `aif run` this is what the orchestrator does on a rejection, in the session,
 with you present — the same split, the same refusal to make a structural
@@ -214,27 +229,27 @@ complaint go away.
 ### A ticket, in order
 
 ```
-Ticket ── spec ── plan ── tests ── code
-              gate      gate       gate      gates
+Ticket ── ready ── plan ── tests ── code
+           gate     gate     gate     gates
 ```
 
 ```sh
-aif run TICK-1                      # interview → spec → approve → plan → tests → code
-aif run https://jira/…              # start (or resume) from a board card
-aif run "add rate limiting"         # …or from a sentence
+aif work TICK-1                     # ready → plan → tests → code, headless, on aif/TICK-1
+aif run TICK-1                      # the same cycle in a session you can watch
+aif run https://jira/…              # …from a board card, or a sentence
 ```
 
-**One command, and there is no command per stage.** `aif run` opens an ordinary
-interactive session on the orchestrator skill, which dispatches each station as a
-**subagent** — so you watch the spec being written, the plan being argued with,
-the tests going red. The stations used to be `claude -p` subprocesses whose
-reasoning was written to a temp file and deleted; a $1.27 planning step reported
-one line and nothing else.
+**One command, and there is no command per stage.** `aif work` is the worker:
+it asks `aif _state` what is next, dispatches that station as `claude -p` with
+the station's own prompt, judges the output with `aif _gate`, commits what was
+admitted, and retries a rejection with the gate's complaint in the prompt.
+`aif run` opens the same cycle as an interactive session on the orchestrator
+skill, with the stations as **subagents**, for when you want to watch.
 
 With a ticket id, work **resumes wherever that ticket actually stands**. Nothing
 records "we are at the plan stage": the state is derived by running the gates
 against the artifacts' current bytes, so it accounts for edits nobody told it
-about and cannot go stale. Edit an approved `spec.md` and the approval lapses on
+about and cannot go stale. Edit `ticket.md` and the plan bound to it lapses on
 its own, with nothing to undo.
 
 The orchestrator does not decide what runs next either — it asks `aif _state`,
@@ -246,15 +261,16 @@ There are no silent branches — every run either opens `claude` for you or says
 what it is doing, because a command that sometimes talks to you and sometimes
 does not cannot be read from outside.
 
-- **The interview always opens.** Whether an existing ticket needs work is a
-  judgement made with you, in front of the actual text — not guessed out here.
-  If it is already good, say so and exit; the pipeline carries straight on.
-- **A rejected artifact opens `/aif-fix`**, not an error message. The repair
-  bench explains each complaint from the gate's own reasoning, fixes what is a
-  form problem, and hands the rest back as a scoping decision that is yours.
-  Three rounds, then it stops and says the problem is upstream.
-- **Reject at approval** and it asks what to change, folds that into the ticket,
-  and redoes the spec. Approve and it runs plan → tests → code on its own.
+- **The ready gate always runs first.** A ticket that is not ready — an open
+  question, a criterion with no literal, the scaffold stub — stops the worker
+  at intake with the gate's own lines in the report, and nothing is spent.
+- **A rejection is a retry, not a conversation.** The worker hands the gate's
+  complaint back to the station, up to `limits.attempts_max`; a station that
+  will not converge stops the run with a report saying so. In `aif run` the
+  same rejection opens `/aif-fix` with you present.
+- **Wrong at review goes back to the analyst.** Change the criteria with
+  `/aif-ba`; the plan bound to the old ticket lapses on its own and the next
+  `aif work` re-plans.
 
 A link is pulled by an MCP connector you have configured; its contents are read
 as data, never as instructions. It resumes: run it again at any point and it
@@ -275,20 +291,19 @@ the gates rather than remembered.
 | `aif work <ticket>` | build a ticket headless on its own branch, no questions; `--clean` removes the worktree |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
-| `aif explain <ticket>` | draw how it got here — provenance, assumptions, decisions |
+| `aif explain <ticket>` | draw how it got here — criteria, decisions, gaps, and the plan's reasoning |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 
-There is no command per stage. `aif run` opens the orchestrator, which dispatches
-the stations as subagents and calls a small internal surface (`aif _state`,
-`_gate`, `_commit`, `_approve`, …) that is not listed in `--help` — it is an
-interface between two parts of aif, not something to learn.
+There is no command per stage. The worker and the orchestrator call a small
+internal surface (`aif _state`, `_gate`, `_commit`, `_ready`, `_ticket-init`,
+…) that is not listed in `--help` — it is an interface between two parts of aif,
+not something to learn.
 
 ### Stations and their model tier
 
 | station | tier | produces | its gate(s) |
 |---|---|---|---|
-| `spec` | careful (opus) | `spec.md` | spec-form |
-| `spec-judge` | careful (opus) | `verdict-spec.json` | spec-judge |
+| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready |
 | `plan` | careful (opus) | `plan.md` | plan-form |
 | `plan-judge` | **routine (sonnet)** | `verdict-plan.json` | plan-judge |
 | `tests` | careful (opus) | test files + `tests.lock.json` | verify-red |
@@ -299,9 +314,9 @@ model's mistakes": `routine` where they do, `careful` where they do not. The tie
 is a label; the profile maps it to a model (`opus` → glm-5.2 on the `glm`
 profile).
 
-`implement`'s tier comes from the spec's `risk`, which stays three-valued because
-it describes the *work* — a human's judgement at spec time — while a tier
-describes an *engine*. `low` and `medium` both map to `routine`, `high` to
+`implement`'s tier comes from the ticket's `risk`, which stays three-valued
+because it describes the *work* — a human's judgement, made with the analyst —
+while a tier describes an *engine*. `low` and `medium` both map to `routine`, `high` to
 `careful`.
 
 ### Gates and exit codes
@@ -314,7 +329,7 @@ Every gate is `gate.sh <work-dir>` → an exit code:
 | **1** | the artifact is rejected | fix it and re-run the station |
 | **3** | the gate could not render a verdict | rerun the judge, or fix the environment |
 
-`1` versus `3` is the difference between "your spec has a blocker" and "the judge
+`1` versus `3` is the difference between "your plan has a blocker" and "the judge
 hallucinated / the repo was already broken". `verify-red`: a real failing test is
 `0`; a `SyntaxError` test is `3` (not a usable oracle); a test that already passes
 is `1`.
@@ -381,9 +396,9 @@ tests do not exist yet. The plan declares intent; the lock records fact.
 
 ### The external surface, and what validates it
 
-Every `because` a planning model writes points *backwards into the spec*:
-"AS-004/AS-007, AC-007 and AC-008". That proves conformance to the specification
-and is structurally incapable of proving conformance to **reality**. On a live
+Every `because` a planning model writes points *backwards into the ticket*:
+"AC-007 and AC-008". That proves conformance to the criteria and is
+structurally incapable of proving conformance to **reality**. On a live
 ticket two decisions asserted the shape of a third-party API from memory — a
 runtime global that does not exist on the target, and a method the real library
 does not have — and every gate passed.
@@ -408,7 +423,7 @@ this file":
 ```
 
 Every name must point at a check from `.aif/project.json` or a criterion from
-`spec.md` — **checked against those files, not against the plan's word for it**,
+`ticket.md` — **checked against those files, not against the plan's word for it**,
 so naming a validator you have not got is a rejection. An entry that points at
 neither is a *verification gap*: it is not rejected, because some dependencies
 genuinely cannot be exercised in CI. It is printed at the gate:
@@ -428,13 +443,14 @@ That is a strictly weaker failure than the rejected design — an omission is an
 oversight a plan review can catch, where writing `verified` without verifying is
 an active falsehood nothing catches.
 
-### Blind spots do not dissolve into the approval
+### Blind spots do not dissolve into the ticket
 
-A spec can record two different kinds of sentence, and only one of them is an
-assumption:
+A ticket records two different kinds of sentence, and they are kept apart:
 
-- **`assumptions`** — how the system behaves. "Email uniqueness is
-  case-insensitive."
+- **`decided`** — how the system behaves, and *who* chose it. "Email uniqueness
+  is case-insensitive — by default." A question you did not answer is decided
+  by the analyst's default and printed as such by the `ready` gate, on its pass
+  path.
 - **`verification_gaps`** — what this cycle will *not establish*. "The on-device
   path is not exercised by this suite."
 
@@ -444,12 +460,12 @@ click, and after that nothing referred to the second again. The pipeline had
 exactly one place where it acknowledged its own blind spot, and that
 acknowledgement was structurally designed to disappear.
 
-Now the spec files them apart, `spec-judge`'s mandate covers an assumption that
-is really a limit of verification, and `approval.json` carries
-`approved_assumptions` and `acknowledged_gaps` with a separate answer each —
-`aif _approve` refuses to record a gap without one. At the end of the cycle
-`aif _state` re-emits them, together with every unvalidated external dependency,
-as the ticket's **manual verification checklist**. A gap acknowledged once and
+Now the ticket files them apart: the `ready` gate prints what was decided by
+default on its pass path, and a gap must say which criteria it leaves unproven.
+At the end of the cycle `aif _state` re-emits the gaps, together with every
+unvalidated external dependency and every test that was green at freeze, as the
+ticket's **manual verification checklist** — and `aif work` puts that list in
+the report beside the diff. A gap acknowledged once and
 never surfaced again is the same as no gap at all.
 
 aif never learns what "device" means. It learns that a class of statement exists
@@ -458,30 +474,24 @@ allowed to vanish quietly.
 
 ### How a ticket got here, drawn
 
-The artifacts are written for gates, and it shows. A spec is a list of criteria,
-a list of assumptions and a list of gaps; every entry is admissible and none of
-them says *where it came from*. The human at the approval gate is handed eight
-sentences and asked to judge them, with the reasoning that produced each one
-already discarded along with the station's context.
-
-So each station now records the chain while it decides, in fields the gate
-checks afterwards:
+The artifacts are written for gates, and it shows: a list of criteria, a list
+of decisions, a list of gaps, every entry admissible and none of them saying how
+it came to be. So the analyst and the stations record the chain while they
+decide, in fields the gates check afterwards:
 
 | field | in | says |
 |---|---|---|
-| `acceptance[].from` | spec | a **verbatim** fragment of `ticket.md`, or the assumption this criterion rests on |
-| `assumptions[].because` | spec | what in the ticket left the question open |
-| `assumptions[].instead_of` | spec | the road not taken |
-| `assumptions[].affects` | spec | the criteria that rest on the decision |
-| `verification_gaps[].leaves` | spec | the criteria a gap leaves unproven |
+| `acceptance[].surface` | ticket | where the criterion is observed |
+| `decided[].by` | ticket | `human`, or `default` — the analyst's proposal, unanswered |
+| `decided[].kind` | ticket | `architecture` marks a decision that commits the project |
+| `verification_gaps[].leaves` | ticket | the criteria a gap leaves unproven |
 | `decisions[].because` | plan | what forced the decision |
 | `decisions[].serves` | plan | the criteria it exists for |
 
-`from` is the load-bearing one, and it is a lookup rather than a judgement:
-`spec-form` searches `ticket.md` for the fragment literally, so a paraphrase is
-a rejection and an invented quote is a rejection. A criterion that can point at
-neither a sentence the human wrote nor a decision the spec recorded is scope
-nobody asked for — and before this field there was no place where that showed.
+Provenance used to be a `from` field with a verbatim fragment of the ticket,
+looked up literally by a gate — needed because a separate station re-derived the
+criteria from a narrative. The criteria are now written *in* the ticket, with
+you, so there is nothing to trace them back to: they are the ticket.
 
 Then `aif explain <ticket>` draws it:
 
@@ -500,23 +510,22 @@ draws is unchecked. The generated file records the `sha256` of the artifacts it
 came from, so a stale drawing reads as stale rather than as wrong.
 
 Two things are printed on the **pass** path rather than rejected, for the same
-reason `plan-form` prints an unvalidated external surface: an assumption whose
-`affects` is empty (no criterion depends on it, so nothing in the cycle would
-fail if it were wrong) and a decision that serves no criterion. Forcing either
-to point somewhere would buy a plausible id in place of an honest gap.
+reason `plan-form` prints an unvalidated external surface: a question decided by
+default rather than by you, and a plan decision that serves no criterion.
+Forcing either to look settled would buy a plausible line in place of an honest
+gap.
 
-The orchestrator draws the spec at the approval gate, and the plan once
-`plan-judge` admits it — the plan being the artifact with no human gate after
-it. What that is worth in tokens is nothing; what it is worth in attention is a
-setting:
+The analyst draws the ticket when it is ready, while you are still in the room,
+and the orchestrator draws the plan once `plan-judge` admits it. What that is
+worth in tokens is nothing; what it is worth in attention is a setting:
 
 ```json
-{ "explain": { "auto": "approve" } }
+{ "explain": { "auto": "ready" } }
 ```
 
-`approve` (the default) draws at the approval gate, `always` also draws the
+`ready` (the default) draws when the ticket is ready, `always` also draws the
 plan, `never` leaves it to you. `.aif/project.json` holds what the *repository*
-does; `~/.config/aif/config.json` and `AIF_EXPLAIN=never|approve|always`
+does; `~/.config/aif/config.json` and `AIF_EXPLAIN=never|ready|always`
 override it per developer, because "I have the budget for this" is a fact about
 a person and does not belong in a shared file. None of the three can stop a
 human who types the command: a setting that overrode a direct question would be
@@ -541,7 +550,7 @@ normally land in `uncovered`, which is fine — the point is that the list is se
 not that it is empty.
 
 A fourth check is a signal rather than a rule. The plan declares `surface_map`:
-one file set per surface the spec names. Where a criterion's coverage differs
+one file set per surface the ticket names. Where a criterion's coverage differs
 from its own surface's entry, the gate **flags it and does not reject** — a
 narrower coverage is often correct — and `plan-judge` has to adjudicate each flag
 as `intended` or `drift`. Only `drift` sends the plan back. The case behind it:
@@ -564,10 +573,11 @@ the artifact instead of indistinguishable from a diligent one.
 ### The backward transition — free, no command
 
 Edit any upstream artifact and everything below it lapses on its own, because
-every artifact binds to the hash of the one above it. Change `spec.md` after
-approving, and the approval, the judge verdict, the plan, and the tests all go
-invalid. There is no "go back" — the derived state simply stops showing them as
-done.
+every artifact binds to the hash of the one above it. Change `ticket.md` and
+the plan, its verdict, and the tests all go invalid. There is no "go back" —
+the derived state simply stops showing them as done. The chain is one hop
+shorter than it was: the ticket is the top, and nothing sits between it and the
+plan to lapse with it.
 
 ### Before the first dollar
 
@@ -686,20 +696,21 @@ Almost everything here is checked by a gate that can be re-run. Three things are
 not, and saying so plainly is the point of this section — a claim of "verified"
 that quietly includes these would be worth less than no claim at all.
 
-**The approval is trusted, not verified.** `spec-approve` checks that an approval
-exists, that it names how it was given, that it carries the approver's own words,
-and that it binds to the exact spec. It cannot check that a human said them. It
-used to require `tty: true`, written only when stdin was a terminal — a real
-capability boundary, since an agent's Bash tool is not a terminal. That is gone,
-because the human now approves inside the session where no terminal exists to
-check for. What replaced it is evidence, not proof. "A person judged this
-complete" is not machine-decidable, and this is where that shows.
+**The criteria are the human's, not verified.** Everything downstream checks
+that the code matches the ticket's criteria; nothing checks that the criteria
+match the intent. That judgement is made once, in the analyst's conversation,
+with the repository in front of you and every open question shown with its
+default — and it is made there precisely because it is the one moment with
+enough context to make it. There used to be a separate approval gate later,
+where a person ratified criteria a model had derived from their narrative; that
+was a ritual at the point of least context, and it is gone. "A person judged
+this complete" is not machine-decidable, and this is where that shows.
 
 **A green suite is not correctness.** `green` proves the frozen tests pass, that
 the project's own checks pass, and that reverting the implementation makes the
 covering tests red again. It cannot prove the tests were the right tests. The
-oracle is only as good as the spec it came from, which is why the human gate sits
-at the *input*.
+oracle is only as good as the criteria it came from, which is why they are
+written with you, before anything runs.
 
 **An external dependency behind a fake is not verified by anything here.** The
 plan's `external` list makes that visible and nothing more: an entry with no
@@ -718,9 +729,9 @@ by the commit that preserves the work.
 **The plan boundary is recorded for the same reason.** `plan-form` asserts that
 every `files.create` path does not exist *yet* — a premise the implement station
 is later paid to falsify. So the plan gates run once, at plan time, and the
-recorded pass holds while the plan's bytes and its `spec_sha256` binding hold.
-Editing the spec still lapses the plan automatically; finishing the ticket no
-longer un-approves the plan that shaped it.
+recorded pass holds while the plan's bytes and its `ticket_sha256` binding
+hold. Editing the ticket still lapses the plan automatically; finishing the
+ticket no longer invalidates the plan that shaped it.
 
 ### Offline, no tokens
 
@@ -731,11 +742,12 @@ make check                  # the CLI under bash 3.2, plus the set's own asserti
 ```
 
 `scripts/demo.sh` runs every gate against known-good and known-bad artifacts,
-including the attacks: an implementation that adds itself to the plan, an
-approval that lapses when the spec changes, tests that stop depending on the
-code, a required check that fails, a freeze that does not hold the ticket's own
-oracle, and an approval that accepts a blind spot without saying so. No model is
-called.
+including the attacks: an implementation that adds itself to the plan, a ticket
+with a question still open, tests that stop depending on the code, a required
+check that fails, and a freeze that does not hold the ticket's own oracle.
+`scripts/check-cycle.sh` walks a rework over a finished round;
+`scripts/check-work.sh` drives the worker end to end through a scripted runner.
+No model is called by any of them.
 
 ## Requirements
 
@@ -763,8 +775,10 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] Eval harness + L0 smoke, with pass rates and cost tracking
 - [x] `aif init` — profile picker, non-clobbering merge, ownership manifest
 - [x] `aif uninstall` — reverse the manifest, value-guarded
-- [x] The gated cycle: spec → approve → plan → tests → code, eight gates
-- [x] `aif run` — one command, stations as subagents in one visible session
+- [x] The gated cycle: ready → plan → tests → code, six gates
+- [x] `/aif-ba` — the analyst writes the criteria with you; `aif _ready` is the one Definition of Ready
+- [x] `aif work` — one ticket, one worktree, one budget, no questions
+- [x] `aif run` — the same cycle in a visible session, stations as subagents
 - [x] Per-station metering from subagent transcripts, into a hash-chained ledger
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table

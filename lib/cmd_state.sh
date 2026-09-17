@@ -10,8 +10,8 @@
 #
 # State is derived, never stored: computed by running the installed gates against
 # the CURRENT bytes of each artifact — "passes now", not "passed once". That is
-# what makes a backward transition free. Edit spec.md and its gates stop passing,
-# the approval below it lapses on its own, and there is nothing to undo.
+# what makes a backward transition free. Edit ticket.md and the plan bound to it
+# stops passing, and everything below the plan lapses with it — nothing to undo.
 #
 # Cost: the walk stops at the first step that is not done, so the expensive gates
 # (green re-runs the suite twice) only execute once everything before them
@@ -45,8 +45,8 @@
 # For these, the RECORDED pass — bound to the bytes that were judged — is the
 # verdict, and it lapses the same way every other binding does: the pass is
 # invalid the moment its subject's hash moves, and aif_ledger_recorded_pass
-# also follows the bindings INSIDE the subject — so editing spec.md lapses the
-# recorded plan pass through the plan's own spec_sha256, without anyone
+# also follows the bindings INSIDE the subject — so editing ticket.md lapses the
+# recorded plan pass through the plan's own ticket_sha256, without anyone
 # re-running a gate. verify-red's "create paths must not exist yet" check
 # stays live at the tests boundary as the net for files created out-of-band
 # between plan and implement.
@@ -55,11 +55,14 @@
 # "passed, against inputs that have not changed since". Editing the source after
 # acceptance does not re-open the gate. Nothing cheap fixes that — the evidence
 # a revert-recheck needs is destroyed by the commit that preserves the work.
+#
+# `ready` is a GATE step, not a station: nobody is dispatched to produce the
+# ticket — the analyst wrote it with the human. The gate is the Definition of
+# Ready, and it runs live every time so a ticket edited after the analyst
+# passed it is re-judged on its current bytes, the same as everything else.
 _aif_state_steps() {
   cat <<'EOF'
-spec	station	spec-form:live
-spec-judge	station	spec-judge:live
-approve	human	spec-approve:live
+ready	gate	ready:live
 plan	station	plan-form:recorded
 plan-judge	station	plan-judge:recorded
 tests	station	verify-red:recorded
@@ -68,8 +71,8 @@ EOF
 }
 
 # _aif_state_ticket_ready <work> — true once ticket.md holds a real ticket rather
-# than the stub the scaffold writes. A cheap proxy, not a validator: the spec
-# station and its gate judge the rest.
+# than the stub the scaffold writes. A cheap proxy, not a validator: the ready
+# gate judges the rest.
 _aif_state_ticket_ready() {
   local tm="$1/ticket.md"
   [ -f "$tm" ] || return 1
@@ -161,14 +164,14 @@ EOF
 #
 # Emitted when the ticket is done, and that is the whole point of it. A blind
 # spot acknowledged at approval and never surfaced again is the same as no blind
-# spot: on the ticket that produced this, the spec said in writing that the
-# target environment was never exercised, the human approved it in a list of
+# spot: on the ticket that produced this, the record said in writing that the
+# target environment was never exercised, the human accepted it in a list of
 # eight, and no station referred to it afterwards. The pipeline had one place
 # where it acknowledged what it could not see, and that acknowledgement was
 # structurally designed to disappear.
 #
 # Three sources, because gaps arrive at three different moments:
-#   spec.md         — verification_gaps, accepted by the human at approval;
+#   ticket.md       — verification_gaps, recorded by the analyst with the human;
 #   plan.md         — external dependencies the plan could point at no check
 #                     and no criterion for. Nothing in the run validated those.
 #   tests.lock.json — tests green at freeze: on a reworked ticket an earlier
@@ -179,9 +182,9 @@ EOF
 _aif_state_checklist() {
   local work="$1" spec_gaps="[]" plan_gaps="[]" test_gaps="[]"
 
-  if [ -f "$work/spec.md" ]; then
-    spec_gaps="$(aif_meta_json "$work/spec.md" 2>/dev/null |
-      jq -c '[ .verification_gaps[]? | { source: "spec", id: .id, text: .text } ]' 2>/dev/null)"
+  if [ -f "$work/ticket.md" ]; then
+    spec_gaps="$(aif_meta_json "$work/ticket.md" 2>/dev/null |
+      jq -c '[ .verification_gaps[]? | { source: "ticket", id: .id, text: .text } ]' 2>/dev/null)"
   fi
   if [ -f "$work/plan.md" ]; then
     plan_gaps="$(aif_meta_json "$work/plan.md" 2>/dev/null |
@@ -284,6 +287,17 @@ aif_cmd_state() {
     if [ "$kind" = "human" ]; then
       next_json="$(jq -n --arg s "$step" --arg d "$detail" \
         '{ kind: "human", step: $s, detail: $d }')"
+      continue
+    fi
+
+    if [ "$kind" = "gate" ]; then
+      # The ticket is not ready. Nothing to dispatch: the whole complaint list
+      # goes out, because every line of it is a question for the analyst's
+      # conversation, and the worker reports it verbatim rather than guessing.
+      local full
+      full="$(aif_gate_run "$root" "${gatespec%%:*}" "$work" 2>&1 || true)"
+      next_json="$(jq -n --arg s "$step" --arg d "$full" \
+        '{ kind: "not-ready", step: $s, detail: $d }')"
       continue
     fi
 

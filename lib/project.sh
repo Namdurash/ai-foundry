@@ -29,21 +29,22 @@ aif_project_config() {
 # level down: a legitimate failure is not a broken one.
 AIF_PROJECT_CHECK_PHASES='["red","green"]'
 
-# What `aif explain` does when the ORCHESTRATOR calls it, as opposed to when a
-# person types it. The moments are the two places in the cycle where a drawing
-# is worth the pause, and they are named rather than numbered so a setting keeps
-# meaning something if the pipeline gains a station:
+# What `aif explain` does when a SKILL calls it, as opposed to when a person
+# types it. The moments are the places in the cycle where a drawing is worth
+# the pause, and they are named rather than numbered so a setting keeps meaning
+# something if the pipeline gains a station:
 #
-#   approve — before the human answers for the assumptions. The default.
-#   plan    — after plan-judge admits the plan, which is the only other place a
-#             human is shown something they did not ask to see.
+#   ready — when the analyst has the ticket ready and the human is still in the
+#           room to read it. The default. (`approve` is the older name for the
+#           same moment and is still accepted.)
+#   plan  — after plan-judge admits the plan.
 #
 # Off by nobody: `never` silences the automatic call, and typing the command by
 # hand still renders. A setting that overrode a person asking a direct question
 # would be a different feature and a worse one.
-AIF_EXPLAIN_DEFAULT="approve"
+AIF_EXPLAIN_DEFAULT="ready"
 
-# aif_explain_auto <root> — never | approve | always.
+# aif_explain_auto <root> — never | ready | always.
 #
 # Three layers, most specific first, and the split is not arbitrary: the project
 # file is committed and says what this REPOSITORY does, the user file is not and
@@ -54,19 +55,27 @@ aif_explain_auto() {
   local root="$1" v=""
 
   case "${AIF_EXPLAIN:-}" in
-    never | approve | always)
+    approve)
+      printf 'ready'
+      return 0
+      ;;
+    never | ready | always)
       printf '%s' "$AIF_EXPLAIN"
       return 0
       ;;
     "") ;;
-    *) aif_warn "AIF_EXPLAIN=$AIF_EXPLAIN is not never|approve|always — ignored" ;;
+    *) aif_warn "AIF_EXPLAIN=$AIF_EXPLAIN is not never|ready|always — ignored" ;;
   esac
 
   local user_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/aif/config.json"
   if [ -f "$user_cfg" ]; then
     v="$(jq -r '.explain.auto // empty' "$user_cfg" 2>/dev/null)"
     case "$v" in
-      never | approve | always)
+      approve)
+        printf 'ready'
+        return 0
+        ;;
+      never | ready | always)
         printf '%s' "$v"
         return 0
         ;;
@@ -75,7 +84,8 @@ aif_explain_auto() {
 
   v="$(jq -r '.explain.auto // empty' "$(aif_project_config "$root")" 2>/dev/null)"
   case "$v" in
-    never | approve | always) printf '%s' "$v" ;;
+    approve) printf 'ready' ;;
+    never | ready | always) printf '%s' "$v" ;;
     *) printf '%s' "$AIF_EXPLAIN_DEFAULT" ;;
   esac
 }
@@ -86,7 +96,7 @@ aif_explain_enabled() {
   setting="$(aif_explain_auto "$1")"
   case "$setting" in
     always) return 0 ;;
-    approve) [ "$2" = "approve" ] ;;
+    ready) [ "$2" = "ready" ] || [ "$2" = "approve" ] ;;
     *) return 1 ;;
   esac
 }
@@ -172,9 +182,9 @@ aif_project_validate() {
       # .explain.auto there would be read against ["never",…] and error.
       ( (.explain.auto // "") as $ea
         | if ($ea | length) > 0
-             and (["never","approve","always"] | index($ea)) == null
+             and (["never","ready","approve","always"] | index($ea)) == null
             then "explain.auto \"" + ($ea | tostring)
-                 + "\" is not one of never|approve|always"
+                 + "\" is not one of never|ready|always"
             else empty end ),
 
       (if (.limits | type) != "object" then "limits must be an object" else empty end),

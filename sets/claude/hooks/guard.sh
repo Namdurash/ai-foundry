@@ -88,7 +88,7 @@ is_test() {
 # any other.
 #
 # What it MAY write is tasks/, and that is not a loophole: everything there is
-# gated against its current bytes by spec-form, plan-form and the judges, so a
+# gated against its current bytes by ready, plan-form and the judges, so a
 # repair made with the user in front of the artifact is checked exactly as a
 # station's output would be. Refusing it would only mean refusing the repair
 # bench.
@@ -105,7 +105,7 @@ if [ -z "$station" ]; then
   case "$rel" in
     tasks/* | .aif/prices.json) exit 0 ;;
   esac
-  deny "you are the orchestrator, not a station. Code, tests, specs, plans and verdicts are written by subagents, so that a gate sees them — dispatch the station that owns this file instead. What you may write: anything under tasks/ (the ticket, and the gated artifacts when repairing one with the user) and .aif/prices.json."
+  deny "you are the orchestrator, not a station. Code, tests, plans and verdicts are written by subagents, so that a gate sees them — dispatch the station that owns this file instead. What you may write: anything under tasks/ (the ticket, and the gated artifacts when repairing one with the user) and .aif/prices.json."
 fi
 
 case "$station" in
@@ -120,7 +120,7 @@ case "$station" in
         # otherwise let an implementation hand-write itself permission for
         # anything. `aif _amend-plan` is the way in: it refuses tests and
         # pipeline paths, requires a reason, and is capped.
-        deny "the ticket's own record — plan, spec, ledger — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
+        deny "the ticket's own record — plan, ledger — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
         ;;
     esac
     ;;

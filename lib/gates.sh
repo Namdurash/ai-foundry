@@ -51,7 +51,7 @@ aif_station_gates() {
 #   freezes  — what the station's gate WROTE to record a boundary (tests.lock.json).
 #              The next station's precondition binds to that boundary, not to
 #              the scattered files that produced it.
-#   produces — the station's own artifact (spec.md, plan.md).
+#   produces — the station's own artifact (plan.md, a verdict).
 #   binds    — for a station that writes no artifact into the work dir at all.
 #              implement writes CODE, so there is nothing here to hash; but its
 #              scope verdict is relative to the plan's file manifest, so the
@@ -144,7 +144,7 @@ EOF
 #
 # A station whose tier is "risk" cannot name one agent: a subagent's model comes
 # from static frontmatter, so the two engines are two agent files and the choice
-# is made here, from the spec's risk — the human's call at spec time.
+# is made here, from the ticket's risk — the human's call, made with the analyst.
 aif_station_agent() {
   local root="$1" station="$2" work="$3"
   local meta tier risk
@@ -156,7 +156,7 @@ aif_station_agent() {
     return 0
   fi
 
-  risk="$(aif_meta_json "$work/spec.md" 2>/dev/null | jq -r '.risk // "medium"' 2>/dev/null)"
+  risk="$(aif_meta_json "$work/ticket.md" 2>/dev/null | jq -r '.risk // "medium"' 2>/dev/null)"
   [ -n "$risk" ] || risk="medium"
   case "$risk" in
     high) tier="careful" ;;

@@ -25,7 +25,7 @@ usage: aif run [<ticket> | <link> | <description>] [--profile P]
 
   Open the foundry on a ticket. The whole cycle runs in one session:
 
-    ticket (interview) -> spec -> approve -> plan -> tests -> code
+    ticket (with the analyst) -> ready -> plan -> tests -> code
 
   With a ticket id, work resumes wherever that ticket actually stands — the
   state is derived by running the gates, so it cannot be stale.

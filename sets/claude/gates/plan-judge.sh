@@ -31,7 +31,7 @@ work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: plan-judge.sh <work-dir>"
 
 plan="$work/plan.md"
-spec="$work/spec.md"
+spec="$work/ticket.md"
 verdict="$work/verdict-plan.json"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"

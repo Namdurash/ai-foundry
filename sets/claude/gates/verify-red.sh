@@ -50,21 +50,21 @@ work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: verify-red.sh <work-dir>"
 
 plan="$work/plan.md"
-spec="$work/spec.md"
+spec="$work/ticket.md"
 project="$(aif_g_project "$work")" || exit $?
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"
-[ -f "$spec" ] || aif_g_error "spec.md missing"
+[ -f "$spec" ] || aif_g_error "ticket.md missing"
 
 plan_meta="$(aif_g_meta_or_die "$plan" "plan.md")" || exit $?
-spec_meta="$(aif_g_meta_or_die "$spec" "spec.md")" || exit $?
+spec_meta="$(aif_g_meta_or_die "$spec" "ticket.md")" || exit $?
 plan_hash="$(aif_g_sha256 "$plan")"
 
-# The plan must bind to the current spec, and this gate to the current plan —
+# The plan must bind to the current ticket, and this gate to the current plan —
 # otherwise "red" is measured against a moving target.
-if [ "$(printf '%s' "$plan_meta" | jq -r '.spec_sha256 // ""')" != "$(aif_g_sha256 "$spec")" ]; then
-  aif_g_reject "plan.md is bound to a different spec — re-run the plan station"
+if [ "$(printf '%s' "$plan_meta" | jq -r '.ticket_sha256 // ""')" != "$(aif_g_sha256 "$spec")" ]; then
+  aif_g_reject "plan.md is bound to a different ticket — re-run the plan station"
 fi
 
 test_files="$(printf '%s' "$plan_meta" | jq -r '.files.tests[]? // empty')"
@@ -198,7 +198,7 @@ else
 fi
 
 # --- coverage: every criterion has a test, with its literal present ---------
-# A fully-backticked expect is the spec-form convention for a domain literal
+# A fully-backticked expect is the ready gate's convention for a domain literal
 # that collides with the vague-word list (`error` the union value). The
 # backticks are the declaration, not part of the value — strip them, so the
 # tests assert the bare literal.

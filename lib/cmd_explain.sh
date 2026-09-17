@@ -7,10 +7,10 @@
 # is the whole design: a picture of "how the agent got here" that a model draws
 # by reading the finished artifact is a plausible story about the artifact, not
 # a record of anything, and it would raise a reader confidence no gate had
-# earned. So this renders ONLY fields the stations wrote while deciding and the
-# gates check afterwards — acceptance.from, assumptions.because/instead_of/
-# affects, decisions.because/serves. It can draw nothing that was not written,
-# and nothing it draws is unchecked.
+# earned. So this renders ONLY fields the analyst and the stations wrote while
+# deciding and the gates check afterwards — the ticket's acceptance, decided and
+# verification_gaps; the plan's decisions.because/serves. It can draw nothing
+# that was not written, and nothing it draws is unchecked.
 #
 # Derived, like everything else here. explain.md is regenerated, never edited,
 # and it records the sha256 of the artifacts it was drawn from so a stale copy
@@ -24,17 +24,18 @@ _aif_explain_usage() {
   cat <<EOF
 usage: aif explain <ticket> [options]
 
-  Draws the chain behind a ticket: what in the ticket each criterion came from,
-  which assumptions it rests on, and which decisions the plan made for it.
+  Draws the chain behind a ticket: its criteria by surface, what was decided
+  with the analyst (and what fell to a default), what this cycle will not
+  establish, and which decisions the plan made for it.
 
 options:
-  --spec            only the specification
+  --ticket          only the ticket
   --plan            only the plan
   --format mermaid  write tasks/<ticket>/explain.md (default)
   --format tree     print an indented tree to stdout instead
-  --auto <moment>   called by the orchestrator at "approve" or "plan"; honours
-                    the project's explain.auto setting and does nothing when it
-                    is off. Typing the command by hand always renders.
+  --auto <moment>   called by a skill at "ready" or "plan"; honours the
+                    project's explain.auto setting and does nothing when it is
+                    off. Typing the command by hand always renders.
 EOF
 }
 
@@ -54,40 +55,39 @@ _AIF_EXPLAIN_JQ_PRELUDE='
   def nid: tostring | gsub("[^A-Za-z0-9_]"; "_");
 '
 
-# _aif_explain_spec <spec.md> <format> — the specification chain.
-_aif_explain_spec() {
-  local spec="$1" format="$2" meta
-  meta="$(aif_meta_json "$spec")"
+# _aif_explain_ticket <ticket.md> <format> — the ticket chain.
+#
+# Criteria grouped by the surface they are observed on; then what was decided
+# with the analyst — a decision the human did not make is drawn as such, because
+# "decided by default" is the one thing a reviewer must not be unaware of; then
+# what this cycle will not establish, and which criteria that leaves unproven.
+_aif_explain_ticket() {
+  local ticket="$1" format="$2" meta
+  meta="$(aif_meta_json "$ticket")"
 
   if [ "$(printf '%s' "$meta" | jq -r '.schema // 0')" != "2" ]; then
-    printf 'spec.md is schema %s — it predates the provenance fields, so there is no chain to draw.\n' \
+    printf 'ticket.md is schema %s — it carries no criteria of its own (they lived in spec.md), so there is no chain to draw.\n' \
       "$(printf '%s' "$meta" | jq -r '.schema // "?"')"
-    printf 'Re-run the spec station to get one.\n'
+    printf 'Rework it with /aif-ba to get one.\n'
     return 0
   fi
 
   printf '%s' "$meta" | jq -r --arg format "$format" "$_AIF_EXPLAIN_JQ_PRELUDE"'
     . as $m
-    | ([ .acceptance[]? | select(((.from // "") | test("^AS-[0-9]{3}$")) | not)
-         | (.from // "") | select(length > 0) ] | unique) as $quotes
-    | ($quotes | to_entries | map({ key: .value, value: ("T" + (.key | tostring)) })
-       | from_entries) as $qid
+    | ($m.surfaces // []) as $surfaces
     | if $format == "tree" then
-        ( "specification"
-        , ( $m.acceptance[]?
-            | . as $ac
-            | "  " + $ac.id + " — " + ($ac.then // "") + " → " + ($ac.expect | tostring)
-            , ( if (($ac.from // "") | test("^AS-[0-9]{3}$"))
-                  then "    rests on " + $ac.from
-                  else "    from the ticket: \"" + ($ac.from // "") + "\"" end ) )
-        , ( if (($m.assumptions // []) | length) > 0 then "  assumptions" else empty end )
-        , ( $m.assumptions[]?
-            | "    " + .id + " — " + .text
-            , "      because       " + (.because // "")
-            , "      instead of    " + (.instead_of // "")
-            , "      carries       " + (if ((.affects // []) | length) > 0
-                                        then ((.affects // []) | join(", "))
-                                        else "nothing — no criterion depends on it" end) )
+        ( "ticket"
+        , ( $surfaces[]?
+            | . as $s
+            | "  " + $s
+            , ( $m.acceptance[]? | select(.surface == $s)
+                | "    " + .id + " — given " + (.given // "") + ", when " + (.when // "")
+                  + ", then " + (.then // "") + " → " + (.expect | tostring) ) )
+        , ( if (($m.decided // []) | length) > 0 then "  decided with the analyst" else empty end )
+        , ( $m.decided[]?
+            | "    " + (if .by == "default" then "BY DEFAULT  " else "human       " end)
+              + .question + " → " + .answer
+              + (if (.kind // "") == "architecture" then "  (architecture)" else "" end) )
         , ( if (($m.verification_gaps // []) | length) > 0 then "  not established by this cycle" else empty end )
         , ( $m.verification_gaps[]?
             | "    " + .id + " — " + .text
@@ -97,42 +97,30 @@ _aif_explain_spec() {
       else
         ( "```mermaid"
         , "flowchart LR"
-        , ( $quotes[]? | "  " + $qid[.] + "(\"" + (. | lbl(90)) + "\")" )
+        , ( $surfaces[]? | "  " + (. | nid) + "([\"" + (. | lbl(40)) + "\"])" )
         , ( $m.acceptance[]?
             | "  " + (.id | nid) + "[\"" + (.id | lbl(12)) + " — "
               + ((.then // "") | lbl(60)) + " → " + ((.expect | tostring) | lbl(20)) + "\"]" )
-        , ( $m.assumptions[]?
-            | "  " + (.id | nid) + "{{\"" + (.id | lbl(12)) + " — " + (.text | lbl(70)) + "\"}}" )
+        , ( $m.acceptance[]?
+            | "  " + ((.surface // "") | nid) + " --> " + (.id | nid) )
+        , ( ($m.decided // []) | to_entries[]
+            | "  D" + (.key | tostring) + "{{\"" + (.value.question | lbl(50)) + " → "
+              + (.value.answer | lbl(40))
+              + (if .value.by == "default" then " (BY DEFAULT)" else "" end) + "\"}}" )
         , ( $m.verification_gaps[]?
             | "  " + (.id | nid) + "[/\"" + (.id | lbl(12)) + " — " + (.text | lbl(70)) + "\"/]" )
-        , ( $m.acceptance[]?
-            | select((((.from // "") | test("^AS-[0-9]{3}$")) | not) and ((.from // "") | length) > 0)
-            | "  " + $qid[.from] + " --> " + (.id | nid) )
-        , ( $m.acceptance[]?
-            | select(((.from // "") | test("^AS-[0-9]{3}$")))
-            | "  " + (.from | nid) + " -->|\"exists only because of this\"| " + (.id | nid) )
-        , ( $m.assumptions[]?
-            | . as $as | ($as.affects // [])[]?
-            | . as $acid
-            | select([ $m.acceptance[]? | select(.id == $acid) | (.from // "") ]
-                     | index($as.id) | not)
-            | "  " + ($as.id | nid) + " -.->|\"rests on\"| " + ($acid | nid) )
         , ( $m.verification_gaps[]?
             | . as $vg | ($vg.leaves // [])[]?
             | "  " + ($vg.id | nid) + " -.->|\"leaves unproven\"| " + (. | nid) )
         , "```"
         , ""
-        , "### Assumptions — the decisions the ticket did not make"
+        , "### Decided with the analyst"
         , ""
-        , ( $m.assumptions[]?
-            | "**" + .id + " — " + .text + "**"
-            , ""
-            , "- the ticket left it open: " + (.because // "—")
-            , "- instead of: " + (.instead_of // "—")
-            , "- carries: " + (if ((.affects // []) | length) > 0
-                               then ((.affects // []) | join(", "))
-                               else "**nothing — no criterion depends on it, so nothing would fail if it were wrong**" end)
-            , "" )
+        , ( ($m.decided // []) | if length == 0 then "- nothing was left open" else
+            .[] | "- " + (if .by == "default" then "**by default, not by the human:** " else "" end)
+              + .question + " → " + .answer
+              + (if (.kind // "") == "architecture" then " _(architecture)_" else "" end) end )
+        , ""
         , ( if (($m.verification_gaps // []) | length) > 0
             then ( "### What this cycle will not establish", "" ) else empty end )
         , ( $m.verification_gaps[]?
@@ -171,7 +159,7 @@ _aif_explain_plan() {
             , ( if ((.rejected // "") | length) > 0 then "      not       " + .rejected else empty end )
             , "      serves    " + (if ((.serves // []) | length) > 0
                                     then ((.serves // []) | join(", "))
-                                    else "nothing the spec asked for" end) )
+                                    else "nothing the ticket asked for" end) )
         , ( if ((.ac_coverage // {}) | length) > 0 then "  criteria, and where they land" else empty end )
         , ( (.ac_coverage // {}) | to_entries[]?
             | "    " + .key + " → " + (.value | join(", ")) )
@@ -208,7 +196,7 @@ _aif_explain_plan() {
             , ( if ((.rejected // "") | length) > 0 then "- rather than: " + .rejected else empty end )
             , "- serves: " + (if ((.serves // []) | length) > 0
                               then ((.serves // []) | join(", "))
-                              else "**nothing the spec asked for**" end)
+                              else "**nothing the ticket asked for**" end)
             , "" )
         , ( if (($m.external // []) | length) > 0
             then ( "### External surface", "" ) else empty end )
@@ -223,7 +211,7 @@ _aif_explain_plan() {
 }
 
 aif_cmd_explain() {
-  local ticket="" format="mermaid" want_spec=0 want_plan=0 moment=""
+  local ticket="" format="mermaid" want_ticket=0 want_plan=0 moment=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -231,7 +219,7 @@ aif_cmd_explain() {
         _aif_explain_usage
         return 0
         ;;
-      --spec) want_spec=1 ;;
+      --ticket) want_ticket=1 ;;
       --plan) want_plan=1 ;;
       --format)
         shift
@@ -271,21 +259,21 @@ aif_cmd_explain() {
   fi
 
   # Neither flag means both, as far as the artifacts exist.
-  if [ "$want_spec" -eq 0 ] && [ "$want_plan" -eq 0 ]; then
-    want_spec=1
+  if [ "$want_ticket" -eq 0 ] && [ "$want_plan" -eq 0 ]; then
+    want_ticket=1
     want_plan=1
   fi
 
-  local spec="$work/spec.md" plan="$work/plan.md"
-  [ "$want_spec" -eq 1 ] && [ ! -f "$spec" ] && want_spec=0
+  local tm="$work/ticket.md" plan="$work/plan.md"
+  [ "$want_ticket" -eq 1 ] && [ ! -f "$tm" ] && want_ticket=0
   [ "$want_plan" -eq 1 ] && [ ! -f "$plan" ] && want_plan=0
 
-  if [ "$want_spec" -eq 0 ] && [ "$want_plan" -eq 0 ]; then
-    aif_die "nothing to draw for $ticket — no spec.md, no plan.md"
+  if [ "$want_ticket" -eq 0 ] && [ "$want_plan" -eq 0 ]; then
+    aif_die "nothing to draw for $ticket — no ticket.md, no plan.md"
   fi
 
   if [ "$format" = "tree" ]; then
-    [ "$want_spec" -eq 1 ] && _aif_explain_spec "$spec" tree
+    [ "$want_ticket" -eq 1 ] && _aif_explain_ticket "$tm" tree
     [ "$want_plan" -eq 1 ] && _aif_explain_plan "$plan" tree
     return 0
   fi
@@ -300,9 +288,9 @@ aif_cmd_explain() {
     printf 'while it decided and is checked by that station gate — nothing here is\n'
     printf 'narrated after the fact. Regenerate it; do not edit it.\n\n'
 
-    if [ "$want_spec" -eq 1 ]; then
-      printf -- '## Specification\n\n'
-      _aif_explain_spec "$spec" mermaid
+    if [ "$want_ticket" -eq 1 ]; then
+      printf -- '## Ticket\n\n'
+      _aif_explain_ticket "$tm" mermaid
     fi
     if [ "$want_plan" -eq 1 ]; then
       printf -- '## Plan\n\n'
@@ -314,7 +302,7 @@ aif_cmd_explain() {
     # can tell.
     printf -- '---\n\n'
     printf 'Drawn from:\n\n'
-    [ "$want_spec" -eq 1 ] && printf -- '- `spec.md` sha256 `%s`\n' "$(aif_sha256 "$spec")"
+    [ "$want_ticket" -eq 1 ] && printf -- '- `ticket.md` sha256 `%s`\n' "$(aif_sha256 "$tm")"
     [ "$want_plan" -eq 1 ] && printf -- '- `plan.md` sha256 `%s`\n' "$(aif_sha256 "$plan")"
     printf '\nIf those no longer match the files, this drawing is stale — run `aif explain %s` again.\n' "$ticket"
   } >"$out.tmp" && mv "$out.tmp" "$out"

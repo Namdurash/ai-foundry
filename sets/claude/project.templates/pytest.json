@@ -12,7 +12,7 @@
 
   "checks": [],
 
-  "explain": { "auto": "approve" },
+  "explain": { "auto": "ready" },
 
   "failure_classes": {
     "legitimate": [
@@ -33,7 +33,7 @@
   },
 
   "limits": {
-    "spec_ac_max": 15,
+    "ticket_ac_max": 15,
     "plan_files_max": 12,
     "diff_lines_max": 400,
     "attempts_max": 3,

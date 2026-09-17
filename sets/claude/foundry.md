@@ -9,6 +9,7 @@ when invoked. Nothing else here is always-on, deliberately: every line in this
 file costs context on every single turn, in every session, forever. Content that
 earns its place goes in a skill.
 
-<!-- The real AI SDLC content lands here once its shape is decided. Until then
-     this file exists to prove the pipeline end to end: aif init writes it, and
-     CLAUDE.md imports it with a single line. -->
+Two halves, one boundary: `/aif-ba` writes a ticket's GIVEN/WHEN/THEN criteria
+*with* the human and ends with `aif _ready`; `aif work <ID>` builds it headless on
+its own branch and never asks anyone anything. A ticket that is not ready comes
+back with the gate's questions, not a guess.

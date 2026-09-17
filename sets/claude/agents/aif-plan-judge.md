@@ -50,7 +50,7 @@ you will notice them.
 4. If the `plan-form` gate flagged **surface drift**, adjudicate each flag. The
    flag says: this criterion covers a different file set from the one its own
    surface declares in `surface_map`. Read the criterion in
-   `tasks/<TICKET>/spec.md`, read the surface's file set, and decide which of
+   `tasks/<TICKET>/ticket.md`, read the surface's file set, and decide which of
    two things is true:
    - `intended` — the criterion really is about that narrower slice, and the
      files it does not cover have nothing to do with what it asserts;

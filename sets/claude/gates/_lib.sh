@@ -115,7 +115,7 @@ aif_g_meta_or_die() {
   printf '%s' "$meta"
 }
 
-# aif_g_surface_drift <plan-meta> <spec-meta> — echo "AC<TAB>surface<TAB>detail"
+# aif_g_surface_drift <plan-meta> <ticket-meta> — echo "AC<TAB>surface<TAB>detail"
 # for every criterion whose file coverage disagrees with the file set its own
 # surface claims.
 #

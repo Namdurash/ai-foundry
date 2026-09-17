@@ -37,19 +37,6 @@ _aif_drop_if_empty() {
   fi
 }
 
-# Remove directories left empty by our own removals, walking up to the project
-# root. rmdir refuses to touch a non-empty directory, which is exactly the guard
-# we want: the moment we hit a directory holding anything else, we stop.
-_aif_prune_empty() {
-  local root="$1" rel="$2"
-  local dir
-  dir="$(dirname "$root/$rel")"
-  while [ "$dir" != "$root" ] && [ "$dir" != "/" ]; do
-    rmdir "$dir" 2>/dev/null || break
-    dir="$(dirname "$dir")"
-  done
-}
-
 aif_cmd_uninstall() {
   AIF_DRY_RUN=0
   AIF_FORCE=0
@@ -106,7 +93,7 @@ aif_cmd_uninstall() {
     printf '  %sremove%s    %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$rel"
     if [ "$AIF_DRY_RUN" -eq 0 ]; then
       rm -f "$root/$rel"
-      _aif_prune_empty "$root" "$rel"
+      aif_prune_empty_dirs "$root" "$rel"
     fi
   done <<EOF
 $(jq -r '.files[]? | [.path, .sha256] | @tsv' "$manifest")
@@ -146,7 +133,7 @@ EOF
             jq -e '. == {}' "$root/$rel" >/dev/null 2>&1; then
             rm -f "$root/$rel"
             _aif_drop_if_empty "$root/$rel"
-            _aif_prune_empty "$root" "$rel"
+            aif_prune_empty_dirs "$root" "$rel"
           fi
         fi
         ;;
@@ -162,7 +149,7 @@ EOF
 
   if [ "$AIF_DRY_RUN" -eq 0 ]; then
     rm -f "$manifest"
-    _aif_prune_empty "$root" ".aif/manifest.json"
+    aif_prune_empty_dirs "$root" ".aif/manifest.json"
   fi
 
   printf '\n  %d removed, %d missing already' "$removed" "$missing"

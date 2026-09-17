@@ -58,6 +58,16 @@ So a team shares one foundry while one developer runs it on Opus and another on
 GLM. Whether that actually holds is an empirical claim — which is what the
 harness is for.
 
+**Upgrading is one command.** `aif init` again: it updates what the set still
+ships and **retires** what it no longer does — the old gates, skills and slash
+commands of a previous version — value-guarded, so a file you have edited is
+kept, named, and still tracked (so `--force` can take it later). Without that
+an upgrade leaves the old files on disk *and* drops them from the manifest, so
+`aif uninstall` could never remove them: measured on a real 0.4.2 → 0.5.0
+upgrade as eleven orphans, three of them slash commands still pointing at a
+pipeline that had been deleted. `.aif/project.json` is yours and is never
+touched.
+
 **`aif init` never clobbers.** The manifest records the digest of every file it
 writes, so a re-run can tell "we wrote this and nobody touched it" from "you
 edited it" from "this was here before us". The first is overwritten silently;

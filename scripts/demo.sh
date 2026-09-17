@@ -72,6 +72,28 @@ check "the ignore block is intact" \
   "$(grep -c '^\.aif/\(profile\.local\|tmp/\|state/\|worktrees/\|board/\)$' .gitignore)" "5"
 check "no scratch file left behind" "$(ls -a | grep -c '^\.aif-tmp-')" "0"
 
+# A set that RETIRES a file has to take it back, or the file is orphaned twice
+# over: left on disk, and dropped from the manifest so uninstall can never
+# remove it either. Measured on a real 0.4.2 → 0.5.0 upgrade before this
+# existed: eleven orphans, three of them slash commands still pointing at a
+# pipeline that had been deleted. Faked here by planting a file the set does
+# not ship and telling the manifest we wrote it.
+note "an upgrade retires what the set no longer ships — and keeps what you edited:"
+printf 'stale\n' > .aif/gates/gone-gate.sh
+printf 'edited by me\n' > .claude/commands/gone-cmd.md
+tmp="$(mktemp)"; jq --arg a "$(shasum -a 256 .aif/gates/gone-gate.sh | cut -d' ' -f1)" \
+  '.files += [ { path: ".aif/gates/gone-gate.sh", sha256: $a },
+               { path: ".claude/commands/gone-cmd.md", sha256: "not-what-is-there" } ]' \
+  .aif/manifest.json > "$tmp" && mv "$tmp" .aif/manifest.json
+"$AIF" init anthropic >/dev/null 2>&1
+check "unchanged one is retired" "$(test -e .aif/gates/gone-gate.sh && echo present || echo gone)" "gone"
+check "edited one is kept" "$(test -e .claude/commands/gone-cmd.md && echo present || echo gone)" "present"
+check "and still tracked, so --force can take it" \
+  "$(jq -r '[.files[] | select(.path == ".claude/commands/gone-cmd.md")] | length' .aif/manifest.json)" "1"
+"$AIF" init anthropic --force >/dev/null 2>&1
+check "--force retires the edited one" \
+  "$(test -e .claude/commands/gone-cmd.md && echo present || echo gone)" "gone"
+
 # --force is how a project takes an edited file back, and it promises a backup of
 # what it overwrites. The backup was keyed on the BASENAME, so the set's three
 # SKILL.md files (one per skill directory) all wrote the same

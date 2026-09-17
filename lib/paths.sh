@@ -140,6 +140,22 @@ aif_require_project() {
   printf '%s' "$root"
 }
 
+# aif_prune_empty_dirs <root> <relpath> — remove directories left empty by our
+# own removal, walking up to the project root.
+#
+# rmdir refuses a non-empty directory, which is exactly the guard wanted: the
+# moment we reach a directory holding anything else, we stop. Shared by init
+# (retiring a file the set no longer ships) and uninstall (removing them all),
+# because two copies of this would eventually disagree about where to stop.
+aif_prune_empty_dirs() {
+  local root="$1" rel="$2" dir
+  dir="$(dirname "$root/$rel")"
+  while [ "$dir" != "$root" ] && [ "$dir" != "/" ]; do
+    rmdir "$dir" 2>/dev/null || break
+    dir="$(dirname "$dir")"
+  done
+}
+
 # aif_sha256 <file> — hex digest, empty if no digest tool is available.
 # macOS ships shasum; most Linux images ship sha256sum; some have both.
 aif_sha256() {

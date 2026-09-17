@@ -265,6 +265,48 @@ aif_cmd_init() {
 $(_aif_set_files "$set_dir")
 EOF
 
+  # Retire what a PREVIOUS install of ours put here and this set no longer
+  # ships. Without this an upgrade leaves the old files on disk AND drops them
+  # from the new manifest, so `aif uninstall` can never remove them either —
+  # they are orphaned permanently. Measured on a 0.4.2 → 0.5.0 upgrade: eleven
+  # of them, including three slash commands still pointing at a pipeline that
+  # no longer exists. A stale command a user can still type is worse litter
+  # than a stale file nobody reads.
+  #
+  # Value-guarded exactly as uninstall is: a file whose bytes still match what
+  # we recorded is ours to remove; one the user has edited since is theirs now,
+  # and it is kept, named, and KEPT IN THE MANIFEST — dropping it there would
+  # forfeit the right to remove it later, so `--force` on a subsequent run
+  # would find nothing to take.
+  local retired=0 kept_edited=0 prev_path prev_sha
+  while IFS="$(printf '\t')" read -r prev_path prev_sha; do
+    [ -n "$prev_path" ] || continue
+    # Ours but generated rather than shipped: it is appended to the manifest
+    # below, after this pass, so it is legitimately absent from the list here.
+    [ "$prev_path" = "$AIF_PROFILE_STATE" ] && continue
+    # Still shipped by this set? Then the install loop above dealt with it.
+    cut -f1 "$files_tsv" 2>/dev/null | grep -qxF "$prev_path" && continue
+    [ -f "$root/$prev_path" ] || continue
+
+    if [ "$(aif_sha256 "$root/$prev_path")" != "$prev_sha" ] && [ "$AIF_FORCE" -eq 0 ]; then
+      kept_edited=$((kept_edited + 1))
+      printf '  %skept%s      %s\n' "$AIF_C_YELLOW" "$AIF_C_RESET" "$prev_path"
+      printf '            %sthis set no longer ships it, and you have edited it — yours now (--force to remove)%s\n' \
+        "$AIF_C_DIM" "$AIF_C_RESET"
+      printf '%s\t%s\n' "$prev_path" "$prev_sha" >>"$files_tsv"
+      continue
+    fi
+
+    retired=$((retired + 1))
+    printf '  %sretire%s    %s\n' "$AIF_C_YELLOW" "$AIF_C_RESET" "$prev_path"
+    if [ "$AIF_DRY_RUN" -eq 0 ]; then
+      rm -f "$root/$prev_path"
+      aif_prune_empty_dirs "$root" "$prev_path"
+    fi
+  done <<EOF
+$(aif_manifest_exists "$root" && jq -r '.files[]? | [.path, .sha256] | @tsv' "$(aif_manifest_path "$root")" 2>/dev/null)
+EOF
+
   # Hooks are the only installed files whose EXEC BIT is load-bearing. The runner
   # execs them directly (settings.json registers them as `type: "command"`),
   # unlike gates, which aif invokes as `/bin/bash <path>` and which therefore work
@@ -392,6 +434,12 @@ EOF
   rm -f "$files_tsv" "$edits_tsv"
 
   printf '\n  %d created, %d updated, %d unchanged' "$created" "$updated" "$unchanged"
+  if [ "$retired" -gt 0 ]; then
+    printf ', %s%d retired%s' "$AIF_C_YELLOW" "$retired" "$AIF_C_RESET"
+  fi
+  if [ "$kept_edited" -gt 0 ]; then
+    printf ', %s%d kept%s' "$AIF_C_YELLOW" "$kept_edited" "$AIF_C_RESET"
+  fi
   if [ "$conflicts" -gt 0 ]; then
     printf ', %s%d conflicts%s' "$AIF_C_RED" "$conflicts" "$AIF_C_RESET"
   fi

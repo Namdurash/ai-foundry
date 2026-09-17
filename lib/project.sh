@@ -187,6 +187,27 @@ aif_project_validate() {
                  + "\" is not one of never|ready|always"
             else empty end ),
 
+      # board — optional; absent means the local board. Present, it must be one
+      # of the two backends, and trello must say which board, which lists, and
+      # the NAMES of the secrets (never their values — those live in the
+      # keychain, see lib/secret.sh). The lists may still be incomplete right
+      # after `aif board init`; `aif board check` is what says whether every
+      # column has one.
+      (if (.board // {}) | type != "object" then "board must be an object" else empty end),
+      ( (.board // {}) as $b
+        | if ($b | type) != "object" or ($b | length) == 0 then empty
+          elif (["local","trello"] | index($b.kind // "")) == null
+            then "board.kind \"" + (($b.kind // "") | tostring) + "\" is not local or trello"
+          elif $b.kind == "trello" then
+            ( (if (($b.board_id // "") | length) == 0
+                then "board.board_id is required for trello (aif board init trello --board <id or url>)" else empty end),
+              (if (($b.secret // "") | length) == 0
+                then "board.secret must NAME the token secret, e.g. TRELLO_TOKEN" else empty end),
+              (if (($b.key_secret // "") | length) == 0
+                then "board.key_secret must NAME the API key secret, e.g. TRELLO_KEY" else empty end),
+              (if (($b.lists // {}) | type) != "object" then "board.lists must be an object" else empty end) )
+          else empty end ),
+
       (if (.limits | type) != "object" then "limits must be an object" else empty end),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),
       (if (.tiers.routine // "") == "" then "tiers.routine is required" else empty end),

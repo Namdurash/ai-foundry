@@ -201,22 +201,161 @@ aif_doctor_probe() {
   return 0
 }
 
+# _aif_doctor_caps <root|""> <probe 0|1> — every capability, probed, as JSON:
+#   { "<name>": { "ok": true|false|null, "detail": "…" } }
+#
+# ok is null where the answer needs a side effect nobody asked for: the test
+# toolchain is only known once the suite has been run, which is what --probe
+# is. A role that needs an unknown capability reports as unknown, never as
+# ready — "not checked" and "checked and fine" are different answers.
+#
+# `board` is the probe that matters most and the one a file check cannot do:
+# it is lib/board.sh's aif_board_check — a token that resolves, one real call
+# that succeeds, six columns that exist. The human cannot know which of those
+# is missing on their machine; this is the thing that tells them.
+_aif_doctor_caps() {
+  local root="$1" probe="$2"
+  local c_ok c_d g_ok g_d t_ok t_d b_ok b_d p_ok p_d out
+
+  if aif_have claude; then
+    c_ok=true
+    c_d="$(aif_runner_version claude)"
+  else
+    c_ok=false
+    c_d="claude is not installed — brew install --cask claude-code"
+  fi
+
+  if ! aif_have git; then
+    g_ok=false
+    g_d="git is not installed"
+  elif [ -n "$root" ]; then
+    if git -C "$root" worktree list >/dev/null 2>&1; then
+      g_ok=true
+      g_d="$(git --version | head -1)"
+    else
+      g_ok=false
+      g_d="git worktree does not work here — git 2.5 or newer is needed"
+    fi
+  else
+    g_ok=true
+    g_d="$(git --version | head -1) (no project to check a worktree in)"
+  fi
+
+  if [ -z "$root" ]; then
+    t_ok=false
+    t_d="not in a project"
+  elif [ "$probe" -eq 1 ]; then
+    if out="$(aif_doctor_probe "$root" 2>&1)"; then
+      t_ok=true
+      t_d="the test command runs and writes a parseable report"
+    else
+      t_ok=false
+      t_d="$(printf '%s' "$out" | grep -E '✗' | head -1 | sed 's/^[^a-zA-Z]*//; s/  */ /g')"
+      [ -n "$t_d" ] || t_d="the test toolchain cannot produce a verdict — aif doctor --probe"
+    fi
+  else
+    t_ok=null
+    t_d="not probed — aif doctor --probe runs the test command once"
+  fi
+
+  if [ -z "$root" ] || [ ! -f "$(aif_project_config "$root")" ]; then
+    b_ok=false
+    b_d="no .aif/project.json here"
+  elif out="$(aif_board_check "$root" 2>&1)"; then
+    b_ok=true
+    b_d="$(printf '%s' "$out" | head -1 | sed 's/^board: //')"
+  else
+    b_ok=false
+    b_d="$(printf '%s' "$out" | head -1 | sed 's/^board: //')"
+  fi
+
+  if aif_have python3; then
+    p_ok=true
+    p_d="$(python3 --version 2>&1 | head -1)"
+  else
+    p_ok=false
+    p_d="python3 is not installed — verify-red and green degrade to coarse mode"
+  fi
+
+  jq -n --argjson c "$c_ok" --arg cd "$c_d" --argjson g "$g_ok" --arg gd "$g_d" \
+    --argjson t "$t_ok" --arg td "$t_d" --argjson b "$b_ok" --arg bd "$b_d" \
+    --argjson p "$p_ok" --arg pd "$p_d" '
+    { "claude":         { ok: $c, detail: $cd },
+      "git-worktree":   { ok: $g, detail: $gd },
+      "test-toolchain": { ok: $t, detail: $td },
+      "board":          { ok: $b, detail: $bd },
+      "python3":        { ok: $p, detail: $pd } }'
+}
+
+# _aif_doctor_roles <root|""> <caps-json> — per role: ready, and what is
+# missing, as a JSON array. The roles come from lib/roles.sh (the worker) and
+# from every installed skill's frontmatter.
+_aif_doctor_roles() {
+  local root="$1" caps="$2" role req rows="" tab
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r role req; do
+    [ -n "$role" ] || continue
+    rows="$rows$(jq -n --arg r "$role" --arg req "$req" --argjson caps "$caps" '
+      ($req | split(" ") | map(select(length > 0))) as $needs
+      | [ $needs[] | . as $n
+          | ($caps[$n] // { ok: false, detail: "unknown capability — no probe by that name" }) as $c
+          | { cap: $n, ok: $c.ok, detail: $c.detail } ] as $checked
+      | { role: $r,
+          requires: $needs,
+          ready: (if any($checked[]; .ok == false) then false
+                  elif any($checked[]; .ok == null) then null
+                  else true end),
+          missing: [ $checked[] | select(.ok == false) | .cap + ": " + .detail ],
+          unknown: [ $checked[] | select(.ok == null) | .cap + ": " + .detail ] }')
+"
+  done <<EOF
+$(if [ -n "$root" ]; then aif_roles_all "$root"; else aif_roles_builtin; fi)
+EOF
+  printf '%s' "$rows" | jq -s '.'
+}
+
+_aif_doctor_render_roles() {
+  printf '\n%sRoles%s  %swhich of the foundry'"'"'s roles can work on this machine%s\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$AIF_C_RESET"
+  printf '%s' "$1" | jq -r '
+    .[] | (if .ready == true then "  ✓ " elif .ready == false then "  ✗ " else "  ? " end)
+        + (.role + "          ")[0:10]
+        + (if .ready == true then "ready"
+           elif .ready == false then (.missing | join("; "))
+           else (.unknown | join("; ")) end)'
+}
+
 aif_doctor() {
-  local probe=0
+  local probe=0 json=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --probe) probe=1 ;;
+      --json) json=1 ;;
       -h | --help)
-        printf 'usage: aif doctor [--probe]\n\n'
+        printf 'usage: aif doctor [--probe] [--json]\n\n'
         printf '  --probe  also RUN the project test command and check it emits a\n'
         printf '           parseable report. Has a side effect, hence opt-in here —\n'
-        printf '           the run command does it for you before spending anything.\n'
+        printf '           the work command does it for you before spending anything.\n'
+        printf '  --json   the same facts as data: capabilities, and per role whether it\n'
+        printf '           is ready here and what is missing. What /aif-setup reads.\n'
         return 0
         ;;
       *) aif_die "unknown option: $1" ;;
     esac
     shift
   done
+
+  local root caps roles
+  root="$(aif_project_root 2>/dev/null)" || root=""
+  [ -n "$root" ] && [ -d "$root/.aif" ] || root=""
+
+  if [ "$json" -eq 1 ]; then
+    caps="$(_aif_doctor_caps "$root" "$probe")"
+    roles="$(_aif_doctor_roles "$root" "$caps")"
+    jq -n --arg v "$AIF_VERSION" --arg root "$root" --argjson caps "$caps" --argjson roles "$roles" \
+      '{ aif: $v, project: (if $root == "" then null else $root end), capabilities: $caps, roles: $roles }'
+    return 0
+  fi
 
   printf '%saif %s%s\n\n' "$AIF_C_BOLD" "$AIF_VERSION" "$AIF_C_RESET"
 
@@ -226,11 +365,22 @@ aif_doctor() {
 
   local probe_rc=0
   if [ "$probe" -eq 1 ]; then
-    local root
-    root="$(aif_project_root 2>/dev/null)" || root=""
     if [ -n "$root" ]; then
       aif_doctor_probe "$root" || probe_rc=$?
     fi
+  fi
+
+  # Roles last, because they are the summary of everything above put the way
+  # a person asks the question: can I run the analyst here, the worker, the
+  # project manager — and if not, what exactly is missing.
+  if [ -n "$root" ]; then
+    # The probe already ran above when asked; do not run the suite twice.
+    caps="$(_aif_doctor_caps "$root" 0)"
+    if [ "$probe" -eq 1 ]; then
+      caps="$(printf '%s' "$caps" | jq --argjson ok "$([ "$probe_rc" -eq 0 ] && printf true || printf false)" \
+        '."test-toolchain" = { ok: $ok, detail: (if $ok then "the test command runs and writes a parseable report" else "the test toolchain cannot produce a verdict — see above" end) }')"
+    fi
+    _aif_doctor_render_roles "$(_aif_doctor_roles "$root" "$caps")"
   fi
 
   printf '\n'

@@ -99,6 +99,30 @@ aif_project_root() {
   return 1
 }
 
+# aif_main_root <root> — the main checkout's root when <root> is a git
+# worktree; <root> itself otherwise.
+#
+# The local board lives here and nowhere else: a move made from inside the
+# worktree `aif work` runs in has to land on the board the developer is
+# looking at, not on a copy that lives and dies with the branch. The git
+# common dir is the one thing every worktree of a repository shares.
+aif_main_root() {
+  local common
+  common="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || {
+    printf '%s' "$1"
+    return 0
+  }
+  case "$common" in
+    /*) ;;
+    *) common="$1/$common" ;;
+  esac
+  common="$(cd "$common" 2>/dev/null && pwd -P)" || {
+    printf '%s' "$1"
+    return 0
+  }
+  dirname "$common" | tr -d '\n'
+}
+
 aif_require_project() {
   local root
   root="$(aif_project_root)" || aif_die "not a git repository — run 'git init' first"

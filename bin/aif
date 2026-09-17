@@ -48,14 +48,16 @@ ${AIF_C_BOLD}aif ${AIF_VERSION}${AIF_C_RESET} — AI Foundry
 usage: aif <command> [options]
 
 commands:
-  work          Build a ticket headless on its own branch — no questions asked
-  run           Open the foundry on a ticket, a board link, or a description
+  work          Build the next Ready ticket (or a named one) headless — no questions asked
+  board         The board: next-ready, move, comment, create, status, check, init
+  secret        Store a token where no model sees it (set | check | rm | list)
+  run           Open the foundry on a ticket in a session you can watch
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
-  explain       Draw how a ticket got here — provenance, assumptions, decisions
+  explain       Draw how a ticket got here — criteria, decisions, gaps
   project       Set up or validate .aif/project.json (init | check)
-  doctor        Report what is installed and what aif can drive
+  doctor        What is installed, and which roles are ready on this machine
   profiles      List the available (set, runner, model) profiles
   test          Run the evals against a profile and report a pass rate
   version       Print the version
@@ -121,9 +123,31 @@ main() {
       . "$AIF_ROOT/lib/cmd_gate.sh"
       # shellcheck source=lib/cmd_meter.sh
       . "$AIF_ROOT/lib/cmd_meter.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
       # shellcheck source=lib/cmd_work.sh
       . "$AIF_ROOT/lib/cmd_work.sh"
       aif_cmd_work ${1+"$@"}
+      ;;
+    board)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/cmd_board.sh
+      . "$AIF_ROOT/lib/cmd_board.sh"
+      aif_cmd_board ${1+"$@"}
+      ;;
+    secret)
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/cmd_secret.sh
+      . "$AIF_ROOT/lib/cmd_secret.sh"
+      aif_cmd_secret ${1+"$@"}
       ;;
     cost)
       # shellcheck source=lib/ledger.sh
@@ -201,6 +225,14 @@ main() {
       aif_cmd_amend_plan ${1+"$@"}
       ;;
     doctor)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/roles.sh
+      . "$AIF_ROOT/lib/roles.sh"
       # shellcheck source=lib/doctor.sh
       . "$AIF_ROOT/lib/doctor.sh"
       aif_doctor ${1+"$@"}

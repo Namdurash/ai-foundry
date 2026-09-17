@@ -69,7 +69,7 @@ check "manifest survives it" \
   "$(jq -r '.set_version' .aif/manifest.json 2>/dev/null)" \
   "$(awk -F= '/^SET_VERSION=/ { print $2 }' "$AIF_ROOT/sets/claude/set.meta")"
 check "the ignore block is intact" \
-  "$(grep -c '^\.aif/\(profile\.local\|tmp/\|state/\|worktrees/\)$' .gitignore)" "4"
+  "$(grep -c '^\.aif/\(profile\.local\|tmp/\|state/\|worktrees/\|board/\)$' .gitignore)" "5"
 check "no scratch file left behind" "$(ls -a | grep -c '^\.aif-tmp-')" "0"
 
 # --force is how a project takes an edited file back, and it promises a backup of

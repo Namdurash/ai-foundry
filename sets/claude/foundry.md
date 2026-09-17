@@ -10,6 +10,9 @@ file costs context on every single turn, in every session, forever. Content that
 earns its place goes in a skill.
 
 Two halves, one boundary: `/aif-ba` writes a ticket's GIVEN/WHEN/THEN criteria
-*with* the human and ends with `aif _ready`; `aif work <ID>` builds it headless on
-its own branch and never asks anyone anything. A ticket that is not ready comes
-back with the gate's questions, not a guess.
+*with* the human, ends with `aif _ready`, and puts the card in Ready; `aif work`
+builds the top of Ready headless on its own branch and never asks anyone
+anything — the card moves to Review with the report, or to Needs Human with the
+gate's questions. `/aif-pjm` keeps the board honest and never starts a build;
+`/aif-setup` says which roles can run on this machine. Every transition goes
+through `aif board`; every token goes through `aif secret`, never through a chat.

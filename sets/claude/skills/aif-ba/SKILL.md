@@ -1,7 +1,7 @@
 ---
 name: aif-ba
 description: The analyst — turns a need into a ticket the worker can build without asking anyone anything. Writes the GIVEN/WHEN/THEN criteria WITH the user, in conversation, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, turn an idea or a product request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
-requires: []
+requires: [board]
 ---
 
 # aif-ba — the analyst
@@ -109,22 +109,29 @@ Show the complete `ticket.md` once — the user owns it, and they should see the
 thing rather than a summary — and take any last edit. Do not re-interview, do not
 "improve" wording they did not ask you to touch.
 
-Then say what comes next and stop:
+Then put it on the board, say what comes next, and stop:
 
 ```bash
-aif work <ID>
+aif board create tasks/<ID>/ticket.md --column ready
 ```
 
-You do not build, plan, or write tests. When a project has a board configured, the
-ticket goes to its Ready column from here (`aif board`); until then, `aif work <ID>`
-picks it up directly.
+That is the hand-off. On a Trello board the card's description *is* the ticket file —
+the worker pulls it back from there at intake, so the card is what gets built; on the
+local board the card only marks the ticket ready. `aif work` takes the top of Ready; the
+project manager (`/aif-pjm`) decides the order when there is more than one. If the user
+wants it built now: `aif work <ID>`.
+
+You do not build, plan, or write tests, and you do not move cards between other
+columns — that is the project manager's.
 
 ### Rework
 
 A ticket that comes back from review comes back **here**, not to the worker: "wrong"
-almost always means the ticket did not say. Read the reviewer's note, change the
+almost always means the ticket did not say. The project manager puts it in Backlog with
+the reviewer's words as a comment — `aif board show <ID>` reads them. Change the
 criteria or add the missing one, keep the ids contiguous, run `aif _ready` again, and
-hand it back. The plan bound to the old ticket lapses on its own — that is what the
+`aif board create … --column ready` again: that updates the card's text and puts it
+back in Ready. The plan bound to the old ticket lapses on its own — that is what the
 hash binding is for — so the next `aif work` re-plans.
 
 ## The format

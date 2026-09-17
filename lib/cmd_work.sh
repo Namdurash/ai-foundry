@@ -47,14 +47,19 @@ AIF_WORK_WORKTREES=".aif/worktrees"
 
 _aif_work_usage() {
   cat <<EOF
-usage: aif work <ticket> [options]
+usage: aif work [<ticket>] [options]
 
   Build one ticket, headless, on its own branch. Never asks a question: a
   ticket the worker cannot build from what it was given comes back with a
   report saying what was missing.
 
-    aif work OPES-52            build it in .aif/worktrees/OPES-52 on aif/OPES-52
+    aif work                    the ticket at the top of the board's Ready column
+    aif work OPES-52            this one, in .aif/worktrees/OPES-52 on aif/OPES-52
     aif work OPES-52 --clean    remove that worktree (the branch stays)
+
+  Every transition goes through the board (aif board): the card moves to In
+  Progress when the run starts, and to Review — or Needs Human, with the
+  report as a comment — when it ends.
 
   --profile P        which (set, runner, model) profile; default: the project's
   --budget USD       stop past this spend (best-effort — under subscription
@@ -93,6 +98,15 @@ _aif_work_preflight() {
 
   [ -f "$root/.claude/agents/aif-implement.md" ] ||
     aif_die "the stations are not installed — run 'aif init'"
+
+  # The board, before the first token. A token that expired since setup stops
+  # the run here with one line, not as a card that quietly never moved after
+  # the work was done.
+  if ! aif_board_check "$root" >/dev/null 2>&1; then
+    aif_board_check "$root" >&2 || true
+    aif_err "the board is not reachable as configured — fix that first (aif board check)"
+    exit 3
+  fi
 
   aif_profile_load "$profile"
   # shellcheck source=lib/runner_claude.sh
@@ -164,6 +178,17 @@ _aif_work_intake() {
 
   work="$(aif_task_dir "$wt" "$ticket")"
   src="$(aif_task_dir "$root" "$ticket")"
+
+  # The board is canonical for the ticket's text until this moment: on a
+  # trello board the card's description is pulled into THIS checkout and
+  # becomes the bytes the run freezes. The local board holds no text — the
+  # ticket is already in tasks/, and the copy below carries it in.
+  if [ "$(aif_board_kind "$wt")" = "trello" ]; then
+    (aif_board_pull "$wt" "$ticket" >/dev/null) || {
+      aif_err "could not pull $ticket from the board — nothing was built."
+      return 1
+    }
+  fi
 
   if [ ! -f "$work/ticket.md" ] && [ -f "$src/ticket.md" ] && [ "$src" != "$work" ]; then
     mkdir -p "$work"
@@ -437,12 +462,9 @@ aif_cmd_work() {
 
   local root
   root="$(aif_require_project)"
-  [ -n "$ticket" ] || {
-    _aif_work_usage >&2
-    aif_die "usage: aif work <ticket>"
-  }
 
   if [ "$clean" -eq 1 ]; then
+    [ -n "$ticket" ] || aif_die "usage: aif work <ticket> --clean"
     local wt="$root/$AIF_WORK_WORKTREES/$ticket"
     [ -e "$wt" ] || aif_die "no worktree for $ticket at ${wt#"$root"/}"
     git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -461,6 +483,28 @@ aif_cmd_work() {
 
   _aif_work_preflight "$root" "$profile"
 
+  # No ticket named: the board decides. The top of Ready is the project
+  # manager's order, and the worker consumes it — queue policy is theirs, the
+  # queue is not.
+  if [ -z "$ticket" ]; then
+    ticket="$(aif_board_next_ready "$root")"
+    [ -n "$ticket" ] || aif_die "nothing in the board's Ready column — write a ticket with /aif-ba, or name one: aif work <ticket>"
+    _aif_work_say "board" "next in Ready: $ticket"
+  fi
+
+  # The card moves before anything is spent. A ticket handed over by id that
+  # has no card yet gets one on the local board — the worker is the consumer,
+  # and a ticket named by hand is implicitly ready; on a trello board the card
+  # IS the ticket, so it has to be there already.
+  if [ "$(aif_board_kind "$root")" = "local" ] && [ ! -f "$(aif_board_local_dir "$root")/$ticket.json" ] &&
+    [ -f "$(aif_task_dir "$root" "$ticket")/ticket.md" ]; then
+    (aif_board_create "$root" "$(aif_task_dir "$root" "$ticket")/ticket.md" ready >/dev/null) || true
+  fi
+  if ! (aif_board_move "$root" "$ticket" in_progress >/dev/null); then
+    aif_err "could not move $ticket to In Progress on the board — nothing was spent."
+    exit 3
+  fi
+
   local wt
   if [ "$use_worktree" -eq 1 ]; then
     wt="$(_aif_work_worktree "$root" "$ticket")"
@@ -469,7 +513,10 @@ aif_cmd_work() {
   fi
   _aif_work_say "worktree" "${wt#"$root"/}"
 
-  _aif_work_intake "$root" "$wt" "$ticket" || exit 1
+  _aif_work_intake "$root" "$wt" "$ticket" || {
+    (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
+    exit 1
+  }
 
   local project attempts_max run_max dispatches_max started
   project="$(aif_project_config "$wt")"
@@ -627,5 +674,22 @@ $detail"
   rm -f "$gate_out"
 
   _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started" "$dispatches"
+
+  # The report goes where the human looks — the card — and the card moves to
+  # where the human decides: Review when it is built, Needs Human when it is
+  # not. Loud on failure, with the exact command to do it by hand; the work is
+  # on the branch either way, and the exit code says what the work is.
+  local col report_path
+  report_path="$(aif_task_dir "$wt" "$ticket")/report.md"
+  col=review
+  [ "$status" = "built" ] || col=needs_human
+  if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
+    aif_warn "could not post the report to the board — run: aif board comment $ticket ${report_path#"$root"/}"
+  fi
+  if ! (aif_board_move "$root" "$ticket" "$col" >/dev/null); then
+    aif_warn "could not move $ticket to $col on the board — run: aif board move $ticket $col"
+  else
+    _aif_work_say "board" "$ticket → $col, report posted"
+  fi
   [ "$status" = "built" ]
 }

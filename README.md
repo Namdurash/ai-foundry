@@ -152,13 +152,22 @@ ln -s /path/to/ai-foundry/bin/aif /opt/homebrew/bin/aif
 ### Once, per project
 
 ```sh
-aif doctor            # what is installed, and what aif can therefore drive
 aif init              # install the set, pick a profile
 aif project init      # detect the runner, and ask what "done" means here —
                       # then REVIEW .aif/project.json, especially test.command
+aif doctor --probe    # which ROLES can run here — analyst, project manager,
+                      # worker — and what each is missing
+aif board init local  # …or: aif board init trello --board <url> --create-lists
 aif project checks    # ask again later, when the Definition of Done moves
 aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?
 ```
+
+Or open a session and say `/aif-setup`: it runs `aif doctor --json`, explains
+each ✗ in plain words, fixes what a command can fix, and asks you only for what
+only you have — which board, a token you create yourself. It never asks for the
+token: it prints `aif secret set TRELLO_TOKEN` for **your** terminal, because a
+token pasted into a chat lands in a transcript on disk. And it never declares
+readiness — the last thing it does is run `aif doctor` again and show its table.
 
 `aif project init` asks one question, once: **what must pass besides the tests?**
 It offers the checks it can find — the scripts your `package.json` declares, the
@@ -191,10 +200,11 @@ product should *do*. Those are yours; a decision you do not make is recorded as
 *decided by default*, in the open, with the default named — never filled in
 silently.
 
-It ends with the **Definition of Ready**:
+It ends with the **Definition of Ready** and a card on the board:
 
 ```sh
 aif _ready TICK-1
+aif board create tasks/TICK-1/ticket.md --column ready
 ```
 
 One script, two callers: the analyst runs it while you still have the whole
@@ -205,6 +215,66 @@ have the most context you will ever have on this ticket. Answer them, or say
 "defaults", and the ticket is buildable. A ticket that comes back from review
 comes back here, not to the worker: "wrong" almost always means the ticket did
 not say.
+
+### The board — where the state is seen
+
+The board is the coupling between the three roles, and it is where the project's
+state is *seen* rather than held in a head:
+
+```
+Backlog → Ready → In Progress → Review → Done
+                                  ↘ Needs Human
+```
+
+The analyst puts a ready ticket in **Ready**. `aif work` — with no argument —
+takes the card at the top, moves it to **In Progress**, builds, and moves it to
+**Review** with the report as a comment, or to **Needs Human** with the gate's
+questions. You review beside the diff; the project manager routes what you say.
+Every transition goes through one adapter, `aif board`, in bash — a model
+"remembering" to move a card is fail-open bookkeeping, and a card that quietly
+did not move is the same defect as a meter that quietly did not fire.
+
+```sh
+aif board status                  # every card, by column
+aif board next-ready              # what the worker would take
+aif board move TICK-1 ready --top # the project manager's order
+aif board show TICK-1             # the card, with the reviewer's comments
+aif board check                   # is it reachable, as configured?
+```
+
+Two backends, one interface. **`local`** is the default: cards live in
+`.aif/board/` of your checkout, gitignored — this machine's board, for a project
+without one. **`trello`** talks to the REST API with a key and a token from
+`aif secret`; `aif board init trello --board <url>` maps the six columns to the
+board's lists by name and prints the mapping, because a wrong mapping moves cards
+to the wrong column silently. On Trello the card's description **is** the ticket
+file: the analyst writes it there, and the worker pulls it back at intake, hashes
+it, and builds exactly those bytes — the board is canonical for the text until
+intake, the repository after. `scripts/check-board.sh` drives both backends
+offline, the Trello one against a stand-in server (`scripts/mock-trello.py`).
+
+**`/aif-pjm`** is the project manager: it orders Ready, links tickets, reads the
+reviewer's words on a card in Review and routes them — rework to Backlog with the
+comment for the analyst, cancel to Done — and finds cards that have sat too long.
+It works only through `aif board`. **It never starts a build and never edits a
+ticket's text**: the worker consumes Ready, the project manager decides what is
+in it. Every decision it makes is a card position or a label you can override by
+dragging. The moment a coordination agent can *start* work, the questions come
+back through it, which is why this one cannot.
+
+**Secrets never pass through a model.** `aif secret set NAME` reads with echo
+off in your terminal and stores in the macOS keychain (a `0600` file elsewhere);
+`aif secret check NAME` says whether it is set, and nothing on the CLI prints a
+value. `.aif/project.json` records the secret's *name*, never the value.
+Exporting the same name in your shell overrides the store, which is how CI works.
+
+**`aif doctor` reports per role.** Every role declares what it requires — the
+worker in `lib/roles.sh`, each skill in its own frontmatter — and each capability
+is a probe, not a file check: `board` means a token resolved *and* one call to
+the API succeeded *and* the six columns exist. The test toolchain is `?` until
+`--probe` runs the suite once; "not checked" is not "fine". `aif work` runs the
+board check again before the first token, so an expired token stops the run with
+one line instead of a card that never moved.
 
 ### When a gate rejects — the repair bench
 
@@ -281,14 +351,16 @@ the gates rather than remembered.
 
 | command | what it does |
 |---|---|
-| `aif doctor` | report runners, tooling, and this project's health |
 | `aif init [profile]` | install the set; merge, never clobber |
 | `aif uninstall` | reverse the manifest; round-trips clean |
 | `aif profiles` | list the (set, runner, model) profiles |
 | `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
 | `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it |
-| `aif work <ticket>` | build a ticket headless on its own branch, no questions; `--clean` removes the worktree |
+| `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
+| `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
+| `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
+| `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
 | `aif run [ticket \| link \| description]` | the whole pipeline, in one session |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
 | `aif explain <ticket>` | draw how it got here — criteria, decisions, gaps, and the plan's reasoning |
@@ -778,6 +850,7 @@ newer bash on `PATH` cannot mask an incompatibility.
 - [x] The gated cycle: ready → plan → tests → code, six gates
 - [x] `/aif-ba` — the analyst writes the criteria with you; `aif _ready` is the one Definition of Ready
 - [x] `aif work` — one ticket, one worktree, one budget, no questions
+- [x] The board — `aif board` over `local` and `trello`, `/aif-pjm` as its policy, `aif secret`, `aif doctor` per role, `/aif-setup`
 - [x] `aif run` — the same cycle in a visible session, stations as subagents
 - [x] Per-station metering from subagent transcripts, into a hash-chained ledger
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost

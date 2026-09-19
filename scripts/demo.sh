@@ -21,6 +21,14 @@ AIF="$AIF_ROOT/bin/aif"
 DEMO="$(mktemp -d "${TMPDIR:-/tmp}/aif-demo-XXXXXX")"
 cd "$DEMO"
 
+# This script must cost nothing, and `aif doctor --probe` now calls the runner
+# once — which is the point of it, and exactly what an offline walk must not
+# do. The same seam the worker checks use tells doctor a scripted runner
+# stands in, so the toolchain half of the probe still runs and the model half
+# does not. Nothing here dispatches a station, so the command itself is never
+# invoked.
+export AIF_WORK_STATION_CMD=/usr/bin/true
+
 bold=$'\033[1m'; dim=$'\033[2m'; grn=$'\033[32m'; red=$'\033[31m'; rst=$'\033[0m'
 step() { printf '\n%s▸ %s%s\n' "$bold" "$1" "$rst"; }
 note() { printf '  %s%s%s\n' "$dim" "$1" "$rst"; }

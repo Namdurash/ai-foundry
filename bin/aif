@@ -10,6 +10,18 @@
 
 set -euo pipefail
 
+# Every number this tool writes is data, not prose: jq parses it, awk compares
+# it, the run record stores it. Under a locale whose decimal separator is a
+# comma, awk's %f writes 0,0100, the next `jq --argjson` refuses it, and the
+# run dies at the first station with a jq usage message for an explanation.
+# So the numeric category is pinned to C. LC_ALL would outrank it, hence the
+# demotion to LANG — language, dates and UTF-8 stay as the user set them.
+if [ -n "${LC_ALL:-}" ]; then
+  export LANG="$LC_ALL"
+  unset LC_ALL
+fi
+export LC_NUMERIC=C
+
 AIF_VERSION="0.5.0"
 
 # Resolve the install root through any symlinks. Homebrew links bin/aif into

@@ -153,6 +153,43 @@ g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.
 g "plain session writes a plan"            '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow ""
 g "plain session edits a gate"             '{"tool_input":{"file_path":".aif/gates/green.sh"}}' allow ""
 
+printf '\nthe junit parser reads what pytest writes\n'
+# junit.py turns a report into per-test rows and verify-red matches each row's
+# `file` against the test files the plan declared. pytest writes @file only
+# under junit_family=xunit1; the xunit2 schema has no such attribute, pytest
+# filters it out, and xunit2 has been the default since pytest 6.0 — so on any
+# current project the file has to come back out of the dotted @classname. Get
+# that wrong and verify-red does not complain, it goes blind: no row matches a
+# declared test, every result looks pre-existing, and the gate certifies a red
+# it never saw.
+if aif_have python3; then
+  jtmp="$(mktemp "${TMPDIR:-/tmp}/aif-junit-XXXXXX")"
+  je() { # <label> <testcase xml> <the file junit.py should resolve>
+    local got
+    printf '<testsuites><testsuite name="pytest">%s</testsuite></testsuites>' "$2" >"$jtmp"
+    got="$(python3 "$ROOT/sets/claude/gates/junit.py" "$jtmp" | jq -r '.[0].file')"
+    if [ "$got" = "$3" ]; then ok "$1"; else bad "$1: got '$got', wanted '$3'"; fi
+  }
+  je "xunit2: the file comes back out of the classname" \
+    '<testcase classname="tests.test_users" name="test_empty"/>' \
+    "tests/test_users.py"
+  je "xunit2: the class in the id is not a directory" \
+    '<testcase classname="tests.api.test_users.TestList" name="test_paged[2-3]"/>' \
+    "tests/api/test_users.py"
+  je "xunit1: a report that carries @file is believed over the guess" \
+    '<testcase classname="tests.test_users" file="src/elsewhere.py" name="test_empty"/>' \
+    "src/elsewhere.py"
+  je "a file that would not import names itself in @name" \
+    '<testcase classname="" name="tests.test_broken"><error message="collection failure">SyntaxError</error></testcase>' \
+    "tests/test_broken.py"
+  je "another runner's classname does not become a python path" \
+    '<testcase classname="Login flow" name="shows an error"/>' \
+    ""
+  rm -f "$jtmp"
+else
+  printf '  · python3 is not installed — the junit parser is unchecked here\n'
+fi
+
 printf '\n'
 if [ "$fails" -eq 0 ]; then
   printf 'set: ok\n'

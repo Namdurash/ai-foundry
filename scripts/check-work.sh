@@ -13,7 +13,9 @@
 #
 # What it proves:
 #   1  a ready ticket goes to `built` with every station recorded, metered as
-#      headless, committed once per accepted station, and a report on the branch
+#      headless, committed once per accepted station, and a report on the
+#      branch — under a decimal-comma locale, where a %f-formatted number is
+#      not JSON and the run used to die at the first station
 #   2  a rejection is retried with the gate's complaint in the prompt, and both
 #      attempts are in the ledger
 #   3  a ticket that is not ready — a stub, or an open question — stops at
@@ -40,6 +42,24 @@ if ! command -v python3 >/dev/null 2>&1; then
   printf 'check-work: skipped — python3 is required for per-test verify-red\n'
   exit 0
 fi
+
+# A locale that writes 0,0100 where jq wants 0.0100, if this machine has one.
+# Scenario 1 runs under it: the worker's money is awk's %f on the way into a
+# JSON run record, and for one release every run on a European laptop stopped
+# at the first station with a jq usage message for an explanation.
+DEC_COMMA=""
+# `locale -a | grep -q` would be the obvious spelling and is a trap: grep -q
+# leaves early, locale takes the SIGPIPE, and under pipefail the whole pipeline
+# reads as "no such locale". The list is four kilobytes; hold it and match it.
+installed_locales="$(locale -a 2>/dev/null || true)"
+for loc in de_DE.UTF-8 fr_FR.UTF-8 uk_UA.UTF-8; do
+  case "$installed_locales" in
+    *"$loc"*)
+      DEC_COMMA="$loc"
+      break
+      ;;
+  esac
+done
 
 fails=0
 ok() { printf '  ✓ %s\n' "$1"; }
@@ -81,17 +101,23 @@ fresh_project() {
   }
   "$AIF" project init pytest --no-checks >/dev/null 2>&1
 
+  # The report shape pytest has written since 6.0: junit_family=xunit2, whose
+  # schema has no @file — the test file is only recoverable from the dotted
+  # @classname. Written that way here on purpose: with @file spelled out, this
+  # whole harness passed while verify-red was blind on every project on a
+  # current pytest.
   cat >.aif/suite.sh <<'SUITE'
 #!/bin/bash
 mkdir -p .aif/tmp
+cn() { printf '%s' "${1%.py}" | tr '/' '.'; } # pytest's classname for a file
 row() { # <id> <file> <green?>
   if [ "$3" = 1 ]; then
-    printf '<testcase name="%s" file="%s"/>' "$1" "$2"
+    printf '<testcase classname="%s" name="%s"/>' "$(cn "$2")" "$1"
   else
-    printf '<testcase name="%s" file="%s"><failure message="assert marker missing">AssertionError: assert marker missing</failure></testcase>' "$1" "$2"
+    printf '<testcase classname="%s" name="%s"><failure message="assert marker missing">AssertionError: assert marker missing</failure></testcase>' "$(cn "$2")" "$1"
   fi
 }
-body="$(row t0 tests/t0.py 1)<testcase name=\"t9\" file=\"tests/t9.py\"><skipped message=\"not on this platform\"/></testcase>"
+body="$(row t0 tests/t0.py 1)<testcase classname=\"tests.t9\" name=\"t9\"><skipped message=\"not on this platform\"/></testcase>"
 for n in 1 2 3; do
   [ -f "tests/t$n.py" ] || continue
   g=0; grep -q "impl$n" src/app.py 2>/dev/null && g=1
@@ -215,8 +241,13 @@ fresh_project "$SANDBOX/p1"
 ticket_for AIF-1
 git add -A && git commit -qm "ticket" >/dev/null
 
+if [ -n "$DEC_COMMA" ]; then
+  printf '  · under %s — every number the run writes is still JSON\n' "$DEC_COMMA"
+else
+  printf '  · no decimal-comma locale on this machine — the locale half is weaker here\n'
+fi
 rc=0
-"$AIF" work AIF-1 --no-worktree >"$OUT/run1.out" 2>&1 || rc=$?
+LC_ALL="$DEC_COMMA" "$AIF" work AIF-1 --no-worktree >"$OUT/run1.out" 2>&1 || rc=$?
 eq "exit 0 — built" "$rc" "0"
 eq "report says built" "$(head -1 tasks/AIF-1/report.md 2>/dev/null)" "# AIF-1 — built"
 eq "run.json status" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
@@ -231,12 +262,14 @@ eq "the ready gate's pass is in the ledger" \
 eq "one commit per accepted station, plus intake and report" \
   "$(git log --format=%s | grep -c '^aif: ')" "5"
 eq "the run record reached done" "$(jq -r '.stage' tasks/AIF-1/run.json)" "done"
+eq "the spend crossed into the run record as a number, not a locale string" \
+  "$(jq -r '(.spent_usd | type) + ":" + ((.spent_usd > 0) | tostring)' tasks/AIF-1/run.json)" "number:true"
 eq "a pre-existing skipped test did not block green" \
   "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-1/ledger.json)" "pass"
 eq "and green said it allowed one" \
   "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-1/ledger.json | grep -c 'skipped elsewhere')" "1"
 eq "the freeze recorded what the rest of the suite looked like" \
-  "$(jq -r '.suite_at_freeze.t9' tasks/AIF-1/tests.lock.json)" "skipped"
+  "$(jq -r '.suite_at_freeze["tests.t9::t9"]' tasks/AIF-1/tests.lock.json)" "skipped"
 eq "the tool wrote the plan's binding, not the model" \
   "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
   "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
@@ -374,11 +407,11 @@ eq "and rebound to the new ticket" \
   "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
   "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
 eq "the round-one test was green at freeze, never proven red" \
-  "$(jq -c '.green_at_freeze' tasks/AIF-1/tests.lock.json)" '["t1"]'
+  "$(jq -c '.green_at_freeze' tasks/AIF-1/tests.lock.json)" '["tests.t1::t1"]'
 eq "so only the new test is covering" \
-  "$(jq -c '.covering' tasks/AIF-1/tests.lock.json)" '["t2"]'
+  "$(jq -c '.covering' tasks/AIF-1/tests.lock.json)" '["tests.t2::t2"]'
 eq "and the report says the green-at-freeze test was never proven red" \
-  "$(grep -c 'tests t1' tasks/AIF-1/report.md)" "1"
+  "$(grep -c 'tests tests.t1::t1' tasks/AIF-1/report.md)" "1"
 eq "the ticket's own gap is on the checklist too" \
   "$(grep -c 'ticket VG-001' tasks/AIF-1/report.md)" "1"
 

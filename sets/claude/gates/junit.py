@@ -7,12 +7,44 @@ every CI image; when it is absent, verify-red falls back to coarse mode and says
 so. This shim is intentionally tiny and dependency-free (stdlib only).
 
 Output: [{"id","file","status","message"}] where status is
-pass | failure | error | skipped. `file` comes from pytest's per-testcase
-attribute so a result can be matched to the test file the plan declared.
+pass | failure | error | skipped. `file` is what lets a result be matched to the
+test file the plan declared: pytest's own @file where the report carries one,
+and otherwise rebuilt from @classname — see _file_from_classname.
 """
 import json
 import sys
 import xml.etree.ElementTree as ET
+
+
+def _file_from_classname(dotted: str) -> str:
+    """The test file a dotted pytest name came from, or "" if it cannot be told.
+
+    pytest emits @file on <testcase> only under junit_family=xunit1: the xunit2
+    schema has no such attribute, so pytest filters it out — and xunit2 is the
+    default since pytest 6.0. Without @file every result looks like it belongs
+    to no file at all, none of them match the plan's declared tests, and
+    verify-red is blind on exactly the projects that are on a current pytest.
+
+    What is left is @classname, which pytest builds from the node id: the file
+    path with "." for "/" and ".py" dropped, then one component per enclosing
+    class — "tests/api/test_users.py::TestList::test_empty" becomes
+    "tests.api.test_users.TestList". Going back means knowing where the path
+    ends and the classes begin, and the dots do not say. Classes are the
+    capitalised tail (pytest collects `Test*` classes by default), so that is
+    what gets dropped; a module file in CamelCase would be read wrong, and
+    nothing pytest collects by default is named that way.
+
+    A report from another producer can still hand us a classname shaped like a
+    module path (a Java package, say) and get a .py path that never existed.
+    Harmless where the value is used: it is only ever matched against the test
+    files the plan declared, and a path that does not exist matches nothing.
+    """
+    parts = dotted.split(".")
+    while parts and parts[-1][:1].isupper():
+        parts.pop()
+    if not parts or not all(p.isidentifier() for p in parts):
+        return ""
+    return "/".join(parts) + ".py"
 
 
 def main() -> int:
@@ -31,6 +63,12 @@ def main() -> int:
         classname = tc.get("classname", "")
         name = tc.get("name", "")
         test_id = f"{classname}::{name}" if classname else name
+        # An empty classname is pytest reporting a whole file that would not
+        # import: the node id was the path alone, so the dotted module ends up
+        # in @name. That one is a collection error in a declared test file —
+        # the gate has to see which file it was to call it broken rather than
+        # blame the pre-existing suite.
+        file_attr = tc.get("file") or _file_from_classname(classname or name)
         status = "pass"
         message = ""
         for child in tc:
@@ -44,7 +82,7 @@ def main() -> int:
         out.append(
             {
                 "id": test_id,
-                "file": tc.get("file", ""),
+                "file": file_attr,
                 "status": status,
                 "message": message.strip()[:800],
             }

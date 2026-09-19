@@ -653,6 +653,9 @@ $complaint"
       '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1)' \
       --arg s "$stage" --argjson d "$dispatches"
 
+    # The two %f formats — here and on the spend below — print a dot because
+    # bin/aif pins LC_NUMERIC=C. One goes to the station as dollars left, the
+    # other into jq as a JSON number; a decimal comma is wrong in both.
     out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
     rc=0
     _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \

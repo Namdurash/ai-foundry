@@ -547,6 +547,15 @@ aif_cmd_work() {
     exit 3
   fi
 
+  # From here the card says work is happening. If the run is killed — Ctrl-C,
+  # a closed terminal — that claim outlives it, and a card sitting in In
+  # Progress with nobody working on it is the same defect as a meter that
+  # quietly did not fire. The trap puts it back where a human will look; the
+  # normal paths clear it before moving the card themselves.
+  # shellcheck disable=SC2064  # expand now: the locals are gone at fire time
+  trap "aif_board_move '$root' '$ticket' needs_human >/dev/null 2>&1 || true; \
+        printf '\ninterrupted — %s moved to needs_human; the branch keeps what was accepted\n' '$ticket' >&2" INT TERM
+
   local wt
   if [ "$use_worktree" -eq 1 ]; then
     wt="$(_aif_work_worktree "$root" "$ticket")"
@@ -570,6 +579,7 @@ aif_cmd_work() {
       printf '%s\n' "${AIF_WORK_NOT_READY:-the ticket does not exist in this checkout}" | sed 's/^/    /'
     } >"$nr"
     (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$nr" >/dev/null) || true
+    trap - INT TERM
     (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
     rm -f "$nr"
     _aif_work_say "board" "$ticket → needs_human, the gate's questions posted"
@@ -702,6 +712,7 @@ $(head -20 "$gate_out")"
   done
   rm -f "$gate_out"
 
+  trap - INT TERM
   _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started"
 
   # The report goes where the human looks — the card — and the card moves to

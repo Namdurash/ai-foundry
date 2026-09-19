@@ -109,13 +109,25 @@ Show the complete `ticket.md` once — the user owns it, and they should see the
 thing rather than a summary — and take any last edit. Do not re-interview, do not
 "improve" wording they did not ask you to touch.
 
-Then put it on the board, say what comes next, and stop:
+Then put it on the board:
 
 ```bash
 aif board create tasks/<ID>/ticket.md --column ready
 ```
 
-That is the hand-off. On a Trello board the card's description *is* the ticket file —
+**End by saying where everything you made is, in plain paths.** A conversation that
+ends "I created the ticket" leaves the one concrete thing it produced for the user to
+go hunting for — which is exactly what happened the first time this ran. Say all four,
+every time, even when it feels obvious:
+
+```
+ticket:  tasks/<ID>/ticket.md
+board:   <ID> is in Ready  (aif board show <ID>)
+ready:   <what aif _ready printed>
+build:   aif work <ID>        ← in your own terminal, not here
+```
+
+On a Trello board the card's description *is* the ticket file —
 the worker pulls it back from there at intake, so the card is what gets built; on the
 local board the card only marks the ticket ready. `aif work` takes the top of Ready; the
 project manager (`/aif-pjm`) decides the order when there is more than one. If the user

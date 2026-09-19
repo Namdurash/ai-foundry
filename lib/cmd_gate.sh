@@ -53,8 +53,17 @@ aif_cmd_gate() {
   aif_station_meta "$root" "$station" >/dev/null 2>&1 ||
     aif_die "no such station: $station"
 
-  local tab subject_line subject hash rest
+  local tab subject_line subject hash rest sep
   tab="$(printf '\t')"
+  # The verdict records below are joined with US (unit separator, \037), NOT a
+  # tab. In bash a TAB inside IFS is a WHITESPACE delimiter, so consecutive
+  # tabs collapse into one and every field after an empty one shifts left —
+  # and a gate that rejects before its subject exists (verify-red, whose
+  # subject is the lock file it has not written yet) has exactly that shape.
+  # The reason then landed in the subject column and the ledger recorded the
+  # rejection with NO REASON AT ALL, which is the one thing that record is for.
+  # Observed on the first live run: two verify-red rejections, both silent.
+  sep="$(printf '\037')"
 
   # The subject is resolved twice, and it has to be. BEFORE a gate runs it is the
   # station's output as it stands, which is what the unchanged-bytes check
@@ -105,7 +114,7 @@ aif_cmd_gate() {
     _resolve_subject
 
     if [ "$rc" -eq 3 ]; then
-      records="$records$gate$tab""error$tab$subject$tab$hash$tab$(printf '%s' "$out" | head -1)
+      records="$records$gate$sep""error$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | head -1)
 "
       _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
@@ -114,7 +123,7 @@ aif_cmd_gate() {
       return 3
     fi
 
-    records="$records$gate$tab$([ "$rc" -eq 0 ] && printf pass || printf fail)$tab$subject$tab$hash$tab$(printf '%s' "$out" | head -1)
+    records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | head -1)
 "
 
     if [ "$rc" -ne 0 ]; then
@@ -248,10 +257,13 @@ EOF
 # therefore last: only the final field may contain anything.
 _aif_gate_record() {
   local work="$1" root="$2" records="$3"
-  local gate result subject hash reason tab
-  tab="$(printf '\t')"
-  while IFS="$tab" read -r gate result subject hash reason; do
+  local gate result subject hash reason sep
+  sep="$(printf '\037')"
+  while IFS="$sep" read -r gate result subject hash reason; do
     [ -n "$gate" ] || continue
+    # A rejection with nothing to say is a defect in the gate, not a row to
+    # write blank: the ledger's whole job at this column is to record why.
+    [ -n "$reason" ] || reason="(the gate gave no reason — look at $gate)"
     aif_ledger_gate "$work" "$gate" "$result" "$subject" "$hash" \
       "$(aif_sha256 "$(aif_gate_path "$root" "$gate")")" "$reason"
   done <<EOF

@@ -79,6 +79,10 @@ aif_cmd_ready() {
   case "$rc" in
     0)
       printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$out"
+      # The path, every time. This is the last command the analyst runs, and a
+      # conversation that ends "I created the ticket" without saying where
+      # leaves the one concrete thing it produced for the user to go hunting.
+      printf '  %s%s/%s/ticket.md%s\n' "$AIF_C_DIM" "$AIF_TASKS_DIR" "$ticket" "$AIF_C_RESET"
       ;;
     127)
       aif_die "the ready gate is not installed in this project — run 'aif init'"

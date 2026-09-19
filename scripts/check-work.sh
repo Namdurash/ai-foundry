@@ -149,7 +149,13 @@ PLAN
   tests)
     for i in $nums; do
       [ -n "$i" ] || continue
-      printf '# AC-00%s asserts impl%s\n' "$i" "$i" >"$wt/tests/t$i.py"
+      if [ "${FAKE_TESTS_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then
+        # No criterion id and no literal: verify-red rejects on coverage,
+        # BEFORE it has written the lock file its verdict would bind to.
+        printf '# nothing to see here\n' >"$wt/tests/t$i.py"
+      else
+        printf '# AC-00%s asserts impl%s\n' "$i" "$i" >"$wt/tests/t$i.py"
+      fi
     done
     ;;
   implement)
@@ -238,7 +244,7 @@ fresh_project "$SANDBOX/p2"
 ticket_for AIF-2
 git add -A && git commit -qm "ticket 2" >/dev/null
 rc=0
-FAKE_PLAN_BAD_FIRST=1 "$AIF" work AIF-2 --no-worktree >"$OUT/run2.out" 2>&1 || rc=$?
+FAKE_PLAN_BAD_FIRST=1 FAKE_TESTS_BAD_FIRST=1 "$AIF" work AIF-2 --no-worktree >"$OUT/run2.out" 2>&1 || rc=$?
 eq "exit 0 — built after the retry" "$rc" "0"
 eq "plan was dispatched twice" \
   "$(jq '[.entries[] | select(.station == "plan")] | length' tasks/AIF-2/ledger.json)" "2"
@@ -247,6 +253,19 @@ eq "the plan gate recorded a fail then a pass" \
 eq "the second attempt saw the complaint" "$(grep -c 'attempt 2' tasks/AIF-2/plan.md)" "1"
 eq "the report counts both attempts" \
   "$(grep -E '^\| plan \|' tasks/AIF-2/report.md | awk -F'|' '{ gsub(/ /,"",$3); print $3 }')" "2"
+eq "the tests station was retried too" \
+  "$(jq '[.entries[] | select(.gate == "verify-red")] | length' tasks/AIF-2/ledger.json)" "2"
+# A gate that rejects BEFORE its subject exists — verify-red, whose subject is
+# the lock file it has not written yet — used to record the rejection with an
+# empty reason, because consecutive tabs collapse in a bash IFS and every
+# field after the empty subject shifted left. Two live rejections were logged
+# that way before anyone noticed.
+eq "every rejection says why" \
+  "$(jq '[.entries[] | select(.result == "fail") | select((.reason // "") == "")] | length' tasks/AIF-2/ledger.json)" "0"
+eq "and the subject column did not eat it" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .subject' tasks/AIF-2/ledger.json)" ""
+eq "the verify-red reason is the gate's own words" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .reason' tasks/AIF-2/ledger.json | grep -c 'REJECT')" "1"
 
 # =============================== 3. not ready ================================
 printf '\n3. a ticket that is not ready stops at intake, nothing spent\n'

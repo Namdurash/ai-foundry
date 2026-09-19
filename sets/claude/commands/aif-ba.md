@@ -10,7 +10,8 @@ exactly — do not summarise it, run it: set up the ticket with `aif _ticket-ini
 repository before asking me anything, write the acceptance criteria with me, put every
 product question you cannot answer in `open` with a default, run `aif _ready` and show me
 the open questions as one batch, record what I answer and what fell to a default, show me
-the finished ticket once, and hand off to `aif work`. Talk to me in my language.
+the finished ticket once, and hand off — ending with the plain paths of everything you
+made: the ticket file, the board card, and the command I run. Talk to me in my language.
 
 That skill file is the single source of truth for how this works; this command only exists
 so `/aif-ba` is reachable on a runner that does not expose skills for me to type. If the

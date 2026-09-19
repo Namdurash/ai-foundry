@@ -216,7 +216,8 @@ aif_doctor_probe() {
   return 0
 }
 
-# _aif_doctor_caps <root|""> <probe 0|1> — every capability, probed, as JSON:
+# _aif_doctor_caps <root|""> <probe-suite 0|1> <probe-runner 0|1> — every
+# capability, probed, as JSON:
 #   { "<name>": { "ok": true|false|null, "detail": "…" } }
 #
 # ok is null where the answer needs a side effect nobody asked for: the test
@@ -229,7 +230,13 @@ aif_doctor_probe() {
 # that succeeds, six columns that exist. The human cannot know which of those
 # is missing on their machine; this is the thing that tells them.
 _aif_doctor_caps() {
-  local root="$1" probe="$2"
+  # TWO switches, not one, and they are separate because the text path needs
+  # different answers to them: it has already run the suite itself (so it must
+  # not run it again) but has NOT called the runner (so it must). Sharing one
+  # flag is how `aif doctor --probe` came to print "not asked whether it
+  # answers here (aif doctor --probe)" at someone who had just run exactly
+  # that — advice contradicting the command that produced it.
+  local root="$1" probe="$2" probe_runner="${3:-$2}"
   local c_ok c_d g_ok g_d t_ok t_d b_ok b_d p_ok p_d out
 
   # Installed is not the same claim as "will answer", and only --probe can ask
@@ -245,7 +252,7 @@ _aif_doctor_caps() {
   elif ! aif_have claude; then
     c_ok=false
     c_d="claude is not installed — brew install --cask claude-code"
-  elif [ "$probe" -eq 1 ]; then
+  elif [ "$probe_runner" -eq 1 ]; then
     # shellcheck source=lib/runner_claude.sh
     . "$AIF_ROOT/lib/runner_claude.sh"
     local c_out
@@ -381,12 +388,12 @@ aif_doctor() {
     shift
   done
 
-  local root caps roles
+  local root caps roles="[]"
   root="$(aif_project_root 2>/dev/null)" || root=""
   [ -n "$root" ] && [ -d "$root/.aif" ] || root=""
 
   if [ "$json" -eq 1 ]; then
-    caps="$(_aif_doctor_caps "$root" "$probe")"
+    caps="$(_aif_doctor_caps "$root" "$probe" "$probe")"
     roles="$(_aif_doctor_roles "$root" "$caps")"
     jq -n --arg v "$AIF_VERSION" --arg root "$root" --argjson caps "$caps" --argjson roles "$roles" \
       '{ aif: $v, project: (if $root == "" then null else $root end), capabilities: $caps, roles: $roles }'
@@ -411,13 +418,15 @@ aif_doctor() {
   # a person asks the question: can I run the analyst here, the worker, the
   # project manager — and if not, what exactly is missing.
   if [ -n "$root" ]; then
-    # The probe already ran above when asked; do not run the suite twice.
-    caps="$(_aif_doctor_caps "$root" 0)"
+    # The suite already ran above when asked, so do not run it twice — but the
+    # RUNNER has not been called yet, and --probe is what asks it to be.
+    caps="$(_aif_doctor_caps "$root" 0 "$probe")"
     if [ "$probe" -eq 1 ]; then
       caps="$(printf '%s' "$caps" | jq --argjson ok "$([ "$probe_rc" -eq 0 ] && printf true || printf false)" \
         '."test-toolchain" = { ok: $ok, detail: (if $ok then "the test command runs and writes a parseable report" else "the test toolchain cannot produce a verdict — see above" end) }')"
     fi
-    _aif_doctor_render_roles "$(_aif_doctor_roles "$root" "$caps")"
+    roles="$(_aif_doctor_roles "$root" "$caps")"
+    _aif_doctor_render_roles "$roles"
   fi
 
   printf '\n'
@@ -453,6 +462,18 @@ aif_doctor() {
     printf 'next: %saif doctor --probe%s — runs your test command and the runner once, which is the only way to know they work here\n' \
       "$AIF_C_BOLD" "$AIF_C_RESET"
     return 0
+  fi
+
+  # The closing line has to agree with the table above it. Printing
+  # `then aif work` under a worker marked ✗ is the same defect as a green
+  # doctor in a directory where `aif init` cannot run: advice contradicting
+  # the report that carries it.
+  local blocked
+  blocked="$(printf '%s' "$roles" | jq -r '[ .[] | select(.ready == false) | .role ] | join(", ")')"
+  if [ -n "$blocked" ]; then
+    printf 'next: fix what the roles above are missing (%s). %s/aif-setup%s walks it with you.\n' \
+      "$blocked" "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 1
   fi
 
   printf 'next: %s/aif-ba <ID> "<what to build>"%s, then %saif work%s\n' \

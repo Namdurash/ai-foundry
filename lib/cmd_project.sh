@@ -183,8 +183,17 @@ _aif_collect_checks() {
 $(_aif_check_candidates "$root")
 EOF
 
+  local first=1
+  [ "$(printf '%s' "$checks" | jq 'length')" -eq 0 ] || first=0
   while :; do
-    printf '\n  another check? name (blank to finish): ' >&2
+    # "another" when nothing was offered and nothing accepted reads as a
+    # question about a first check that never happened.
+    if [ "$first" -eq 1 ]; then
+      printf '\n  a check? name (blank for none): ' >&2
+    else
+      printf '\n  another check? name (blank to finish): ' >&2
+    fi
+    first=0
     read -r name || name=""
     [ -n "$name" ] || break
     if printf '%s' "$checks" | jq -e --arg n "$name" 'any(.name == $n)' >/dev/null 2>&1; then

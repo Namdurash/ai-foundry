@@ -162,24 +162,52 @@ aif_runner_claude_station() {
 # One turn, no tools, no session persistence. Echoes a one-line verdict.
 # rc 0 the runner answered · 1 it did not.
 aif_runner_claude_probe() {
-  local out rc=0 err
+  local out rc=0 err errfile
+  errfile="$(mktemp "${TMPDIR:-/tmp}/aif-probe-XXXXXX")"
+
+  # </dev/null and a SEPARATE stderr, both learned here the hard way:
+  # without the first, `claude -p` waits three seconds for input it will never
+  # get and warns about it; without the second, that warning lands in the
+  # variable being parsed as JSON and every run reads as a failure. The
+  # station runner has always had both — this function was written without
+  # looking at it.
   out="$(claude -p 'Reply with exactly: ok' \
     --output-format json \
     --max-turns 1 \
     --tools "" \
     --no-session-persistence \
-    --setting-sources project,local 2>&1)" || rc=$?
+    --setting-sources project,local \
+    2>"$errfile" </dev/null)" || rc=$?
 
   if [ -z "$out" ]; then
-    printf 'the runner produced no envelope (exit %s)' "$rc"
+    err="$(head -1 "$errfile")"
+    rm -f "$errfile"
+    printf 'the runner produced no envelope (exit %s)%s' "$rc" \
+      "$([ -n "$err" ] && printf ' — %s' "$err")"
     return 1
   fi
+  rm -f "$errfile"
   if printf '%s' "$out" | jq -e '.is_error == false' >/dev/null 2>&1; then
     printf 'answered in %s turn(s)' "$(printf '%s' "$out" | jq -r '.num_turns // 0')"
     return 0
   fi
   err="$(printf '%s' "$out" | jq -r '.result // empty' 2>/dev/null | head -1)"
   [ -n "$err" ] || err="$(printf '%s' "$out" | head -1)"
+
+  # An authentication failure inside a Claude Code session is the one result
+  # this probe cannot be trusted on. docs/FINDINGS.md #7 was written as a law
+  # from exactly this observation, and the law was false: the session exports
+  # its own credentials into every child, so what failed may be the nesting
+  # rather than the machine. Say so, instead of letting a confounded probe
+  # send someone to debug an authentication that works fine one shell out.
+  case "$err" in
+    *authenticat* | *Authenticat* | *401*)
+      if [ "${CLAUDECODE:-}" = "1" ]; then
+        printf '%s — but this ran INSIDE a Claude Code session, where a nested run is confounded (FINDINGS #7). Run `aif doctor --probe` from your own terminal before believing it' "$err"
+        return 1
+      fi
+      ;;
+  esac
   printf '%s' "$err"
   return 1
 }

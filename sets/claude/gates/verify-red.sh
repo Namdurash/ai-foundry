@@ -113,6 +113,7 @@ fi
 
 new_count=0
 new_rows=""
+suite_rows=""
 green_ids=""
 green_count=0
 red_count=0
@@ -139,6 +140,14 @@ if [ "$mode" = "per-test" ]; then
   # tests it does not have.
   new_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
     '.[] | select((.file // "") as $f | $tf | index($f)) | (.file // "") + "\t" + .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " "))')"
+
+  # And the rest of the suite, as it stands right now. green needs it to tell
+  # a test that was ALREADY skipped before this ticket — a platform guard, an
+  # importorskip, a slow marker — from one the implementation just silenced.
+  # Without it green can only choose between rejecting every project that has
+  # a skipped test anywhere (which it did) and ignoring a real regression.
+  suite_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
+    '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | .id + "\t" + .status')"
 
   # Three kinds of outcome, and they part ways here:
   #   reject (exit 1) — a real test asserting the wrong thing (skipped, since a
@@ -343,6 +352,7 @@ jq -n \
   --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)" \
   --rawfile tests_raw <(printf '%s' "$tests_json") \
   --rawfile impl_raw <(printf '%s' "$impl_frozen") \
+  --rawfile suite_raw <(printf '%s' "${suite_rows:-}") \
   --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" '
@@ -353,7 +363,8 @@ jq -n \
     covering: $covering,
     green_at_freeze: $green,
     impl_frozen: rows($impl_raw),
-    impl_created: $create }' >"$work/tests.lock.json"
+    impl_created: $create,
+    suite_at_freeze: rows($suite_raw) }' >"$work/tests.lock.json"
 
 # The file was called tests.lock until the content stopped being a secret: it is
 # JSON, editors did not highlight it, jq did not pick it up by glob, and diffs

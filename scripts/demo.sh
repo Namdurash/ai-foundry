@@ -136,7 +136,7 @@ else
   BODY='<testcase classname="tests.test_users" name="test_conflict" file="tests/test_users.py" line="3"><failure message="assert 200 == 409">AssertionError: assert 200 == 409</failure></testcase>'
 fi
 cat > .aif/tmp/report.xml <<X
-<testsuites><testsuite tests="1">$BODY</testsuite></testsuites>
+<testsuites><testsuite tests="2">$BODY<testcase classname="tests.test_platform" name="test_on_device" file="tests/test_platform.py"><skipped message="not on this platform"/></testcase></testsuite></testsuites>
 X
 MK
 chmod +x .aif/mkreport.sh
@@ -357,6 +357,15 @@ note "is the verdict from here on — re-running it later would report a false a
 
 # ---------------------------------------------------------------------------
 step "6. CODE boundary  —  green (+ revert-recheck) → scope"
+note "the suite also carries a pre-existing SKIPPED test — a platform guard, the"
+note "ordinary kind every repository has. green used to reject anything not"
+note "'"'"'pass'"'"' across the whole report, while verify-red explicitly allows a skip:"
+note "so a repo with one skipped test anywhere passed the tests boundary and could"
+note "never pass the code boundary. Strict about THIS ticket'"'"'s frozen tests, no"
+note "stricter than verify-red about the rest:"
+check "the freeze recorded the rest of the suite" \
+  "$(jq -r '.suite_at_freeze["tests.test_platform::test_on_device"]' tasks/PROJ-1/tests.lock.json)" "skipped"
+
 note "implement: make the test pass, touching only the plan's files"
 printf 'def create():\n    return 409\n' > src/api/users.py
 

@@ -110,21 +110,68 @@ EOF
 
 aif_g_report "${drift# }" "test tree"
 
-# --- the suite is green, with no skips -------------------------------------
+# --- the suite is green ------------------------------------------------------
+#
+# "No skips" is the right rule for THIS TICKET'"'"'S tests and the wrong rule for
+# everything else, and for one release it was applied to everything. A skip in
+# a frozen covering test is the cheapest way to make red go away without
+# implementing anything, so it is a rejection. A skip somewhere else in the
+# project is ordinary: a platform guard, an importorskip, a slow marker. The
+# gate used to reject on any of those, which meant that any repository with a
+# single skipped test anywhere passed verify-red (which explicitly allows them)
+# and could then never pass green. The two gates disagreed about what a skip
+# means, and the one that was wrong was this one.
+#
+# What is still caught: a pre-existing test that was PASSING when the tests
+# were frozen and is skipped now. The implementation cannot edit a test — the
+# tree is hash-locked — but it can change source so one stops collecting, and
+# that is a regression however it happened. verify-red records the rest of the
+# suite'"'"'s status at freeze so this can be told apart from a skip that was
+# always there. A lock written before that field existed carries no such
+# record, and the gate says so rather than pretending to check it.
 test_cmd="$(jq -r '.test.command' "$project")"
 report_path="$(jq -r '.test.report.path' "$project")"
 mkdir -p "$root/$(dirname "$report_path")"
 (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
 
+allowed_skips=0
+freeze_known=yes
 if aif_g_have python3 && [ -f "$root/$report_path" ]; then
   results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
   if [ -n "$results" ]; then
-    notpass="$(printf '%s' "$results" | jq -r '.[] | select(.status != "pass") | .id + " (" + .status + ")"')"
+    [ "$(jq -r 'has("suite_at_freeze")' "$lock")" = "true" ] || freeze_known=no
+    notpass="$(printf '%s' "$results" | jq -r \
+      --argjson mine "$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")" \
+      --argjson freeze "$(jq -c '.suite_at_freeze // null' "$lock")" '
+      .[]
+      | . as $t
+      | if ($mine | index($t.id)) != null then
+          (if $t.status != "pass"
+            then $t.id + " (" + $t.status + ") — a test this ticket froze, so it must pass; a skip here is red made to go away without implementing anything"
+            else empty end)
+        elif ($t.status == "failure" or $t.status == "error") then
+          $t.id + " (" + $t.status + ") — the pre-existing suite broke"
+        elif $t.status == "skipped" then
+          (if $freeze != null and (($freeze[$t.id] // "") == "pass")
+            then $t.id + " (skipped) — it was passing when the tests were frozen, so something in this change silenced it"
+            else empty end)
+        else empty end')"
     if [ -n "$notpass" ]; then
       printf 'REJECT suite is not green:\n' >&2
       printf '%s\n' "$notpass" | sed 's/^/  - /' >&2
       exit "$AIF_G_REJECT"
     fi
+    # `. as $t` first: inside index(f), jq evaluates f against the ARRAY being
+    # searched, not against the element — so `index(.id)` asks $mine for its
+    # own .id and dies with "Cannot index array with string". It did, on the
+    # pass path, where the error became the recorded reason for a PASS.
+    allowed_skips="$(printf '%s' "$results" | jq -r \
+      --argjson mine "$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")" \
+      '[ .[] | . as $t | select($t.status == "skipped")
+         | select(($mine | index($t.id)) == null) ] | length' 2>/dev/null)"
+    case "$allowed_skips" in
+      '' | *[!0-9]*) allowed_skips=0 ;;
+    esac
   else
     aif_g_error "test report was not parseable — cannot confirm green"
   fi
@@ -205,6 +252,13 @@ if [ "$recheck_ok" -eq 0 ]; then
   printf 'green: suite passes (revert-recheck skipped — needs git and python3)'
 else
   printf 'green: suite passes, and the covering tests depend on the implementation'
+fi
+# On the PASS path, always. A test that did not run is a criterion nobody
+# exercised, whoever skipped it and whenever.
+if [ "${allowed_skips:-0}" -gt 0 ]; then
+  printf ', %s skipped elsewhere in the suite' "$allowed_skips"
+  [ "$freeze_known" = yes ] ||
+    printf ' (this lock predates suite_at_freeze, so a NEWLY skipped test cannot be told from an old one — re-run the tests station to get that check)'
 fi
 if [ "${checks_ran:-0}" -gt 0 ]; then
   printf ', %s check(s) green' "$checks_ran"

@@ -803,6 +803,18 @@ covering tests red again. It cannot prove the tests were the right tests. The
 oracle is only as good as the criteria it came from, which is why they are
 written with you, before anything runs.
 
+**And a skipped test is not a passing one.** `green` is strict about the tests
+*this ticket* froze — a skip there is red made to go away without implementing
+anything, and it is a rejection. It is deliberately **not** strict about the
+rest of your suite: a platform guard, an `importorskip`, a slow marker are
+ordinary, and `verify-red` allows them at the other boundary. What it still
+catches is a pre-existing test that was *passing* when the tests were frozen
+and is skipped now — the implementation cannot edit a test, but it can change
+source until one stops collecting. `verify-red` records the rest of the suite's
+status in `tests.lock.json` so the two can be told apart, and green prints how
+many it allowed on its pass path, because a test that did not run is a
+criterion nobody exercised whoever skipped it.
+
 **An external dependency behind a fake is not verified by anything here.** The
 plan's `external` list makes that visible and nothing more: an entry with no
 check and no criterion is printed at the gate and re-emitted at close as a manual

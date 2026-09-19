@@ -67,6 +67,12 @@ fresh_project() {
   mkdir -p src tests
   printf 'def users():\n    return []\n' >src/app.py
   printf '# a pre-existing, green test\n' >tests/t0.py
+  # A pre-existing SKIPPED test — a platform guard, a slow marker, an
+  # importorskip. Ordinary in any real repository, and for one release it made
+  # green unpassable: it rejected anything not "pass" across the whole report,
+  # while verify-red explicitly allowed a skip. Every scenario here now carries
+  # one, so the disagreement cannot come back unnoticed.
+  printf '# skipped on this platform\n' >tests/t9.py
   git add -A && git commit -qm init >/dev/null
 
   "$AIF" init anthropic >/dev/null 2>&1 || {
@@ -85,7 +91,7 @@ row() { # <id> <file> <green?>
     printf '<testcase name="%s" file="%s"><failure message="assert marker missing">AssertionError: assert marker missing</failure></testcase>' "$1" "$2"
   fi
 }
-body="$(row t0 tests/t0.py 1)"
+body="$(row t0 tests/t0.py 1)<testcase name=\"t9\" file=\"tests/t9.py\"><skipped message=\"not on this platform\"/></testcase>"
 for n in 1 2 3; do
   [ -f "tests/t$n.py" ] || continue
   g=0; grep -q "impl$n" src/app.py 2>/dev/null && g=1
@@ -225,6 +231,12 @@ eq "the ready gate's pass is in the ledger" \
 eq "one commit per accepted station, plus intake and report" \
   "$(git log --format=%s | grep -c '^aif: ')" "5"
 eq "the run record reached done" "$(jq -r '.stage' tasks/AIF-1/run.json)" "done"
+eq "a pre-existing skipped test did not block green" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-1/ledger.json)" "pass"
+eq "and green said it allowed one" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-1/ledger.json | grep -c 'skipped elsewhere')" "1"
+eq "the freeze recorded what the rest of the suite looked like" \
+  "$(jq -r '.suite_at_freeze.t9' tasks/AIF-1/tests.lock.json)" "skipped"
 eq "the tool wrote the plan's binding, not the model" \
   "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
   "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"

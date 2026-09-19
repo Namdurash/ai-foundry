@@ -1,7 +1,7 @@
 ---
 name: aif-setup
 description: Set the foundry up on this machine — find out which roles (analyst, project manager, worker) can run here and what each is missing, fix what can be fixed, ask the user only for what only they have (which board, a token they create themselves), and never claim readiness that `aif doctor` did not confirm. Use right after `aif init`, when a role fails for a missing tool or token, or when the user invokes /aif-setup.
-requires: []
+requires: [claude]
 ---
 
 # aif-setup — the machine, made ready
@@ -43,8 +43,9 @@ that it should be rotated, and still point them at the command.
 aif doctor --json --probe
 ```
 
-`--probe` runs the project's test command once — a side effect, which is why it is
-opt-in, and why it is needed here: the worker cannot be called ready without it. Read
+`--probe` runs the project's test command once AND spawns the runner once — side
+effects, which is why it is opt-in, and why it is needed here: the worker cannot be
+called ready without both. Read
 `roles[]`: each has `ready` (`true`, `false`, or `null` for "not known"), `missing[]`
 and `unknown[]`, each entry a capability with `doctor`'s own explanation.
 
@@ -81,8 +82,15 @@ Show the table as it is — one line per role, ✓ / ✗ / ? — before doing an
   the suite collected nothing — a project with no tests yet cannot be worked; say so).
 - Fix, then `aif doctor --probe` again.
 
-**`claude`** — the runner. `brew install --cask claude-code` on macOS; then `claude`
-once to log in. You cannot log in for them.
+**`claude`** — a session to type a skill into. `brew install --cask claude-code` on
+macOS. If this one is ✗, the user cannot even be reading you, so say it and stop.
+
+**`claude-headless`** — the worker spawning `claude -p` and getting an answer. It is a
+*different* question from the one above and fails on its own: the CLI keeps its own
+stored OAuth session, separate from the app the user is talking to, and it expires
+while everything they can see keeps working (docs/FINDINGS.md #7). The fix is theirs to
+run, in their terminal: `claude`, then `/login` if it does not ask. You cannot log in
+for them. Reported `?` until `aif doctor --probe` actually spawns one.
 
 **`git-worktree`** — git 2.5 or newer. Almost always present; if not, say which git
 they have.

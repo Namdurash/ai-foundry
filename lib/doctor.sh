@@ -237,35 +237,54 @@ _aif_doctor_caps() {
   # answers here (aif doctor --probe)" at someone who had just run exactly
   # that — advice contradicting the command that produced it.
   local root="$1" probe="$2" probe_runner="${3:-$2}"
-  local c_ok c_d g_ok g_d t_ok t_d b_ok b_d p_ok p_d out
+  local c_ok c_d h_ok h_d g_ok g_d t_ok t_d b_ok b_d p_ok p_d out
 
-  # Installed is not the same claim as "will answer", and only --probe can ask
-  # the second one. Without it this reports presence and SAYS SO, rather than
-  # letting a green tick stand for a question nobody asked (FINDINGS #12).
+  # TWO capabilities, because the roles ask two different questions of the
+  # runner and collapsing them gets one of them wrong whichever way you pick:
+  #
+  #   claude           — is there a session to type a skill INTO? A skill is
+  #                      prompt text a model already running reads; /aif-ba
+  #                      spawns nothing. Presence is the whole question, and it
+  #                      is answerable for free.
+  #   claude-headless  — can aif SPAWN a runner and get an answer? That is the
+  #                      worker's first dispatch, and only --probe can ask it.
+  #
+  # The case that forced the split: a machine whose interactive app works fine
+  # while the CLI's own stored OAuth session has expired (FINDINGS #7, narrowed
+  # twice). There, the analyst really is ready and the worker really is not —
+  # one capability cannot say both.
+  if aif_have claude; then
+    c_ok=true
+    c_d="$(aif_runner_version claude) — a session to run the skills in"
+  else
+    c_ok=false
+    c_d="claude is not installed — brew install --cask claude-code"
+  fi
+
   if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
     # The offline seam: a scripted command stands in for the runner, which is
     # how the check suite drives the whole worker without a model. Probing
     # claude here would ask about something no station is going to use — and
     # would put a billed call inside `make check`.
-    c_ok=true
-    c_d="substituted by AIF_WORK_STATION_CMD — a scripted runner is in use"
-  elif ! aif_have claude; then
-    c_ok=false
-    c_d="claude is not installed — brew install --cask claude-code"
+    h_ok=true
+    h_d="substituted by AIF_WORK_STATION_CMD — a scripted runner is in use"
+  elif [ "$c_ok" = false ]; then
+    h_ok=false
+    h_d="claude is not installed — brew install --cask claude-code"
   elif [ "$probe_runner" -eq 1 ]; then
     # shellcheck source=lib/runner_claude.sh
     . "$AIF_ROOT/lib/runner_claude.sh"
-    local c_out
-    if c_out="$(aif_runner_claude_probe)"; then
-      c_ok=true
-      c_d="$(aif_runner_version claude) — $c_out"
+    local h_out
+    if h_out="$(aif_runner_claude_probe)"; then
+      h_ok=true
+      h_d="spawned and $h_out"
     else
-      c_ok=false
-      c_d="$(aif_runner_version claude) is installed but did not answer: $c_out"
+      h_ok=false
+      h_d="installed but a spawned run did not answer: $h_out"
     fi
   else
-    c_ok=null
-    c_d="$(aif_runner_version claude) is installed — not asked whether it answers here (aif doctor --probe)"
+    h_ok=null
+    h_d="not asked whether a spawned run answers here (aif doctor --probe)"
   fi
 
   if ! aif_have git; then
@@ -320,10 +339,12 @@ _aif_doctor_caps() {
     p_d="python3 is not installed — verify-red and green degrade to coarse mode"
   fi
 
-  jq -n --argjson c "$c_ok" --arg cd "$c_d" --argjson g "$g_ok" --arg gd "$g_d" \
+  jq -n --argjson c "$c_ok" --arg cd "$c_d" --argjson h "$h_ok" --arg hd "$h_d" \
+    --argjson g "$g_ok" --arg gd "$g_d" \
     --argjson t "$t_ok" --arg td "$t_d" --argjson b "$b_ok" --arg bd "$b_d" \
     --argjson p "$p_ok" --arg pd "$p_d" '
-    { "claude":         { ok: $c, detail: $cd },
+    { "claude":          { ok: $c, detail: $cd },
+      "claude-headless": { ok: $h, detail: $hd },
       "git-worktree":   { ok: $g, detail: $gd },
       "test-toolchain": { ok: $t, detail: $td },
       "board":          { ok: $b, detail: $bd },

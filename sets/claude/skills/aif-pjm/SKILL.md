@@ -1,7 +1,7 @@
 ---
 name: aif-pjm
 description: The project manager — keeps the board honest so the human can see the state of the project instead of holding it in their head. Orders the Ready column, links related tickets, reads the reviewer's comments on cards in Review and routes them (rework, cancel, question), finds cards that have sat too long in Needs Human, and gives a five-line status. Works only through `aif board`; never starts a build, never edits a ticket's text. Use when the user asks what is on the board, wants Ready ordered or a ticket prioritised, wants a review comment acted on, or invokes /aif-pjm.
-requires: [board]
+requires: [claude, board]
 ---
 
 # aif-pjm — the project manager

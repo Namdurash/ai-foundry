@@ -22,10 +22,17 @@
 # and the six columns exist", not "a token exists". A role that names a
 # capability no probe knows is reported as not ready with "unknown capability"
 # — a typo in a skill's frontmatter must not read as ready.
+#
+# `claude` and `claude-headless` are deliberately two, and every role has to
+# pick the one it means. A SKILL is prompt text a model already running reads,
+# so it needs a session to be typed into and nothing more. The WORKER spawns
+# `claude -p` itself, which is a different thing that can fail on its own —
+# and does: on a machine whose interactive app works while the CLI's stored
+# session has expired, the analyst is ready and the worker is not.
 
 # aif_roles_builtin — "role<TAB>requires…" for roles that are not skills.
 aif_roles_builtin() {
-  printf 'worker\tclaude git-worktree test-toolchain board\n'
+  printf 'worker\tclaude-headless git-worktree test-toolchain board\n'
 }
 
 # aif_role_requires_of_skill <SKILL.md> — the `requires:` list, space-separated.

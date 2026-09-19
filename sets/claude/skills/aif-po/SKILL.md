@@ -1,7 +1,7 @@
 ---
 name: aif-po
 description: The product partner — think a need through with the user before anyone writes a ticket. Asks what is wrong now, what should be true after, and who feels the difference; pushes back on scope; names what is deliberately out. Writes a request at requests/<slug>.md that the analyst (/aif-ba) cuts into tickets. Use when the user has an idea, a complaint, a half-formed feature, or a pile of feedback and wants to work out what to build — not when they already know and want it built.
-requires: []
+requires: [claude]
 ---
 
 # aif-po — the product partner

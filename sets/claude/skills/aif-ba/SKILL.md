@@ -1,7 +1,7 @@
 ---
 name: aif-ba
 description: The analyst — turns a need into a ticket the worker can build without asking anyone anything. Writes the GIVEN/WHEN/THEN criteria WITH the user, in conversation, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, turn an idea or a product request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
-requires: [board]
+requires: [claude, board]
 ---
 
 # aif-ba — the analyst

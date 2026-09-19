@@ -203,9 +203,17 @@ aif_runner_claude_probe() {
   case "$err" in
     *authenticat* | *Authenticat* | *401*)
       if [ "${CLAUDECODE:-}" = "1" ]; then
+        # shellcheck disable=SC2016  # backticks are prose here, not substitution
         printf '%s — but this ran INSIDE a Claude Code session, where a nested run is confounded (FINDINGS #7). Run `aif doctor --probe` from your own terminal before believing it' "$err"
-        return 1
+      else
+        # shellcheck disable=SC2016  # backticks are prose here, not substitution
+        # Not nested, so the credential really is the problem, and the fix is
+        # one command in the shell the user is already in. Saying only what
+        # failed leaves them to guess that the CLI has its own stored session,
+        # separate from whatever app they were just talking to.
+        printf '%s — sign the CLI in again: run `claude` in this shell (then /login if it does not ask)' "$err"
       fi
+      return 1
       ;;
   esac
   printf '%s' "$err"

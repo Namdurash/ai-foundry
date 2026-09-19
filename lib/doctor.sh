@@ -464,19 +464,27 @@ aif_doctor() {
     return 0
   fi
 
-  # The closing line has to agree with the table above it. Printing
-  # `then aif work` under a worker marked ✗ is the same defect as a green
-  # doctor in a directory where `aif init` cannot run: advice contradicting
-  # the report that carries it.
+  # The closing line has to agree with the table above it, and it has to say
+  # WHERE each command is typed. `aif` is a shell command; `/aif-setup` is a
+  # Claude Code session command. Printed side by side with nothing to tell
+  # them apart, the second one gets typed into zsh — which is exactly what
+  # happened the first time this line existed.
   local blocked
   blocked="$(printf '%s' "$roles" | jq -r '[ .[] | select(.ready == false) | .role ] | join(", ")')"
   if [ -n "$blocked" ]; then
-    printf 'next: fix what the roles above are missing (%s). %s/aif-setup%s walks it with you.\n' \
-      "$blocked" "$AIF_C_BOLD" "$AIF_C_RESET"
+    # The ✗ rows above already carry the reason and the remedy; repeating them
+    # here would double the longest lines on the screen.
+    printf 'next: %s cannot run yet — see the %s✗%s above.\n' \
+      "$blocked" "$AIF_C_RED" "$AIF_C_RESET"
+    printf '      Fix it here in the shell, or open Claude Code in this project and type\n'
+    printf '      %s/aif-setup%s %s— a session command, not a shell one.%s\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$AIF_C_RESET"
     return 1
   fi
 
-  printf 'next: %s/aif-ba <ID> "<what to build>"%s, then %saif work%s\n' \
-    "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_BOLD" "$AIF_C_RESET"
+  printf 'next: in a Claude Code session:  %s/aif-ba <ID> "<what to build>"%s\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET"
+  printf '      then back in this shell:   %saif work%s\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET"
   return 0
 }

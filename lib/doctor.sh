@@ -48,8 +48,23 @@ _aif_doctor_tooling() {
 # resolves to general-purpose — a quiet tier downgrade on the quality mechanism).
 _aif_doctor_project() {
   local root config
-  root="$(aif_project_root 2>/dev/null)" || return 0
-  [ -d "$root/.aif" ] || return 0
+  if ! root="$(aif_project_root 2>/dev/null)"; then
+    # The precondition everything else rests on, and the one a fresh machine
+    # hits first: `aif init` refuses outside a repository, but doctor used to
+    # print a clean bill of health here and say what it could drive. A report
+    # that is green where the next command is guaranteed to fail is worse than
+    # no report.
+    printf '\n%sProject%s\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    printf '  %s %-14s %snot a git repository — aif needs one. Run: git init%s\n' \
+      "$(aif_no)" "git" "$AIF_C_YELLOW" "$AIF_C_RESET"
+    return 1
+  fi
+  if [ ! -d "$root/.aif" ]; then
+    printf '\n%sProject%s  %s%s%s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$root" "$AIF_C_RESET"
+    printf '  %s %-14s %saif is not installed here. Run: aif init%s\n' \
+      "$(aif_no)" "set" "$AIF_C_YELLOW" "$AIF_C_RESET"
+    return 1
+  fi
 
   printf '\n%sProject%s  %s%s%s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$root" "$AIF_C_RESET"
 
@@ -217,12 +232,33 @@ _aif_doctor_caps() {
   local root="$1" probe="$2"
   local c_ok c_d g_ok g_d t_ok t_d b_ok b_d p_ok p_d out
 
-  if aif_have claude; then
+  # Installed is not the same claim as "will answer", and only --probe can ask
+  # the second one. Without it this reports presence and SAYS SO, rather than
+  # letting a green tick stand for a question nobody asked (FINDINGS #12).
+  if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
+    # The offline seam: a scripted command stands in for the runner, which is
+    # how the check suite drives the whole worker without a model. Probing
+    # claude here would ask about something no station is going to use — and
+    # would put a billed call inside `make check`.
     c_ok=true
-    c_d="$(aif_runner_version claude)"
-  else
+    c_d="substituted by AIF_WORK_STATION_CMD — a scripted runner is in use"
+  elif ! aif_have claude; then
     c_ok=false
     c_d="claude is not installed — brew install --cask claude-code"
+  elif [ "$probe" -eq 1 ]; then
+    # shellcheck source=lib/runner_claude.sh
+    . "$AIF_ROOT/lib/runner_claude.sh"
+    local c_out
+    if c_out="$(aif_runner_claude_probe)"; then
+      c_ok=true
+      c_d="$(aif_runner_version claude) — $c_out"
+    else
+      c_ok=false
+      c_d="$(aif_runner_version claude) is installed but did not answer: $c_out"
+    fi
+  else
+    c_ok=null
+    c_d="$(aif_runner_version claude) is installed — not asked whether it answers here (aif doctor --probe)"
   fi
 
   if ! aif_have git; then
@@ -361,7 +397,8 @@ aif_doctor() {
 
   _aif_doctor_runners
   _aif_doctor_tooling
-  _aif_doctor_project
+  local project_rc=0
+  _aif_doctor_project || project_rc=$?
 
   local probe_rc=0
   if [ "$probe" -eq 1 ]; then
@@ -384,7 +421,11 @@ aif_doctor() {
   fi
 
   printf '\n'
-  [ "$probe_rc" -eq 0 ] || return 1
+
+  if ! aif_have jq; then
+    aif_warn "jq is missing — nothing here works without it"
+    return 1
+  fi
 
   local available
   available="$(aif_runners_available)"
@@ -395,12 +436,26 @@ aif_doctor() {
     return 1
   fi
 
-  printf 'aif can drive:%s\n' "$(printf ' %s' "$available")"
-
-  if ! aif_have jq; then
-    aif_warn "jq is missing — init and test will need it"
+  # The single most useful line: what to do next, here, now. A report that ends
+  # with a capability list leaves the reader to work out the blocker themselves,
+  # and the blocker is usually one command.
+  if [ "$project_rc" -ne 0 ]; then
     return 1
   fi
+  if [ ! -f "$(aif_project_config "$root")" ]; then
+    printf 'next: %saif project init%s\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 1
+  fi
+  if [ "$probe_rc" -ne 0 ]; then
+    return 1
+  fi
+  if [ "$probe" -eq 0 ]; then
+    printf 'next: %saif doctor --probe%s — runs your test command and the runner once, which is the only way to know they work here\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 0
+  fi
 
+  printf 'next: %s/aif-ba <ID> "<what to build>"%s, then %saif work%s\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_BOLD" "$AIF_C_RESET"
   return 0
 }

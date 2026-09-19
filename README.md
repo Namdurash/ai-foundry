@@ -153,11 +153,18 @@ environments. It is not a rule, and nothing here is designed around it; see
 brew install Namdurash/tap/aif
 ```
 
-Or, to run it straight from a clone:
+Or, to run **this clone** rather than the tap — which is what you want while
+developing it:
 
 ```sh
-ln -s /path/to/ai-foundry/bin/aif /opt/homebrew/bin/aif
+cd /path/to/ai-foundry
+make link      # symlinks bin/aif onto PATH, and brew-unlinks the tap first
+make unlink    # and back
 ```
+
+The tap and a clone install the same command name. `make link` says which one
+you end up with and prints the version, because the failure mode otherwise is
+silent: you edit the clone, type `aif`, and run the tap's older copy.
 
 ### Once, per project
 
@@ -166,7 +173,10 @@ aif init              # install the set, pick a profile
 aif project init      # detect the runner, and ask what "done" means here —
                       # then REVIEW .aif/project.json, especially test.command
 aif doctor --probe    # which ROLES can run here — analyst, project manager,
-                      # worker — and what each is missing
+                      # worker — and what each is missing. --probe is the only
+                      # form that ASKS: it runs your test command once and
+                      # calls the runner once. Without it a capability that
+                      # was not asked about reads "?", never "✓"
 aif board init local  # …or: aif board init trello --board <url> --create-lists
 aif project checks    # ask again later, when the Definition of Done moves
 aif test L0-smoke --profile anthropic --runs 3   # smoke: does the model answer?

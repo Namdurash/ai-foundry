@@ -150,6 +150,40 @@ aif_runner_claude_station() {
   )
 }
 
+# aif_runner_claude_probe — does this runner actually ANSWER here?
+#
+# `aif_have claude` says a binary is on PATH. That is not the question the
+# worker's first dispatch asks, and the difference is not hypothetical: a
+# nested `claude -p` failed to authenticate in the very probe that established
+# the flag set (docs/FINDINGS.md #12), on a machine where `aif doctor` was
+# reporting the runner green. A presence check that reads as a readiness check
+# is the same defect as a fail-open hook — it reports "fine" for "not asked".
+#
+# One turn, no tools, no session persistence. Echoes a one-line verdict.
+# rc 0 the runner answered · 1 it did not.
+aif_runner_claude_probe() {
+  local out rc=0 err
+  out="$(claude -p 'Reply with exactly: ok' \
+    --output-format json \
+    --max-turns 1 \
+    --tools "" \
+    --no-session-persistence \
+    --setting-sources project,local 2>&1)" || rc=$?
+
+  if [ -z "$out" ]; then
+    printf 'the runner produced no envelope (exit %s)' "$rc"
+    return 1
+  fi
+  if printf '%s' "$out" | jq -e '.is_error == false' >/dev/null 2>&1; then
+    printf 'answered in %s turn(s)' "$(printf '%s' "$out" | jq -r '.num_turns // 0')"
+    return 0
+  fi
+  err="$(printf '%s' "$out" | jq -r '.result // empty' 2>/dev/null | head -1)"
+  [ -n "$err" ] || err="$(printf '%s' "$out" | head -1)"
+  printf '%s' "$err"
+  return 1
+}
+
 # aif_runner_claude_result_usage <result.json> — the four token classes, as a
 # JSON object. Zeros where the envelope has none, so a row is never missing a
 # key — the failure path must record the same fields as the success path.

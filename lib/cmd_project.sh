@@ -53,6 +53,34 @@ _aif_detect_runner() {
   fi
 }
 
+# _aif_pytest_launcher <root> — how pytest is actually invoked HERE.
+#
+# The template shipped a bare `pytest`, and on any project with a virtualenv —
+# which on macOS with a Homebrew python is close to every project — that is
+# exit 127 at the first gate. Worse, it is not curable in the file: the next
+# `aif project init pytest` writes the same broken line again.
+#
+# aif still learns nothing about python. It reads what the PROJECT already
+# declares about itself — a venv directory, a lockfile — exactly as the checks
+# interview reads package.json scripts and Makefile targets, and it prints what
+# it chose so a wrong guess is visible once rather than at the first gate.
+_aif_pytest_launcher() {
+  local root="$1"
+  if [ -x "$root/.venv/bin/pytest" ]; then
+    printf '.venv/bin/pytest\tthis project has a .venv with pytest in it'
+  elif [ -x "$root/venv/bin/pytest" ]; then
+    printf 'venv/bin/pytest\tthis project has a venv with pytest in it'
+  elif [ -f "$root/uv.lock" ] && aif_have uv; then
+    printf 'uv run pytest\tuv.lock is present and uv is installed'
+  elif [ -f "$root/poetry.lock" ] && aif_have poetry; then
+    printf 'poetry run pytest\tpoetry.lock is present and poetry is installed'
+  elif aif_have pytest; then
+    printf 'pytest\tpytest is on PATH'
+  else
+    printf 'python3 -m pytest\tnothing else was detected; this at least fails with a readable error rather than exit 127'
+  fi
+}
+
 # Candidate checks, as "name<TAB>command", from what the project ALREADY
 # declares about itself.
 #
@@ -227,6 +255,22 @@ _aif_project_init() {
   mkdir -p "$(dirname "$dest")"
   cp "$template" "$dest"
 
+  # Adapt the template's test command to how this project is actually run.
+  if [ "$runner" = "pytest" ]; then
+    local launcher why tab tmp
+    tab="$(printf '\t')"
+    launcher="$(_aif_pytest_launcher "$root")"
+    why="${launcher#*"$tab"}"
+    launcher="${launcher%%"$tab"*}"
+    tmp="$(aif_tmpfile "$dest")"
+    jq --arg l "$launcher" \
+      '.test.command = ($l + " -q --junitxml=.aif/tmp/report.xml")
+       | .test.select = ($l + " -q --junitxml=.aif/tmp/report.xml {ids}")' \
+      "$dest" >"$tmp" && mv "$tmp" "$dest"
+    printf '%stest command%s %s  %s(%s)%s\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET" "$launcher" "$AIF_C_DIM" "$why" "$AIF_C_RESET"
+  fi
+
   _aif_write_checks "$dest" "$(_aif_collect_checks "$root" "$ask")"
 
   local problems
@@ -238,6 +282,8 @@ _aif_project_init() {
 
   printf '%swrote%s %s (runner: %s)\n' "$AIF_C_GREEN" "$AIF_C_RESET" ".aif/project.json" "$runner"
   printf '%sReview it — the test command and paths are a starting point, not a guess that is always right.%s\n' \
+    "$AIF_C_DIM" "$AIF_C_RESET"
+  printf '%sThen confirm it actually runs here: aif doctor --probe%s\n' \
     "$AIF_C_DIM" "$AIF_C_RESET"
 }
 

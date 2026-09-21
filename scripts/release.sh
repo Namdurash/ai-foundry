@@ -92,6 +92,7 @@ verify() {
     printf 'release: v%s is tagged and the tap serves it\n' "$v"
     return 0
   fi
+  # shellcheck disable=SC2016  # backticks are prose here, not substitution
   printf 'release: v%s is tagged, the tap still serves %s — `brew install` hands out the old one\n' "$v" "${fv:-?}" >&2
   printf '         make release V=%s\n' "$v" >&2
   return 1
@@ -198,6 +199,7 @@ cut_release() {
 
   printf '\nreleased %s\n' "$version"
   printf '  install:  brew update && brew upgrade %s/aif\n' "$TAP_NAME"
+  # shellcheck disable=SC2016  # backticks are prose here, not substitution
   printf '  a clone on PATH shadows the tap — `make unlink` first if `which aif` is a symlink here\n'
 }
 

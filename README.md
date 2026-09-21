@@ -871,6 +871,31 @@ make lint    # shellcheck
 `${var,,}`. `make check` runs the entry point under `/bin/bash` on purpose, so a
 newer bash on `PATH` cannot mask an incompatibility.
 
+### Releasing
+
+A release is the tag **and** the tap. `aif` is installed with
+`brew install Namdurash/tap/aif`, so a tag the formula does not point at is a
+version nobody can install — `brew upgrade` goes on handing out the previous one
+and says nothing about it. 0.5.0 shipped that way for two days.
+
+```sh
+make release V=0.5.1
+```
+
+That bumps both version markers (`AIF_VERSION` and `SET_VERSION` — the bottle is
+a CLI-and-set pair and the formula's own test asserts they agree), runs lint and
+check, commits, tags, pushes, then points `Namdurash/homebrew-tap` at the new
+tarball and pushes that too.
+
+GitHub only builds the tarball once the tag is pushed, so the two halves cannot
+be simultaneous. Every step is therefore idempotent: if it stops in between, run
+the same command again and it resumes at the first thing that did not happen.
+`make check` ends with `scripts/release.sh --verify`, which is silent while a
+version is unreleased and fails the moment a tag exists that the tap does not
+serve.
+
+Never `git tag` a release by hand.
+
 ## Roadmap
 
 - [x] CLI skeleton, `aif doctor`

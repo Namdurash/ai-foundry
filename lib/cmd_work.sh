@@ -75,6 +75,29 @@ _aif_work_say() {
   printf '%s%-9s%s %s\n' "$AIF_C_DIM" "$1" "$AIF_C_RESET" "$2" >&2
 }
 
+# _aif_work_abandon — the card stops claiming that work is happening.
+#
+# Armed for EXIT, INT and TERM the moment the card moves to In Progress, and it
+# has to cover all three. Ctrl-C and a supervisor's TERM are the obvious two;
+# the common one is neither — it is any `aif_die` or `set -e` failure between
+# the move and the report, which used to leave the card In Progress with
+# nobody working on it. That is the same defect as a meter that quietly did
+# not fire, and for one release the handler meant to prevent it was disarmed
+# by the first ledger write of every run (docs/DEFECTS-3.md #1-#3).
+#
+# Idempotent, and silent once the run has settled the card itself. Where it
+# does act it exits 1, because a run nobody finished IS "stopped, needs a
+# human" — which is what 1 means here.
+_aif_work_abandon() {
+  [ "${AIF_WORK_SETTLED:-0}" = "0" ] || return 0
+  AIF_WORK_SETTLED=1
+  [ -n "${AIF_WORK_CARD:-}" ] || return 0
+  aif_board_move "$AIF_WORK_ROOT" "$AIF_WORK_CARD" needs_human >/dev/null 2>&1 || true
+  printf '\n%s did not finish — moved to needs_human; the branch keeps what was accepted\n' \
+    "$AIF_WORK_CARD" >&2
+  exit 1
+}
+
 # _aif_work_preflight <root> <profile> — everything that can refuse a run
 # before it costs anything: the project's config, the stations, the runner and
 # its credential, the board as configured, and the test toolchain.
@@ -547,14 +570,16 @@ aif_cmd_work() {
     exit 3
   fi
 
-  # From here the card says work is happening. If the run is killed — Ctrl-C,
-  # a closed terminal — that claim outlives it, and a card sitting in In
-  # Progress with nobody working on it is the same defect as a meter that
-  # quietly did not fire. The trap puts it back where a human will look; the
-  # normal paths clear it before moving the card themselves.
-  # shellcheck disable=SC2064  # expand now: the locals are gone at fire time
-  trap "aif_board_move '$root' '$ticket' needs_human >/dev/null 2>&1 || true; \
-        printf '\ninterrupted — %s moved to needs_human; the branch keeps what was accepted\n' '$ticket' >&2" INT TERM
+  # From here the card says work is happening, and every way out of this
+  # function has to end that claim. The handler is armed rather than written
+  # inline so that a library taking a trap of its own puts it back instead of
+  # clearing it (lib/common.sh). Its subject travels in globals: a trap fires
+  # with no argument, and on EXIT the locals may already be gone.
+  AIF_WORK_ROOT="$root"
+  AIF_WORK_CARD="$ticket"
+  AIF_WORK_SETTLED=0
+  aif_trap_arm "_aif_work_abandon"
+
 
   local wt
   if [ "$use_worktree" -eq 1 ]; then
@@ -579,7 +604,7 @@ aif_cmd_work() {
       printf '%s\n' "${AIF_WORK_NOT_READY:-the ticket does not exist in this checkout}" | sed 's/^/    /'
     } >"$nr"
     (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$nr" >/dev/null) || true
-    trap - INT TERM
+    AIF_WORK_SETTLED=1
     (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
     rm -f "$nr"
     _aif_work_say "board" "$ticket → needs_human, the gate's questions posted"
@@ -715,7 +740,9 @@ $(head -20 "$gate_out")"
   done
   rm -f "$gate_out"
 
-  trap - INT TERM
+  # Still armed: the report reads the ledger, the run record and the plan, and
+  # a failure in any of that is exactly the case where the card must not be
+  # left saying the work is under way.
   _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started"
 
   # The report goes where the human looks — the card — and the card moves to
@@ -734,5 +761,6 @@ $(head -20 "$gate_out")"
   else
     _aif_work_say "board" "$ticket → $col, report posted"
   fi
+  AIF_WORK_SETTLED=1
   [ "$status" = "built" ]
 }

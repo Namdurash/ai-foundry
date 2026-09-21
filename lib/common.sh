@@ -25,6 +25,34 @@ else
   AIF_C_YELLOW=''
 fi
 
+# Traps are per-process, not per-function: a bare `trap -` anywhere in a
+# library takes the CALLER's handler with it. That is not hypothetical — the
+# worker's interrupt handler was dead from the first ledger write onwards, and
+# had been since the day it was written (docs/DEFECTS-3.md #1).
+#
+# So a command that needs a handler to outlive the libraries it calls arms it
+# here, and a library that needs a trap of its own restores it here afterwards
+# rather than clearing the slate.
+# shellcheck disable=SC2034  # read by the modules that source this file
+AIF_TRAP_ARMED=""
+
+# aif_trap_arm <handler> — run <handler> on EXIT, INT and TERM.
+aif_trap_arm() {
+  AIF_TRAP_ARMED="$1"
+  # shellcheck disable=SC2064  # the handler IS the argument; expanding it now
+  trap "$1" EXIT INT TERM
+}
+
+# aif_trap_restore — put back whatever was armed, or clear if nothing was.
+aif_trap_restore() {
+  if [ -n "${AIF_TRAP_ARMED:-}" ]; then
+    # shellcheck disable=SC2064  # same: put back the handler, not a reference
+    trap "$AIF_TRAP_ARMED" EXIT INT TERM
+  else
+    trap - EXIT INT TERM
+  fi
+}
+
 aif_err() {
   printf '%serror:%s %s\n' "$AIF_C_RED" "$AIF_C_RESET" "$*" >&2
 }

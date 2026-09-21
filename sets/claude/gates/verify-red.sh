@@ -220,7 +220,7 @@ while IFS= read -r ac; do
      | if test("^`[^`]+`$") then .[1:-1] else . end')"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    grep -qF "$ac" "$root/$f" 2>/dev/null && local_hit=1
+    grep -qF -- "$ac" "$root/$f" 2>/dev/null && local_hit=1
   done <<EOF
 $test_files
 EOF
@@ -229,10 +229,16 @@ $ac is not referenced by any test file"
 
   # The expected literal must appear in some test — the cheap guard against a
   # test that is red now but green against any stub.
+  #
+  # `--` because the pattern is the ticket's own value: an expect of "-1" — what
+  # indexOf returns, what a criterion about a missing item asserts — is an
+  # OPTION to grep, and the search silently answers "not found" about a test
+  # where the literal plainly is. The station cannot fix that; it burns
+  # attempts_max runs and stops the ticket.
   lit_hit=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    grep -qF "$expect" "$root/$f" 2>/dev/null && lit_hit=1
+    grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_hit=1
   done <<EOF
 $test_files
 EOF

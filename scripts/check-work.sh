@@ -186,7 +186,12 @@ PLAN
         # BEFORE it has written the lock file its verdict would bind to.
         printf '# nothing to see here\n' >"$wt/tests/t$i.py"
       else
-        printf '# AC-00%s asserts impl%s\n' "$i" "$i" >"$wt/tests/t$i.py"
+        # The expect literal goes into the test, because that is what
+        # verify-red greps for. An expect of "-1" is a grep OPTION unless the
+        # gate passes `--`, and without it this scenario fails outright.
+        exp="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' |
+          jq -r --arg id "AC-00$i" '.acceptance[] | select(.id==$id) | .expect')"
+        printf '# AC-00%s asserts impl%s — expects %s\n' "$i" "$i" "$exp" >"$wt/tests/t$i.py"
       fi
     done
     ;;
@@ -220,7 +225,7 @@ ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
   "acceptance": [
     { "id": "AC-001", "surface": "export",
       "given": "users exist", "when": "the export runs",
-      "then": "writes the marker", "expect": "impl1" }${3:-} ],
+      "then": "writes the marker", "expect": "-1" }${3:-} ],
   "open": ${2:-[]},
   "decided": [
     { "question": "may the export be deferred to a queue?", "answer": "no — synchronous", "by": "default" } ],
@@ -414,6 +419,39 @@ eq "and the report says the green-at-freeze test was never proven red" \
   "$(grep -c 'tests tests.t1::t1' tasks/AIF-1/report.md)" "1"
 eq "the ticket's own gap is on the checklist too" \
   "$(grep -c 'ticket VG-001' tasks/AIF-1/report.md)" "1"
+
+# ================= 7. a run that dies still frees the card ==================
+# The card says work is happening from the moment it moves to In Progress, and
+# the ways out are not only Ctrl-C: any aif_die between the move and the report
+# used to leave it saying that for ever. Forced here by removing the gate the
+# worker needs at intake, which is an aif_die on the far side of the move.
+printf '\n7. a run that cannot start does not leave the card In Progress\n'
+fresh_project "$SANDBOX/p7"
+ticket_for AIF-7
+git add -A && git commit -qm "ticket" >/dev/null
+rm -f .aif/gates/ready.sh
+
+rc=0
+"$AIF" work AIF-7 --no-worktree >"$OUT/run7.out" 2>&1 || rc=$?
+eq "exit 1 — the run stopped" "$rc" "1"
+eq "the card was put back where a human will look" \
+  "$(jq -r '.column' .aif/board/AIF-7.json 2>/dev/null)" "needs_human"
+eq "and the worker said so" "$(grep -c 'did not finish' "$OUT/run7.out")" "1"
+
+# The handler above is armed once and then has to survive every library that
+# takes a trap of its own. aif_ledger_append takes one for its lock, and its
+# `trap -` on the way out used to clear the worker's with it — which made the
+# trap dead from the first ledger write of every run, silently.
+mkdir -p "$SANDBOX/trapwork"
+armed="$(/bin/bash -c '
+  . "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/ledger.sh"
+  aif_ledger_init "$2" T-1
+  aif_trap_arm "true # SENTINEL"
+  aif_ledger_append "$2" "{\"gate\":\"x\",\"result\":\"pass\"}"
+  trap -p INT
+' _ "$ROOT" "$SANDBOX/trapwork" 2>&1)"
+eq "a ledger write leaves the armed handler in place" \
+  "$(printf '%s' "$armed" | grep -c 'SENTINEL')" "1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

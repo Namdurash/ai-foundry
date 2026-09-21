@@ -64,10 +64,12 @@ aif_ledger_append() {
     sleep 0.1 2>/dev/null || sleep 1
   done
   # The path is expanded into the trap NOW, not read from a local at fire time —
-  # by then the local is out of scope. No other trap exists in this codebase, so
-  # clearing it below cannot clobber someone else's.
+  # by then the local is out of scope. The caller's handler is appended rather
+  # than displaced: a signal arriving mid-write must still do whatever the
+  # command had arranged for it, and `trap -` on the way out used to take that
+  # handler with it (docs/DEFECTS-3.md #1).
   # shellcheck disable=SC2064 # expanding now is the point, see above
-  trap "rmdir '$lock' 2>/dev/null || true" EXIT INT TERM
+  trap "rmdir '$lock' 2>/dev/null || true; ${AIF_TRAP_ARMED:-}" EXIT INT TERM
 
   seq=$(($(jq '.entries | length' "$ledger") + 1))
   if [ "$seq" -eq 1 ]; then
@@ -85,7 +87,7 @@ aif_ledger_append() {
     "$ledger" >"$tmp" && mv "$tmp" "$ledger"
 
   rmdir "$lock" 2>/dev/null || true
-  trap - EXIT INT TERM
+  aif_trap_restore
 }
 
 # aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason>

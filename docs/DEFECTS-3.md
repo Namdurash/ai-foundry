@@ -1,8 +1,12 @@
 # Defects — rebuild-3, found by review
 
 Fourteen problems in the machine half, found by reading what 0.5.0 ships and
-running the parts that can be run offline. **None of them is fixed here.** This
-file is the list; the order is roughly the order to fix them in.
+running the parts that can be run offline. This file is the list; the order is
+roughly the order to fix them in.
+
+**Four are now fixed — 1, 2, 3 and 6 — and each says so under its own heading.**
+They are fixed in `main`, which is not the same as released: until a version
+carries them and the tap serves it, nobody's `brew install` has them.
 
 Reviewed at `12830b1` on 2026-09-19, on macOS 26.5.2, bash 3.2.57, awk 20200816,
 jq 1.7.1-apple, git 2.x, claude 2.1.226. Every entry says how it was
@@ -49,6 +53,11 @@ Cost: Ctrl-C leaves the card in In Progress for good — the exact defect the tr
 was written to prevent, and the one the code calls "the same defect as a meter
 that quietly did not fire".
 
+**Fixed.** `aif_trap_arm` / `aif_trap_restore` in `lib/common.sh`: the ledger's
+lock now appends the caller's handler to its own trap and puts it back on the
+way out instead of clearing the slate. `scripts/check-work.sh` asserts that a
+ledger write leaves an armed handler in place.
+
 ### 2. The trap does not stop the run even when it fires — probed
 
 [lib/cmd_work.sh:556-558] moves the card and prints `interrupted — … moved to
@@ -65,6 +74,10 @@ A `kill -TERM` from a supervisor, a timeout or a cancelled CI job reaches only
 `aif`: the card moves to `needs_human`, the message says the run was interrupted,
 and the run carries on spending the budget it was told to stop spending.
 
+**Fixed.** The handler is `_aif_work_abandon`, it is idempotent, and where it
+acts it exits 1 — a run nobody finished is "stopped, needs a human", which is
+what 1 means here.
+
 ### 3. Nothing puts the card back on any other exit — read
 
 The card moves to In Progress at [lib/cmd_work.sh:545] and there is no `EXIT`
@@ -76,6 +89,12 @@ installed), [:610] (`cd` into the worktree) — and, more often, any failure und
 That last one is not hypothetical. The decimal-comma defect (`FINDINGS` #18)
 produced exactly this shape: `run.json` left saying `"status": "running"`,
 `"stage": "plan"`, and a card sitting in In Progress with nobody working on it.
+
+**Fixed.** The handler is armed for `EXIT` as well as `INT`/`TERM`, and stays
+armed through the report — a failure while writing the report is exactly the
+case where the card must not be left claiming the work is under way. Scenario 7
+of `scripts/check-work.sh` forces a die on the far side of the move and asserts
+the card came back.
 
 ### 4. The budget cap reads the number that is structurally zero — read
 
@@ -127,6 +146,10 @@ So a criterion whose expected value is `-1`, `--force`, or any negative number
 passes the ready gate and is then rejected by `verify-red` with *"expected value
 (-1) does not appear in any test"* — about a test where it plainly does. The
 station cannot fix it: it burns `attempts_max` opus runs and stops the ticket.
+
+**Fixed.** `grep -qF --` on both greps in that block. The offline harness now
+asks for an `expect` of `-1` and has the test station write that literal into
+the test it authors, so removing the `--` again fails the first scenario.
 
 ### 7. `_record` and `_commit` fail silently, and everything downstream leans on them — read
 

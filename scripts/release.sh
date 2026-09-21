@@ -101,7 +101,7 @@ verify() {
 # cut — the release itself
 # --------------------------------------------------------------------------
 cut_release() {
-  local version="$1" tap formula branch sha tarball tmp try
+  local version="$1" tap formula branch sha tarball tmp try verb
   case "$version" in
     [0-9]*.[0-9]*.[0-9]*) ;;
     *) die "version must look like 1.2.3, got '$version'" ;;
@@ -181,9 +181,14 @@ cut_release() {
   write_version "$formula" "s|sha256 \".*\"|sha256 \"$sha\"|"
   [ "$(formula_version "$formula")" = "$version" ] || die "the formula did not take the new url"
 
+  # The tap's own convention, kept: a minor bump is a feat there, a patch a fix.
+  verb=fix
+  case "$version" in
+    *.*.0) verb=feat ;;
+  esac
   if [ -n "$(git -C "$tap" status --porcelain)" ]; then
     git -C "$tap" add "$FORMULA"
-    git -C "$tap" commit -q -m "feat: point aif at the v$version tarball" ||
+    git -C "$tap" commit -q -m "$verb: point aif at the v$version tarball" ||
       die "could not commit the formula"
     git -C "$tap" push -q origin HEAD || die "the formula is committed but NOT pushed — push it by hand"
     say "tap → v$version, pushed"

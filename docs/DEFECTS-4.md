@@ -14,6 +14,9 @@ Each entry says how it was established:
 - **reported** — taken on the reporter's word; the mechanism is confirmed,
   the trigger is not.
 
+Section C is later: one run of the same ticket on 0.5.3, which delivered, and
+which found what #2 could not name.
+
 Two defects that were not reported are in section B: both were found while
 reading the same code, and both are in the same family — a gate reading a
 report that describes some other run.
@@ -47,7 +50,7 @@ looks for it, and the verdict was then drawn about a suite that did not run.
 `aif doctor` had cleared it before probing since the probe existed. Both gates
 now do the same.
 
-### 2. Coarse mode persists when the report exists and python3 resolves — **not solved; now instrumented** — reported
+### 2. Coarse mode persists when the report exists and python3 resolves — **instrumented in 0.5.3; the root cause is #11, closed in 0.5.4** — reported
 
 The reporter established, inside the worktree, that `.aif/tmp/report.xml` was
 present at 64 561 bytes, that `python3 .aif/gates/junit.py` parsed it and
@@ -65,16 +68,20 @@ fi
 [ -z "$results" ] && mode="coarse"
 ```
 
-The root cause is still unknown. What is fixed is that it can now be read off
-the output. Each cause is named where it is found, and the name travels to the
+The root cause is **#11**, found on the next run — by this instrumentation and
+nothing else. What is fixed here is that it can be read off the output. Each cause is named where it is found, and the name travels to the
 closing line and into `tests.lock.json` as `mode_reason`:
 
 - `python3 is not on PATH (PATH=…)` — PATH included, because the interesting
   case is exactly a python3 the developer's shell resolves and the gate's
   environment does not;
-- `the suite (exit N) wrote no report at <path>`;
 - `junit.py could not read <path> (exit N) — not the declared format, or it
   holds no test cases`.
+
+The third — *the suite (exit N) wrote no report at <path>* — was a coarse
+cause in 0.5.3, and it is the one #11 recorded. It is not a cause of coarse
+mode any more: since 0.5.4 a suite that wrote no report is an ERROR in both
+gates, because it did not run. Coarse mode describes a report that exists.
 
 The closing line no longer says "install python3", which was the one place the
 answer provably was not.
@@ -255,6 +262,148 @@ oracle is weakest.
 naming the coarse freeze and its recorded reason. The full tree copy is skipped
 in that case too, since there was nothing to learn from it. Scenario 9 of
 `check-work.sh` asserts all three.
+
+---
+
+## C. Found driving the same ticket on 0.5.3
+
+One `aif work OPES-62` run against 0.5.3 (`be8e138`) on 2026-09-22, same machine
+and same project. It is the first run of this ticket that delivered: one attempt
+per station, 3 dispatches, 10 minutes, `stage: done`, card moved to Review. The
+implementation was again correct. The **evidence** behind it was again empty,
+for the reason #2 left open.
+
+### 11. The root cause of #2: a fresh worktree has no `node_modules` — probed — **fixed in 0.5.4**
+
+`tests.lock.json` from that run:
+
+```json
+"mode": "coarse",
+"mode_reason": "the suite (exit 1) wrote no report at .aif/tmp/report.xml",
+"at": "2026-09-22T16:55:50Z",
+"covering": []
+```
+
+**The instrumentation added for #2 is what found this.** The old line said
+"install python3", which sent the last three runs looking at a python that was
+never the problem. The new reason names the suite, and the suite is where it is.
+
+`git worktree add` checks out tracked files. `node_modules` is gitignored, so
+`.aif/worktrees/<ID>` does not have one, and nothing in `aif work` installs
+dependencies before the first gate runs its test command. Parking the directory
+and running the project's own command reproduces the recorded reason exactly:
+
+```
+$ mv node_modules ../nm-parked
+$ JEST_JUNIT_OUTPUT_FILE=.aif/tmp/report.xml npx --no-install jest --ci \
+    --reporters=default --reporters=jest-junit
+● Validation Error:
+
+  Module <rootDir>/node_modules/react-native-worklets/jest/resolver.js in the
+  resolver option was not found.
+         <rootDir> is: /Users/…/opes/.aif/worktrees/OPES-62
+
+EXIT=1
+$ ls .aif/tmp/
+(empty)
+```
+
+Restore the directory and the same command gives 27 suites, 179 tests, and a
+58 KB report. jest dies in config validation — **before it runs a single
+test** — so it never reaches its reporter, and the gate's `mkdir -p` (#1) has
+nothing to do with it: the directory is there and empty.
+
+Note the second-order trap: the resolver path is `<rootDir>`-anchored, which is
+what #8 tells projects to do. Anchoring is right and it is also what makes the
+worktree's missing `node_modules` fatal instead of silently resolving upward to
+the parent checkout's copy.
+
+**Why the 0.5.3 hardening did not catch it.** #2 now matches
+`failure_classes.broken` against the suite's output before accepting coarse red.
+That list is project-authored, and this project's carries `SyntaxError`,
+`Unexpected token`, `Cannot use import statement`, `Test suite failed to run`,
+`must contain at least one test`. A jest **config** failure prints none of them.
+The check assumes the runner started; the failure is that it did not. No regex
+list a project writes in advance can be relied on to cover the ways a runner
+refuses to boot.
+
+**What it cost, exactly.** Coarse red was admitted, so `covering` is empty by
+construction, so #10's fix correctly reported the revert-recheck as not-done —
+and `green` passed anyway:
+
+```
+green: suite passes (revert-recheck NOT done — the lock names no covering test,
+so there was nothing to revert-recheck (the lock is COARSE: the suite (exit 1)
+wrote no report at .aif/tmp/report.xml)), 1 check(s) green
+```
+
+By the time `green` ran, `node_modules` was present in the worktree (mtime
+16:56Z, one minute after the 16:55:50Z freeze; the run ended 16:56:55Z), so that
+suite genuinely ran and genuinely passed. The gap is not the code. It is that
+**nothing in the run established that the frozen tests fail without the
+implementation** — which is the one thing the freeze exists to establish.
+
+Done by hand afterwards, it takes about thirty seconds: reverting the single
+implementation file against the frozen tests puts AC-002 and AC-003 red
+(177/179), and restoring it gives 179/179. The tests are a real oracle. The run
+is simply not what showed that.
+
+**Two fixes, in order of how much they buy.**
+
+1. **Probe the worktree, not the repository.** `aif doctor --probe` runs in the
+   main checkout, where `node_modules` exists — it passed, minutes before this
+   run, and could not have seen the problem. The probe's value is entirely in
+   running where the stations will run. Doing one report-producing suite run
+   inside the freshly created worktree, before dispatching `plan`, converts this
+   from a silent downgrade in rigour into a refusal that costs nothing. It also
+   catches every sibling of it: a missing `bundle install`, a `.env` the runner
+   needs, a native module built out of tree.
+
+2. **Treat "no report at all" as broken, not as red.** A suite that never reached
+   its reporter did not run, and that is structural — it needs no regex and no
+   project cooperation. `mode_reason` already distinguishes the three causes;
+   only one of them is compatible with coarse red. Keep coarse for *junit.py
+   could not read it*, refuse for *the suite wrote no report*. On this run that
+   alone would have stopped the freeze at 16:55:50Z with an accurate message.
+
+A third, smaller: a project-level `prepare` command in `.aif/project.json`
+(`npm ci`, `bundle install`) run once after the worktree is cut. Worth having,
+but 1 and 2 are what make the failure loud, and loud is the part that was
+missing.
+
+**Fixed** (0.5.4), all three, in the order given.
+
+1. The worker cuts the worktree *before* the card moves and probes the suite
+   in it — `_aif_work_ready_worktree` ([lib/cmd_work.sh:223]), the same probe
+   `aif doctor --probe` runs, but where the stations run. A checkout that
+   cannot run the suite is refused with exit 3, nothing spent and no card to
+   put back ([lib/cmd_work.sh:697], ahead of the move at [lib/cmd_work.sh:711]).
+   The preflight probe in the developer's checkout stays, for the one thing
+   only it can see: the `.aif/worktrees/` collision (#8).
+2. No report is no run. `verify-red` answers 3 instead of coarse red
+   ([verify-red.sh:147]); `green` does the same for its own run
+   ([green.sh:171]) and for the reverted one ([green.sh:421]) — a
+   revert-recheck that did not run is not a pass with a caveat. Coarse mode is
+   left with the two causes that describe a report that exists.
+3. `"prepare"` in `.aif/project.json` ([lib/project.sh:141]): a shell command
+   the worker runs once per worktree it cuts, with a marker under `.aif/tmp/`
+   so a resume does not repeat it and a prepare that died halfway is tried
+   again ([lib/cmd_work.sh:232]). Read from the developer's config rather than
+   the branch's, on purpose: the run that gets refused is the one after which
+   the field gets added, to a file the branch does not have yet. The jest
+   template ships `"prepare": "npm ci"` ([jest.json:13]); a project set up
+   before the field existed adds it by hand, and the refusal says so.
+
+Scenarios 14 and 15 of `check-work.sh`: a suite that needs a gitignored
+directory is refused in a fresh worktree — the message, the card unmoved, no
+run started — and with `prepare` set the same ticket is built with a per-test
+freeze. Driven straight at the gate, a runner that does not boot after the
+tests station leaves `verify-red` at `error`, nothing frozen, `implement`
+never dispatched.
+
+What this run's `tests.lock.json` would say under 0.5.4 is nothing: the run
+stops at the worktree probe, ten minutes and three dispatches earlier, with
+`wrote no report` and the name of the field to set.
 
 ---
 

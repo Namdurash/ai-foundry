@@ -167,7 +167,22 @@ aif_prune_empty_dirs() {
   done
 }
 
-# aif_sha256 <file> — hex digest, empty if no digest tool is available.
+# aif_require_sha256 — refuse to run without a digest tool.
+#
+# Every binding this tool records is a hash: the ticket's bytes at intake, the
+# plan's binding to them, the frozen tests, the ledger's chain. With no digest
+# tool the two functions below used to return "" and everything downstream
+# compared "" to "" and said yes — the one comparison that replaced the whole
+# hash cascade, `aif_run_resumable`, silently answered "the ticket has not
+# changed" about any ticket at all, and the report said it built against sha ''
+# (docs/DEFECTS-3.md #9). Its gate twin in _lib.sh has always stopped instead.
+# Called once from bin/aif, before any command that touches a project.
+aif_require_sha256() {
+  aif_have shasum || aif_have sha256sum ||
+    aif_die "no sha256 tool on PATH (shasum or sha256sum) — every binding aif records is a hash, so it refuses rather than record empty ones"
+}
+
+# aif_sha256 <file> — hex digest.
 # macOS ships shasum; most Linux images ship sha256sum; some have both.
 aif_sha256() {
   if aif_have shasum; then
@@ -175,7 +190,7 @@ aif_sha256() {
   elif aif_have sha256sum; then
     sha256sum "$1" 2>/dev/null | cut -d' ' -f1
   else
-    printf ''
+    aif_die "no sha256 tool (shasum or sha256sum)"
   fi
 }
 
@@ -187,7 +202,7 @@ aif_sha256_stdin() {
   elif aif_have sha256sum; then
     sha256sum | cut -d' ' -f1
   else
-    printf ''
+    aif_die "no sha256 tool (shasum or sha256sum)"
   fi
 }
 

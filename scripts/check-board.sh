@@ -56,6 +56,9 @@ printf '\nboard, offline (sandbox: %s)\n' "$SANDBOX"
 
 # Never the developer's real keychain.
 export AIF_SECRETS_DIR="$SANDBOX/secrets"
+# The worker scenarios run --no-worktree, which is refused unless the checkout
+# is declared disposable. These sandboxes are.
+export AIF_DISPOSABLE=1
 
 MOCK_PID=""
 cleanup() { [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null; }
@@ -194,6 +197,24 @@ eq "a move from a worktree lands on the main board" \
   "$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-1") | .column')" "review"
 eq "the board dir is ignored by git" "$(git status --porcelain | grep -c 'board')" "0"
 eq "a card that does not exist is a clear error" "$("$AIF" board move AIF-9 "done" 2>&1 | grep -c 'no card for AIF-9')" "1"
+# Ordering was `date +%s`: three moves inside one second tied on pos, and the
+# tie went to whatever order the glob returned. Now a plain move goes strictly
+# below every card and --top strictly above, whatever the clock says.
+ticket_for AIF-3
+"$AIF" board create tasks/AIF-3/ticket.md >/dev/null
+ticket_for AIF-4
+"$AIF" board create tasks/AIF-4/ticket.md >/dev/null
+"$AIF" board move AIF-2 backlog >/dev/null
+"$AIF" board move AIF-3 ready >/dev/null
+"$AIF" board move AIF-4 ready >/dev/null
+"$AIF" board move AIF-2 ready >/dev/null
+eq "three moves in one second: the first moved is first in Ready" "$("$AIF" board next-ready)" "AIF-3"
+"$AIF" board move AIF-2 ready --top >/dev/null
+eq "--top still wins" "$("$AIF" board next-ready)" "AIF-2"
+"$AIF" board move AIF-2 ready >/dev/null
+eq "and a plain move goes to the bottom, behind the other two" "$("$AIF" board next-ready)" "AIF-3"
+eq "every pos is distinct" \
+  "$("$AIF" board status --json | jq -r '[.[].pos] | (length == (unique | length))')" "true"
 
 # =============================== 3. trello ===================================
 printf '\n3. trello, against a stand-in server\n'

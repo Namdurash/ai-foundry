@@ -301,8 +301,12 @@ else
   else
     coarse_why="the suite (exit $suite_rc) wrote no report at $report_path"
   fi
-  if [ "$suite_rc" -ne 0 ] || grep -qiE 'fail|error' "$work/.suite.out"; then
-    aif_g_reject "the suite is not green (coarse mode: $coarse_why)"
+  # The exit code alone. The grep this used to OR in — `fail|error` anywhere in
+  # the output — rejected a green suite for a test NAMED test_error_handling,
+  # for a captured log line, for tsc's "0 errors", with a complaint no station
+  # could act on (docs/DEFECTS-3.md #5).
+  if [ "$suite_rc" -ne 0 ]; then
+    aif_g_reject "the suite is not green (exit $suite_rc; coarse mode: $coarse_why)"
   fi
 fi
 
@@ -335,16 +339,48 @@ else
   cp -R "$root/." "$scratch/" 2>/dev/null || true
 
   # change files: back to frozen content. create files: remove them.
+  #
+  # From the commit the worker recorded at dispatch, not from the index. The
+  # implement station has Bash, and after one `git commit` from it the index
+  # already held the implementation: the checkout was a no-op, every covering
+  # test stayed green, and this gate told the station its tests were worthless
+  # when what had happened was that it committed (docs/DEFECTS-3.md #8).
+  base="$(aif_g_dispatch_base "$work" "$root")"
   jq -r '.impl_frozen | to_entries[] | .key' "$lock" | while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     # The frozen content is not stored, only its hash — so revert by checking
-    # out the committed version.
-    git -C "$scratch" checkout -q -- "$rel" 2>/dev/null || true
+    # out the baseline's version, and prove it below against that hash.
+    git -C "$scratch" checkout -q "$base" -- "$rel" 2>/dev/null || true
   done
   jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     rm -f "$scratch/$rel"
   done
+
+  # The revert is proven, file by file, against the hashes verify-red froze. A
+  # revert that did not happen used to be indistinguishable from tests that
+  # assert nothing; now it is named for what it is, and it is a 3, because no
+  # retry of the implementation changes what the baseline holds.
+  tab="$(printf '\t')"
+  not_restored=""
+  while IFS="$tab" read -r rel want; do
+    [ -n "$rel" ] || continue
+    [ "$(aif_g_sha256 "$scratch/$rel")" = "$want" ] || not_restored="$not_restored
+$rel"
+  done <<EOF
+$(jq -r '.impl_frozen | to_entries[] | [.key, .value] | @tsv' "$lock")
+EOF
+  not_restored="$(printf '%s' "${not_restored# }" | grep -v '^$' || true)"
+  if [ -n "$not_restored" ]; then
+    rm -rf "$scratch"
+    printf 'ERROR  the revert-recheck could not restore the frozen implementation from %s:\n' \
+      "$(printf '%s' "$base" | cut -c1-10)" >&2
+    printf '%s\n' "$not_restored" | sed 's/^/  - /' >&2
+    printf '  At that commit the file does not match its hash in tests.lock.json. When a gate\n' >&2
+    printf '  is run by hand there is no dispatch baseline, only HEAD — and if the station\n' >&2
+    printf '  committed its work, HEAD already holds the change being reverted.\n' >&2
+    exit "$AIF_G_ERROR"
+  fi
 
   # The scratch is a copy of the tree AFTER the green run, so it carries that
   # run's report. If the reverted run fails to produce one, that stale file is

@@ -111,14 +111,37 @@ _aif_board_local_pull() {
   printf 'pulled %s (local board: the ticket is already in %s/%s/)\n' "$2" "$AIF_TASKS_DIR" "$2"
 }
 
+# _aif_board_local_pos <root> top|bottom — a pos strictly below every card's,
+# or strictly above. It was `date +%s` for a plain move: two moves in one
+# second tied, `sort_by(.pos)` broke the tie by whatever order the glob
+# returned, and `next-ready` stopped being deterministic exactly when the
+# project manager was reordering the queue quickly (docs/DEFECTS-3.md #12).
+#
+# The glob is tested first, on purpose. Handed a pattern that matched nothing,
+# `jq -s` still runs the filter over an empty slurp AND exits non-zero — so a
+# `|| printf 1` fallback printed a second number after jq's, and the first
+# card on a fresh board was created with `--argjson p 11`… which is not JSON.
+_aif_board_local_pos() {
+  local dir n=""
+  dir="$(aif_board_local_dir "$1")"
+  if ls "$dir"/*.json >/dev/null 2>&1; then
+    case "$2" in
+      top) n="$(jq -rs '[ .[].pos ] | (min // 1000000) - 1' "$dir"/*.json 2>/dev/null)" ;;
+      *) n="$(jq -rs '[ .[].pos ] | (max // 0) + 1' "$dir"/*.json 2>/dev/null)" ;;
+    esac
+  fi
+  case "$n" in
+    '' | *[!0-9.-]*) n=1 ;;
+  esac
+  printf '%s' "$n"
+}
+
 _aif_board_local_move() {
   local root="$1" id="$2" col="$3" where="${4:-}" f pos
   f="$(_aif_board_local_require "$root" "$id")"
   case "$where" in
-    top)
-      pos="$(jq -rs '[ .[].pos ] | (min // 1000000) - 1' "$(aif_board_local_dir "$root")"/*.json 2>/dev/null)"
-      ;;
-    *) pos="$(date +%s)" ;;
+    top) pos="$(_aif_board_local_pos "$root" top)" ;;
+    *) pos="$(_aif_board_local_pos "$root" bottom)" ;;
   esac
   jq --arg c "$col" --argjson p "${pos:-0}" --arg at "$(_aif_board_now)" \
     '.column = $c | .pos = $p | .moved_at = $at' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
@@ -148,7 +171,7 @@ _aif_board_local_create() {
     printf 'updated %s (%s) → %s\n' "$id" "$title" "$col"
   else
     jq -n --arg id "$id" --arg t "$title" --arg c "$col" --arg at "$(_aif_board_now)" \
-      --argjson p "$(date +%s)" \
+      --argjson p "$(_aif_board_local_pos "$root" bottom)" \
       '{ ticket: $id, title: $t, column: $c, pos: $p, labels: [], comments: [],
          created_at: $at, moved_at: $at }' >"$f"
     printf 'created %s (%s) → %s\n' "$id" "$title" "$col"
@@ -267,7 +290,10 @@ _aif_trello_pull() {
   mkdir -p "$work"
   # -j, not -r: the description is the file's bytes and the file's bytes are
   # what gets hashed; a newline jq adds on output is a hash that does not match.
-  printf '%s' "$card" | jq -j '.desc' >"$work/ticket.md.tmp"
+  # tr -d '\r': Trello's editor can hand back \r\n, and the file written here is
+  # the bytes the run hashes and the bytes `board create` pushes back — LF, so a
+  # round trip does not change them (docs/DEFECTS-3.md #10).
+  printf '%s' "$card" | jq -j '.desc' | tr -d '\r' >"$work/ticket.md.tmp"
   if ! grep -q '^<!-- aif:meta$' "$work/ticket.md.tmp"; then
     rm -f "$work/ticket.md.tmp"
     aif_die "the card $id has no aif:meta block in its description — it was not written by the analyst (/aif-ba)"

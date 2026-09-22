@@ -8,8 +8,9 @@
 # what the plan says — the pipeline's own machinery, config, and CI must never be
 # edited by an implementation, even one the plan wrongly permitted.
 #
-# The baseline is the last commit, which aif made when the tests station passed.
-# So the diff is exactly what the implement station did.
+# The baseline is the commit the worker recorded when it dispatched the station
+# — the one it made when the tests station passed — so the diff is exactly what
+# the implement station did, whether or not the station committed along the way.
 
 set -uo pipefail
 
@@ -22,6 +23,11 @@ aif_g_need git
 
 work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: scope.sh <work-dir>"
+# Resolved, because the exemptions below are computed as paths RELATIVE to the
+# root, and the root comes back resolved (pwd -P). Handed /var/… on a Mac,
+# where /var is a symlink to /private/var, the prefix never stripped and this
+# gate rejected its own run record as an implementation editing the pipeline.
+work="$(cd "$work" 2>/dev/null && pwd -P)" || aif_g_error "no such work dir: $1"
 
 plan="$work/plan.md"
 project="$(aif_g_project "$work")" || exit $?
@@ -94,10 +100,15 @@ EOF
 }
 
 # What the implement station changed: tracked modifications and deletions since
-# the last commit, plus new untracked files.
-changed="$(git -C "$root" diff --name-only HEAD 2>/dev/null || true)"
+# the baseline, plus new untracked files. The baseline is what the worker
+# recorded at dispatch, not HEAD — a station with Bash can move HEAD, and for
+# one release that emptied this diff (see aif_g_dispatch_base).
+base="$(aif_g_dispatch_base "$work" "$root")"
+[ -n "$base" ] || aif_g_error "scope needs a baseline commit and the repository has none"
+head_now="$(git -C "$root" rev-parse HEAD 2>/dev/null)"
+changed="$(git -C "$root" diff --name-only "$base" 2>/dev/null || true)"
 created="$(git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true)"
-deleted="$(git -C "$root" diff --name-only --diff-filter=D HEAD 2>/dev/null || true)"
+deleted="$(git -C "$root" diff --name-only --diff-filter=D "$base" 2>/dev/null || true)"
 
 # The amendments file itself is under tasks/, so the denylist would reject the
 # very mechanism that exists to be used. Exempted by exact path — not the whole
@@ -153,7 +164,7 @@ aif_g_report "${viol# }" "scope"
 # tasks/ is excluded from the count — the ledger and the amendments file are
 # machine-written bookkeeping, and rows recorded for a failed attempt must not
 # eat the budget of the retry that fixes it.
-added_removed="$(git -C "$root" diff --numstat HEAD -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
+added_removed="$(git -C "$root" diff --numstat "$base" -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
 if [ "${added_removed:-0}" -gt "$max_diff" ]; then
   aif_g_reject "the change is $added_removed lines, over the limit of $max_diff — too large for the ticket, or out of scope"
 fi
@@ -166,4 +177,11 @@ if [ -n "$amended" ]; then
   jq -r '.amendments[] | "  + " + .path + ": " + .why' "$amend_file" 2>/dev/null
 else
   printf 'scope: change confined to the plan (%s lines)\n' "${added_removed:-0}"
+fi
+# On the pass path, always: a station that commits is doing the worker's job,
+# and a reviewer reading the branch will meet its commit without this note.
+if [ -n "$head_now" ] && [ "$head_now" != "$base" ]; then
+  printf '  ! HEAD moved during the station (%s → %s): the station committed. The worker seals\n' \
+    "$(printf '%s' "$base" | cut -c1-10)" "$(printf '%s' "$head_now" | cut -c1-10)"
+  printf '    each admitted station itself; the diff above was judged against the dispatch baseline.\n'
 fi

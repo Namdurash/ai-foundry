@@ -76,6 +76,10 @@ OUT="$SANDBOX/out"
 mkdir -p "$OUT"
 printf '\nworker, offline (sandbox: %s)\n' "$SANDBOX"
 
+# Every scenario runs --no-worktree, which the worker refuses unless the
+# checkout is declared disposable. These are.
+export AIF_DISPOSABLE=1
+
 # fresh_project <dir> — a project on the rails, with a state-sensitive stub
 # suite. One per scenario: the worker commits into the project it runs in, so a
 # shared one would carry one scenario's implementation into the next.
@@ -141,7 +145,9 @@ SUITE
 # Reads the dispatch bindings out of the prompt the way a station would, writes
 # the station's artifact, and writes an envelope. FAKE_PLAN_BAD_FIRST makes the
 # first plan attempt name a file that does not exist (plan-form rejects it),
-# FAKE_STALL makes every implement attempt identical and wrong.
+# FAKE_STALL makes every implement attempt identical and wrong, FAKE_COMMIT
+# has the implement station commit its own work (a station with Bash can),
+# FAKE_ZERO_COST reports total_cost_usd 0 the way subscription auth does.
 cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 #!/bin/bash
 set -u
@@ -203,12 +209,18 @@ PLAN
       for i in $nums; do [ -n "$i" ] && body="$body impl$i"; done
       printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
     fi
+    if [ "${FAKE_COMMIT:-0}" = 1 ]; then
+      git -C "$wt" add src >/dev/null 2>&1
+      git -C "$wt" -c user.email=s@x -c user.name=station commit -qm "wip: the station committed" >/dev/null 2>&1
+    fi
     ;;
 esac
 
-jq -n --arg st "$station" --argjson n "$n" \
+cost=0.01
+[ "${FAKE_ZERO_COST:-0}" = 1 ] && cost=0
+jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" \
   '{type:"result",subtype:"success",is_error:false,result:("fake " + $st + " done"),
-    num_turns:2,total_cost_usd:0.01,duration_ms:5,
+    num_turns:2,total_cost_usd:$cost,duration_ms:5,
     usage:{input_tokens:10,output_tokens:(20*$n),cache_read_input_tokens:0,cache_creation_input_tokens:0},
     modelUsage:{"fake-model":{}}}' >"$out"
 FAKE
@@ -393,6 +405,11 @@ eq "round one is built" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
 eq "an unchanged ticket resumes at done, and dispatches nothing" \
   "$(jq -r '.dispatches' tasks/AIF-1/run.json)" "0"
 eq "it says so" "$(grep -c 'resume.*done' "$OUT/r1b.out")" "1"
+# The report diffs base..HEAD. A resume used to reset base to the current
+# HEAD, so this exact run — nothing dispatched — reported "no code changed"
+# about a branch holding all of it.
+eq "and its report still describes the ticket's work, not this invocation's" \
+  "$(grep -c 'no code changed' tasks/AIF-1/report.md)" "0"
 
 # Now the analyst adds a criterion. Nothing is reset by hand: the run record
 # was bound to the ticket's bytes, and they moved.
@@ -508,6 +525,97 @@ eq "but says the revert-recheck was not done" \
   "$(printf '%s' "$green_out" | grep -c 'revert-recheck NOT done')" "1"
 eq "and names the coarse freeze as the reason" \
   "$(printf '%s' "$green_out" | grep -c 'python3 is not on PATH')" "1"
+
+# ============ 10. a station that commits does not empty the gates ===========
+#
+# The implement station has Bash, and models reach for `git commit -am` by
+# habit. The gates used to diff against "the last commit" — which, after that,
+# was the station's own: scope passed everything with "0 lines", and green's
+# revert-recheck checked out from an index that already held the
+# implementation, so it blamed the tests for not depending on it. The worker
+# now records HEAD before every dispatch and the gates judge against that.
+printf '\n10. a station that commits its own work is still judged on the real diff\n'
+fresh_project "$SANDBOX/p10"
+ticket_for AIF-10
+git add -A && git commit -qm "ticket 10" >/dev/null
+rc=0
+FAKE_COMMIT=1 "$AIF" work AIF-10 --no-worktree >"$OUT/run10.out" 2>&1 || rc=$?
+eq "exit 0 — built" "$rc" "0"
+eq "the station's commit is in the history" "$(git log --format=%s | grep -c 'the station committed')" "1"
+eq "scope judged the real change, not an empty diff" \
+  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' tasks/AIF-10/ledger.json)" \
+  "scope: change confined to the plan (2 lines)"
+eq "green's revert-recheck held — the tests do depend on the code" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-10/ledger.json | grep -c 'depend on the implementation')" "1"
+eq "the run record carries the dispatch baseline" \
+  "$(jq -r '.dispatch_base | length' tasks/AIF-10/run.json)" "40"
+# The note on scope's pass path: the ledger keeps a gate's first line only, so
+# it is read off a gate run by hand — against a tree built to show exactly the
+# defect: a baseline recorded at dispatch, and a station commit after it. Then
+# the record is removed, which is the old behaviour, and the change vanishes.
+mkdir -p "$SANDBOX/p10b" && cd "$SANDBOX/p10b" || exit 1
+git init -q && git config user.email s@x && git config user.name station
+mkdir -p .aif tasks/AIF-10 src
+cp "$SANDBOX/p10/.aif/project.json" .aif/project.json
+cp -R "$SANDBOX/p10/.aif/gates" .aif/gates
+printf 'def users():\n    return []\n' >src/app.py
+printf '<!-- aif:meta\n{ "files": { "create": [], "change": ["src/app.py"], "tests": [] } }\n-->\n# plan\n' >tasks/AIF-10/plan.md
+git add -A && git commit -qm base >/dev/null
+jq -n --arg b "$(git rev-parse HEAD)" '{ dispatch_base: $b }' >tasks/AIF-10/run.json
+printf 'def users():\n    return []  # impl1\n' >src/app.py
+git add src && git commit -qm "wip: the station committed" >/dev/null
+eq "scope, with the baseline: judges the real diff and says HEAD moved" \
+  "$(/bin/bash .aif/gates/scope.sh "$PWD/tasks/AIF-10" 2>&1 |
+     grep -cE '^scope: change confined to the plan \(2 lines\)|HEAD moved during the station')" "2"
+rm -f tasks/AIF-10/run.json
+eq "without it — the old behaviour — the same change is invisible" \
+  "$(/bin/bash .aif/gates/scope.sh "$PWD/tasks/AIF-10" 2>&1 | head -1)" "scope: change confined to the plan (0 lines)"
+
+# ============ 11. the budget cap prices tokens, not the runner's zero ========
+#
+# Under subscription auth the runner reports total_cost_usd 0 for every
+# station, and the cap read exactly that number — so on the auth most users
+# have it could not fire, while the report beside it printed dollars from the
+# same tokens. The cap now takes the larger of the two.
+printf '\n11. the budget cap fires on token-priced cost when the runner reports USD 0\n'
+fresh_project "$SANDBOX/p11"
+tmp="$(mktemp)"
+jq '.models["fake-model"] = { input: 1000, output: 1000, cache_read: 0, cache_write: 0 }' \
+  .aif/prices.json >"$tmp" && mv "$tmp" .aif/prices.json
+ticket_for AIF-11
+git add -A && git commit -qm "ticket 11" >/dev/null
+rc=0
+FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree --budget 0.05 >"$OUT/run11.out" 2>&1 || rc=$?
+eq "exit 1 — stopped" "$rc" "1"
+eq "stopped by the budget" "$(jq -r '.why' tasks/AIF-11/run.json | grep -c '^budget:')" "1"
+eq "with a spend above zero, though every envelope said \$0" \
+  "$(jq -r '.spent_usd > 0' tasks/AIF-11/run.json)" "true"
+eq "and the ledger priced the same tokens" \
+  "$(jq -r '[.entries[] | select(.station != null)] | first | .cost_source' tasks/AIF-11/ledger.json)" "priced"
+
+# ============ 12. --no-worktree needs a disposable checkout ==================
+printf '\n12. --no-worktree is refused unless the checkout is declared disposable\n'
+fresh_project "$SANDBOX/p12"
+ticket_for AIF-12
+git add -A && git commit -qm "ticket 12" >/dev/null
+rc=0
+env -u AIF_DISPOSABLE -u CI "$AIF" work AIF-12 --no-worktree >"$OUT/run12.out" 2>&1 || rc=$?
+eq "refused, exit 1" "$rc" "1"
+eq "and it says how to declare it" "$(grep -c 'AIF_DISPOSABLE=1' "$OUT/run12.out")" "1"
+eq "nothing ran" "$(test -f tasks/AIF-12/run.json && echo yes || echo no)" "no"
+rc=0
+CI=1 "$AIF" work AIF-12 --no-worktree >"$OUT/run12b.out" 2>&1 || rc=$?
+eq "CI=1 is enough — a CI job has it already" "$rc" "0"
+
+# ============ 13. a CRLF ticket still has a meta block =======================
+# A card edited in a browser can come back with \r\n, and `<!-- aif:meta\r`
+# used to match nothing — the pull then said the analyst never wrote it.
+printf '\n13. a meta block survives CRLF line endings\n'
+printf '<!-- aif:meta\r\n{ "ticket": "AIF-9", "schema": 2 }\r\n-->\r\n# AIF-9\r\n' >"$SANDBOX/crlf.md"
+eq "aif_meta_json reads it" \
+  "$(/bin/bash -c '. "$1/lib/common.sh"; aif_meta_json "$2" | jq -r .ticket' _ "$ROOT" "$SANDBOX/crlf.md" 2>&1)" "AIF-9"
+eq "and the gates' copy agrees" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; aif_g_meta "$2" | jq -r .ticket' _ "$ROOT" "$SANDBOX/crlf.md" 2>&1)" "AIF-9"
 
 # ----------------------------------------------------------------------------
 printf '\n'

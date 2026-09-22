@@ -259,8 +259,14 @@ else
     rm -f "$work/.suite.out"
     exit "$AIF_G_ERROR"
   fi
-  if grep -qiE 'passed|ok|0 failed' "$work/.suite.out" && ! grep -qiE 'fail|error' "$work/.suite.out"; then
-    aif_g_reject "the suite appears green — no observable red (coarse mode: $mode_why)"
+  # The runner's exit code, and nothing else. This used to grep the output for
+  # "passed" and the absence of "fail|error": a red pytest run prints "failed"
+  # so it mostly held, but a suite whose output said "ok" and nothing else read
+  # as green, and one whose log mentioned "error" anywhere read as red
+  # (docs/DEFECTS-3.md #5). The exit code is the one signal every runner agrees
+  # on, and suite_rc has held it since the report cross-check arrived.
+  if [ "$suite_rc" -eq 0 ]; then
+    aif_g_reject "the suite exited 0 — no observable red (coarse mode: $mode_why)"
   fi
 fi
 

@@ -61,9 +61,15 @@ aif_cmd_record() {
 
   local doc field target tab
   doc="$(aif_meta_json "$artifact" 2>/dev/null)"
-  [ -n "$doc" ] || aif_die "$produces has no aif:meta block to record into"
-  printf '%s' "$doc" | jq -e . >/dev/null 2>&1 ||
-    aif_die "$produces has an aif:meta block that is not valid JSON — the station must fix that itself"
+  if [ -z "$doc" ] || ! printf '%s' "$doc" | jq -e . >/dev/null 2>&1; then
+    # No meta block, or one that is not JSON: the station's defect, and the
+    # gate reports it in its own words a moment from now, as a rejection the
+    # next attempt can fix. Dying here would turn that retry into a stopped
+    # run, now that the worker treats this command's failure as the tool's.
+    printf '%s%s has no usable aif:meta block — nothing recorded; the gate will say so%s\n' \
+      "$AIF_C_DIM" "$produces" "$AIF_C_RESET"
+    return 0
+  fi
 
   tab="$(printf '\t')"
   while IFS="$tab" read -r field target; do

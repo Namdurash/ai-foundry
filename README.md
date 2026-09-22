@@ -114,6 +114,20 @@ a bare `.aif/` also matches when the suite runs *inside* a worktree, which is
 where the gates run it, and a worktree that excludes its own tree finds no
 tests at all.
 
+Three smaller things about a run, each learned the hard way. **The budget cap
+prices tokens itself**: the runner's own `total_cost_usd` is 0 under
+subscription auth, so `--budget` (and `limits.run_budget_usd`) takes the larger
+of that figure and the one `.aif/prices.json` gives the same tokens — a model
+the table does not know contributes the runner's number alone. **A station
+that commits is still judged on what it did**: the worker records HEAD before
+every dispatch, and `scope` and `green` diff and revert against that baseline
+rather than "the last commit", which after a station's own `git commit` would
+have been its own. The guard hook refuses the obvious `git commit` spellings
+from a station as well, and fails open on cleverer ones by design. **And
+`--no-worktree` is refused unless the checkout is declared disposable** — it
+runs every station with `bypassPermissions` *here*, so it wants `CI=1` (a CI
+job already has it) or `AIF_DISPOSABLE=1` from you.
+
 `aif work` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
 the project is not on the profile's model** — it uses whatever the project
@@ -786,10 +800,14 @@ stations run under `--permission-mode bypassPermissions`, and no probe has yet
 watched it deny one (`docs/FINDINGS.md` #12). `scope` and `green` are the
 backstops either way.
 
-Stated plainly: this matches the Write and Edit tools, so `bash -c 'echo … >
-src/f.py'` walks past it. Matching shell commands would mean parsing shell, which
-fails open in ways nobody notices. The real backstop for code is `scope`, which
-rejects any file the plan did not name regardless of who wrote it; the hook exists
+Stated plainly: for files this matches the Write and Edit tools, so `bash -c
+'echo … > src/f.py'` walks past it. For Bash it matches one thing — `git commit`,
+`reset`, `stash` and the like at a command position — because a station that
+commits moves the baseline under the gates, and it deliberately does not try to
+match anything cleverer: parsing shell fails open in ways nobody notices. The
+real backstop for code is `scope`, which diffs against the baseline the worker
+recorded at dispatch and rejects any file the plan did not name regardless of
+who wrote it or what they committed since; the hook exists
 so the honest-but-helpful path is closed early and by name.
 
 ### What is verified, and what is trusted

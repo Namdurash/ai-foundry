@@ -284,7 +284,13 @@ aif_cmd_commit() {
   root="$(aif_require_project)"
   [ -e "$root/.git" ] || return 0
 
-  git -C "$root" add -A >/dev/null 2>&1 || true
+  # Loud, both steps. This used to swallow both and print "committed" either
+  # way; scope's baseline and green's revert both lean on the commit having
+  # happened, and a tool failure here was billed to the human as the next
+  # station's fault (docs/DEFECTS-3.md #7).
+  local out
+  out="$(git -C "$root" add -A 2>&1)" ||
+    aif_die "git add failed in ${root} — $(printf '%s' "$out" | tail -1)"
   if git -C "$root" diff --cached --quiet 2>/dev/null; then
     printf '%snothing to commit%s for %s\n' "$AIF_C_DIM" "$AIF_C_RESET" "$station"
     return 0
@@ -296,8 +302,9 @@ aif_cmd_commit() {
     "$(aif_ledger_path "$(aif_task_dir "$root" "$ticket")")" 2>/dev/null)"
   [ -n "$attempt" ] || attempt=1
 
-  git -C "$root" \
+  out="$(git -C "$root" \
     -c user.email="aif@local" -c user.name="aif" \
-    commit -q -m "aif: $station $ticket (attempt $attempt)" >/dev/null 2>&1 || true
+    commit -q -m "aif: $station $ticket (attempt $attempt)" 2>&1)" ||
+    aif_die "git commit failed for $station $ticket — $(printf '%s' "$out" | tail -1)"
   printf '%scommitted%s %s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$station" "$ticket"
 }

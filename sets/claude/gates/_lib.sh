@@ -82,7 +82,12 @@ aif_g_sha256() {
 # every block would concatenate them into invalid JSON. Kept identical to
 # aif_meta_json in lib/common.sh.
 aif_g_meta() {
+  # The CR is stripped before anything is matched. A card edited in a browser
+  # can come back with \r\n, and a line that is `<!-- aif:meta\r` matches
+  # nothing — the ticket then reads as "not written by the analyst", which
+  # sends the human to the wrong place (docs/DEFECTS-3.md #10).
   awk '
+    { sub(/\r$/, "") }
     /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
     inblock && /^-->$/         { inblock = 0; next }
     inblock                    { print }
@@ -147,6 +152,27 @@ aif_g_project() {
     dir="$(dirname "$dir")"
   done
   aif_g_error ".aif/project.json not found — run 'aif project init'"
+}
+
+# aif_g_dispatch_base <work> <root> — the commit the implementation is judged
+# against: HEAD as it was when the worker dispatched the station, or HEAD now.
+#
+# "The last commit" was the baseline for as long as these gates existed, and
+# the implement station has Bash. One `git commit -am` from the station and
+# `git diff HEAD` is empty: scope passed everything with "0 lines", and green
+# reverted from an index that already held the implementation and blamed the
+# tests for not depending on it (docs/DEFECTS-3.md #8). So the worker writes
+# HEAD into the run record before every dispatch, and the gates read that. HEAD
+# is the fallback for a gate run by hand, where there is no record and no
+# station in between to have committed.
+aif_g_dispatch_base() {
+  local work="$1" root="$2" base
+  base="$(jq -r '.dispatch_base // empty' "$work/run.json" 2>/dev/null)"
+  if [ -n "$base" ] && git -C "$root" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
+    printf '%s' "$base"
+  else
+    git -C "$root" rev-parse HEAD 2>/dev/null
+  fi
 }
 
 # aif_g_checks_run <project> <root> <phase> <record> — run the project's checks

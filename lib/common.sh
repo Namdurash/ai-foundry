@@ -81,7 +81,10 @@ aif_have() {
 # cannot source this file — it runs in CI without aif). Keep the two awk
 # programs identical.
 aif_meta_json() {
+  # The CR is stripped first: a ticket edited in a browser can come back with
+  # \r\n, and `<!-- aif:meta\r` matches nothing (docs/DEFECTS-3.md #10).
   awk '
+    { sub(/\r$/, "") }
     /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
     inblock && /^-->$/         { inblock = 0; next }
     inblock                    { print }

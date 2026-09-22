@@ -52,6 +52,32 @@ station="$(printf '%s' "$payload" |
 # not find its Write tool policed.
 [ -n "$station" ] || exit 0
 
+deny() {
+  # PreToolUse deny: the JSON form, so the reason reaches the model.
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "$1" | jq -R .)"
+  exit 0
+}
+
+# Bash, one narrow rule: a station does not commit. The worker seals each
+# admitted station itself, and a station that commits moves HEAD under the
+# gates — which used to empty scope's diff outright (docs/DEFECTS-3.md #8).
+# The gates now judge against the baseline the worker recorded, so this is
+# the speed bump in front of that fix, not the fix: it matches the obvious
+# spellings and fails OPEN on anything cleverer, and says so here rather than
+# pretending to parse shell.
+if [ "$(printf '%s' "$payload" | jq -r '.tool_name // ""' 2>/dev/null)" = "Bash" ]; then
+  cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null)"
+  # At a command position only — the start of the line, or after ; & | — so
+  # that `echo git commit` and a message quoting the words are not denied. A
+  # subshell or a backtick spelling walks past this on purpose: catching it
+  # would mean parsing shell, and the gates behind this no longer need it.
+  if printf '%s' "$cmd" | grep -qE '(^|[;&|])[[:space:]]*git[[:space:]]+(commit|stash|reset|rebase|merge|push|checkout|switch|restore)([[:space:]]|$)'; then
+    deny "a station does not commit, reset or switch branches — the worker commits each admitted station itself, and a commit from here moves the baseline the gates judge you against. Leave the tree as it is; write the code."
+  fi
+  exit 0
+fi
+
 path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] || exit 0
 
@@ -60,13 +86,6 @@ rel="$path"
 case "$path" in
   "$PWD"/*) rel="${path#"$PWD"/}" ;;
 esac
-
-deny() {
-  # PreToolUse deny: the JSON form, so the reason reaches the model.
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$(printf '%s' "$1" | jq -R .)"
-  exit 0
-}
 
 is_test() {
   case "$1" in

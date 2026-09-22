@@ -59,11 +59,14 @@ usage: aif work [<ticket>] [options]
   report as a comment — when it ends.
 
   --profile P        which (set, runner, model) profile; default: the project's
-  --budget USD       stop past this spend (best-effort — under subscription
-                     auth the runner reports \$0; tokens are always recorded)
+  --budget USD       stop past this spend. Each station is priced from its
+                     tokens where .aif/prices.json knows the model, else as the
+                     runner reported it — under subscription auth that is \$0
   --max-minutes N    stop past this wall clock (default limits.run_max_minutes, 120)
-  --no-worktree      run in the current checkout instead of a worktree. Only
-                     for a checkout that is already disposable (CI, a test)
+  --no-worktree      run in the current checkout instead of a worktree. Every
+                     station then runs with bypassPermissions HERE, so the
+                     checkout must already be disposable: set CI=1 (a CI job
+                     has it) or AIF_DISPOSABLE=1 to say so. Refused otherwise
   --clean            remove the ticket's worktree and stop
 
 The worker is the whole dev pipeline. There is no command per stage, and there
@@ -244,11 +247,16 @@ _aif_work_intake() {
   if [ -f "$(aif_run_path "$work")" ] && aif_run_resumable "$work"; then
     # The ticket has not moved since the last run stopped. Keep the stage; give
     # it a fresh attempt count and a fresh budget, because this is a new
-    # invocation and the caps are per-invocation.
+    # invocation and the caps are per-invocation. NOT a fresh base: the report
+    # diffs base..HEAD to say what the ticket built, and resetting it here made
+    # a resumed run — one that resumes at `done` most of all — report "no code
+    # changed" about a branch holding all of it (docs/DEFECTS-3.md #13). A
+    # record from before the field existed gets one now, and only then.
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
     aif_run_update "$work" \
       '.attempts = {} | .dispatches = 0 | .spent_usd = 0 | .status = "running"
-       | .why = null | .finished_at = null | .started_at = $at | .base = $base' \
+       | .why = null | .finished_at = null | .started_at = $at
+       | .base = (.base // $base)' \
       --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base"
     _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run"
   else
@@ -372,6 +380,29 @@ $complaint"
        cost_source: (if $c == null then "tokens-only" else "priced" end),
        subtype: $sub, result: $ok, summary: $sum }')"
   return 0
+}
+
+# _aif_work_envelope_cost <wt> <envelope> — what one dispatch cost, for the
+# budget cap: the larger of the runner's own figure and the token-priced one.
+#
+# Two numbers exist for every station and they disagree. The runner's
+# total_cost_usd is 0 under subscription auth (docs/FINDINGS.md #2) — the auth
+# most users have. The ledger prices the same tokens from .aif/prices.json and
+# that is what the report prints. The cap used to read the first, so on the
+# common auth it could not fire, while the report beside it showed dollars
+# (docs/DEFECTS-3.md #4). A guard against a runaway run takes the larger; a
+# model prices.json does not know contributes the runner's figure alone, and
+# the ledger row says "tokens-only" for it.
+_aif_work_envelope_cost() {
+  local wt="$1" out="$2" runner priced model usage
+  runner="$(jq -r '.total_cost_usd // 0' "$out" 2>/dev/null)"
+  model="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
+  usage="$("aif_runner_${AIF_PROFILE_RUNNER}_result_usage" "$out")"
+  priced="$(_aif_meter_cost "$wt/.aif/prices.json" "$model" "$usage")"
+  case "$priced" in
+    '' | null) priced=0 ;;
+  esac
+  awk -v r="${runner:-0}" -v p="$priced" 'BEGIN { printf "%.4f", (r > p) ? r : p }'
 }
 
 # _aif_work_keep_envelope <wt> <ticket> <n> <station> <envelope>
@@ -539,6 +570,16 @@ aif_cmd_work() {
     shift
   done
 
+  # --no-worktree keeps bypassPermissions and drops the disposable copy that
+  # justified it (lib/runner_claude.sh). The usage text always said "only for a
+  # checkout that is already disposable" and nothing enforced it
+  # (docs/DEFECTS-3.md #11). Now the caller has to say so: CI jobs already
+  # carry CI=1, and a harness sets AIF_DISPOSABLE=1 for its sandboxes.
+  if [ "$use_worktree" -eq 0 ] && [ "$clean" -eq 0 ] &&
+    [ -z "${CI:-}" ] && [ "${AIF_DISPOSABLE:-}" != "1" ]; then
+    aif_die "--no-worktree runs every station with bypassPermissions in THIS checkout, and nothing here says it is disposable. In CI, CI=1 already does; anywhere else: AIF_DISPOSABLE=1 aif work ${ticket:-<ticket>} --no-worktree"
+  fi
+
   local root
   root="$(aif_require_project)"
 
@@ -645,7 +686,7 @@ aif_cmd_work() {
   # bound by the --arg flags that follow the filter. The single quotes are what
   # keeps the shell out of them, hence a disable on each.
   local stage agent expects complaint="" status="" why="" gate_out
-  local dispatches=0 spent=0 attempts out rc station_err
+  local dispatches=0 spent=0 attempts out rc station_err tool_out
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -687,10 +728,15 @@ $complaint"
     [ -z "$expects" ] || _aif_work_say "expects" "$expects"
 
     dispatches=$((dispatches + 1))
+    # dispatch_base: HEAD as it stands now, for scope and green to judge
+    # against. A station with Bash can commit; after it does, "the last commit"
+    # is its own, and a gate diffing against that sees nothing
+    # (docs/DEFECTS-3.md #8, aif_g_dispatch_base in the gates' _lib.sh).
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
     aif_run_update "$work" \
-      '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1)' \
-      --arg s "$stage" --argjson d "$dispatches"
+      '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1) | .dispatch_base = $b' \
+      --arg s "$stage" --argjson d "$dispatches" \
+      --arg b "$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf '')"
 
     # The two %f formats — here and on the spend below — print a dot because
     # bin/aif pins LC_NUMERIC=C. One goes to the station as dollars left, the
@@ -707,7 +753,7 @@ $complaint"
       break
     fi
     _aif_work_keep_envelope "$wt" "$ticket" "$dispatches" "$stage" "$out"
-    spent="$(awk -v s="$spent" -v c="$(jq -r '.total_cost_usd // 0' "$out")" 'BEGIN { printf "%.4f", s + c }')"
+    spent="$(awk -v s="$spent" -v c="$(_aif_work_envelope_cost "$wt" "$out")" 'BEGIN { printf "%.4f", s + c }')"
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
     aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
     if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
@@ -729,19 +775,38 @@ $complaint"
 
     if awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
       status="stopped"
-      why="budget: spent \$$spent of \$$budget (as reported by the runner)."
+      why="budget: spent \$$spent of \$$budget — each station priced from its tokens where .aif/prices.json knows the model, else as the runner reported it."
       break
     fi
 
     # The tool writes the provenance the station was never asked to carry.
-    "$AIF_ROOT/bin/aif" _record "$stage" "$ticket" >/dev/null 2>&1 || true
+    # Its failure is the tool's, never the station's — and it used to be
+    # silent: an unstamped plan is rejected by verify-red as "bound to a
+    # different ticket", the station rewrites the same plan, and the loop
+    # repeats to the cap, billing a tool defect to the human as opus retries
+    # (docs/DEFECTS-3.md #7). So it stops, and says whose fault it was.
+    if ! tool_out="$("$AIF_ROOT/bin/aif" _record "$stage" "$ticket" 2>&1)"; then
+      status="stopped"
+      why="aif _record failed after the $stage station — the tool, not the station, and no gate was run:
+$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
+      break
+    fi
 
     rc=0
     "$AIF_ROOT/bin/aif" _gate "$stage" "$ticket" >"$gate_out" 2>&1 || rc=$?
     case "$rc" in
       0)
         _aif_work_say "gate" "$stage admitted — $(grep -m1 '✓' "$gate_out" | sed 's/.*✓ //')"
-        "$AIF_ROOT/bin/aif" _commit "$stage" "$ticket" >/dev/null 2>&1 || true
+        # The commit seals the verdict and is the next station's baseline. One
+        # that did not happen used to be invisible until scope rejected the
+        # implementation for "touching" the tests the previous commit should
+        # have carried (docs/DEFECTS-3.md #7).
+        if ! tool_out="$("$AIF_ROOT/bin/aif" _commit "$stage" "$ticket" 2>&1)"; then
+          status="stopped"
+          why="aif _commit failed after $stage was admitted — the tool, not the station. The verdict is recorded; the commit that seals it is not, and the next station's baseline would be wrong:
+$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
+          break
+        fi
         complaint=""
         # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
         aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"

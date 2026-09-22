@@ -98,6 +98,13 @@ main() {
     shift
   fi
 
+  # Everything that touches a project hashes something. Refuse up front on a
+  # machine with no digest tool, rather than let "" pass as a hash downstream.
+  case "$cmd" in
+    help | -h | --help | version | -V | --version | profiles) ;;
+    *) aif_require_sha256 ;;
+  esac
+
   case "$cmd" in
     init)
       # shellcheck source=lib/merge.sh

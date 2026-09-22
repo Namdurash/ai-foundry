@@ -22,7 +22,7 @@ if [ -n "${LC_ALL:-}" ]; then
 fi
 export LC_NUMERIC=C
 
-AIF_VERSION="0.5.3"
+AIF_VERSION="0.5.4"
 
 # Resolve the install root through any symlinks. Homebrew links bin/aif into
 # libexec, and `readlink -f` does not exist on BSD, so walk the chain by hand.

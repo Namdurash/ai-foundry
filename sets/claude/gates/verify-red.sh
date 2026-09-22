@@ -19,7 +19,9 @@
 #   - no implementation was written (the plan's create paths must not exist yet)
 #
 # Without a readable per-test report none of that is possible and the gate falls
-# to COARSE mode — the suite's exit code alone. Two things hold there. The
+# to COARSE mode — the suite's exit code alone. Only a report that exists and
+# cannot be read per test gets there; a suite that wrote NO report did not run,
+# and that is an ERROR, not a weaker red. Two things hold in coarse mode. The
 # project's broken-failure classes are matched against the run's own output, so
 # a suite that did not compile is still refused rather than frozen as an oracle;
 # and the reason for the degradation is named, on the closing line and in
@@ -129,15 +131,30 @@ suite_rc=0
 # there was no way to tell which had happened — not from the gate's output, not
 # from the lock, not afterwards. Each cause is now named where it is found, and
 # the name travels to the closing line and into tests.lock.json.
+#
+# One of the three is not a cause of coarse mode at all, and for one release
+# it was treated as one. A suite that wrote no report never reached its
+# reporter: a runner that died validating its config, a missing dependency in
+# a fresh worktree, an uninstalled reporter. Its exit code says nothing about
+# the tests, because no test ran — and coarse red admitted it, froze an empty
+# `covering`, and green then passed on a run that had established nothing
+# (docs/DEFECTS-4.md #11). That case is a 3. Coarse mode is for a report that
+# exists and cannot be read per test.
 mode="per-test"
 mode_why=""
 results=""
-if ! aif_g_have python3; then
+if [ ! -f "$root/$report_path" ]; then
+  printf 'ERROR  the suite did not run — it exited %s and wrote no report at %s:\n' \
+    "$suite_rc" "$report_path" >&2
+  tail -8 "$work/.suite.out" | sed 's/^/      /' >&2
+  printf '  A run that never reaches its reporter is neither red nor green; it is not a\n' >&2
+  printf '  run. If this is a fresh worktree, the runner may need dependencies that only\n' >&2
+  printf '  tracked files cannot bring: set "prepare" in .aif/project.json (e.g. "npm ci").\n' >&2
+  exit "$AIF_G_ERROR"
+elif ! aif_g_have python3; then
   # PATH, because the interesting case is a python3 the developer's shell
   # resolves and the gate's environment does not.
   mode_why="python3 is not on PATH (PATH=${PATH:0:200})"
-elif [ ! -f "$root/$report_path" ]; then
-  mode_why="the suite (exit $suite_rc) wrote no report at $report_path"
 else
   parse_rc=0
   results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null)" || parse_rc=$?

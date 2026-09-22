@@ -63,6 +63,11 @@ usage: aif work [<ticket>] [options]
                      tokens where .aif/prices.json knows the model, else as the
                      runner reported it — under subscription auth that is \$0
   --max-minutes N    stop past this wall clock (default limits.run_max_minutes, 120)
+  A fresh worktree holds tracked files only. "prepare" in .aif/project.json
+  (npm ci, bundle install) runs once after it is cut, and the suite is then
+  probed THERE before anything is spent — a checkout that cannot run the
+  suite is refused, not built against.
+
   --no-worktree      run in the current checkout instead of a worktree. Every
                      station then runs with bypassPermissions HERE, so the
                      checkout must already be disposable: set CI=1 (a CI job
@@ -141,6 +146,11 @@ _aif_work_preflight() {
     exit 3
   fi
 
+  # In the developer's checkout: the reporter, the report path, and whether
+  # the runner is collecting .aif/worktrees/ beside the real tree — that last
+  # one is only visible from here. Whether the suite can run where the
+  # STATIONS run is a different question, asked of the worktree once it is
+  # cut (_aif_work_ready_worktree).
   # shellcheck source=lib/doctor.sh
   . "$AIF_ROOT/lib/doctor.sh"
   if ! aif_doctor_probe "$root" >/dev/null 2>&1; then
@@ -187,6 +197,67 @@ _aif_work_worktree() {
       aif_die "could not create worktree $wt on $branch"
   fi
   printf '%s' "$wt"
+}
+
+# _aif_work_ready_worktree <root> <wt> <ticket> — make the checkout the
+# stations will run in able to run the suite, and prove it, before anything
+# is spent or any card moves.
+#
+# `git worktree add` checks out tracked files and nothing else. node_modules
+# is gitignored, so a fresh worktree has none, and jest dies validating its
+# config before it runs a single test — no report, exit 1. For three runs of
+# one ticket that was admitted as coarse RED, the freeze recorded an empty
+# `covering`, and green passed a build whose tests nobody had seen fail
+# (docs/DEFECTS-4.md #11). The preflight probe could not have seen it: it
+# runs in the developer's checkout, where node_modules exists.
+#
+# Two things, in order:
+#   prepare — project.json's "prepare" (npm ci, bundle install), run once per
+#             worktree. A marker under .aif/tmp/ — gitignored, per checkout —
+#             says it happened, so a resume does not repeat it and a prepare
+#             that died halfway is tried again.
+#   probe   — the same probe `aif doctor --probe` runs, but HERE. Its whole
+#             value is running where the stations run.
+# rc 0 usable · 3 the checkout cannot run the suite, and the run must not
+# start — nothing was spent, the card has not moved.
+_aif_work_ready_worktree() {
+  local root="$1" wt="$2" ticket="$3"
+  local prepare marker log rc=0
+
+  # From the DEVELOPER'S config, not the worktree's. The branch was cut from
+  # whatever HEAD was on the first run, and the run that gets refused here is
+  # exactly the one after which someone adds "prepare" — to a file the branch
+  # does not have yet. Provisioning is the developer's live instruction; what
+  # the suite IS still comes from the worktree, through the probe below.
+  prepare="$(jq -r '.prepare // empty' "$(aif_project_config "$root")" 2>/dev/null)"
+  marker="$wt/.aif/tmp/prepared"
+  if [ -n "$prepare" ] && [ ! -f "$marker" ]; then
+    _aif_work_say "prepare" "$prepare"
+    mkdir -p "$wt/.aif/tmp"
+    log="$wt/.aif/tmp/prepare.log"
+    (cd "$wt" && eval "$prepare") >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      aif_err "prepare failed (exit $rc) in ${wt#"$root"/} — the run cannot start, nothing was spent:"
+      tail -8 "$log" | sed 's/^/    /' >&2
+      aif_err "the command is \"prepare\" in .aif/project.json; the full log is ${log#"$root"/}"
+      return 3
+    fi
+    : >"$marker"
+  fi
+
+  # shellcheck source=lib/doctor.sh
+  . "$AIF_ROOT/lib/doctor.sh"
+  if ! aif_doctor_probe "$wt" >/dev/null 2>&1; then
+    aif_doctor_probe "$wt" >&2 || true
+    aif_err "the suite cannot run in ${wt#"$root"/}, where the stations run — nothing was spent."
+    if [ -z "$prepare" ]; then
+      aif_err "A fresh worktree holds tracked files only. If the runner needs installed"
+      aif_err "dependencies, set \"prepare\" in .aif/project.json (e.g. \"npm ci\") and the"
+      aif_err "worker runs it once after cutting the worktree."
+    fi
+    return 3
+  fi
+  return 0
 }
 
 # _aif_work_intake <root> <wt> <ticket> — carry the ticket in, judge it ready,
@@ -612,6 +683,23 @@ aif_cmd_work() {
     _aif_work_say "board" "next in Ready: $ticket"
   fi
 
+  # The checkout first, then the card. Cutting a worktree spends nothing, and
+  # what has to be established in it — that the suite can run there at all —
+  # is a preflight question: answered no, the run must not start, and a card
+  # that never moved needs nothing put back.
+  local wt fresh=0
+  if [ "$use_worktree" -eq 1 ]; then
+    # Decided here, not inside the helper: it runs in a $(…) and a flag it set
+    # would die with the subshell.
+    [ -e "$root/$AIF_WORK_WORKTREES/$ticket/.git" ] || fresh=1
+    wt="$(_aif_work_worktree "$root" "$ticket")"
+    [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
+    _aif_work_ready_worktree "$root" "$wt" "$ticket" || exit 3
+  else
+    wt="$root"
+  fi
+  _aif_work_say "worktree" "${wt#"$root"/}"
+
   # The card moves before anything is spent. A ticket handed over by id that
   # has no card yet gets one on the local board — the worker is the consumer,
   # and a ticket named by hand is implicitly ready; on a trello board the card
@@ -634,15 +722,6 @@ aif_cmd_work() {
   AIF_WORK_CARD="$ticket"
   AIF_WORK_SETTLED=0
   aif_trap_arm "_aif_work_abandon"
-
-
-  local wt
-  if [ "$use_worktree" -eq 1 ]; then
-    wt="$(_aif_work_worktree "$root" "$ticket")"
-  else
-    wt="$root"
-  fi
-  _aif_work_say "worktree" "${wt#"$root"/}"
 
   local intake_rc=0
   AIF_WORK_NOT_READY=""

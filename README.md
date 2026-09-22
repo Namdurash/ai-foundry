@@ -128,6 +128,17 @@ from a station as well, and fails open on cleverer ones by design. **And
 runs every station with `bypassPermissions` *here*, so it wants `CI=1` (a CI
 job already has it) or `AIF_DISPOSABLE=1` from you.
 
+**And a fresh worktree holds tracked files only.** `git worktree add` brings
+nothing git ignores — no `node_modules`, no `vendor/`, no `.venv` — and a
+runner that needs them dies before it runs a test, let alone writes a report.
+So `.aif/project.json` has `"prepare"`: a shell command (`npm ci`, `bundle
+install`) the worker runs once in each worktree it cuts, then the suite is
+probed *there*, where the stations will run, before anything is spent. A
+checkout that cannot run the suite is refused, not built against. The jest
+template ships `"prepare": "npm ci"`; add yours to a project set up before the
+field existed. The worker reads it from your checkout's config, not the
+branch's, so adding it after a refusal works without re-cutting the worktree.
+
 `aif work` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
 the project is not on the profile's model** — it uses whatever the project
@@ -854,7 +865,10 @@ not. So it is cross-checked against the runner: a non-zero suite whose own
 report names nothing failing is neither a pass nor a rejection but a gate that
 cannot render a verdict, and the run stops. The two gates also delete the
 previous report before running, so a command that never reaches its reporter
-cannot be judged on the last run's file.
+cannot be judged on the last run's file — and a suite that writes *no* report
+is not a weaker red, it is no run at all: an ERROR in both gates, and the
+freeze never happens. Coarse mode is only for a report that exists and cannot
+be read per test.
 
 **Coarse mode is a real downgrade, and it now says so out loud.** Without a
 readable per-test report the gates fall back to the suite's exit code alone,

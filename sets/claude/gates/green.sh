@@ -164,7 +164,16 @@ lock_mode="$(jq -r '.mode // "per-test"' "$lock")"
 allowed_skips=0
 freeze_known=yes
 [ "$lock_mode" = "per-test" ] || freeze_known=no
-if aif_g_have python3 && [ -f "$root/$report_path" ]; then
+# No report is not a coarse verdict; it is no run. The same rule verify-red
+# applies, for the same reason (docs/DEFECTS-4.md #11): a suite that never
+# reached its reporter has an exit code that says nothing about the tests.
+if [ ! -f "$root/$report_path" ]; then
+  printf 'ERROR  the suite did not run — it exited %s and wrote no report at %s:\n' \
+    "$suite_rc" "$report_path" >&2
+  tail -8 "$work/.suite.out" | sed 's/^/      /' >&2
+  exit "$AIF_G_ERROR"
+fi
+if aif_g_have python3; then
   results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
   if [ -n "$results" ]; then
     [ "$(jq -r 'has("suite_at_freeze")' "$lock")" = "true" ] || freeze_known=no
@@ -293,14 +302,10 @@ if aif_g_have python3 && [ -f "$root/$report_path" ]; then
     aif_g_error "test report was not parseable — cannot confirm green"
   fi
 else
-  # Coarse: exit code only. Weaker, and a skip is invisible here — so say which
-  # of the two reasons put the gate here, rather than leaving the reader to
-  # guess between a missing interpreter and a missing report.
-  if ! aif_g_have python3; then
-    coarse_why="python3 is not on PATH (PATH=${PATH:0:200})"
-  else
-    coarse_why="the suite (exit $suite_rc) wrote no report at $report_path"
-  fi
+  # Coarse: exit code only. Weaker, and a skip is invisible here. One reason
+  # is left that lands a gate here — the report exists and there is no python3
+  # to read it — and it is named rather than left to be guessed.
+  coarse_why="python3 is not on PATH (PATH=${PATH:0:200})"
   # The exit code alone. The grep this used to OR in — `fail|error` anywhere in
   # the output — rejected a green suite for a test NAMED test_error_handling,
   # for a captured log line, for tsc's "0 errors", with a complaint no station
@@ -408,8 +413,15 @@ EOF
       exit "$AIF_G_REJECT"
     fi
   else
-    recheck_ok=0
-    recheck_why="the reverted run wrote no report at $report_path"
+    # The green run above wrote a report and this one did not, on the same
+    # tree minus the implementation. Whatever stopped it, the one proof this
+    # gate exists to produce — that the covering tests fail without the code —
+    # was not produced, and a pass with a caveat is the wrong answer to that.
+    rm -rf "$scratch"
+    printf 'ERROR  the revert-recheck did not run — the reverted suite wrote no report at %s:\n' "$report_path" >&2
+    tail -8 "$scratch/.out" 2>/dev/null | sed 's/^/      /' >&2
+    printf '  Nothing established that the covering tests depend on the implementation.\n' >&2
+    exit "$AIF_G_ERROR"
   fi
 fi
 

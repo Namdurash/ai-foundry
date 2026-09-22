@@ -135,6 +135,10 @@ aif_project_validate() {
       (if (.test.command | type) != "string" then "test.command must be a string" else empty end),
       (if (.test.report.path | type) != "string" then "test.report.path must be a string" else empty end),
       (if (.test.report.format | type) != "string" then "test.report.format must be a string" else empty end),
+      # prepare — optional: the command that makes a fresh worktree able to run
+      # the suite (npm ci, bundle install). git checks out tracked files only.
+      (if ((.prepare // "") | type) != "string"
+        then "prepare must be a string — a shell command, e.g. \"npm ci\"" else empty end),
       (if (.failure_classes.legitimate | type) != "array"
         then "failure_classes.legitimate must be an array" else empty end),
       (if (.failure_classes.broken | type) != "array"

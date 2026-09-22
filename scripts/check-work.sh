@@ -617,6 +617,69 @@ eq "aif_meta_json reads it" \
 eq "and the gates' copy agrees" \
   "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; aif_g_meta "$2" | jq -r .ticket' _ "$ROOT" "$SANDBOX/crlf.md" 2>&1)" "AIF-9"
 
+# ====== 14. a fresh worktree that cannot run the suite is refused ===========
+#
+# `git worktree add` checks out tracked files. node_modules is gitignored, so
+# a fresh worktree has none, and jest dies validating its config — no report,
+# exit 1. Three runs of one ticket were admitted as coarse RED that way, froze
+# an empty `covering`, and passed green on a build nobody had seen fail. The
+# preflight probe could not see it: it runs in the developer's checkout, where
+# node_modules exists. Here the suite needs a file under a gitignored directory
+# that the developer's checkout has and a fresh worktree does not.
+printf '\n14. a fresh worktree that cannot run the suite is refused, and prepare fixes it\n'
+fresh_project "$SANDBOX/p14"
+printf 'deps/\n' >>.gitignore
+mkdir -p deps && : >deps/ok
+tmp="$(mktemp)"
+{ printf '#!/bin/bash\n[ -f deps/ok ] || { echo "Validation Error: deps missing"; exit 1; }\n'; tail -n +2 .aif/suite.sh; } >"$tmp"
+mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+ticket_for AIF-14
+git add -A && git commit -qm "ticket 14" >/dev/null
+rc=0
+"$AIF" work AIF-14 >"$OUT/run14.out" 2>&1 || rc=$?
+eq "refused, exit 3 — the environment, and nothing was spent" "$rc" "3"
+eq "it says the suite wrote no report there" "$(grep -c 'wrote no report' "$OUT/run14.out")" "1"
+eq "and points at prepare" "$(grep -c '"prepare"' "$OUT/run14.out")" "1"
+eq "the card never moved" "$(test -f .aif/board/AIF-14.json && jq -r .column .aif/board/AIF-14.json || echo none)" "none"
+eq "no run started in the worktree" \
+  "$(test -f .aif/worktrees/AIF-14/tasks/AIF-14/run.json && echo yes || echo no)" "no"
+# The project now says how a checkout becomes able to run its suite. Read from
+# the developer's config on purpose: the branch was cut before the field
+# existed, and the worktree it cut is reused, not re-cut.
+tmp="$(mktemp)"
+jq '.prepare = "mkdir -p deps && : >deps/ok"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+git add -A && git commit -qm "prepare" >/dev/null
+rc=0
+"$AIF" work AIF-14 >"$OUT/run14b.out" 2>&1 || rc=$?
+eq "with prepare: built" "$rc" "0"
+eq "prepare ran, in the worktree" "$(grep -c 'prepare .*deps/ok' "$OUT/run14b.out")" "1"
+eq "and left its marker, so a resume does not repeat it" \
+  "$(test -f .aif/worktrees/AIF-14/.aif/tmp/prepared && echo yes || echo no)" "yes"
+eq "the freeze was per-test, not coarse" \
+  "$(jq -r '.mode' .aif/worktrees/AIF-14/tasks/AIF-14/tests.lock.json)" "per-test"
+
+# ====== 15. a suite that never reaches its reporter is not red ==============
+# The gate's half of the same defect: with no report at all, verify-red used
+# to fall to coarse mode and accept a non-zero exit as red. A runner that did
+# not boot has an exit code that says nothing about the tests.
+printf '\n15. a suite that never reaches its reporter is not red\n'
+fresh_project "$SANDBOX/p15"
+tmp="$(mktemp)"
+{ printf '#!/bin/bash\n[ -f tests/t1.py ] && { echo "Validation Error: the runner did not boot"; exit 1; }\n'; tail -n +2 .aif/suite.sh; } >"$tmp"
+mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+ticket_for AIF-15
+git add -A && git commit -qm "ticket 15" >/dev/null
+rc=0
+"$AIF" work AIF-15 --no-worktree >"$OUT/run15.out" 2>&1 || rc=$?
+eq "exit 1 — stopped" "$rc" "1"
+eq "verify-red could not render a verdict" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-15/ledger.json)" "error"
+eq "and said the suite did not run" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-15/ledger.json | grep -c 'did not run')" "1"
+eq "nothing was frozen" "$(test -f tasks/AIF-15/tests.lock.json && echo yes || echo no)" "no"
+eq "implement was never dispatched" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-15/ledger.json)" "0"
+
 # ----------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

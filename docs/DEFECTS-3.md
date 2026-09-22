@@ -1,159 +1,93 @@
 # Defects — rebuild-3, found by review
 
 Fourteen problems in the machine half, found by reading what 0.5.0 ships and
-running the parts that can be run offline. This file is the list; the order is
-roughly the order to fix them in.
+running the parts that can be run offline.
 
-**Four are now fixed — 1, 2, 3 and 6 — and each says so under its own heading.**
-They are fixed in `main`, which is not the same as released: until a version
-carries them and the tap serves it, nobody's `brew install` has them.
+**Five are closed — 1, 2, 3, 6 and 14 — and they have moved to section D.**
+Nine are open and keep their place in A, B and C. The numbers never move:
+`lib/common.sh`, `lib/ledger.sh`, `lib/cmd_work.sh` and both gates cite them
+from code comments, and a renumbered list would silently re-point every one of
+those.
 
-Reviewed at `12830b1` on 2026-09-19, on macOS 26.5.2, bash 3.2.57, awk 20200816,
-jq 1.7.1-apple, git 2.x, claude 2.1.226. Every entry says how it was
-established:
+Found at `12830b1` on 2026-09-19, on macOS 26.5.2, bash 3.2.57, awk 20200816,
+jq 1.7.1-apple, git 2.x, claude 2.1.226.
+
+**Re-checked against 0.5.2 (`cd0eb03`) on 2026-09-22**, entry by entry, against
+the code rather than against memory. Line citations below are 0.5.2's. Two
+entries changed status in that pass: 14 closed, and 5 lost half of itself —
+see its heading.
+
+Every entry says how it was established:
 
 - **probed** — reproduced on this machine, with the observation quoted;
 - **read** — established from the code alone. Believable, not witnessed.
 
 The three that produced the 0.5.0 fixes are in `FINDINGS.md` (17–19) instead:
-those are established and closed. What is here is open.
+those are established and closed. The eight from driving OPES-62 end to end are
+in `DEFECTS-4.md`.
 
 ---
 
 ## A. The run
 
-### 1. `aif_ledger_append` silently removes the worker's interrupt trap — probed
+### 4. The budget cap reads the number that is structurally zero — read — **open**
 
-`aif work` installs a trap at [lib/cmd_work.sh:556] so that an interrupted run
-puts its card back in `needs_human` rather than leaving it claiming that work is
-happening. Thirteen lines later the run reaches intake, intake records the
-`ready` verdict ([lib/cmd_work.sh:208]), and `aif_ledger_append` sets its own
-trap for the lock directory ([lib/ledger.sh:70]) and then clears it:
-
-```sh
-trap - EXIT INT TERM        # lib/ledger.sh:88
-```
-
-Traps are per-process, not per-function. That line takes the worker's trap with
-it, and the worker never reinstalls it. From intake to the end of the loop —
-the whole expensive part of the run — the interrupt protection is off.
-
-```
-control, no ledger append:  WORKER TRAP fired / survived the signal / exit=0
-after one ledger append:    exit=130, no handler, no card moved
-```
-
-The comment above that line says "No other trap exists in this codebase, so
-clearing it below cannot clobber someone else's". It was true when it was
-written (`1806bbe`) and stopped being true when the worker's trap arrived
-(`097627e`) — which means that trap has never protected the loop it was written
-for, and the live run it was written after would fail the same way today.
-
-Cost: Ctrl-C leaves the card in In Progress for good — the exact defect the trap
-was written to prevent, and the one the code calls "the same defect as a meter
-that quietly did not fire".
-
-**Fixed.** `aif_trap_arm` / `aif_trap_restore` in `lib/common.sh`: the ledger's
-lock now appends the caller's handler to its own trap and puts it back on the
-way out instead of clearing the slate. `scripts/check-work.sh` asserts that a
-ledger write leaves an armed handler in place.
-
-### 2. The trap does not stop the run even when it fires — probed
-
-[lib/cmd_work.sh:556-558] moves the card and prints `interrupted — … moved to
-needs_human`, and does not exit. A bash trap handler returns to where the signal
-arrived, so the loop keeps going. Probed with a stand-in loop: three signals,
-three "interrupted" lines, and the loop still ran to completion.
-
-An interactive Ctrl-C hides this — the signal reaches the whole foreground group,
-`claude -p` dies with it, the dispatch returns no envelope and the loop breaks —
-but it breaks through the wrong door, reporting "the runner could not run the
-station — the environment, not the ticket".
-
-A `kill -TERM` from a supervisor, a timeout or a cancelled CI job reaches only
-`aif`: the card moves to `needs_human`, the message says the run was interrupted,
-and the run carries on spending the budget it was told to stop spending.
-
-**Fixed.** The handler is `_aif_work_abandon`, it is idempotent, and where it
-acts it exits 1 — a run nobody finished is "stopped, needs a human", which is
-what 1 means here.
-
-### 3. Nothing puts the card back on any other exit — read
-
-The card moves to In Progress at [lib/cmd_work.sh:545] and there is no `EXIT`
-trap anywhere in the worker. Every `aif_die` after that point leaves it there:
-[:157] and [:160] (the worktree could not be made), [:207] (the ready gate is not
-installed), [:610] (`cd` into the worktree) — and, more often, any failure under
-`set -e` inside the loop.
-
-That last one is not hypothetical. The decimal-comma defect (`FINDINGS` #18)
-produced exactly this shape: `run.json` left saying `"status": "running"`,
-`"stage": "plan"`, and a card sitting in In Progress with nobody working on it.
-
-**Fixed.** The handler is armed for `EXIT` as well as `INT`/`TERM`, and stays
-armed through the report — a failure while writing the report is exactly the
-case where the card must not be left claiming the work is under way. Scenario 7
-of `scripts/check-work.sh` forces a die on the far side of the move and asserts
-the card came back.
-
-### 4. The budget cap reads the number that is structurally zero — read
-
-[lib/cmd_work.sh:671] accumulates `spent` from the envelope's `total_cost_usd`
-and [lib/cmd_work.sh:679] tests the cap against it. `FINDINGS` #2 — this
+[lib/cmd_work.sh:710] accumulates `spent` from the envelope's `total_cost_usd`
+and [lib/cmd_work.sh:730] tests the cap against it. `FINDINGS` #2 — this
 repository's own — records that `total_cost_usd` is 0 under subscription auth.
 So on the auth most users have, the cap cannot fire.
 
-Meanwhile [lib/cmd_work.sh:339] prices the same station from its token counts
+Meanwhile [lib/cmd_work.sh:363] prices the same station from its token counts
 and `prices.json`, and that number goes into the ledger and into the report's
 Stations table. One report therefore carries two different amounts of money, and
 the one guarding against a runaway run is the one that reads zero.
+
+Unchanged in 0.5.2.
 
 ---
 
 ## B. Gates that render a false verdict
 
-### 5. `green`'s coarse mode never looks at the exit code — read
+### 5. Coarse mode and the suite's exit code — read — **half closed, still open**
 
-[sets/claude/gates/green.sh:135] discards the suite's status with `|| true`, and
-the fallback at [green.sh:179-182], under a comment that says *"Coarse: exit code
-only"*, greps the suite's stdout:
+The entry as written was two defects in one sentence, and 0.5.2 closed one of
+them.
+
+**Closed:** the exit code was discarded with `|| true` and nothing read it.
+Both gates now capture it as `suite_rc` ([green.sh:156],
+[verify-red.sh:125]), and green's coarse branch rejects on a non-zero suite
+([green.sh:304]). A red suite that does not print the magic words no longer
+passes.
+
+**Still open:** the grep is still there, and in the other direction it is still
+wrong. [green.sh:304] is an `or`, so a suite that exits 0 while its output
+mentions "error" anywhere — a test named `test_error_handling`, a captured log
+line, `0 errors` from tsc or eslint — is rejected for ever, with a complaint no
+station can act on:
 
 ```sh
-if grep -qiE 'fail|error' "$work/.suite.out"; then
+if [ "$suite_rc" -ne 0 ] || grep -qiE 'fail|error' "$work/.suite.out"; then
 ```
 
-Both directions are wrong. A green suite whose output mentions "error" anywhere
-— a test named `test_error_handling`, a captured log line, `0 errors` from tsc or
-eslint — is rejected for ever, with a complaint no station can act on. A red
-suite that does not print those words passes.
+`verify-red` did not change at all here. [verify-red.sh:262] still decides
+"the suite appears green" by grepping for `passed|ok|0 failed` and the absence
+of `fail|error`, while `suite_rc` sits unused three lines above it. Its
+consequences are milder, because a red pytest run does print "failed".
+
+The fix is now small and was not taken only because it was out of scope when
+`suite_rc` arrived: with a trustworthy exit code in hand, both greps are
+redundant and should go.
 
 Reachable wherever python3 is missing: `aif doctor` only warns about it
-([lib/doctor.sh:160]) and preflight fails the run only when no report appears at
-all. `verify-red` has the same pair at [verify-red.sh:204]; its consequences are
-milder, because a red pytest run does print "failed".
+([lib/doctor.sh:164]) and preflight fails the run only when no report appears at
+all. What 0.5.2 did add is a reason — `mode_reason` in `tests.lock.json` and on
+the gate's closing line — and a check that the project's own
+`failure_classes.broken` are matched against the run's output before coarse red
+is accepted (`DEFECTS-4.md` #2).
 
-### 6. `grep -qF "$expect"` without `--` — probed
+### 7. `_record` and `_commit` fail silently, and everything downstream leans on them — read — **open**
 
-[sets/claude/gates/verify-red.sh:235] greps each test file for the criterion's
-expected literal. An `expect` that starts with a dash becomes an option:
-
-```
-grep -qF "-1" t.py    → rc=1   (the file contains -1)
-grep -qF -- "-1" t.py → rc=0
-```
-
-So a criterion whose expected value is `-1`, `--force`, or any negative number
-passes the ready gate and is then rejected by `verify-red` with *"expected value
-(-1) does not appear in any test"* — about a test where it plainly does. The
-station cannot fix it: it burns `attempts_max` opus runs and stops the ticket.
-
-**Fixed.** `grep -qF --` on both greps in that block. The offline harness now
-asks for an `expect` of `-1` and has the test station write that literal into
-the test it authors, so removing the `--` again fails the first scenario.
-
-### 7. `_record` and `_commit` fail silently, and everything downstream leans on them — read
-
-[lib/cmd_work.sh:686] and [lib/cmd_work.sh:693] both end in
+[lib/cmd_work.sh:737] and [lib/cmd_work.sh:744] both end in
 `>/dev/null 2>&1 || true`. Both are load-bearing:
 
 - `scope`'s baseline is the last commit ([scope.sh:98]). If `_commit` did not
@@ -161,7 +95,7 @@ the test it authors, so removing the `--` again fails the first scenario.
   rejects the implementation for *"X is a test file — the implementation must not
   touch tests"*.
 - `green`'s revert-recheck restores from that same commit's index
-  ([green.sh:199]).
+  ([green.sh:342]).
 - If `_record` did not stamp `ticket_sha256` into `plan.md`, `verify-red` rejects
   with *"plan.md is bound to a different ticket — re-run the plan station"*, the
   station rewrites the same plan, and the loop repeats to the cap.
@@ -169,9 +103,12 @@ the test it authors, so removing the `--` again fails the first scenario.
 In each case a tool failure is reported to the human as the station's fault, at
 opus prices.
 
-### 8. `implement` has Bash, and one `git commit` from the station empties scope — read
+Unchanged in 0.5.2. Worth reading beside `DEFECTS-4.md` #4, which is the same
+shape one layer up: a station blamed for a defect it cannot reach.
 
-`aif-implement` and `aif-implement-careful` declare
+### 8. `implement` has Bash, and one `git commit` from the station empties scope — read — **open**
+
+`aif-implement` and `aif-implement-careful` still declare
 `tools: Read, Grep, Glob, Write, Edit, Bash`. Models reach for `git commit -am`
 by habit. After one, `git diff --name-only HEAD` ([scope.sh:98]) is empty: scope
 passes everything and prints *"change confined to the plan (0 lines)"*.
@@ -186,53 +123,181 @@ happened is that it committed.
 backstop. This is the case where the backstop is switched off by the thing it
 was supposed to catch.
 
+Unchanged in 0.5.2.
+
 ---
 
 ## C. Smaller, and risks
 
-### 9. `aif_sha256` fails open where its gate twin fails loudly — read
+### 9. `aif_sha256` fails open where its gate twin fails loudly — read — **open**
 
-[lib/paths.sh:161] returns `""` when neither `shasum` nor `sha256sum` is present;
-[sets/claude/gates/_lib.sh:71] raises `ERROR` in the same situation. With an
+[lib/paths.sh:172] returns `""` when neither `shasum` nor `sha256sum` is present;
+[sets/claude/gates/_lib.sh:65] raises `ERROR` in the same situation. With an
 empty hash, `aif_run_resumable` compares `"" = ""` and is always true, so the
 one comparison that replaced the whole cascade — *the ticket's bytes changed
 since intake* — silently answers "they did not", and the report says it built
 against sha `''`.
 
-### 10. Trello, CRLF, and `^<!-- aif:meta$` — read, not verified against the API
+Unchanged in 0.5.2.
+
+### 10. Trello, CRLF, and `^<!-- aif:meta$` — read, not verified against the API — **open**
 
 [lib/board.sh:271] requires the meta opener to be a line of its own, and the
 design says a human editing the card is a legitimate author of the ticket's text
 (REBUILD-3 §5). If the browser editor stores `\r\n`, the pull dies with *"the
 card … has no aif:meta block in its description — it was not written by the
 analyst"*, which sends the human to the wrong place. Cheap to make robust; worth
-confirming against a real board first.
+confirming against a real board first. The same anchor is in
+[lib/common.sh:85] and in the gates' `aif_g_meta`.
 
-### 11. `--no-worktree` puts `bypassPermissions` in the developer's checkout — read
+Unchanged in 0.5.2.
+
+### 11. `--no-worktree` puts `bypassPermissions` in the developer's checkout — read — **open**
 
 [lib/runner_claude.sh:123] justifies `bypassPermissions` by the worktree being a
-disposable copy. `--no-worktree` removes the copy and keeps the flag. The usage
-text says it is "only for a checkout that is already disposable (CI, a test)" and
-nothing enforces that — not a clean tree, not a CI marker.
+disposable copy, and [lib/runner_claude.sh:147] passes it unconditionally.
+`--no-worktree` ([lib/cmd_work.sh:530]) removes the copy and keeps the flag. The
+usage text says it is "only for a checkout that is already disposable (CI, a
+test)" and nothing enforces that — not a clean tree, not a CI marker.
 
-### 12. The local board orders by `date +%s` — read
+Unchanged in 0.5.2.
 
-[lib/board.sh:121]. Two moves in the same second get the same `pos`, and
-`sort_by(.pos)` then picks by whatever order the glob returned — so
-`aif board next-ready` stops being deterministic exactly when the project manager
-is reordering the queue quickly.
+### 12. The local board orders by `date +%s` — read — **open**
 
-### 13. A resumed run reports "no code changed" — read
+[lib/board.sh:121], and the same at [lib/board.sh:151] where a card is created.
+Two moves in the same second get the same `pos`, and `sort_by(.pos)` then picks
+by whatever order the glob returned — so `aif board next-ready` stops being
+deterministic exactly when the project manager is reordering the queue quickly.
 
-Intake resets `.base` to the current HEAD ([lib/cmd_work.sh:227]), so the report's
-diffstat describes this invocation rather than the ticket. A run that resumes at
-`done` reports `no code changed` for a ticket whose work is all on the branch.
+Unchanged in 0.5.2.
+
+### 13. A resumed run reports "no code changed" — read — **open**
+
+Intake resets `.base` to the current HEAD ([lib/cmd_work.sh:251]), so the
+report's diffstat ([lib/cmd_work.sh:418]) describes this invocation rather than
+the ticket. A run that resumes at `done` reports `no code changed` for a ticket
+whose work is all on the branch.
+
+Unchanged in 0.5.2.
+
+---
+
+## D. Closed
+
+Kept in full rather than deleted: each says what the defect was, so that the fix
+below it can be read as an answer to something. They are closed in `main` *and*
+released — 1, 2, 3 and 6 in 0.5.1, 14 in 0.5.2 — which for this tool is the only
+claim worth making. A tag the tap does not serve is a fix nobody has.
+
+### 1. `aif_ledger_append` silently removes the worker's interrupt trap — probed
+
+`aif work` installs a trap so that an interrupted run puts its card back in
+`needs_human` rather than leaving it claiming that work is happening. Thirteen
+lines later the run reaches intake, intake records the `ready` verdict, and
+`aif_ledger_append` set its own trap for the lock directory and then cleared it:
+
+```sh
+trap - EXIT INT TERM        # lib/ledger.sh, before the fix
+```
+
+Traps are per-process, not per-function. That line took the worker's trap with
+it, and the worker never reinstalled it. From intake to the end of the loop —
+the whole expensive part of the run — the interrupt protection was off.
+
+```
+control, no ledger append:  WORKER TRAP fired / survived the signal / exit=0
+after one ledger append:    exit=130, no handler, no card moved
+```
+
+The comment above that line said "No other trap exists in this codebase, so
+clearing it below cannot clobber someone else's". It was true when it was
+written (`1806bbe`) and stopped being true when the worker's trap arrived
+(`097627e`) — which means that trap had never protected the loop it was written
+for, and the live run it was written after would have failed the same way.
+
+Cost: Ctrl-C left the card in In Progress for good — the exact defect the trap
+was written to prevent, and the one the code calls "the same defect as a meter
+that quietly did not fire".
+
+**Fixed** (0.5.1). `aif_trap_arm` / `aif_trap_restore` in [lib/common.sh:40]:
+the ledger's lock appends the caller's handler to its own trap and puts it back
+on the way out ([lib/ledger.sh:90]) instead of clearing the slate.
+`scripts/check-work.sh` asserts that a ledger write leaves an armed handler in
+place. Verified still in force at 0.5.2.
+
+### 2. The trap does not stop the run even when it fires — probed
+
+The handler moved the card and printed `interrupted — … moved to needs_human`,
+and did not exit. A bash trap handler returns to where the signal arrived, so
+the loop kept going. Probed with a stand-in loop: three signals, three
+"interrupted" lines, and the loop still ran to completion.
+
+An interactive Ctrl-C hid this — the signal reaches the whole foreground group,
+`claude -p` dies with it, the dispatch returns no envelope and the loop breaks —
+but it broke through the wrong door, reporting "the runner could not run the
+station — the environment, not the ticket".
+
+A `kill -TERM` from a supervisor, a timeout or a cancelled CI job reaches only
+`aif`: the card moved to `needs_human`, the message said the run was
+interrupted, and the run carried on spending the budget it was told to stop
+spending.
+
+**Fixed** (0.5.1). The handler is `_aif_work_abandon` ([lib/cmd_work.sh:92]),
+it is idempotent, and where it acts it exits 1 — a run nobody finished is
+"stopped, needs a human", which is what 1 means here. Verified still in force at
+0.5.2.
+
+### 3. Nothing puts the card back on any other exit — read
+
+The card moved to In Progress and there was no `EXIT` trap anywhere in the
+worker. Every `aif_die` after that point left it there — the worktree that could
+not be made, the ready gate that was not installed, the `cd` into the worktree —
+and, more often, any failure under `set -e` inside the loop.
+
+That last one was not hypothetical. The decimal-comma defect (`FINDINGS` #18)
+produced exactly this shape: `run.json` left saying `"status": "running"`,
+`"stage": "plan"`, and a card sitting in In Progress with nobody working on it.
+
+**Fixed** (0.5.1). `aif_trap_arm` covers `EXIT` as well as `INT`/`TERM`
+([lib/cmd_work.sh:595]), and the handler stays armed through the report — a
+failure while writing the report is exactly the case where the card must not be
+left claiming the work is under way. Scenario 7 of `scripts/check-work.sh`
+forces a die on the far side of the move and asserts the card came back.
+Verified still in force at 0.5.2.
+
+### 6. `grep -qF "$expect"` without `--` — probed
+
+`verify-red` greps each test file for the criterion's expected literal. An
+`expect` that starts with a dash became an option:
+
+```
+grep -qF "-1" t.py    → rc=1   (the file contains -1)
+grep -qF -- "-1" t.py → rc=0
+```
+
+So a criterion whose expected value was `-1`, `--force`, or any negative number
+passed the ready gate and was then rejected by `verify-red` with *"expected
+value (-1) does not appear in any test"* — about a test where it plainly did.
+The station could not fix it: it burned `attempts_max` opus runs and stopped the
+ticket.
+
+**Fixed** (0.5.1). `grep -qF --` on both greps in that block
+([verify-red.sh:281] and [verify-red.sh:299]). The offline harness asks for an
+`expect` of `-1` and has the test station write that literal into the test it
+authors, so removing the `--` again fails the first scenario. Verified still in
+force at 0.5.2.
 
 ### 14. `.suite.out` survives the reject paths — read
 
-`green` and `verify-red` both write `$work/.suite.out` and remove it only where
-they pass. On a rejection it stays under `tasks/<ID>/` and the report's
-`git add -A` commits it.
+`green` and `verify-red` both write `$work/.suite.out` and removed it only where
+they passed. On a rejection it stayed under `tasks/<ID>/` and the report's
+`git add -A` committed it — and a rejection is the common case, so the removals
+were written for the rarer one.
+
+**Fixed** (0.5.2). Both gates arm `trap 'rm -f "$work/.suite.out"' EXIT` the
+moment the file is written ([green.sh:153], [verify-red.sh:122]). A gate is its
+own process, so that is the whole fix, and unlike the per-site removals it
+covers every exit — including the two `ERROR` paths `DEFECTS-4.md` added.
 
 ---
 

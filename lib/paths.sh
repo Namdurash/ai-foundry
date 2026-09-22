@@ -25,6 +25,17 @@ AIF_PROFILE_STATE=".aif/profile.local"
 # shellcheck disable=SC2034
 AIF_TASKS_DIR="tasks"
 
+# Where `aif work` checks a ticket out to build it, relative to the project root.
+#
+# Here rather than in lib/cmd_work.sh because it is not only the worker's
+# business: it is a whole checkout INSIDE the repository, and anything that
+# scans the repository from the root has to be told about it. `aif doctor`
+# reads it to answer the one question git cannot — whether the project's own
+# test runner is collecting the worker's copy of every suite alongside the real
+# one (docs/DEFECTS-4.md #8).
+# shellcheck disable=SC2034
+AIF_WORK_WORKTREES=".aif/worktrees"
+
 # Where the product partner's requests live, relative to the project root.
 #
 # Parallel to tasks/, and deliberately not inside it: a request is what a

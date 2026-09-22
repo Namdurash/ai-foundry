@@ -193,6 +193,43 @@ aif_doctor_probe() {
   fi
   printf '  %s %-14s ran (exit %s — a red suite is fine here)\n' "$(aif_ok)" "test command" "$rc"
 
+  # The worker's checkouts live INSIDE the repository, at .aif/worktrees/<ID>,
+  # and they are complete trees. A test runner that globs from the project root
+  # does not care that git is hiding them: it collects every suite twice — once
+  # real, once from the worker's copy — and reports failures that do not exist.
+  # One `aif work` run is enough to make the project's own `npm test`
+  # meaningless, and the noise reads as the ticket's fault.
+  #
+  # Established from evidence, not from the presence of the directory: the run
+  # that just happened either mentioned those paths or it did not.
+  if printf '%s' "$out" | grep -q "$AIF_WORK_WORKTREES/" ||
+    grep -q "$AIF_WORK_WORKTREES/" "$root/$report_path" 2>/dev/null; then
+    printf '  %s %-14s it collects %s%s/%s too — the worker'"'"'s own checkouts\n' \
+      "$(aif_no)" "test scope" "$AIF_C_YELLOW" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"
+    printf '       %severy suite is then counted twice, once from a copy on another branch,\n' "$AIF_C_DIM"
+    printf '       and the extra failures belong to no ticket. Tell the runner to skip it:%s\n' "$AIF_C_RESET"
+    case "$test_cmd" in
+      *jest* | *vitest*)
+        printf '       %stestPathIgnorePatterns: ["<rootDir>/%s/"]%s\n' \
+          "$AIF_C_DIM" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"
+        ;;
+      *pytest*)
+        printf '       %snorecursedirs = %s%s\n' "$AIF_C_DIM" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"
+        ;;
+      *)
+        printf '       %s(the ignore list your runner reads, with the path %s/)%s\n' \
+          "$AIF_C_DIM" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"
+        ;;
+    esac
+    # The obvious pattern is a trap, so it is named. An unanchored `.aif/`
+    # matches inside the worktree as well, where the gates run the suite — and
+    # a worktree that excludes its own tree collects nothing, writes an empty
+    # report, and the gate falls to coarse mode on a project that is fine.
+    printf '       %sAnchor it (<rootDir>, or a rootdir-relative path). A bare ".aif/" also\n' "$AIF_C_YELLOW"
+    printf '       matches when the suite runs INSIDE a worktree, and then it finds no tests.%s\n' "$AIF_C_RESET"
+    return 1
+  fi
+
   # And the report must be readable by what reads it, in the format declared.
   local cases=""
   if [ "$report_fmt" = "junit" ] && aif_have python3; then

@@ -39,7 +39,8 @@
 # Exit: 0 built · 1 stopped, needs a human (the report says why) · 3 the
 # environment cannot run a ticket at all (nothing was spent).
 
-AIF_WORK_WORKTREES=".aif/worktrees"
+# AIF_WORK_WORKTREES lives in lib/paths.sh: `aif doctor` needs it too, to tell
+# a project whose test runner is collecting these checkouts beside the real tree.
 
 _aif_work_usage() {
   cat <<EOF
@@ -457,6 +458,19 @@ _aif_work_report() {
     ' "$ledger" 2>/dev/null
     printf '\n_Costs come from `.aif/prices.json`; a model missing there prints "tokens only". Tokens are always recorded. Each station'"'"'s own account of what it did is kept in `stations/`._\n'
 
+    # A station can end with a runner error and still be admitted: the gate
+    # judges the artifacts, not the exit code. That is the intended behaviour
+    # and it is invisible in the table above, so it gets its own section rather
+    # than living only in the scrollback of whoever started the run.
+    if [ "$(jq -r '(.station_errors // []) | length' "$run" 2>/dev/null)" != "0" ]; then
+      printf '\n## Stations that ended with a runner error\n\n'
+      printf 'The runner reported a failure for these dispatches. Their artifacts were still\n'
+      printf 'judged by the gate — the gate is the verdict — so a station can appear here and\n'
+      printf 'have been admitted anyway. Read it next to the diff.\n\n'
+      jq -r '(.station_errors // [])[]
+        | "- `" + .stage + "` attempt " + (.attempt | tostring) + " — " + .error' "$run" 2>/dev/null
+    fi
+
     if [ -f "$work/plan.md" ]; then
       printf '\n## Decisions the plan made\n\n'
       aif_meta_json "$work/plan.md" | jq -r '
@@ -631,7 +645,7 @@ aif_cmd_work() {
   # bound by the --arg flags that follow the filter. The single quotes are what
   # keeps the shell out of them, hence a disable on each.
   local stage agent expects complaint="" status="" why="" gate_out
-  local dispatches=0 spent=0 attempts out rc
+  local dispatches=0 spent=0 attempts out rc station_err
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -697,7 +711,19 @@ $complaint"
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
     aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
     if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
-      _aif_work_say "station" "$stage ended with an error: $("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
+      station_err="$("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
+      # A station that ended badly may still have left a usable artifact on
+      # disk, and the GATE decides, not the runner's exit code. That is
+      # deliberate — but on its own it reads as a contradiction: "ended with an
+      # error" followed on the next line by "admitted", with nothing outside
+      # the scrollback remembering it happened. So say which of the two is the
+      # verdict, and put the error in the run record for the report to carry.
+      _aif_work_say "station" "$stage ended with an error: $station_err"
+      _aif_work_say "station" "  the gate below judges the artifacts it left; the runner's exit is not the verdict"
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+      aif_run_update "$work" \
+        '.station_errors = ((.station_errors // []) + [{ stage: $s, attempt: $a, error: $e }])' \
+        --arg s "$stage" --arg e "$station_err" --argjson a "$((attempts + 1))"
     fi
     rm -f "$out"
 
@@ -725,8 +751,15 @@ $complaint"
         _aif_work_say "gate" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — retrying with the complaint"
         ;;
       3)
+        # Not always the environment. A gate also answers 3 when the defect is
+        # real but lies in an artifact THIS station may not touch — a frozen
+        # test file, say — where retrying is not merely wasteful, it is
+        # unsatisfiable. Either way the loop stops and the gate's own words are
+        # the explanation; this line no longer overrides them with a guess.
         status="stopped"
-        why="a gate could not render a verdict on $stage — the environment, not the ticket:
+        why="a gate could not render a verdict on $stage, so the run stopped rather than
+retrying a station that cannot fix what it is being rejected for. The gate says
+which it is:
 $(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | head -20)"
         break
         ;;

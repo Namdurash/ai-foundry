@@ -18,6 +18,15 @@
 #     appears in a test
 #   - no implementation was written (the plan's create paths must not exist yet)
 #
+# Without a readable per-test report none of that is possible and the gate falls
+# to COARSE mode — the suite's exit code alone. Two things hold there. The
+# project's broken-failure classes are matched against the run's own output, so
+# a suite that did not compile is still refused rather than frozen as an oracle;
+# and the reason for the degradation is named, on the closing line and in
+# tests.lock.json, because three different causes used to collapse into one
+# empty variable and "install python3" was the only thing this gate ever said
+# about any of them.
+#
 # A new test that PASSES at freeze is not rejected. On a second round — a
 # reworked ticket whose earlier round already implemented some criteria — the
 # honest test for a built criterion is green before this round's implementation
@@ -93,16 +102,47 @@ EOF
 aif_g_report "${viol# }" "tests"
 
 # --- run the suite ---------------------------------------------------------
+# The previous report is DELETED first, and that is not tidiness. A run that
+# never gets as far as writing one — a reporter that is not installed, a runner
+# that dies on startup, a checkout the runner refuses — leaves the last run's
+# file exactly where this gate looks for it, and every conclusion below is then
+# drawn about a suite that did not run. `aif doctor` has cleared it before
+# probing since the probe existed; the gates, which decide things, had not.
 test_cmd="$(jq -r '.test.command' "$project")"
 report_path="$(jq -r '.test.report.path' "$project")"
+[ -n "$report_path" ] && [ "$report_path" != "null" ] ||
+  aif_g_error "project.json names no test.report.path — this gate has nothing to read"
 mkdir -p "$root/$(dirname "$report_path")"
+rm -f "$root/$report_path"
 
-(cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
+# The suite's raw output is scratch, and it lives inside tasks/<ID>/ — which the
+# worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
+# #14): the removals were written on the pass paths only, and a rejection is the
+# common case. A gate is its own process, so a plain EXIT trap is the whole fix.
+trap 'rm -f "$work/.suite.out"' EXIT
 
+suite_rc=0
+(cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
+
+# Coarse mode is a large downgrade in rigour and it used to engage in silence:
+# three different causes collapsed into one empty variable, and from the outside
+# there was no way to tell which had happened — not from the gate's output, not
+# from the lock, not afterwards. Each cause is now named where it is found, and
+# the name travels to the closing line and into tests.lock.json.
 mode="per-test"
+mode_why=""
 results=""
-if aif_g_have python3 && [ -f "$root/$report_path" ]; then
-  results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+if ! aif_g_have python3; then
+  # PATH, because the interesting case is a python3 the developer's shell
+  # resolves and the gate's environment does not.
+  mode_why="python3 is not on PATH (PATH=${PATH:0:200})"
+elif [ ! -f "$root/$report_path" ]; then
+  mode_why="the suite (exit $suite_rc) wrote no report at $report_path"
+else
+  parse_rc=0
+  results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null)" || parse_rc=$?
+  [ -n "$results" ] ||
+    mode_why="junit.py could not read $report_path (exit $parse_rc) — not the declared format, or it holds no test cases"
 fi
 if [ -z "$results" ]; then
   # No parser or no report: fall back to the suite exit code alone. A much weaker
@@ -201,8 +241,26 @@ EOF
   fi
 else
   # coarse: the suite as a whole must be observably non-green.
+  #
+  # Before that, the one distinction coarse mode CAN still draw is drawn. A
+  # test file that does not compile is red, and "red" was the whole of the
+  # question here — which is how a jest.mock() factory closing over an
+  # out-of-scope variable became a frozen oracle asserting nothing, admitted by
+  # this branch on a live ticket. The project already names these strings for
+  # exactly this case; they were consulted in per-test mode only, where the
+  # message of an individual test is available. The suite's own output carries
+  # them too, and it is what this branch has.
+  broken_re="$(jq -r '.failure_classes.broken | join("|")' "$project")"
+  if [ -n "$broken_re" ] && grep -qE "$broken_re" "$work/.suite.out"; then
+    printf 'ERROR  the new tests are not a usable oracle — the run matches a broken-failure class:\n' >&2
+    grep -ohE "$broken_re" "$work/.suite.out" | sort -u | sed 's/^/  - /' >&2
+    printf '  This is coarse mode (%s), so the gate cannot say WHICH test broke —\n' "$mode_why" >&2
+    printf '  only that the suite did not merely fail, it failed to run.\n' >&2
+    rm -f "$work/.suite.out"
+    exit "$AIF_G_ERROR"
+  fi
   if grep -qiE 'passed|ok|0 failed' "$work/.suite.out" && ! grep -qiE 'fail|error' "$work/.suite.out"; then
-    aif_g_reject "the suite appears green — no observable red (coarse mode: install python3 for per-test checking)"
+    aif_g_reject "the suite appears green — no observable red (coarse mode: $mode_why)"
   fi
 fi
 
@@ -355,6 +413,7 @@ EOF
 jq -n \
   --arg plan_hash "$plan_hash" \
   --arg mode "$mode" \
+  --arg mode_reason "$mode_why" \
   --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)" \
   --rawfile tests_raw <(printf '%s' "$tests_json") \
   --rawfile impl_raw <(printf '%s' "$impl_frozen") \
@@ -364,7 +423,7 @@ jq -n \
   --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
     | map({ (.[0]): .[1] }) | add // {};
-  { schema: 1, plan_sha256: $plan_hash, mode: $mode, at: $at,
+  { schema: 1, plan_sha256: $plan_hash, mode: $mode, mode_reason: $mode_reason, at: $at,
     tests: rows($tests_raw),
     covering: $covering,
     green_at_freeze: $green,
@@ -381,7 +440,12 @@ jq -n \
 rm -f "$work/tests.lock" "$work/.suite.out"
 
 if [ "$mode" = "coarse" ]; then
-  printf 'verify-red: red (COARSE mode — no per-test detail; install python3)\n'
+  # The reason, not the remedy. "install python3" was the only thing this line
+  # ever said, and on a machine where python3 was installed and resolving it
+  # sent the reader looking in the one place the answer was not.
+  printf 'verify-red: red (COARSE mode — no per-test detail)\n'
+  printf '  ! why: %s\n' "$mode_why"
+  printf '  ! the lock records covering: [] — green has no test to revert-recheck against.\n'
 else
   printf 'verify-red: %s new test(s) red for the right reason, all criteria covered\n' \
     "$red_count"

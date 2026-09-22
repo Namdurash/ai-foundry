@@ -19,6 +19,13 @@
 #     included a compiler, a linter or a dependency-integrity pass could not say
 #     so, and the pipeline therefore never enforced it. A module that did not
 #     compile on its target runtime shipped through a green suite that way.
+#
+# Under all four sits one rule about the evidence itself: the report is read
+# beside the runner that wrote it, never alone. A junit reporter emits one
+# <testcase> per test and therefore NONE for a suite that failed to run, so a
+# report can be entirely silent about a broken file and read as a clean pass.
+# When the runner and its own report disagree, this gate answers 3 — it cannot
+# render a verdict — rather than picking the more convenient of the two.
 
 set -uo pipefail
 
@@ -131,18 +138,75 @@ aif_g_report "${drift# }" "test tree"
 # record, and the gate says so rather than pretending to check it.
 test_cmd="$(jq -r '.test.command' "$project")"
 report_path="$(jq -r '.test.report.path' "$project")"
+[ -n "$report_path" ] && [ "$report_path" != "null" ] ||
+  aif_g_error "project.json names no test.report.path — this gate has nothing to read"
 mkdir -p "$root/$(dirname "$report_path")"
-(cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
+# The last run's report is deleted before this one, so that a command which
+# never reaches its reporter cannot be judged on a file it did not write. See
+# the same note in verify-red.sh: the gates decide, and they were the two places
+# that read this path without first clearing it.
+rm -f "$root/$report_path"
+# The suite's raw output is scratch, and it lives inside tasks/<ID>/ — which the
+# worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
+# #14): the removals were written on the pass paths only, and a rejection is the
+# common case. A gate is its own process, so a plain EXIT trap is the whole fix.
+trap 'rm -f "$work/.suite.out"' EXIT
+
+suite_rc=0
+(cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
+
+# What the LOCK is, as distinct from what this run is. A lock written in coarse
+# mode holds no per-test record at all: covering is empty, suite_at_freeze is
+# empty, and the three checks below that read them therefore check nothing. That
+# was invisible — this gate printed the same confident sentence either way.
+lock_mode="$(jq -r '.mode // "per-test"' "$lock")"
 
 allowed_skips=0
 freeze_known=yes
+[ "$lock_mode" = "per-test" ] || freeze_known=no
 if aif_g_have python3 && [ -f "$root/$report_path" ]; then
   results="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
   if [ -n "$results" ]; then
     [ "$(jq -r 'has("suite_at_freeze")' "$lock")" = "true" ] || freeze_known=no
+
+    # --- the report is evidence, not testimony ---------------------------
+    # A reporter emits one <testcase> per test, and therefore emits NONE for a
+    # suite that failed to RUN — no failing <testsuite> either, on jest-junit.
+    # The file is simply absent from the report, and a report read on its own
+    # then says "everything passed" about a run that plainly did not. Measured:
+    # a suite reporting `1 failed, 26 passed` produced a report with zero
+    # occurrences of the failing file, and this gate passed the ticket on it.
+    #
+    # So the report is cross-checked against the runner. A non-zero run whose
+    # own report names nothing failing is neither a pass nor a rejection: it is
+    # a gate that cannot render a verdict, which is what exit 3 means.
+    failed_in_report="$(printf '%s' "$results" | jq -r \
+      '[ .[] | select(.status == "failure" or .status == "error") ] | length' 2>/dev/null)"
+    if [ "$suite_rc" -ne 0 ] && [ "${failed_in_report:-0}" -eq 0 ]; then
+      printf 'ERROR  the report contradicts the runner, so it cannot carry a verdict:\n' >&2
+      printf '  - the suite exited %s; its report names no failing test\n' "$suite_rc" >&2
+      printf '  - a suite that fails to RUN emits no test case, so the report is silent about it\n' >&2
+      printf '  - the last lines of the run were:\n' >&2
+      tail -5 "$work/.suite.out" | sed 's/^/      /' >&2
+      rm -f "$work/.suite.out"
+      exit "$AIF_G_ERROR"
+    fi
+    # Bound once, read four times below. They were four identical sub-shells.
+    mine_json="$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")"
+    freeze_json="$(jq -c '.suite_at_freeze // null' "$lock")"
+
+    # A failing test that is not one of this ticket's own used to be reported,
+    # unconditionally, as "the pre-existing suite broke". That sentence is a
+    # claim about WHERE a test came from, and the gate was not checking: on a
+    # live ticket it was printed about six tests in a file the run had just
+    # created, and the human read it as a regression in their own repository.
+    #
+    # The freeze knows. verify-red records the whole suite's status at freeze
+    # time, so an id absent from that record did not exist when the tests were
+    # frozen and cannot be pre-existing — whatever else it is.
     notpass="$(printf '%s' "$results" | jq -r \
-      --argjson mine "$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")" \
-      --argjson freeze "$(jq -c '.suite_at_freeze // null' "$lock")" '
+      --argjson mine "$mine_json" \
+      --argjson freeze "$freeze_json" '
       .[]
       | . as $t
       | if ($mine | index($t.id)) != null then
@@ -150,15 +214,68 @@ if aif_g_have python3 && [ -f "$root/$report_path" ]; then
             then $t.id + " (" + $t.status + ") — a test this ticket froze, so it must pass; a skip here is red made to go away without implementing anything"
             else empty end)
         elif ($t.status == "failure" or $t.status == "error") then
-          $t.id + " (" + $t.status + ") — the pre-existing suite broke"
+          (if $freeze == null then
+             $t.id + " (" + $t.status + ") — origin unknown: this lock predates suite_at_freeze, so a pre-existing test cannot be told from one this ticket authored"
+           elif (($freeze[$t.id] // "") == "") then
+             $t.id + " (" + $t.status + ") — NOT pre-existing: absent from the suite when the tests were frozen, so it arrived with this ticket'"'"'s own test files"
+           else
+             $t.id + " (" + $t.status + ") — the pre-existing suite broke"
+           end)
         elif $t.status == "skipped" then
           (if $freeze != null and (($freeze[$t.id] // "") == "pass")
             then $t.id + " (skipped) — it was passing when the tests were frozen, so something in this change silenced it"
             else empty end)
         else empty end')"
+
+    # The same three populations, counted, because the counts decide WHO is
+    # being rejected — and that is a different question from what to print.
+    counts="$(printf '%s' "$results" | jq -r \
+      --argjson mine "$mine_json" \
+      --argjson freeze "$freeze_json" '
+      # Each arm is parenthesised. In jq the comma binds TIGHTER than the pipe,
+      # so [A] | length, [B] | length is not three counts but one pipeline that
+      # ends up calling .[] on a number. It did, and the error went into the
+      # output of this gate and became the recorded reason for a PASS.
+      ([ .[] | . as $t | select(($mine | index($t.id)) != null)
+             | select($t.status != "pass") ] | length),
+      ([ .[] | . as $t | select(($mine | index($t.id)) == null)
+             | select($t.status == "failure" or $t.status == "error")
+             | select($freeze != null and (($freeze[$t.id] // "") != "")) ] | length),
+      ([ .[] | . as $t | select(($mine | index($t.id)) == null)
+             | select($t.status == "failure" or $t.status == "error")
+             | select($freeze != null and (($freeze[$t.id] // "") == "")) ] | length)')"
+    mine_fail="$(printf '%s\n' "$counts" | sed -n 1p)"
+    pre_fail="$(printf '%s\n' "$counts" | sed -n 2p)"
+    post_fail="$(printf '%s\n' "$counts" | sed -n 3p)"
+
     if [ -n "$notpass" ]; then
+      # Whose defect is it? The implement station may write only files.change,
+      # and every test file is hash-locked by tests.lock.json — so when nothing
+      # failing is either one of this ticket's frozen tests or a pre-existing
+      # one, what failed can only be a test that arrived with the oracle, and
+      # implement cannot reach it. Rejecting implement there is not merely
+      # unfair, it is unsatisfiable: measured at three dispatches, 93 turns and
+      # 51 580 output tokens before limits.attempts_max stopped the run.
+      #
+      # So it is a 3, not a 1: the gate cannot render a verdict on THIS
+      # station's work, and the loop must stop instead of retrying.
+      if [ "$lock_mode" = "per-test" ] && [ "${mine_fail:-0}" -eq 0 ] &&
+        [ "${pre_fail:-0}" -eq 0 ] && [ "${post_fail:-0}" -gt 0 ]; then
+        printf 'ERROR  the failing tests are the oracle, not the implementation:\n' >&2
+        printf '%s\n' "$notpass" | sed 's/^/  - /' >&2
+        printf '  Every one of them arrived with this ticket'"'"'s own test files, which are frozen by\n' >&2
+        printf '  tests.lock.json and outside files.change. The implement station cannot fix what it\n' >&2
+        printf '  is being rejected for. Re-run the tests station against this plan.\n' >&2
+        rm -f "$work/.suite.out"
+        exit "$AIF_G_ERROR"
+      fi
       printf 'REJECT suite is not green:\n' >&2
       printf '%s\n' "$notpass" | sed 's/^/  - /' >&2
+      if [ "$lock_mode" != "per-test" ]; then
+        printf '  The lock is COARSE (%s), so it names no covering test and no suite at freeze —\n' \
+          "$(jq -r '.mode_reason // "reason not recorded"' "$lock")" >&2
+        printf '  nothing above could be attributed to a station. Fix that first.\n' >&2
+      fi
       exit "$AIF_G_REJECT"
     fi
     # `. as $t` first: inside index(f), jq evaluates f against the ARRAY being
@@ -166,7 +283,7 @@ if aif_g_have python3 && [ -f "$root/$report_path" ]; then
     # own .id and dies with "Cannot index array with string". It did, on the
     # pass path, where the error became the recorded reason for a PASS.
     allowed_skips="$(printf '%s' "$results" | jq -r \
-      --argjson mine "$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")" \
+      --argjson mine "$mine_json" \
       '[ .[] | . as $t | select($t.status == "skipped")
          | select(($mine | index($t.id)) == null) ] | length' 2>/dev/null)"
     case "$allowed_skips" in
@@ -176,9 +293,16 @@ if aif_g_have python3 && [ -f "$root/$report_path" ]; then
     aif_g_error "test report was not parseable — cannot confirm green"
   fi
 else
-  # Coarse: exit code only. Weaker, and a skip is invisible here.
-  if grep -qiE 'fail|error' "$work/.suite.out"; then
-    aif_g_reject "the suite is not green (coarse mode)"
+  # Coarse: exit code only. Weaker, and a skip is invisible here — so say which
+  # of the two reasons put the gate here, rather than leaving the reader to
+  # guess between a missing interpreter and a missing report.
+  if ! aif_g_have python3; then
+    coarse_why="python3 is not on PATH (PATH=${PATH:0:200})"
+  else
+    coarse_why="the suite (exit $suite_rc) wrote no report at $report_path"
+  fi
+  if [ "$suite_rc" -ne 0 ] || grep -qiE 'fail|error' "$work/.suite.out"; then
+    aif_g_reject "the suite is not green (coarse mode: $coarse_why)"
   fi
 fi
 
@@ -187,25 +311,46 @@ fi
 # repo, re-run, and require the covering tests to fail again. A copy, not the
 # live tree — the same disposable-copy reasoning as the eval harness — so this
 # check cannot damage the work.
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/aif-green-XXXXXX")"
-cp -R "$root/." "$scratch/" 2>/dev/null || true
-
-# change files: back to frozen content. create files: remove them.
-jq -r '.impl_frozen | to_entries[] | .key' "$lock" | while IFS= read -r rel; do
-  [ -n "$rel" ] || continue
-  # The frozen content is not stored, only its hash — so revert by checking out
-  # the committed version if git is present, else skip with a recorded caveat.
-  if [ -e "$root/.git" ]; then
-    git -C "$scratch" checkout -q -- "$rel" 2>/dev/null || true
-  fi
-done
-jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
-  [ -n "$rel" ] || continue
-  rm -f "$scratch/$rel"
-done
-
+#
+# Whether it ran at all is now carried in recheck_why rather than assumed. An
+# empty `covering` list makes the loop below a no-op, and a lock frozen in
+# coarse mode has an empty covering list BY CONSTRUCTION — so on exactly the
+# runs where the oracle is weakest, this gate used to print its strongest
+# sentence about a check that had looked at nothing. The copy is skipped
+# outright in that case: it is a full copy of the working tree, and there is
+# nothing to learn from it.
 recheck_ok=1
-if [ -e "$root/.git" ] && aif_g_have python3; then
+recheck_why="needs git and python3"
+scratch=""
+covering_n="$(jq -r '(.covering // []) | length' "$lock")"
+if [ "${covering_n:-0}" -eq 0 ]; then
+  recheck_ok=0
+  recheck_why="the lock names no covering test, so there was nothing to revert-recheck"
+  [ "$lock_mode" = "per-test" ] ||
+    recheck_why="$recheck_why (the lock is COARSE: $(jq -r '.mode_reason // "reason not recorded"' "$lock"))"
+elif [ ! -e "$root/.git" ] || ! aif_g_have python3; then
+  recheck_ok=0
+else
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/aif-green-XXXXXX")"
+  cp -R "$root/." "$scratch/" 2>/dev/null || true
+
+  # change files: back to frozen content. create files: remove them.
+  jq -r '.impl_frozen | to_entries[] | .key' "$lock" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    # The frozen content is not stored, only its hash — so revert by checking
+    # out the committed version.
+    git -C "$scratch" checkout -q -- "$rel" 2>/dev/null || true
+  done
+  jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    rm -f "$scratch/$rel"
+  done
+
+  # The scratch is a copy of the tree AFTER the green run, so it carries that
+  # run's report. If the reverted run fails to produce one, that stale file is
+  # what gets parsed — every covering test reads as "pass", and the gate rejects
+  # a correct implementation for tests that "do not depend on" it.
+  rm -f "$scratch/$report_path"
   (cd "$scratch" && eval "$test_cmd") >"$scratch/.out" 2>&1 || true
   if [ -f "$scratch/$report_path" ]; then
     reverted="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"
@@ -228,12 +373,12 @@ EOF
     fi
   else
     recheck_ok=0
+    recheck_why="the reverted run wrote no report at $report_path"
   fi
-else
-  recheck_ok=0
 fi
 
-rm -rf "$scratch" "$work/.suite.out"
+[ -z "$scratch" ] || rm -rf "$scratch"
+rm -f "$work/.suite.out"
 
 # --- the rest of the Definition of Done ------------------------------------
 # Run last, because the suite is the cheapest signal and there is no point
@@ -249,7 +394,7 @@ aif_g_report "$check_viol" "checks"
 checks_ran="$(jq 'length' "$root/.aif/tmp/checks-green.json" 2>/dev/null || echo 0)"
 
 if [ "$recheck_ok" -eq 0 ]; then
-  printf 'green: suite passes (revert-recheck skipped — needs git and python3)'
+  printf 'green: suite passes (revert-recheck NOT done — %s)' "$recheck_why"
 else
   printf 'green: suite passes, and the covering tests depend on the implementation'
 fi

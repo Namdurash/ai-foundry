@@ -103,6 +103,17 @@ verified, what it cost — beside the diff, which is the one place a reviewer ha
 enough context to judge it. Run several tickets at once: each gets its own
 worktree. The offline walk of the whole thing is `scripts/check-work.sh`.
 
+One thing to know about those worktrees: they are complete checkouts *inside*
+the repository, and git hiding them does not mean your test runner will. A
+runner that globs from the project root will collect every suite twice — once
+real, once from a worker's copy — and report failures that belong to no ticket.
+`aif doctor` detects it from the suite's own output and refuses, which means
+`aif work` refuses before spending anything, and prints the pattern to add.
+Anchor that pattern (`<rootDir>/.aif/worktrees/`, or a rootdir-relative path):
+a bare `.aif/` also matches when the suite runs *inside* a worktree, which is
+where the gates run it, and a worktree that excludes its own tree finds no
+tests at all.
+
 `aif work` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
 the project is not on the profile's model** — it uses whatever the project
@@ -814,6 +825,29 @@ source until one stops collecting. `verify-red` records the rest of the suite's
 status in `tests.lock.json` so the two can be told apart, and green prints how
 many it allowed on its pass path, because a test that did not run is a
 criterion nobody exercised whoever skipped it.
+
+**A report is evidence, not testimony — and the gates now treat it that way.**
+Every verdict here rests on the junit report the project's `test.command`
+writes, and a report can be silent about a suite that failed to *run*: a junit
+reporter emits one `<testcase>` per test, so a file that does not compile
+contributes none, and jest-junit emits no failing `<testsuite>` for it either.
+Read alone, such a report says "everything passed" about a run that plainly did
+not. So it is cross-checked against the runner: a non-zero suite whose own
+report names nothing failing is neither a pass nor a rejection but a gate that
+cannot render a verdict, and the run stops. The two gates also delete the
+previous report before running, so a command that never reaches its reporter
+cannot be judged on the last run's file.
+
+**Coarse mode is a real downgrade, and it now says so out loud.** Without a
+readable per-test report the gates fall back to the suite's exit code alone,
+which cannot tell a legitimate failure from a broken one. `verify-red` still
+matches the project's `failure_classes.broken` against the run's output there —
+a suite that did not compile is not usable red, whatever its exit code — and
+records *why* it degraded in `tests.lock.json` as `mode_reason`: no python3 on
+PATH (with the PATH), no report at the declared path, or a report the parser
+could not read. A coarse freeze also names no covering test, so `green`'s
+revert-recheck has nothing to target; it now reports that it did not run
+instead of printing the sentence it prints when it did.
 
 **An external dependency behind a fake is not verified by anything here.** The
 plan's `external` list makes that visible and nothing more: an entry with no

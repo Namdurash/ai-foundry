@@ -453,6 +453,62 @@ armed="$(/bin/bash -c '
 eq "a ledger write leaves the armed handler in place" \
   "$(printf '%s' "$armed" | grep -c 'SENTINEL')" "1"
 
+# =========== 8. a report that contradicts the runner is not a verdict ========
+#
+# A junit reporter emits one <testcase> per test, so a suite that fails to RUN
+# contributes none — and jest-junit emits no failing <testsuite> for it either.
+# The file is simply absent, and the report then reads as "everything passed"
+# about a run that plainly did not. Measured on a live ticket: `npm test` said
+# `1 failed, 26 passed`, the report held zero mentions of the failing file, and
+# green passed the ticket on it. Seven acceptance criteria reached review
+# verified by nothing.
+#
+# The stub below reproduces exactly that: it keeps writing its all-pass report
+# and starts exiting non-zero the moment the implementation lands.
+printf '\n8. a report that contradicts the runner is not a verdict\n'
+fresh_project "$SANDBOX/p8"
+cat >>.aif/suite.sh <<'BREAK'
+grep -q impl1 src/app.py 2>/dev/null && exit 1
+exit 0
+BREAK
+ticket_for AIF-8
+git add -A && git commit -qm "ticket 8" >/dev/null
+rc=0
+"$AIF" work AIF-8 --no-worktree >"$OUT/run8.out" 2>&1 || rc=$?
+eq "exit 1 — the run stopped instead of passing" "$rc" "1"
+eq "green could not render a verdict" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-8/ledger.json)" "error"
+eq "and said the report contradicts the runner" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-8/ledger.json |
+     grep -c 'contradicts the runner')" "1"
+# An un-renderable verdict is a 3, so the loop stops. Retrying implement here
+# buys nothing: the suite is broken somewhere the report does not describe.
+eq "implement was dispatched once, not attempts_max times" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-8/ledger.json)" "1"
+eq "the ticket did not reach review" "$(jq -r '.status' tasks/AIF-8/run.json)" "stopped"
+
+# ======== 9. the lock says how sharp it was, and green repeats it ============
+printf '\n9. a coarse freeze says so, and green does not claim a check it skipped\n'
+eq "a per-test freeze records the mode and an empty reason" \
+  "$(jq -r '.mode + "/" + (.mode_reason | tostring)' "$SANDBOX/p1/tasks/AIF-1/tests.lock.json")" "per-test/"
+# The revert-recheck is the check that catches a test asserting nothing, and it
+# iterates over `covering`. A coarse freeze leaves covering empty BY
+# CONSTRUCTION, so the loop did nothing and the gate went on printing its
+# strongest sentence anyway. Drive green against a lock with no covering test
+# and it must say so instead.
+mkdir -p "$SANDBOX/p9"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p9/" 2>/dev/null || true
+cd "$SANDBOX/p9" || exit 1
+tmp="$(mktemp)"
+jq '.covering = [] | .mode = "coarse" | .mode_reason = "python3 is not on PATH"' \
+  tasks/AIF-1/tests.lock.json >"$tmp" && mv "$tmp" tasks/AIF-1/tests.lock.json
+green_out="$(/bin/bash .aif/gates/green.sh "$PWD/tasks/AIF-1" 2>&1)"
+eq "green still passes the suite" "$(printf '%s' "$green_out" | grep -c '^green: suite passes')" "1"
+eq "but says the revert-recheck was not done" \
+  "$(printf '%s' "$green_out" | grep -c 'revert-recheck NOT done')" "1"
+eq "and names the coarse freeze as the reason" \
+  "$(printf '%s' "$green_out" | grep -c 'python3 is not on PATH')" "1"
+
 # ----------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

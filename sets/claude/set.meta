@@ -1,4 +1,4 @@
 # KEY=VALUE, parsed rather than sourced.
 SET_DESC=The Claude Code foundry set
-SET_VERSION=0.5.4
+SET_VERSION=0.5.5
 SET_RUNNER=claude

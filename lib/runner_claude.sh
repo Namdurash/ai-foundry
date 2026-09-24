@@ -138,6 +138,14 @@ aif_runner_claude_station() {
   local workdir="$1" sys="$2" prompt="$3" model="$4"
   local max_turns="$5" budget="$6" tools="$7" out="$8" err="$9"
 
+  # An empty budget is no ceiling, and the flag is then left off entirely —
+  # not passed as 0, which claude would read as a ceiling of nothing. The
+  # array is expanded as ${a[@]+"${a[@]}"} because bash 3.2 treats an empty
+  # one as unset under set -u (docs/FINDINGS.md, bash 3.2).
+  local cap
+  cap=()
+  [ -z "$budget" ] || cap=(--max-budget-usd "$budget")
+
   (
     cd "$workdir" || exit 70
     claude -p "$prompt" \
@@ -146,7 +154,7 @@ aif_runner_claude_station() {
       --tools "$tools" \
       --output-format json \
       --max-turns "$max_turns" \
-      --max-budget-usd "$budget" \
+      ${cap[@]+"${cap[@]}"} \
       --permission-mode bypassPermissions \
       --setting-sources project,local \
       >"$out" 2>"$err" </dev/null

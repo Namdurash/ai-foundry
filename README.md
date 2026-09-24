@@ -114,11 +114,30 @@ a bare `.aif/` also matches when the suite runs *inside* a worktree, which is
 where the gates run it, and a worktree that excludes its own tree finds no
 tests at all.
 
-Three smaller things about a run, each learned the hard way. **The budget cap
-prices tokens itself**: the runner's own `total_cost_usd` is 0 under
-subscription auth, so `--budget` (and `limits.run_budget_usd`) takes the larger
-of that figure and the one `.aif/prices.json` gives the same tokens — a model
-the table does not know contributes the runner's number alone. **A station
+**A run always has two caps and optionally a third.** The two that always
+apply are the wall clock (`limits.run_max_minutes`, 120) and the dispatch cap
+(`limits.run_dispatches_max`, 12 station runs) — both counted by the worker
+itself, so both always hold. The third is a dollar ceiling, and it is **off
+unless you ask for it**: pass `--budget 5`, or set `limits.run_budget_usd` to
+a number (`null` or absent means no ceiling; `--no-budget` turns off one the
+project sets).
+
+Off by default because a ceiling that cannot fire is worse than none. Spend is
+the larger of the runner's own `total_cost_usd` and what `.aif/prices.json`
+prices the same tokens at — and under subscription auth the first is `0`
+(`docs/FINDINGS.md` #2) while the table ships empty on purpose, so on the
+commonest setup the total stays `0.0000` and no ceiling is ever crossed. It
+read as a guarantee and was not one. Before relying on a ceiling, put your
+model in `.aif/prices.json` and check the report's Stations table: a row
+saying `tokens only` is a row contributing nothing to the total.
+
+None of the three interrupts a station mid-flight — the current `claude -p`
+always finishes and the worker stops before the next one, so a ceiling is
+"stop past this", not a hard stop. When a ceiling is set, each station is also
+invoked with `--max-budget-usd` carrying what is left of it; with no ceiling
+the flag is not passed at all.
+
+Two smaller things, each learned the hard way. **A station
 that commits is still judged on what it did**: the worker records HEAD before
 every dispatch, and `scope` and `green` diff and revert against that baseline
 rather than "the last commit", which after a station's own `git commit` would

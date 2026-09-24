@@ -59,20 +59,29 @@ usage: aif work [<ticket>] [options]
   report as a comment — when it ends.
 
   --profile P        which (set, runner, model) profile; default: the project's
-  --budget USD       stop past this spend. Each station is priced from its
-                     tokens where .aif/prices.json knows the model, else as the
-                     runner reported it — under subscription auth that is \$0
+  --budget USD       stop past this spend. OFF unless asked for: set it here
+                     or as limits.run_budget_usd. Each station is priced from
+                     its tokens where .aif/prices.json knows the model, else as
+                     the runner reported it — under subscription auth that is
+                     \$0, so an unpriced model contributes nothing to the total
+  --no-budget        no dollar ceiling, whatever limits.run_budget_usd says
   --max-minutes N    stop past this wall clock (default limits.run_max_minutes, 120)
-  A fresh worktree holds tracked files only. "prepare" in .aif/project.json
-  (npm ci, bundle install) runs once after it is cut, and the suite is then
-  probed THERE before anything is spent — a checkout that cannot run the
-  suite is refused, not built against.
-
   --no-worktree      run in the current checkout instead of a worktree. Every
                      station then runs with bypassPermissions HERE, so the
                      checkout must already be disposable: set CI=1 (a CI job
                      has it) or AIF_DISPOSABLE=1 to say so. Refused otherwise
   --clean            remove the ticket's worktree and stop
+
+Two caps always apply — the wall clock and limits.run_dispatches_max (12
+station runs). The dollar ceiling is the third and is opt-in: under
+subscription auth the runner reports \$0 for every station and
+.aif/prices.json ships empty, so a ceiling nobody configured could not fire.
+Price your model there before relying on one.
+
+A fresh worktree holds tracked files only. "prepare" in .aif/project.json
+(npm ci, bundle install) runs once after it is cut, and the suite is then
+probed THERE before anything is spent — a checkout that cannot run the suite
+is refused, not built against.
 
 The worker is the whole dev pipeline. There is no command per stage, and there
 is no question at any stage; see docs/REBUILD-3.md.
@@ -614,6 +623,10 @@ _aif_work_report() {
 
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
+  # An empty budget means NO ceiling, here and everywhere below. budget_off
+  # separates "the caller said no ceiling" from "the caller said nothing",
+  # which is what lets --no-budget override a project that sets one.
+  local budget_off=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -624,6 +637,19 @@ aif_cmd_work() {
       --budget)
         shift
         budget="${1:-}"
+        budget_off=0
+        # Validated, because the failure is silent in the wrong direction: awk
+        # reads a non-number as 0, and `spent > 0` is true at the first cent —
+        # the run would stop after one station and blame the budget.
+        case "$budget" in
+          '' | *[!0-9.]* | *.*.* | .) aif_die "--budget takes a positive dollar amount, e.g. --budget 5 (for no ceiling: --no-budget)" ;;
+        esac
+        awk -v b="$budget" 'BEGIN { exit !(b > 0) }' ||
+          aif_die "--budget must be greater than 0 (for no ceiling: --no-budget)"
+        ;;
+      --no-budget)
+        budget=""
+        budget_off=1
         ;;
       --max-minutes)
         shift
@@ -751,12 +777,25 @@ aif_cmd_work() {
   attempts_max="$(jq -r '.limits.attempts_max // 3' "$project")"
   dispatches_max="$(jq -r '.limits.run_dispatches_max // 12' "$project")"
   [ -n "$max_minutes" ] || max_minutes="$(jq -r '.limits.run_max_minutes // 120' "$project")"
-  [ -n "$budget" ] || budget="$(jq -r '.limits.run_budget_usd // 20' "$project")"
+  # No default. A dollar ceiling that nobody chose is worse than none: under
+  # subscription auth the runner reports $0 and .aif/prices.json ships empty,
+  # so the old default of 20 could not fire on the commonest setup — it read
+  # as a guarantee and was not one. Now it is off unless the project or the
+  # caller names a number, and when it IS named the run says so on its first
+  # line. The wall clock and the dispatch cap are the caps that always apply.
+  if [ "$budget_off" -eq 1 ]; then
+    budget=""
+  elif [ -z "$budget" ]; then
+    budget="$(jq -r '.limits.run_budget_usd // empty' "$project")"
+  fi
+  local budget_say="off"
+  [ -z "$budget" ] || budget_say="\$$budget"
   run_max=$((max_minutes * 60))
   started="$(date +%s)"
 
-  printf '\n%swork%s %s · profile %s · budget $%s · ≤%s min\n\n' \
-    "$AIF_C_BOLD" "$AIF_C_RESET" "$ticket" "$profile" "$budget" "$max_minutes" >&2
+  printf '\n%swork%s %s · profile %s · budget %s · ≤%s min · ≤%s dispatches\n\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET" "$ticket" "$profile" "$budget_say" "$max_minutes" \
+    "$dispatches_max" >&2
 
   # The loop. The run record says which stage is next and the station's own
   # agent file says what checks it; the worker keeps only what is true of THIS
@@ -765,7 +804,7 @@ aif_cmd_work() {
   # bound by the --arg flags that follow the filter. The single quotes are what
   # keeps the shell out of them, hence a disable on each.
   local stage agent expects complaint="" status="" why="" gate_out
-  local dispatches=0 spent=0 attempts out rc station_err tool_out
+  local dispatches=0 spent=0 attempts out rc station_err tool_out budget_left
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -822,9 +861,15 @@ $complaint"
     # other into jq as a JSON number; a decimal comma is wrong in both.
     out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
     rc=0
+    # Empty when there is no ceiling, and the runner is then invoked without
+    # --max-budget-usd at all. Computing it anyway would hand the station the
+    # 0.01 floor below — a one-cent cap in place of no cap.
+    budget_left=""
+    if [ -n "$budget" ]; then
+      budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
+    fi
     _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
-      "$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')" \
-      "$out" || rc=$?
+      "$budget_left" "$out" || rc=$?
     if [ "$rc" -eq 3 ]; then
       rm -f "$out"
       status="stopped"
@@ -852,7 +897,7 @@ $complaint"
     fi
     rm -f "$out"
 
-    if awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
+    if [ -n "$budget" ] && awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
       status="stopped"
       why="budget: spent \$$spent of \$$budget — each station priced from its tokens where .aif/prices.json knows the model, else as the runner reported it."
       break

@@ -156,6 +156,9 @@ work="$wt/tasks/$ticket"
 count_file="$wt/.aif/tmp/fake-$station.count"
 mkdir -p "$wt/.aif/tmp"
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); printf '%s' "$n" >"$count_file"
+# The budget the worker handed this dispatch — empty when there is no ceiling,
+# and the real runner then omits --max-budget-usd entirely.
+printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 
 # The criteria the ticket actually carries — so a reworked ticket with a new
@@ -571,27 +574,72 @@ rm -f tasks/AIF-10/run.json
 eq "without it — the old behaviour — the same change is invisible" \
   "$(/bin/bash .aif/gates/scope.sh "$PWD/tasks/AIF-10" 2>&1 | head -1)" "scope: change confined to the plan (0 lines)"
 
-# ============ 11. the budget cap prices tokens, not the runner's zero ========
+# ============ 11. the dollar ceiling: off by default, and real when set =====
 #
-# Under subscription auth the runner reports total_cost_usd 0 for every
-# station, and the cap read exactly that number — so on the auth most users
-# have it could not fire, while the report beside it printed dollars from the
-# same tokens. The cap now takes the larger of the two.
-printf '\n11. the budget cap fires on token-priced cost when the runner reports USD 0\n'
-fresh_project "$SANDBOX/p11"
-tmp="$(mktemp)"
-jq '.models["fake-model"] = { input: 1000, output: 1000, cache_read: 0, cache_write: 0 }' \
-  .aif/prices.json >"$tmp" && mv "$tmp" .aif/prices.json
+# Two things at once. A ceiling nobody asked for could not be honoured: under
+# subscription auth the runner reports total_cost_usd 0 for every station and
+# .aif/prices.json ships empty, so the old default of 20 read as a guarantee
+# and was not one. It is off now unless asked for. And when it IS asked for it
+# has to fire on the token-priced cost, not on the runner's zero.
+#
+# priced() — a project whose price table knows the fake model, so a station
+# that reports $0 still costs something.
+priced() {
+  fresh_project "$1"
+  local t
+  t="$(mktemp)"
+  jq '.models["fake-model"] = { input: 1000, output: 1000, cache_read: 0, cache_write: 0 }' \
+    .aif/prices.json >"$t" && mv "$t" .aif/prices.json
+}
+printf '\n11. the dollar ceiling is opt-in, and fires on token-priced cost when it is set\n'
+
+priced "$SANDBOX/p11"
+eq "the template ships no ceiling" "$(jq -r '.limits.run_budget_usd' .aif/project.json)" "null"
 ticket_for AIF-11
 git add -A && git commit -qm "ticket 11" >/dev/null
 rc=0
-FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree --budget 0.05 >"$OUT/run11.out" 2>&1 || rc=$?
-eq "exit 1 — stopped" "$rc" "1"
+FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree >"$OUT/run11.out" 2>&1 || rc=$?
+eq "no ceiling: built" "$rc" "0"
+eq "and the run says so on its first line" "$(grep -c 'budget off' "$OUT/run11.out")" "1"
+# The station is invoked without --max-budget-usd at all, not with the 0.01
+# floor the remaining-budget arithmetic would otherwise produce.
+eq "the station was handed no budget" "$(cat .aif/tmp/fake-budget)" ""
+eq "the spend was still recorded" "$(jq -r '.spent_usd > 0' tasks/AIF-11/run.json)" "true"
+
+priced "$SANDBOX/p11b"
+ticket_for AIF-11
+git add -A && git commit -qm "ticket 11b" >/dev/null
+rc=0
+FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree --budget 0.05 >"$OUT/run11b.out" 2>&1 || rc=$?
+eq "--budget 0.05: exit 1 — stopped" "$rc" "1"
 eq "stopped by the budget" "$(jq -r '.why' tasks/AIF-11/run.json | grep -c '^budget:')" "1"
-eq "with a spend above zero, though every envelope said \$0" \
+eq "with a spend above zero, though every envelope said USD 0" \
   "$(jq -r '.spent_usd > 0' tasks/AIF-11/run.json)" "true"
 eq "and the ledger priced the same tokens" \
   "$(jq -r '[.entries[] | select(.station != null)] | first | .cost_source' tasks/AIF-11/ledger.json)" "priced"
+eq "the station was handed what was left of it" \
+  "$([ -n "$(cat .aif/tmp/fake-budget)" ] && echo yes || echo no)" "yes"
+
+# The project can set it, and --no-budget overrides the project.
+priced "$SANDBOX/p11c"
+tmp="$(mktemp)"
+jq '.limits.run_budget_usd = 0.05' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+ticket_for AIF-11
+git add -A && git commit -qm "ticket 11c" >/dev/null
+eq "a ceiling in project.json still validates" "$("$AIF" project check >/dev/null 2>&1; echo $?)" "0"
+rc=0
+FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree >"$OUT/run11c.out" 2>&1 || rc=$?
+eq "limits.run_budget_usd alone stops the run" "$rc" "1"
+eq "and the first line names it" "$(grep -c "budget .0.05" "$OUT/run11c.out")" "1"
+rc=0
+FAKE_ZERO_COST=1 "$AIF" work AIF-11 --no-worktree --no-budget >"$OUT/run11d.out" 2>&1 || rc=$?
+eq "--no-budget overrides the project and builds" "$rc" "0"
+eq "a non-numeric --budget is refused, not read as zero" \
+  "$("$AIF" work AIF-11 --no-worktree --budget lots 2>&1 | grep -c 'positive dollar amount')" "1"
+eq "a string in project.json is refused by the validator" \
+  "$(jq '.limits.run_budget_usd = "20"' .aif/project.json >"$OUT/bad.json" &&
+     /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/project.sh"; aif_project_validate "$2"' \
+       _ "$ROOT" "$OUT/bad.json" 2>&1 | grep -c 'run_budget_usd must be a number')" "1"
 
 # ============ 12. --no-worktree needs a disposable checkout ==================
 printf '\n12. --no-worktree is refused unless the checkout is declared disposable\n'

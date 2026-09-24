@@ -41,7 +41,7 @@
     "station_max_turns": 30,
     "run_dispatches_max": 12,
     "run_max_minutes": 120,
-    "run_budget_usd": 20
+    "run_budget_usd": null
   },
 
   "risk_rules": [

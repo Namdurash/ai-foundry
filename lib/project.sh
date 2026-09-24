@@ -213,6 +213,15 @@ aif_project_validate() {
           else empty end ),
 
       (if (.limits | type) != "object" then "limits must be an object" else empty end),
+      # run_budget_usd — optional, and null (or absent) means no dollar
+      # ceiling. A string here would read as 0 in awk and stop the run at the
+      # first cent, blaming a budget nobody set.
+      (if (.limits.run_budget_usd // null) == null then empty
+       elif (.limits.run_budget_usd | type) != "number"
+         then "limits.run_budget_usd must be a number, or null for no ceiling"
+       elif .limits.run_budget_usd <= 0
+         then "limits.run_budget_usd must be greater than 0, or null for no ceiling"
+       else empty end),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),
       (if (.tiers.routine // "") == "" then "tiers.routine is required" else empty end),
       (if (.tiers.careful // "") == "" then "tiers.careful is required" else empty end)

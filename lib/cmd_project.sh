@@ -46,7 +46,11 @@ _aif_detect_runner() {
     [ -f "$root/setup.cfg" ] || [ -f "$root/conftest.py" ]; then
     printf 'pytest'
   elif [ -d "$root/tests" ] &&
-    find "$root/tests" -name '*.py' -print 2>/dev/null | head -1 | grep -q .; then
+    [ -n "$(find "$root/tests" -name '*.py' -print 2>/dev/null | head -1)" ]; then
+    # Inside a substitution, on purpose: `head -1` leaves after one line, a
+    # find still walking a large tree takes SIGPIPE, and as the condition's
+    # own pipeline that 141 read as "no .py files" — at 5000 of them
+    # (docs/DEFECTS-5.md #2). `[ -n … ]` reads the text, not the status.
     printf 'pytest'
   else
     printf ''

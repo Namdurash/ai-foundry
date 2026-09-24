@@ -680,6 +680,37 @@ eq "nothing was frozen" "$(test -f tasks/AIF-15/tests.lock.json && echo yes || e
 eq "implement was never dispatched" \
   "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-15/ledger.json)" "0"
 
+# ====== 16. runner detection survives a large tests/ tree ==================
+# `find | head -1 | grep -q .` as an elif condition: head leaves after one
+# line, a find still walking 5000 files takes SIGPIPE, pipefail makes that
+# the condition's status, and the project is reported as having no test kind
+# (docs/DEFECTS-5.md #2). Only a project with none of pyproject/pytest.ini/
+# setup.cfg/conftest.py gets this far — this one has none.
+printf '\n16. runner detection survives a large tests/ tree\n'
+fresh_project "$SANDBOX/p16"
+rm -f .aif/project.json
+i=0; while [ "$i" -lt 5000 ]; do : >"tests/f$i.py"; i=$((i + 1)); done
+eq "5000 test files: still detected as pytest" \
+  "$("$AIF" project init --no-checks 2>&1 | grep -c 'detected runner: .*pytest')" "1"
+
+# ====== 17. the collision check reads ALL of a large suite output ==========
+# `printf '%s' "$out" | grep -q pattern` with the suite's whole output in
+# $out: grep leaves at the first match, printf takes SIGPIPE on the rest, and
+# under pipefail the `if` reads "not found" — for exactly the suites large
+# enough to matter (docs/DEFECTS-5.md #3). The path is on the FIRST line here
+# and 280 KB follow it.
+printf '\n17. the worktree-collision check reads all of a large suite output\n'
+fresh_project "$SANDBOX/p17"
+tmp="$(mktemp)"
+{
+  printf '#!/bin/bash\necho "PASS .aif/worktrees/AIF-1/tests/t0.py"\n'
+  # shellcheck disable=SC2016  # a script being written, not expanded
+  printf 'i=0; while [ "$i" -lt 4000 ]; do echo "PASS tests/t0.py - filler line $i pushing the output past a pipe buffer"; i=$((i + 1)); done\n'
+  tail -n +2 .aif/suite.sh
+} >"$tmp"
+mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+eq "doctor --probe reports the collision" "$("$AIF" doctor --probe 2>&1 | grep -c 'test scope')" "1"
+
 # ----------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

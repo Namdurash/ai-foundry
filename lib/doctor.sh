@@ -202,7 +202,11 @@ aif_doctor_probe() {
   #
   # Established from evidence, not from the presence of the directory: the run
   # that just happened either mentioned those paths or it did not.
-  if printf '%s' "$out" | grep -q "$AIF_WORK_WORKTREES/" ||
+  # No -q on the piped grep: the suite's output can be far larger than a pipe
+  # buffer, and a grep that leaves at the first match hands printf SIGPIPE —
+  # which `pipefail` turns into "not found" for exactly the suites large enough
+  # to matter (docs/DEFECTS-5.md #3). Without -q grep reads to the end.
+  if printf '%s' "$out" | grep "$AIF_WORK_WORKTREES/" >/dev/null ||
     grep -q "$AIF_WORK_WORKTREES/" "$root/$report_path" 2>/dev/null; then
     printf '  %s %-14s it collects %s%s/%s too — the worker'"'"'s own checkouts\n' \
       "$(aif_no)" "test scope" "$AIF_C_YELLOW" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"

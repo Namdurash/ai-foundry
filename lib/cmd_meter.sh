@@ -109,7 +109,10 @@ aif_cmd_meter() {
 
   transcript="$(printf '%s' "$payload" | jq -r '.agent_transcript_path // empty')"
   agent_id="$(printf '%s' "$payload" | jq -r '.agent_id // empty')"
-  summary="$(printf '%s' "$payload" | jq -r '.last_assistant_message // ""' | head -1)"
+  # One jq, no head: the last message can be long, and a head that leaves
+  # after one line hands jq SIGPIPE inside an assignment under set -e — the
+  # hook dies and the cost row is never written (docs/DEFECTS-5.md #3).
+  summary="$(printf '%s' "$payload" | jq -r '(.last_assistant_message // "") | split("\n")[0]')"
 
   local root ticket work
   root="$(aif_project_root)" || return 0

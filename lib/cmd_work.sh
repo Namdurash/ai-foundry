@@ -436,7 +436,7 @@ $complaint"
   usage="$("aif_runner_${AIF_PROFILE_RUNNER}_result_usage" "$out")"
   turns="$(jq -r '.num_turns // 0' "$out")"
   subtype="$("aif_runner_${AIF_PROFILE_RUNNER}_result_subtype" "$out")"
-  summary="$(jq -r '.result // ""' "$out" | head -1 | cut -c1-200)"
+  summary="$(jq -r '(.result // "") | split("\n")[0] | .[0:200]' "$out")"
   model_ran="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
   [ -n "$model_ran" ] || model_ran="$model"
   cost="$(_aif_meter_cost "$wt/.aif/prices.json" "$model_ran" "$usage")"
@@ -867,7 +867,7 @@ $complaint"
     if ! tool_out="$("$AIF_ROOT/bin/aif" _record "$stage" "$ticket" 2>&1)"; then
       status="stopped"
       why="aif _record failed after the $stage station — the tool, not the station, and no gate was run:
-$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
+$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
       break
     fi
 
@@ -883,7 +883,7 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
         if ! tool_out="$("$AIF_ROOT/bin/aif" _commit "$stage" "$ticket" 2>&1)"; then
           status="stopped"
           why="aif _commit failed after $stage was admitted — the tool, not the station. The verdict is recorded; the commit that seals it is not, and the next station's baseline would be wrong:
-$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
+$(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
           break
         fi
         complaint=""
@@ -891,7 +891,10 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
         aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"
         ;;
       1)
-        complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | head -40)"
+        # sed -n, not head: a gate's output is not bounded, and a head that
+        # leaves early under set -e would end the run at the moment of the
+        # rejection it was quoting (docs/DEFECTS-5.md #3).
+        complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
         _aif_work_say "gate" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — retrying with the complaint"
         ;;
       3)
@@ -904,7 +907,7 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | head -10)"
         why="a gate could not render a verdict on $stage, so the run stopped rather than
 retrying a station that cannot fix what it is being rejected for. The gate says
 which it is:
-$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | head -20)"
+$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | sed -n '1,20p')"
         break
         ;;
       *)

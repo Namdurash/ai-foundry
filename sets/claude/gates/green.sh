@@ -400,7 +400,7 @@ EOF
     still_green=""
     while IFS= read -r tid; do
       [ -n "$tid" ] || continue
-      st="$(printf '%s' "$reverted" | jq -r --arg i "$tid" '.[] | select(.id==$i) | .status' 2>/dev/null | head -1)"
+      st="$(printf '%s' "$reverted" | jq -r --arg i "$tid" '[ .[] | select(.id==$i) | .status ] | .[0] // ""' 2>/dev/null)"
       [ "$st" = "pass" ] && still_green="$still_green
 $tid stays green with the implementation reverted — it does not test the behaviour"
     done <<EOF

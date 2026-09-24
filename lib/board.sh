@@ -243,24 +243,37 @@ _aif_trello_list_id() { # <root> <column>
 # _aif_trello_column_of_list <root> <listId> — the canonical column, or "".
 _aif_trello_column_of_list() {
   jq -r --arg l "$2" '.board.lists // {} | to_entries[] | select(.value == $l) | .key' \
-    "$(aif_project_config "$1")" 2>/dev/null | head -1
+    "$(aif_project_config "$1")" 2>/dev/null | sed -n 1p
 }
 
 # _aif_trello_find_card <root> <ID> — the card JSON, or rc 1.
+#
+# Captured once and tested as a variable. This used to pipe a pretty-printed jq
+# into `grep -q .` to ask "is there a card": grep left at the opening brace, jq
+# — still writing the card's description, which under this foundry IS the
+# ticket file — took SIGPIPE, `pipefail` made 141 the pipeline's status, and
+# `|| return 1` said the card was absent. Only for a card long enough to be
+# worth building; `status` never asks for desc, so it went on listing a card
+# the worker then could not find (docs/DEFECTS-5.md #1, FINDINGS #19).
 _aif_trello_find_card() {
-  local root="$1" id="$2" board out
+  local root="$1" id="$2" board out card
   board="$(_aif_trello_board "$root")"
   [ -n "$board" ] || aif_die "project.json board.board_id is empty — run: aif board init trello"
   out="$(_aif_trello_call "$root" GET "/boards/$board/cards" -G \
     --data-urlencode "fields=name,idList,pos,desc,shortUrl,idLabels")" ||
     aif_die "Trello: could not list the board's cards — $out"
-  printf '%s' "$out" | jq -e --arg id "$id" \
-    '[ .[] | select(.name | test("^" + $id + "([^A-Za-z0-9-]|$)")) ] | .[0] // empty' 2>/dev/null |
-    grep -q . || return 1
-  printf '%s' "$out" | jq -c --arg id "$id" \
-    '[ .[] | select(.name | test("^" + $id + "([^A-Za-z0-9-]|$)")) ] | .[0]'
+  card="$(printf '%s' "$out" | jq -c --arg id "$id" \
+    '[ .[] | select(.name | test("^" + $id + "([^A-Za-z0-9-]|$)")) ] | .[0] // empty' 2>/dev/null)"
+  [ -n "$card" ] || return 1
+  printf '%s' "$card"
 }
 
+# Every caller assigns this inside `$(…)` and follows with `|| return 1`, on
+# purpose. The die above runs in the substitution's subshell; without the
+# guard the caller kept going with an empty card whenever set -e was off —
+# and it is off inside any `if`, including the worker's `if ! (aif_board_move
+# …)`, which is how "no card named OPES-68" was followed by "could not move
+# OPES-68 — 404" from a PUT to /cards/null (docs/DEFECTS-5.md #1).
 _aif_trello_require_card() {
   _aif_trello_find_card "$1" "$2" ||
     aif_die "no card named $2 on the Trello board — create it: aif board create $AIF_TASKS_DIR/$2/ticket.md"
@@ -275,7 +288,7 @@ _aif_trello_next_ready() {
     aif_die "Trello: could not read the Ready list — $out"
   printf '%s' "$out" | jq -r --arg re "$re" \
     '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[0].name // empty' |
-    grep -oE "^$re" | head -1
+    grep -oE "^$re" | sed -n 1p
 }
 
 # _aif_trello_pull <root> <ID> — the card's description becomes ticket.md.
@@ -285,7 +298,7 @@ _aif_trello_next_ready() {
 # checkout's tasks/ — the worker calls this from its worktree.
 _aif_trello_pull() {
   local root="$1" id="$2" card work
-  card="$(_aif_trello_require_card "$root" "$id")"
+  card="$(_aif_trello_require_card "$root" "$id")" || return 1
   work="$(aif_task_dir "$root" "$id")"
   mkdir -p "$work"
   # -j, not -r: the description is the file's bytes and the file's bytes are
@@ -306,7 +319,7 @@ _aif_trello_pull() {
 
 _aif_trello_move() {
   local root="$1" id="$2" col="$3" where="${4:-}" card cid list out
-  card="$(_aif_trello_require_card "$root" "$id")"
+  card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   list="$(_aif_trello_list_id "$root" "$col")"
   [ -n "$list" ] || aif_die "project.json board.lists.$col is empty — run: aif board init trello"
@@ -318,7 +331,7 @@ _aif_trello_move() {
 
 _aif_trello_comment() {
   local root="$1" id="$2" file="$3" card cid out tmp
-  card="$(_aif_trello_require_card "$root" "$id")"
+  card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   # Trello caps a comment at 16384 characters. Cut, and say where the rest is,
   # rather than fail after the work is done.
@@ -379,7 +392,7 @@ _aif_trello_status_json() {
 
 _aif_trello_show_json() {
   local root="$1" id="$2" card cid comments col
-  card="$(_aif_trello_require_card "$root" "$id")"
+  card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
   comments="$(_aif_trello_call "$root" GET "/cards/$cid/actions" -G \
@@ -393,7 +406,7 @@ _aif_trello_show_json() {
 
 _aif_trello_label() {
   local root="$1" id="$2" label="$3" card cid board labels lid out
-  card="$(_aif_trello_require_card "$root" "$id")"
+  card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   board="$(_aif_trello_board "$root")"
   labels="$(_aif_trello_call "$root" GET "/boards/$board/labels" -G --data-urlencode "fields=name")" ||

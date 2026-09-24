@@ -92,7 +92,10 @@ aif_runner_claude_result_ok() {
 # absence, with usage present, is what an exhausted turn budget looks like — so
 # read this alongside subtype and num_turns, never alone.
 aif_runner_claude_result_error() {
-  jq -r '.result // "no result field"' "$1" 2>/dev/null | head -1
+  # In jq, not `| head -1`: .result is the station's whole final message, the
+  # caller assigns this under set -e, and a head that leaves early would end
+  # the worker right after "ended with an error" (docs/DEFECTS-5.md #3).
+  jq -r '(.result // "no result field") | split("\n")[0]' "$1" 2>/dev/null
 }
 
 # aif_runner_claude_result_cost <result.json> — "cost_usd turns in_tok out_tok".
@@ -191,8 +194,8 @@ aif_runner_claude_probe() {
     printf 'answered in %s turn(s)' "$(printf '%s' "$out" | jq -r '.num_turns // 0')"
     return 0
   fi
-  err="$(printf '%s' "$out" | jq -r '.result // empty' 2>/dev/null | head -1)"
-  [ -n "$err" ] || err="$(printf '%s' "$out" | head -1)"
+  err="$(printf '%s' "$out" | jq -r '(.result // empty) | split("\n")[0]' 2>/dev/null)"
+  [ -n "$err" ] || err="$(printf '%s' "$out" | sed -n 1p)"
 
   # An authentication failure inside a Claude Code session is the one result
   # this probe cannot be trusted on. docs/FINDINGS.md #7 was written as a law

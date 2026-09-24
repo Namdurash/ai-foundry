@@ -39,7 +39,7 @@ aif_manifest_file_hash() {
   local file
   file="$(aif_manifest_path "$root")"
   [ -f "$file" ] || return 0
-  jq -r --arg p "$rel" '.files[]? | select(.path == $p) | .sha256' "$file" 2>/dev/null | head -1
+  jq -r --arg p "$rel" '[ .files[]? | select(.path == $p) | .sha256 ] | .[0] // empty' "$file" 2>/dev/null
 }
 
 # aif_manifest_write <root> <profile> <set> <set_version> <files-tsv> <edits-tsv>

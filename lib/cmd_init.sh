@@ -285,7 +285,9 @@ EOF
     # below, after this pass, so it is legitimately absent from the list here.
     [ "$prev_path" = "$AIF_PROFILE_STATE" ] && continue
     # Still shipped by this set? Then the install loop above dealt with it.
-    cut -f1 "$files_tsv" 2>/dev/null | grep -qxF "$prev_path" && continue
+    # No -q: a grep that leaves at the first match hands cut SIGPIPE, and
+    # under pipefail that reads as "not listed" (docs/DEFECTS-5.md #3).
+    cut -f1 "$files_tsv" 2>/dev/null | grep -xF "$prev_path" >/dev/null && continue
     [ -f "$root/$prev_path" ] || continue
 
     if [ "$(aif_sha256 "$root/$prev_path")" != "$prev_sha" ] && [ "$AIF_FORCE" -eq 0 ]; then

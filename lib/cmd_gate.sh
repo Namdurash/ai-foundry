@@ -114,7 +114,7 @@ aif_cmd_gate() {
     _resolve_subject
 
     if [ "$rc" -eq 3 ]; then
-      records="$records$gate$sep""error$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | head -1)
+      records="$records$gate$sep""error$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
       _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
@@ -123,7 +123,10 @@ aif_cmd_gate() {
       return 3
     fi
 
-    records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | head -1)
+    # sed -n 1p, not head -1: the first line of a gate's output goes into an
+    # assignment, whose status under set -e is the pipeline's — and a head that
+    # leaves early hands the producer SIGPIPE (docs/DEFECTS-5.md #3).
+    records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
 
     if [ "$rc" -ne 0 ]; then

@@ -273,6 +273,22 @@ curl -s -X POST "$AIF_TRELLO_API/cards" -H 'Authorization: OAuth oauth_consumer_
   --data-urlencode "idList=$(jq -r '.board.lists.ready' .aif/project.json)" \
   --data-urlencode "name=AIF-9 — written by hand" --data-urlencode "desc=just a sentence" >/dev/null
 eq "a card the analyst did not write is refused at pull" "$("$AIF" board pull AIF-9 2>&1 | grep -c 'no aif:meta')" "1"
+# A card whose description outgrows a pipe buffer. The finder used to pipe a
+# pretty-printed jq into `grep -q .`: grep left at the opening brace, jq took
+# SIGPIPE on the rest of the description, pipefail made that 141, and the card
+# read as absent — only for tickets long enough to be worth building, and only
+# for show/move/comment/pull, so status went on listing a card the worker could
+# not find (docs/DEFECTS-5.md #1). 76 KiB of ticket here, past any buffer.
+ticket_for AIF-5
+{ i=0; while [ "$i" -lt 900 ]; do
+    printf 'Line %04d of a long ticket body, padding the description well past the pipe buffer.\n' "$i"
+    i=$((i + 1))
+  done; } >>tasks/AIF-5/ticket.md
+eq "a 76 KiB ticket makes a card" "$("$AIF" board create tasks/AIF-5/ticket.md --column ready 2>&1 | grep -c '^created AIF-5')" "1"
+eq "with the whole description on it" \
+  "$(mock | jq -r '[.cards[] | select(.name | startswith("AIF-5")) | .desc | length] | .[0] > 65536')" "true"
+eq "show finds it" "$("$AIF" board show AIF-5 --json | jq -r .ticket)" "AIF-5"
+eq "move finds it" "$("$AIF" board move AIF-5 in_progress 2>&1)" "moved AIF-5 → in_progress"
 
 # =============================== 4. doctor ===================================
 printf '\n4. doctor says per role what is missing\n'

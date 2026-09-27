@@ -261,26 +261,32 @@ their sources froze neither, and nothing noticed.
 
 ### Before the ticket — the product partner
 
-**`/aif-po`** is a thinking partner, not a form: what is wrong today, who feels
-it and how often, what should be true after, what is the *smallest* version that
-changes that, what is deliberately out. It pushes back where a request arrives
-larger than its problem, and it says plainly where the machine's tests will not
-prove correctness — money, auth, concurrency, a real device.
+**`/aif-po`** is a thinking partner with a spine. It takes the problem before the
+solution — says back what is wrong today and gets a yes — proposes a *smaller* version
+than the one you brought and asks what it misses, and cuts one outcome into **slices**
+that each ship, and are useful, on their own. It writes nothing until the request clears
+a short bar: what is wrong now and who feels it, one observable *After* with no mechanism
+in it, ordered slices with the core first, at least one thing that is not included, and
+one concrete thing that would make it not worth doing. Say "write it as is" and it writes
+anyway, with what is still soft under *Open* instead of a blank.
 
-It writes `requests/<slug>.md` and stops. It does **not** write criteria, does
-not read the codebase, and decides nothing: feasibility is the analyst's, and a
-product decision made quietly is one nobody made. `requests/` sits beside
-`tasks/` and is committed — it is the record of *why* the work exists.
+It writes `requests/<slug>.md` and stops; the analyst takes one slice per ticket. It does
+**not** write criteria, does not read the codebase, and decides nothing: feasibility is
+the analyst's, and a product decision made quietly is one nobody made. `requests/` sits
+beside `tasks/` and is committed — it is the record of *why* the work exists. Give it an
+existing request (`/aif-po requests/<slug>.md`) and it holds that to the same bar and
+reworks only what fails — including requests written before slices existed.
 
-Five minutes or an hour; the user decides when there is enough. This is the one
-part of the foundry with no gate and nothing downstream that can be lied to,
-which is deliberate: it is the thinking, and thinking does not pass a lint.
+Five minutes or an hour; the bar decides when there is enough, and you can override it
+out loud. This is the one part of the foundry with no gate and nothing downstream that
+can be lied to, which is deliberate: it is the thinking, and thinking does not pass a lint.
 
 ### Before the build — the analyst
 
 **`/aif-ba`** writes the ticket with you (`/aif-ba TICK-1 "add rate limiting to
-login"`). It ships as both a skill and a slash command with the same name, so it
-is reachable whether or not your runner lets you type skills.
+login"`), or cuts a request into tickets (`/aif-ba requests/<slug>.md`). It ships as
+both a skill and a slash command with the same name, so it is reachable whether or not
+your runner lets you type skills.
 
 Two things make it an analyst rather than an interview form. **It writes the
 acceptance criteria** — GIVEN / WHEN / THEN, each with the literal a test will
@@ -291,6 +297,14 @@ the questions it puts to you are the ones the code cannot answer: what the
 product should *do*. Those are yours; a decision you do not make is recorded as
 *decided by default*, in the open, with the default named — never filled in
 silently.
+
+Given a request from the product partner, **it cuts by the slices**: one ticket per
+slice, never one across two, every other slice a named non-goal of each ticket. It
+proposes the cut as one block — which slices now, which wait, the ids — and scaffolds
+nothing until you say yes. The first slice's ticket lands in Ready, the rest in Backlog
+in slice order for `/aif-pjm` to release; a slice that waits stays in the request, and
+`/aif-ba requests/<slug>.md slice 3` cuts it when it is due. Each ticket names its
+request and slice in its meta block and its first line.
 
 It ends with the **Definition of Ready** and a card on the board:
 
@@ -303,10 +317,10 @@ One script, two callers: the analyst runs it while you still have the whole
 conversation in your head, and the worker runs the same file at intake. It
 prints one line per problem, and the lines that matter are the open questions,
 each with its proposed default — shown to you as one batch, at the moment you
-have the most context you will ever have on this ticket. Answer them, or say
-"defaults", and the ticket is buildable. A ticket that comes back from review
-comes back here, not to the worker: "wrong" almost always means the ticket did
-not say.
+have the most context you will ever have on this ticket (or on every ticket of a
+cut, in one sitting). Answer them, or say "defaults", and the ticket is buildable.
+A ticket that comes back from review comes back here, not to the worker: "wrong"
+almost always means the ticket did not say.
 
 ### The board — where the state is seen
 

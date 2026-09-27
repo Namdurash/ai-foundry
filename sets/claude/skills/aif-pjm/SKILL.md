@@ -97,9 +97,11 @@ them; the human decides.
 
 ### Cutting a request into tickets landed several cards at once
 
-The analyst creates them in Backlog. You link them (`depends-on-<ID>` labels where one
-needs another built first), order them, and move to Ready the ones that are ready in
-that order. Say the order.
+The analyst cuts one ticket per slice of the request: the first slice's ticket in Ready,
+the rest in Backlog in slice order, and each ticket's first line names its request, its
+slice, and the ticket it needs built first. Link them from that line
+(`depends-on-<ID>`), and when the one before is merged, move the next to Ready. Say the
+order.
 
 ## What you do not do — stated so it is not tried
 

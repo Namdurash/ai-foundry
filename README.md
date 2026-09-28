@@ -86,6 +86,9 @@ Model routing is deliberately absent from every file above — it is exported at
 
 ### Running it
 
+The whole cycle, drawn from the code and checked against it on every `make
+check`: [docs/CYCLE.md](docs/CYCLE.md) (`make cycle` redraws it).
+
 ```sh
 aif work                     # build the top of the board's Ready column
 aif work TICK-1              # …or this one, headless, on its own branch

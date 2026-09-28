@@ -1,0 +1,218 @@
+<title>AI Foundry Cycle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono&display=swap">
+<style>
+  :root {
+    --bg: #eef0f2; --surface: #ffffff; --surface-2: #f5f7f9;
+    --ink: #171c21; --muted: #5f6b76; --line: #d6dce2; --line-strong: #8d98a3;
+    --human: #b45309; --machine: #1d4ed8; --board: #475569;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1418; --surface: #161c22; --surface-2: #1c242c;
+      --ink: #e7ebee; --muted: #98a4af; --line: #2a343e; --line-strong: #5b6873;
+      --human: #f59e0b; --machine: #60a5fa; --board: #94a3b8;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1418; --surface: #161c22; --surface-2: #1c242c;
+    --ink: #e7ebee; --muted: #98a4af; --line: #2a343e; --line-strong: #5b6873;
+    --human: #f59e0b; --machine: #60a5fa; --board: #94a3b8;
+    color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+  .page { max-width: 1240px; margin: 0 auto; padding-block: 28px 40px; padding-inline: 20px; display: grid; gap: 28px; }
+  header { display: grid; gap: 8px; max-width: 68ch; }
+  .eyebrow { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { margin: 0; color: var(--muted); }
+  .lede b { color: var(--ink); font-weight: 500; }
+  .diagram-wrap { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; padding: 16px; }
+  .diagram svg { display: block; width: 100%; height: auto; min-width: 640px; margin: 0 auto; }
+  .diagram .src { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--muted); white-space: pre; }
+  .diagram .cluster rect { stroke-width: 1.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  .legend li::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: -1px; background: var(--dot); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; align-items: start; }
+  section.block { display: grid; gap: 10px; min-width: 0; }
+  section.block h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 20px; }
+  section.block h2 small { display: block; font-family: var(--font-mono); font-size: 11px; font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
+  section.block p { margin: 0; color: var(--muted); font-size: 14px; }
+  .human h2 small { color: var(--human); } .machine h2 small { color: var(--machine); } .board h2 small { color: var(--board); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { font-family: var(--font-mono); font-weight: 400; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  td:first-child { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+  footer { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 13.5px; max-width: 78ch; display: grid; gap: 6px; }
+  footer p { margin: 0; }
+  a { color: var(--machine); }
+  :focus-visible { outline: 2px solid var(--machine); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) { .diagram svg { transition: opacity 0.2s ease; } }
+</style>
+<main class="page">
+  <header>
+    <p class="eyebrow">Drawn from the code · scripts/cycle.sh</p>
+    <h1>AI Foundry Cycle</h1>
+    <p class="lede"><b>Two halves, one boundary.</b> The human half is a conversation with no gates: it decides what is worth building and writes it down. The machine half is headless and never asks: it builds what the ticket says, and a gate judges every station. They meet only on the board.</p>
+  </header>
+
+  <section class="diagram-wrap" aria-label="The cycle">
+    <div id="cycle" class="diagram"><pre id="cycle-src" class="src">
+flowchart TB
+  subgraph HUMAN["Human time · no gates"]
+    PO["/aif-po — the product partner&lt;br/&gt;challenges the need, writes requests/&amp;lt;slug&amp;gt;.md&lt;br/&gt;cut into slices that ship on their own"]
+    BA["/aif-ba — the analyst&lt;br/&gt;one ticket per slice, never one across two&lt;br/&gt;tasks/&amp;lt;ID&amp;gt;/ticket.md with GIVEN / WHEN / THEN"]
+    DOR{{"aif _ready — the Definition of Ready&lt;br/&gt;every open question answered, or its default taken"}}
+    PJM["/aif-pjm — the project manager&lt;br/&gt;orders Ready, routes the reviewer's words"]
+    PO --&gt;|"the request"| BA
+    BA --&gt; DOR
+    DOR -.-&gt;|"open questions, each with a default"| BA
+  end
+
+  subgraph BOARD["The board · aif board"]
+    BACKLOG[Backlog]
+    READY[Ready]
+    IN_PROGRESS[In progress]
+    REVIEW[Review]
+    DONE[Done]
+    NEEDS_HUMAN[Needs Human]
+    BACKLOG --&gt;|"/aif-pjm, when the one before it is merged"| READY
+  end
+
+  subgraph MACHINE["Machine time · aif work, never asks"]
+    INTAKE["intake — the ticket's bytes frozen&lt;br/&gt;one worktree, one branch aif/&amp;lt;ID&amp;gt;, one budget"]
+    G_READY{{"gate ready"}}
+    INTAKE --&gt; G_READY
+    S_plan["station plan · opus"] --&gt; G_plan{{"gate plan"}}
+    G_READY --&gt; S_plan
+    G_plan -.-&gt;|"rejected: retried with the complaint, up to 3 times"| S_plan
+    S_tests["station tests · opus"] --&gt; G_tests{{"gate verify-red"}}
+    G_plan --&gt; S_tests
+    G_tests -.-&gt; S_tests
+    S_implement["station implement · sonnet · opus if risk is high"] --&gt; G_implement{{"gates green, scope"}}
+    G_tests --&gt; S_implement
+    G_implement -.-&gt; S_implement
+    REPORT["report.md, beside the diff on the branch"]
+    G_implement --&gt; REPORT
+  end
+
+  DOR --&gt;|"the first slice"| READY
+  DOR --&gt;|"the other slices, in order"| BACKLOG
+  READY --&gt;|"the top card"| INTAKE
+  INTAKE -.-&gt;|"the card"| IN_PROGRESS
+  G_READY --&gt;|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
+  REPORT --&gt;|"built"| REVIEW
+  REPORT --&gt;|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
+  REVIEW --&gt;|"merged"| DONE
+  REVIEW --&gt;|"wrong — a comment on the card"| PJM
+  NEEDS_HUMAN --&gt; PJM
+  PJM --&gt;|"rework, in the reviewer's words"| BACKLOG
+  PJM --&gt;|"cancelled"| DONE
+  BACKLOG -.-&gt;|"/aif-ba reworks the criteria"| BA</pre></div>
+  </section>
+  <ul class="legend" aria-label="Reading the diagram">
+    <li style="--dot: var(--human)">Human time — a skill, run when you want, for as long as you want</li>
+    <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
+    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions</li>
+    <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
+  </ul>
+
+  <div class="grid">
+    <section class="block human">
+      <h2><small>The human half</small>Roles</h2>
+      <p>Each is a skill under <code>sets/claude/skills/</code> and a slash command of the same name. <code>/aif-setup</code> says which can run on this machine.</p>
+      <div class="table-wrap">
+<table>
+<thead><tr><th>skill</th><th>role</th><th>needs</th></tr></thead>
+<tbody>
+<tr><td>/aif-po</td><td>The product partner</td><td>claude</td></tr>
+<tr><td>/aif-ba</td><td>The analyst</td><td>claude board</td></tr>
+<tr><td>/aif-pjm</td><td>The project manager</td><td>claude board</td></tr>
+<tr><td>/aif-setup</td><td>Set the foundry up on this machine</td><td>claude</td></tr>
+</tbody>
+</table>
+      </div>
+    </section>
+    <section class="block board">
+      <h2><small>The boundary</small>The board</h2>
+      <p><code>backlog → ready → in progress → review → done</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog for the one before them to merge.</p>
+    </section>
+    <section class="block machine">
+      <h2><small>The machine half</small>Stations and gates</h2>
+      <p>The stage order is the list in <code>lib/run.sh</code>; each station's own file names the gate that judges it. The <code>ready</code> gate runs first, at intake, before the first token: the same script the analyst ran at the end of the conversation.</p>
+      <div class="table-wrap">
+<table>
+<thead><tr><th>stage</th><th>engine</th><th>judged by</th><th>requires</th><th>leaves behind</th></tr></thead>
+<tbody>
+<tr><td>plan</td><td>opus (careful)</td><td>plan</td><td>ready</td><td>plan.md</td></tr>
+<tr><td>tests</td><td>opus (careful)</td><td>verify-red</td><td>plan</td><td>tests.lock.json, frozen</td></tr>
+<tr><td>implement</td><td>sonnet, or opus when the ticket's risk is high</td><td>green, scope</td><td>plan, verify-red</td><td>the code, bound to plan.md</td></tr>
+</tbody>
+</table>
+      </div>
+    </section>
+    <section class="block machine">
+      <h2><small>The machine half</small>Caps on one run</h2>
+      <p>From <code>sets/claude/project.templates/</code>; a project's own <code>.aif/project.json</code> may set others. The wall clock and the dispatch cap always apply.</p>
+      <div class="table-wrap">
+<table>
+<thead><tr><th>cap</th><th>value</th><th>setting</th></tr></thead>
+<tbody>
+<tr><td>a station rejected in a row</td><td>3</td><td>limits.attempts_max</td></tr>
+<tr><td>station runs in one ticket's run</td><td>12</td><td>limits.run_dispatches_max</td></tr>
+<tr><td>wall clock, minutes</td><td>120</td><td>limits.run_max_minutes</td></tr>
+<tr><td>dollars</td><td>off unless a project or the caller sets it</td><td>limits.run_budget_usd</td></tr>
+</tbody>
+</table>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <p><b>How this stays true.</b> Nothing here was typed in: <code>scripts/cycle.sh</code> reads the stations, gates, columns, roles and caps from the files that define them, asserts the facts that live in control flow, and writes <code>docs/CYCLE.md</code> and this page. <code>make check</code> fails while either is stale.</p>
+    <p>This page is a published copy of <code>docs/CYCLE.html</code>. After <code>make cycle</code>, republish it.</p>
+  </footer>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.6.0/mermaid.min.js"></script>
+<script>
+(function () {
+  var host = document.getElementById('cycle');
+  var srcEl = document.getElementById('cycle-src');
+  if (!host || !srcEl) return;
+  var src = srcEl.textContent;
+  var seq = 0;
+  function token(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function draw() {
+    if (!window.mermaid) return;
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      flowchart: { curve: 'basis', htmlLabels: true, padding: 14, nodeSpacing: 34, rankSpacing: 44 },
+      themeVariables: {
+        fontFamily: token('--font-body'), fontSize: '13px',
+        primaryColor: token('--surface'), primaryTextColor: token('--ink'), primaryBorderColor: token('--line-strong'),
+        secondaryColor: token('--surface-2'), tertiaryColor: token('--surface-2'),
+        lineColor: token('--line-strong'), textColor: token('--ink'),
+        clusterBkg: token('--surface-2'), clusterBorder: token('--line'),
+        edgeLabelBackground: token('--surface'), titleColor: token('--ink')
+      }
+    });
+    seq += 1;
+    mermaid.render('cycle-svg-' + seq, src).then(function (r) {
+      host.innerHTML = r.svg;
+    }).catch(function (e) {
+      host.textContent = 'The diagram did not render: ' + (e && e.message ? e.message : e);
+    });
+  }
+  draw();
+  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw); } catch (e) {}
+  try { new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch (e) {}
+})();
+</script>

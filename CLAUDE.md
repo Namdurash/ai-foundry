@@ -41,9 +41,11 @@ make release V=0.5.1
   offline; `check` drives the whole worker with a fake station.
 - **Gates run without `aif`.** Anything under `sets/*/gates/` must work in CI
   from a fresh checkout — it may not source `lib/`.
-- **`docs/` is gitignored** except `docs/DEFECTS-3.md`, which is tracked
-  deliberately. `docs/FINDINGS.md` is where a probed, non-obvious fact goes so
-  nobody re-derives it.
+- **`docs/` is gitignored** except the defect logs, tracked deliberately, and
+  `docs/CYCLE.md` + `docs/CYCLE.html`, which `make cycle` generates from the code
+  — never edit them by hand; `make check` fails while they are stale.
+  `docs/FINDINGS.md` is where a probed, non-obvious fact goes so nobody
+  re-derives it.
 - **Traps are per-process.** Arm one with `aif_trap_arm` and restore it with
   `aif_trap_restore`; a bare `trap -` in a helper takes the caller's handler
   with it (`docs/DEFECTS-3.md` #1).

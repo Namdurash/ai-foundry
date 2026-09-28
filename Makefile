@@ -5,18 +5,19 @@ SHELL := /bin/bash
 SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) \
                  $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh) \
                  scripts/check-set.sh scripts/check-work.sh \
-                 scripts/check-board.sh scripts/release.sh
+                 scripts/check-board.sh scripts/release.sh scripts/cycle.sh
 
 # Where `make link` puts the symlink. Homebrew's prefix when there is one, so
 # the link lands on the same PATH entry the tap would have used.
 PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /usr/local)
 
-.PHONY: help lint fmt check release link unlink
+.PHONY: help lint fmt check cycle release link unlink
 
 help:
 	@echo "make lint    Run shellcheck over all shell sources"
 	@echo "make fmt     Run shfmt (write mode) over all shell sources"
 	@echo "make check   Smoke-check the CLI entry point"
+	@echo "make cycle   Redraw docs/CYCLE.md and docs/CYCLE.html from the code"
 	@echo "make release V=x.y.z  Cut a release: bump, tag, push, point the tap at it"
 	@echo "make link    Put THIS clone on PATH as \`aif\` (development)"
 	@echo "make unlink  Take it back off"
@@ -69,5 +70,13 @@ check:
 	@/bin/bash scripts/check-set.sh
 	@/bin/bash scripts/check-work.sh
 	@/bin/bash scripts/check-board.sh
+	@/bin/bash scripts/cycle.sh --verify
 	@/bin/bash scripts/release.sh --verify
 	@echo "ok"
+
+# The cycle, drawn from the code that runs it. docs/CYCLE.md (GitHub renders
+# the mermaid) and docs/CYCLE.html (the page published as an artifact) are
+# generated, and `make check` fails while either is stale — a drawing that can
+# disagree with the code would be read as the design and trusted over the code.
+cycle:
+	@/bin/bash scripts/cycle.sh

@@ -72,6 +72,7 @@ flowchart TB
     BA["/aif-ba — the analyst&lt;br/&gt;one ticket per slice, never one across two&lt;br/&gt;tasks/&amp;lt;ID&amp;gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready&lt;br/&gt;every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager&lt;br/&gt;orders Ready, routes the reviewer's words"]
+    QA["/aif-review — the reviewer's brief&lt;br/&gt;per criterion its test, what was not established,&lt;br/&gt;the request's After — then the verdict"]
     PO --&gt;|"writes it — Status: not cut"| REQ
     REQ --&gt;|"the slices"| BA
     BA -.-&gt;|"marks it after the cards: cut in part, then cut"| REQ
@@ -86,7 +87,7 @@ flowchart TB
     REVIEW[Review]
     DONE[Done]
     NEEDS_HUMAN[Needs Human]
-    BACKLOG --&gt;|"/aif-pjm, when the one before it is merged"| READY
+    BACKLOG --&gt;|"released by aif land, or by /aif-pjm by hand"| READY
   end
 
   subgraph MACHINE["Machine time · aif work"]
@@ -104,17 +105,22 @@ flowchart TB
     G_implement -.-&gt; S_implement
     REPORT["report.md, beside the diff on the branch"]
     G_implement --&gt; REPORT
+    LAND["aif land — merge into the checkout's branch,&lt;br/&gt;the suite on the result, Done, the next slice released"]
   end
 
   DOR --&gt;|"the first slice"| READY
   DOR --&gt;|"the other slices, in order"| BACKLOG
-  READY --&gt;|"the top card"| INTAKE
+  READY --&gt;|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.-&gt;|"the card"| IN_PROGRESS
   G_READY --&gt;|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   REPORT --&gt;|"built"| REVIEW
   REPORT --&gt;|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
-  REVIEW --&gt;|"merged"| DONE
-  REVIEW --&gt;|"wrong — a comment on the card"| PJM
+  REVIEW --&gt;|"the card, the diff, the report"| QA
+  QA --&gt;|"land it"| LAND
+  QA --&gt;|"wrong — a comment in the reviewer's words"| PJM
+  LAND --&gt;|"merged, the suite green"| DONE
+  LAND --&gt;|"a conflict, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -.-&gt;|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --&gt; PJM
   PJM --&gt;|"rework, in the reviewer's words"| BACKLOG
   PJM --&gt;|"cancelled"| DONE
@@ -123,7 +129,7 @@ flowchart TB
   <ul class="legend" aria-label="Reading the diagram">
     <li style="--dot: var(--human)">Human time — a skill, run when you want, for as long as you want</li>
     <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
-    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions</li>
+    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
     <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
   </ul>
@@ -139,6 +145,7 @@ flowchart TB
 <tbody>
 <tr><td>/aif-po</td><td>The product partner</td><td>claude</td></tr>
 <tr><td>/aif-ba</td><td>The analyst</td><td>claude board</td></tr>
+<tr><td>/aif-review</td><td>The reviewer's brief</td><td>claude board</td></tr>
 <tr><td>/aif-pjm</td><td>The project manager</td><td>claude board</td></tr>
 <tr><td>/aif-setup</td><td>Set the foundry up on this machine</td><td>claude</td></tr>
 </tbody>
@@ -147,7 +154,7 @@ flowchart TB
     </section>
     <section class="block board">
       <h2><small>The boundary</small>The board</h2>
-      <p><code>backlog → ready → in progress → review → done</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog for the one before them to merge.</p>
+      <p><code>backlog → ready → in progress → review → done</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog, and <code>aif land</code> releases each one when the tickets it depends on are Done.</p>
     </section>
     <section class="block machine">
       <h2><small>The machine half</small>Stations and gates</h2>

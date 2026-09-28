@@ -24,6 +24,11 @@
 #      the developer's checkout is untouched, and --clean removes the checkout
 #      but not the branch
 #   6  the dispatch cap stops a station that never converges
+#  18  --loop drains Ready in the board's order, stops when it is empty, at
+#      --max-tickets, and after two runs in a row that did not build
+#  19  land: the yes after review — merge, suite on the result, Done, the
+#      worktree and branch gone, the ticket that depended on it released; a
+#      red suite or a conflict undoes the merge and posts why
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -246,6 +251,7 @@ ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
     { "question": "may the export be deferred to a queue?", "answer": "no — synchronous", "by": "default" } ],
   "verification_gaps": [
     { "id": "VG-001", "text": "nothing here runs against a real user list", "leaves": ["AC-001"] } ],
+  "depends_on": ${4:-[]},
   "non_goals": [] }
 -->
 # $1 — one-command user export
@@ -758,6 +764,119 @@ tmp="$(mktemp)"
 } >"$tmp"
 mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
 eq "doctor --probe reports the collision" "$("$AIF" doctor --probe 2>&1 | grep -c 'test scope')" "1"
+
+# =============================== 18. --loop ==================================
+printf '\n18. --loop drains Ready in the board'"'"'s order and stops when it is empty\n'
+fresh_project "$SANDBOX/p18"
+col() { "$AIF" board status --json | jq -r --arg t "$1" '[ .[] | select(.ticket == $t) ] | .[0].column // empty'; }
+ticket_for AIF-16
+ticket_for AIF-17
+git add -A && git commit -qm "two tickets" >/dev/null
+"$AIF" board create tasks/AIF-16/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-17/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work --loop >"$OUT/run16.out" 2>&1 || rc=$?
+eq "exit 0 — every ticket taken was built" "$rc" "0"
+eq "in the board's order" "$(grep -o 'loop [0-9] — AIF-1[67]' "$OUT/run16.out" | tr '\n' ';')" "loop 1 — AIF-16;loop 2 — AIF-17;"
+eq "both cards are in Review" "$(col AIF-16),$(col AIF-17)" "review,review"
+eq "each on its own branch" "$(git branch --list 'aif/AIF-1[67]' | wc -l | tr -d ' ')" "2"
+eq "it stopped because Ready was empty" "$(grep -c 'Ready is empty' "$OUT/run16.out")" "1"
+eq "the developer's checkout is untouched" "$(grep -c impl1 src/app.py)" "0"
+
+# two tickets that are not ready: the first goes to Needs Human and the loop
+# goes on; the second does too, and two in a row stop it — with nothing spent
+ticket_for AIF-19 '[ { "id": "Q-001", "question": "which users?", "default": "all", "affects": ["AC-001"] } ]'
+ticket_for AIF-20 '[ { "id": "Q-001", "question": "which users?", "default": "all", "affects": ["AC-001"] } ]'
+git add -A && git commit -qm "two not-ready tickets" >/dev/null
+"$AIF" board create tasks/AIF-19/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-20/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work --loop >"$OUT/run16b.out" 2>&1 || rc=$?
+eq "exit 1 — not every ticket built" "$rc" "1"
+eq "both went to Needs Human" "$(col AIF-19),$(col AIF-20)" "needs_human,needs_human"
+eq "and two in a row stopped the loop" "$(grep -c 'two runs in a row did not build' "$OUT/run16b.out")" "1"
+eq "nothing was dispatched" "$(grep -c '"station"' tasks/AIF-19/ledger.json tasks/AIF-20/ledger.json 2>/dev/null | awk -F: '{ s += $2 } END { print s + 0 }')" "0"
+
+# --max-tickets takes that many and leaves the rest in Ready
+ticket_for AIF-21
+ticket_for AIF-22
+git add -A && git commit -qm "two more" >/dev/null
+"$AIF" board create tasks/AIF-21/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-22/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work --loop --max-tickets 1 >"$OUT/run16c.out" 2>&1 || rc=$?
+eq "--max-tickets 1: exit 0" "$rc" "0"
+eq "one built, one still in Ready" "$(col AIF-21),$(col AIF-22)" "review,ready"
+eq "and says why it stopped" "$(grep -c 'max-tickets 1 reached' "$OUT/run16c.out")" "1"
+rc=0
+"$AIF" work AIF-22 --loop >"$OUT/run16d.out" 2>&1 || rc=$?
+eq "--loop with a ticket is refused" "$rc" "1"
+
+# =============================== 19. land ====================================
+printf '\n19. land — the yes after review, as one command\n'
+# Still in p18: AIF-16 and AIF-17 are in Review on their branches. A ticket
+# that needs AIF-16 waits in Backlog, and says so in its own meta block.
+ticket_for AIF-18 '[]' '' '["AIF-16"]'
+git add -A && git commit -qm "a ticket waiting on AIF-16" >/dev/null
+"$AIF" board create tasks/AIF-18/ticket.md --column backlog >/dev/null
+rc=0
+"$AIF" land AIF-16 >"$OUT/land16.out" 2>&1 || rc=$?
+eq "exit 0 — landed" "$rc" "0"
+eq "main has the implementation" "$(grep -c impl1 src/app.py)" "1"
+eq "as one merge commit" "$(git log --format=%s -1)" "aif: land AIF-16 — one-command user export"
+if [ -f tasks/AIF-16/report.md ]; then ok "the report came with it"; else bad "no report on main"; fi
+eq "the card is in Done" "$(col AIF-16)" "done"
+if [ -e .aif/worktrees/AIF-16 ]; then bad "the worktree is still there"; else ok "the worktree is gone"; fi
+if git show-ref --verify --quiet refs/heads/aif/AIF-16; then bad "the branch is still there"; else ok "the branch is gone"; fi
+eq "the landing note is on the card" \
+  "$("$AIF" board show AIF-16 --json | jq -r '.comments[-1].text' | grep -c 'landed')" "1"
+eq "the ticket waiting on it moved to Ready" "$(col AIF-18)" "ready"
+eq "with a comment saying why" \
+  "$("$AIF" board show AIF-18 --json | jq -r '.comments[-1].text' | grep -c 'released by aif land AIF-16')" "1"
+eq "the summary names what moved" "$(grep -c '^released: AIF-18 → Ready' "$OUT/land16.out")" "1"
+eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# refusals touch nothing
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-18 >"$OUT/land18.out" 2>&1 || rc=$?
+eq "no branch: refused" "$rc" "1"
+eq "…and says so" "$(grep -c 'no branch aif/AIF-18' "$OUT/land18.out")" "1"
+"$AIF" board move AIF-17 backlog >/dev/null
+rc=0
+"$AIF" land AIF-17 >"$OUT/land17a.out" 2>&1 || rc=$?
+eq "a card not in Review: refused" "$rc" "1"
+eq "…naming the column" "$(grep -c 'is in backlog, not Review' "$OUT/land17a.out")" "1"
+eq "nothing merged" "$(git rev-parse HEAD)" "$head_before"
+"$AIF" board move AIF-17 review >/dev/null
+
+# a red suite on the RESULT undoes the merge: main grew a test after the
+# build, and the branch does not satisfy it
+printf '# t2 waits for impl2\n' >tests/t2.py
+git add -A && git commit -qm "main grew a test after the build" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-17 >"$OUT/land17b.out" 2>&1 || rc=$?
+eq "red on the result: exit 1" "$rc" "1"
+eq "the merge was undone" "$(git rev-parse HEAD)" "$head_before"
+eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
+eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c 'suite is red')" "1"
+if git show-ref --verify --quiet refs/heads/aif/AIF-17; then ok "the branch is untouched"; else bad "the branch is gone"; fi
+eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# a conflict is aborted, never resolved
+"$AIF" board move AIF-17 review >/dev/null
+git rm -q tests/t2.py
+printf 'def users():\n    return []  # main moved on\n' >src/app.py
+git add -A && git commit -qm "main moved the same line" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-17 >"$OUT/land17c.out" 2>&1 || rc=$?
+eq "a conflict: exit 1" "$rc" "1"
+eq "the merge was aborted" "$(git rev-parse HEAD)" "$head_before"
+eq "no merge in progress" "$([ -f .git/MERGE_HEAD ] && echo yes || echo no)" "no"
+eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
+eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c 'does not merge cleanly')" "1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

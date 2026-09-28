@@ -61,6 +61,7 @@ usage: aif <command> [options]
 
 commands:
   work          Build the next Ready ticket (or a named one) headless — no questions asked
+  land          The yes after review: merge the branch, suite on the result, card to Done, next slice released
   board         The board: next-ready, move, comment, create, status, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
   init          Install a foundry set into this project
@@ -75,9 +76,9 @@ commands:
   help          Print this message
 
 'work' is the whole dev pipeline: it takes a ready ticket and comes back with a
-branch and a report, without asking anything. The roles that decide what to
-build are skills — /aif-po, /aif-ba, /aif-pjm — and /aif-setup says which of
-them can run on this machine.
+branch and a report, without asking anything; 'land' is the human's yes after
+reviewing it. The roles that decide what to build are skills — /aif-po, /aif-ba,
+/aif-review, /aif-pjm — and /aif-setup says which of them can run on this machine.
 EOF
 }
 
@@ -149,6 +150,19 @@ main() {
       # shellcheck source=lib/cmd_work.sh
       . "$AIF_ROOT/lib/cmd_work.sh"
       aif_cmd_work ${1+"$@"}
+      ;;
+    land)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/cmd_land.sh
+      . "$AIF_ROOT/lib/cmd_land.sh"
+      aif_cmd_land ${1+"$@"}
       ;;
     board)
       # shellcheck source=lib/ledger.sh

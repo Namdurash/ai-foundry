@@ -14,7 +14,10 @@ writes `requests/<slug>.md`; `/aif-ba` cuts that into tickets, writes the
 GIVEN/WHEN/THEN criteria *with* the human, ends with `aif _ready`, and puts the
 card in Ready. **Machine time:** `aif work` builds the top of Ready headless on
 its own branch and never asks anyone anything — the card moves to Review with
-the report, or to Needs Human with the gate's questions.
+the report, or to Needs Human with the gate's questions; `--loop` drains the
+column. **Back to human time:** `/aif-review` prepares the review, and
+`aif land <ID>` is the yes — merge, suite on the result, Done, the next slice
+released.
 
 `/aif-pjm` keeps the board honest and never starts a build; `/aif-setup` says
 which roles can run on this machine. Every transition goes through `aif board`;

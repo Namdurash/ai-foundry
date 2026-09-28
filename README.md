@@ -106,6 +106,19 @@ verified, what it cost — beside the diff, which is the one place a reviewer ha
 enough context to judge it. Run several tickets at once: each gets its own
 worktree. The offline walk of the whole thing is `scripts/check-work.sh`.
 
+**The queue drains, and the yes is one command.** `aif work --loop` takes the next
+card in Ready after each run until the column is empty (`--max-tickets N` to stop
+sooner); it stops early when a run cannot start, or after two runs in a row that did
+not build, because two cards in Needs Human usually mean the problem is not the
+cards. `/aif-review` prepares the human's three-minute review of a card in Review —
+per criterion the test that proves it, what the run did not establish, what to look
+at first — and takes the verdict. `aif land <ID>` is the yes: it merges the branch
+into the checkout's branch, runs the suite on the *result*, moves the card to Done,
+removes the worktree and the branch, and releases the tickets whose `depends_on`
+names it from Backlog to Ready — which is how a request's slices flow without the
+project manager touching each one. A conflict or a red suite undoes the merge and
+moves the card to Needs Human with the reason; nothing is ever resolved by a model.
+
 One thing to know about those worktrees: they are complete checkouts *inside*
 the repository, and git hiding them does not mean your test runner will. A
 runner that globs from the project root will collect every suite twice — once
@@ -463,6 +476,8 @@ the gates rather than remembered.
 | `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
+| `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, or two in a row that did not build |
+| `aif land <ID> [--no-suite] [--keep]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready |
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
@@ -1013,6 +1028,7 @@ Never `git tag` a release by hand.
 - [x] The board — `aif board` over `local` and `trello`, `/aif-pjm` as its policy, `aif secret`, `aif doctor` per role, `/aif-setup`
 - [x] Per-station metering from each station's envelope, into a hash-chained ledger
 - [x] `/aif-po` — the product partner, and `requests/` as what the analyst cuts from
+- [x] `aif work --loop`, `aif land`, `/aif-review` — the queue drains, the yes is one command, the review has a brief
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals

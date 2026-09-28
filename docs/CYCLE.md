@@ -16,6 +16,7 @@ flowchart TB
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
+    QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
     PO -->|"writes it — Status: not cut"| REQ
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
@@ -30,7 +31,7 @@ flowchart TB
     REVIEW[Review]
     DONE[Done]
     NEEDS_HUMAN[Needs Human]
-    BACKLOG -->|"/aif-pjm, when the one before it is merged"| READY
+    BACKLOG -->|"released by aif land, or by /aif-pjm by hand"| READY
   end
 
   subgraph MACHINE["Machine time · aif work"]
@@ -48,17 +49,22 @@ flowchart TB
     G_implement -.-> S_implement
     REPORT["report.md, beside the diff on the branch"]
     G_implement --> REPORT
+    LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
-  READY -->|"the top card"| INTAKE
+  READY -->|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.->|"the card"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
-  REVIEW -->|"merged"| DONE
-  REVIEW -->|"wrong — a comment on the card"| PJM
+  REVIEW -->|"the card, the diff, the report"| QA
+  QA -->|"land it"| LAND
+  QA -->|"wrong — a comment in the reviewer's words"| PJM
+  LAND -->|"merged, the suite green"| DONE
+  LAND -->|"a conflict, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's words"| BACKLOG
   PJM -->|"cancelled"| DONE
@@ -78,12 +84,14 @@ line per slice once the analyst has made cards, `cut` when every slice has one.
 |---|---|---|
 | /aif-po | The product partner | claude |
 | /aif-ba | The analyst | claude board |
+| /aif-review | The reviewer's brief | claude board |
 | /aif-pjm | The project manager | claude board |
 | /aif-setup | Set the foundry up on this machine | claude |
 
 ## The board
 
-The columns `lib/board.sh` knows, on a local board or on Trello:
+The columns `lib/board.sh` knows, on a local board or on Trello — and `aif land`
+is how a card leaves Review for Done:
 
 `backlog → ready → in progress → review → done`, plus `Needs Human`.
 

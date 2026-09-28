@@ -53,6 +53,7 @@ usage: aif work [<ticket>] [options]
     aif work                    the ticket at the top of the board's Ready column
     aif work OPES-52            this one, in .aif/worktrees/OPES-52 on aif/OPES-52
     aif work OPES-52 --clean    remove that worktree (the branch stays)
+    aif work --loop             every card in Ready, in the board's order, one run each
 
   Every transition goes through the board (aif board): the card moves to In
   Progress when the run starts, and to Review — or Needs Human, with the
@@ -71,6 +72,11 @@ usage: aif work [<ticket>] [options]
                      checkout must already be disposable: set CI=1 (a CI job
                      has it) or AIF_DISPOSABLE=1 to say so. Refused otherwise
   --clean            remove the ticket's worktree and stop
+  --loop             after each run take the next card in Ready, until Ready is
+                     empty. Stops early when a run cannot start, or after two
+                     runs in a row that did not build — two cards in Needs Human
+                     usually mean the problem is not the cards
+  --max-tickets N    with --loop: stop after N tickets
 
 Two caps always apply — the wall clock and limits.run_dispatches_max (12
 station runs). The dollar ceiling is the third and is opt-in: under
@@ -621,8 +627,86 @@ _aif_work_report() {
   printf '\n%s%s%s\n' "$AIF_C_DIM" "${report#"$root"/}" "$AIF_C_RESET"
 }
 
+# _aif_work_loop <root> <max> <profile> <budget> <budget_off> <max_minutes>
+#                <use_worktree> — drain Ready.
+#
+# One `aif work <card>` per card, as a child process: each run keeps its own
+# traps, caps and exit code, and the single-ticket path above is not
+# re-entered with half its globals set. The board is read again before every
+# run, so a card the project manager moves while the loop runs is taken (or
+# not) in the order the board has at that moment — queue policy stays theirs.
+#
+# Stops when Ready is empty, at --max-tickets, when a run cannot start at all
+# (exit 3: the environment, not the card), after two runs in a row that did
+# not build, or when a card is still at the top of Ready after its run —
+# every run moves its card, so that last one means the run never got to the
+# board, and taking it again would loop forever.
+#
+# Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
+# environment.
+_aif_work_loop() {
+  local root="$1" max="$2" profile="$3" budget="$4" budget_off="$5"
+  local max_minutes="$6" use_worktree="$7"
+  local next last="" rc taken=0 built=0 in_a_row=0 why="" env=0
+
+  set --
+  [ -z "$profile" ] || set -- "$@" --profile "$profile"
+  if [ "$budget_off" -eq 1 ]; then
+    set -- "$@" --no-budget
+  elif [ -n "$budget" ]; then
+    set -- "$@" --budget "$budget"
+  fi
+  [ -z "$max_minutes" ] || set -- "$@" --max-minutes "$max_minutes"
+  [ "$use_worktree" -eq 1 ] || set -- "$@" --no-worktree
+
+  while :; do
+    if [ "$max" -gt 0 ] && [ "$taken" -ge "$max" ]; then
+      why="--max-tickets $max reached"
+      break
+    fi
+    next="$(aif_board_next_ready "$root")"
+    if [ -z "$next" ]; then
+      why="Ready is empty"
+      break
+    fi
+    if [ "$next" = "$last" ]; then
+      why="$next is still at the top of Ready after its run — the run never reached the board; not taking it again"
+      break
+    fi
+    last="$next"
+    taken=$((taken + 1))
+    printf '\n%sloop%s %s — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken" "$next" >&2
+    rc=0
+    "$AIF_ROOT/bin/aif" work "$next" ${1+"$@"} || rc=$?
+    case "$rc" in
+      0)
+        built=$((built + 1))
+        in_a_row=0
+        ;;
+      3)
+        why="$next could not start (exit 3) — the environment, not the card; the loop stops"
+        env=1
+        break
+        ;;
+      *)
+        in_a_row=$((in_a_row + 1))
+        if [ "$in_a_row" -ge 2 ]; then
+          why="two runs in a row did not build ($next the last) — read the cards in Needs Human before spending on a third"
+          break
+        fi
+        ;;
+    esac
+  done
+
+  printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken" "$built" "$why" >&2
+  [ "$env" -eq 0 ] || exit 3
+  [ "$taken" -eq "$built" ] || exit 1
+  exit 0
+}
+
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
+  local loop=0 max_tickets=0
   # An empty budget means NO ceiling, here and everywhere below. budget_off
   # separates "the caller said no ceiling" from "the caller said nothing",
   # which is what lets --no-budget override a project that sets one.
@@ -657,6 +741,14 @@ aif_cmd_work() {
         ;;
       --no-worktree) use_worktree=0 ;;
       --clean) clean=1 ;;
+      --loop) loop=1 ;;
+      --max-tickets)
+        shift
+        max_tickets="${1:-}"
+        case "$max_tickets" in
+          '' | *[!0-9]* | 0) aif_die "--max-tickets takes a positive whole number" ;;
+        esac
+        ;;
       -h | --help)
         _aif_work_usage
         return 0
@@ -689,6 +781,12 @@ aif_cmd_work() {
     printf '%sremoved%s %s — branch aif/%s is untouched\n' "$AIF_C_GREEN" "$AIF_C_RESET" "${wt_c#"$root"/}" "$ticket"
     return 0
   fi
+
+  if [ "$loop" -eq 1 ]; then
+    [ -z "$ticket" ] || aif_die "--loop takes no ticket: it drains the board's Ready column in the board's order"
+    _aif_work_loop "$root" "$max_tickets" "$profile" "$budget" "$budget_off" "$max_minutes" "$use_worktree"
+  fi
+  [ "$max_tickets" -eq 0 ] || aif_die "--max-tickets only means something with --loop"
 
   if [ -z "$profile" ]; then
     if [ -f "$root/$AIF_PROFILE_STATE" ]; then

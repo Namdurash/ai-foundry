@@ -143,6 +143,10 @@ Write `tasks/<ID>/ticket.md` in the format below. The criteria are the contract:
 - **A ticket cut from a request says so**: `request` and `slice` in the meta block,
   and the narrative's first line — "Cut from `requests/<slug>.md`, slice 2 of 3; needs
   OPES-61 (slice 1) built first." The project manager orders the board by that line.
+- **A ticket that needs another built first says so in `depends_on`** — the previous
+  slice's ticket(s), or the earlier ticket of a split slice. That is what `aif land`
+  reads to move it from Backlog to Ready when everything it names is Done; a
+  dependency only in prose is one the project manager has to carry by hand.
 
 ### 4. The Definition of Ready — the only gate, and it is a conversation
 
@@ -182,8 +186,9 @@ aif board create tasks/<ID>/ticket.md --column ready
 
 A single ticket goes to Ready. A cut of several: the first slice's ticket goes to
 **Ready**, the rest to **Backlog** in slice order — each needs the one before it built,
-and the project manager (`/aif-pjm`) labels and releases them when it is due. The user
-can say otherwise.
+and `aif land` releases each one when the tickets its `depends_on` names are Done; the
+project manager (`/aif-pjm`) labels them and moves one by hand only when the human
+merged by hand. The user can say otherwise.
 
 **Then mark the request.** Rewrite its `## Status` — the last section of
 `requests/<slug>.md` — from what now exists in `tasks/`, not from memory. The first
@@ -260,6 +265,7 @@ into a bigger ticket.
   "ticket": "<ID>",
   "request": "<requests/<slug>.md — only when cut from a request>",
   "slice": <n — only with request>,
+  "depends_on": ["<ID of a ticket that must land first — omit when none>"],
   "lang": "<uk | en | …>",
   "risk": "<low | medium | high>",
   "surfaces": ["<each observable interface this touches, e.g. POST /api/users>"],
@@ -297,8 +303,9 @@ helps a reader, and the non-goals.>
 Ids run `AC-001, AC-002, …` and `VG-001, …` without gaps. `expect` for a domain value
 that happens to read like a judgement — a status literally called `error` — is written
 in backticks: ``"expect": "`error`"``. `request` and `slice` are absent on a ticket that
-was not cut from a request; `aif _ready` does not read them — they are for people and
-the project manager.
+was not cut from a request, and `depends_on` when nothing must land first; `aif _ready`
+reads none of them — `request` and `slice` are for people and the project manager,
+`depends_on` is what `aif land` reads.
 
 ## What this skill cannot do — said so it does not oversell
 

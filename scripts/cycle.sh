@@ -103,6 +103,12 @@ sets/claude/skills/aif-ba/SKILL.md|`not cut`, `cut in part`, `cut`|the status is
 sets/claude/skills/aif-pjm/SKILL.md|rework:|the project manager routes a review comment as rework, to Backlog
 sets/claude/skills/aif-pjm/SKILL.md|cancelled:|…or cancels the card to Done
 sets/claude/skills/aif-pjm/SKILL.md|`aif work` takes the top card|the worker consumes the top of Ready
+lib/cmd_work.sh|--loop|aif work --loop drains Ready
+lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
+lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
+lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
+sets/claude/skills/aif-ba/SKILL.md|depends_on|a ticket names the tickets it needs built first
+sets/claude/skills/aif-review/SKILL.md|aif land <ID>|the reviewer's brief ends in aif land, or a comment
 ANCHORS
 
 # --------------------------------------------------------------------------
@@ -166,7 +172,7 @@ last_gate="$prev_gate"
 role_rows="" # skill|role|requires
 # In the order the cycle runs them, then whatever else the set ships.
 skills=""
-for n in po ba pjm; do
+for n in po ba review pjm; do
   [ -f "$SET/skills/aif-$n/SKILL.md" ] && skills="$skills $SET/skills/aif-$n/SKILL.md"
 done
 for f in "$SET"/skills/aif-*/SKILL.md; do
@@ -200,6 +206,7 @@ flowchart TB
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
+    QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
     PO -->|"writes it — Status: not cut"| REQ
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
@@ -214,7 +221,7 @@ flowchart TB
     REVIEW[Review]
     DONE[Done]
     NEEDS_HUMAN[Needs Human]
-    BACKLOG -->|"/aif-pjm, when the one before it is merged"| READY
+    BACKLOG -->|"released by aif land, or by /aif-pjm by hand"| READY
   end
 
   subgraph MACHINE["Machine time · aif work"]
@@ -223,17 +230,22 @@ flowchart TB
     INTAKE --> G_READY
 $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
     $last_gate --> REPORT
+    LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
-  READY -->|"the top card"| INTAKE
+  READY -->|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.->|"the card"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
-  REVIEW -->|"merged"| DONE
-  REVIEW -->|"wrong — a comment on the card"| PJM
+  REVIEW -->|"the card, the diff, the report"| QA
+  QA -->|"land it"| LAND
+  QA -->|"wrong — a comment in the reviewer's words"| PJM
+  LAND -->|"merged, the suite green"| DONE
+  LAND -->|"a conflict, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's words"| BACKLOG
   PJM -->|"cancelled"| DONE
@@ -287,7 +299,8 @@ $(table_md "skill|role|needs" "$role_rows")
 
 ## The board
 
-The columns \`lib/board.sh\` knows, on a local board or on Trello:
+The columns \`lib/board.sh\` knows, on a local board or on Trello — and \`aif land\`
+is how a card leaves Review for Done:
 
 \`$columns_pretty\`, plus \`Needs Human\`.
 
@@ -387,7 +400,7 @@ EOH
   <ul class="legend" aria-label="Reading the diagram">
     <li style="--dot: var(--human)">Human time — a skill, run when you want, for as long as you want</li>
     <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
-    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions</li>
+    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
     <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
   </ul>
@@ -405,7 +418,7 @@ EOH
     </section>
     <section class="block board">
       <h2><small>The boundary</small>The board</h2>
-      <p><code>$(printf '%s' "$columns_pretty" | html_escape)</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog for the one before them to merge.</p>
+      <p><code>$(printf '%s' "$columns_pretty" | html_escape)</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog, and <code>aif land</code> releases each one when the tickets it depends on are Done.</p>
     </section>
     <section class="block machine">
       <h2><small>The machine half</small>Stations and gates</h2>

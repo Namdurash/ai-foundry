@@ -69,7 +69,8 @@ gets the label `depends-on-<ID>` and goes below it.
 
 ### A card in Review has a comment
 
-`aif board show <ID>` and read the reviewer's words. Then route, and say which:
+`aif board show <ID>` and read the reviewer's words — their own, or the verdict
+`/aif-review` posted for them. Then route, and say which:
 
 - **rework** — "wrong", "missing", "should also…": the ticket did not say enough. Move
   it to `backlog` and comment `rework: <their words, verbatim>`; the analyst reworks the
@@ -79,7 +80,8 @@ gets the label `depends-on-<ID>` and goes below it.
 - **question** — "why did it…?": answer from the report (`tasks/<ID>/report.md` — the
   decisions and the checklist are there) if the answer is there; otherwise take the
   question to the human. Do not guess an answer into a comment.
-- **merged** — the human says it is in: move to `done`.
+- **landed** — `aif land <ID>` merged it, moved the card to Done and released what
+  waited on it; nothing for you. If the human merged by hand instead: move to `done`.
 
 ### A ticket the worker sent to Needs Human
 
@@ -98,10 +100,10 @@ them; the human decides.
 ### Cutting a request into tickets landed several cards at once
 
 The analyst cuts one ticket per slice of the request: the first slice's ticket in Ready,
-the rest in Backlog in slice order, and each ticket's first line names its request, its
-slice, and the ticket it needs built first. Link them from that line
-(`depends-on-<ID>`), and when the one before is merged, move the next to Ready. Say the
-order.
+the rest in Backlog in slice order, and each ticket names the ticket it needs built
+first in its own `depends_on`. `aif land` reads that: when everything a ticket names is
+Done, it moves the ticket to Ready itself. Label them `depends-on-<ID>` for the eye,
+and move one by hand only when the human merged by hand. Say the order.
 
 ## What you do not do — stated so it is not tried
 

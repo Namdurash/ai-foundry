@@ -11,11 +11,14 @@ They meet only on the board.
 ```mermaid
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>challenges the need, writes requests/&lt;slug&gt;.md<br/>cut into slices that ship on their own"]
+    PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
-    PO -->|"the request"| BA
+    PO -->|"writes it — Status: not cut"| REQ
+    REQ -->|"the slices"| BA
+    BA -.->|"marks it after the cards: cut in part, then cut"| REQ
     BA --> DOR
     DOR -.->|"open questions, each with a default"| BA
   end
@@ -30,7 +33,7 @@ flowchart TB
     BACKLOG -->|"/aif-pjm, when the one before it is merged"| READY
   end
 
-  subgraph MACHINE["Machine time · aif work, never asks"]
+  subgraph MACHINE["Machine time · aif work"]
     INTAKE["intake — the ticket's bytes frozen<br/>one worktree, one branch aif/&lt;ID&gt;, one budget"]
     G_READY{{"gate ready"}}
     INTAKE --> G_READY
@@ -66,6 +69,10 @@ flowchart TB
 
 Each is a skill under `sets/claude/skills/`, and a slash command of the same
 name. `/aif-setup` says which of them can run on this machine.
+
+What passes between the first two is a file, `requests/<slug>.md`, and it carries
+its own status: `not cut` when the product partner writes it, `cut in part` with one
+line per slice once the analyst has made cards, `cut` when every slice has one.
 
 | skill | role | needs |
 |---|---|---|

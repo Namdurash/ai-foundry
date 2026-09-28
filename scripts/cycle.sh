@@ -92,10 +92,14 @@ lib/cmd_work.sh|col=needs_human|a stopped run's card goes to Needs Human with wh
 lib/cmd_work.sh|retrying with the complaint|a rejected station is retried with the gate's complaint
 sets/claude/skills/aif-po/SKILL.md|requests/<slug>.md|the product partner writes requests/<slug>.md
 sets/claude/skills/aif-po/SKILL.md|## Slices|a request is cut into slices that ship on their own
+sets/claude/skills/aif-po/SKILL.md|## Status|a new request carries a Status line
+sets/claude/skills/aif-po/SKILL.md|not cut|…and starts as not cut
 sets/claude/skills/aif-ba/SKILL.md|One ticket never spans two slices|the analyst cuts one ticket per slice
 sets/claude/skills/aif-ba/SKILL.md|--column ready|the first slice's ticket goes to Ready
 sets/claude/skills/aif-ba/SKILL.md|the rest to **Backlog**|the other slices' tickets go to Backlog, in slice order
 sets/claude/skills/aif-ba/SKILL.md|aif _ready <ID>|the analyst ends with the Definition of Ready
+sets/claude/skills/aif-ba/SKILL.md|**Then mark the request.**|the analyst marks the request after the cards are made
+sets/claude/skills/aif-ba/SKILL.md|`not cut`, `cut in part`, `cut`|the status is one of not cut, cut in part, cut
 sets/claude/skills/aif-pjm/SKILL.md|rework:|the project manager routes a review comment as rework, to Backlog
 sets/claude/skills/aif-pjm/SKILL.md|cancelled:|…or cancels the card to Done
 sets/claude/skills/aif-pjm/SKILL.md|`aif work` takes the top card|the worker consumes the top of Ready
@@ -191,11 +195,14 @@ dollars|$budget|limits.run_budget_usd
 diagram="$(cat <<MERMAID
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>challenges the need, writes requests/&lt;slug&gt;.md<br/>cut into slices that ship on their own"]
+    PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
-    PO -->|"the request"| BA
+    PO -->|"writes it — Status: not cut"| REQ
+    REQ -->|"the slices"| BA
+    BA -.->|"marks it after the cards: cut in part, then cut"| REQ
     BA --> DOR
     DOR -.->|"open questions, each with a default"| BA
   end
@@ -210,7 +217,7 @@ flowchart TB
     BACKLOG -->|"/aif-pjm, when the one before it is merged"| READY
   end
 
-  subgraph MACHINE["Machine time · aif work, never asks"]
+  subgraph MACHINE["Machine time · aif work"]
     INTAKE["intake — the ticket's bytes frozen<br/>one worktree, one branch aif/&lt;ID&gt;, one budget"]
     G_READY{{"gate ready"}}
     INTAKE --> G_READY
@@ -271,6 +278,10 @@ $diagram
 
 Each is a skill under \`sets/claude/skills/\`, and a slash command of the same
 name. \`/aif-setup\` says which of them can run on this machine.
+
+What passes between the first two is a file, \`requests/<slug>.md\`, and it carries
+its own status: \`not cut\` when the product partner writes it, \`cut in part\` with one
+line per slice once the analyst has made cards, \`cut\` when every slice has one.
 
 $(table_md "skill|role|needs" "$role_rows")
 
@@ -378,12 +389,14 @@ EOH
     <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
     <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
+    <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
   </ul>
 
   <div class="grid">
     <section class="block human">
       <h2><small>The human half</small>Roles</h2>
       <p>Each is a skill under <code>sets/claude/skills/</code> and a slash command of the same name. <code>/aif-setup</code> says which can run on this machine.</p>
+      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one.</p>
       <div class="table-wrap">
 EOH
   table_html "skill|role|needs" "$role_rows"

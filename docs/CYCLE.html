@@ -67,11 +67,14 @@
     <div id="cycle" class="diagram"><pre id="cycle-src" class="src">
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner&lt;br/&gt;challenges the need, writes requests/&amp;lt;slug&amp;gt;.md&lt;br/&gt;cut into slices that ship on their own"]
+    PO["/aif-po — the product partner&lt;br/&gt;challenges the need, cuts it into slices&lt;br/&gt;that ship on their own"]
+    REQ(["requests/&amp;lt;slug&amp;gt;.md — the request&lt;br/&gt;Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst&lt;br/&gt;one ticket per slice, never one across two&lt;br/&gt;tasks/&amp;lt;ID&amp;gt;/ticket.md with GIVEN / WHEN / THEN"]
     DOR{{"aif _ready — the Definition of Ready&lt;br/&gt;every open question answered, or its default taken"}}
     PJM["/aif-pjm — the project manager&lt;br/&gt;orders Ready, routes the reviewer's words"]
-    PO --&gt;|"the request"| BA
+    PO --&gt;|"writes it — Status: not cut"| REQ
+    REQ --&gt;|"the slices"| BA
+    BA -.-&gt;|"marks it after the cards: cut in part, then cut"| REQ
     BA --&gt; DOR
     DOR -.-&gt;|"open questions, each with a default"| BA
   end
@@ -86,7 +89,7 @@ flowchart TB
     BACKLOG --&gt;|"/aif-pjm, when the one before it is merged"| READY
   end
 
-  subgraph MACHINE["Machine time · aif work, never asks"]
+  subgraph MACHINE["Machine time · aif work"]
     INTAKE["intake — the ticket's bytes frozen&lt;br/&gt;one worktree, one branch aif/&amp;lt;ID&amp;gt;, one budget"]
     G_READY{{"gate ready"}}
     INTAKE --&gt; G_READY
@@ -122,12 +125,14 @@ flowchart TB
     <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
     <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
+    <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
   </ul>
 
   <div class="grid">
     <section class="block human">
       <h2><small>The human half</small>Roles</h2>
       <p>Each is a skill under <code>sets/claude/skills/</code> and a slash command of the same name. <code>/aif-setup</code> says which can run on this machine.</p>
+      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one.</p>
       <div class="table-wrap">
 <table>
 <thead><tr><th>skill</th><th>role</th><th>needs</th></tr></thead>

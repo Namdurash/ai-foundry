@@ -307,7 +307,9 @@ proposes the cut as one block — which slices now, which wait, the ids — and 
 nothing until you say yes. The first slice's ticket lands in Ready, the rest in Backlog
 in slice order for `/aif-pjm` to release; a slice that waits stays in the request, and
 `/aif-ba requests/<slug>.md slice 3` cuts it when it is due. Each ticket names its
-request and slice in its meta block and its first line.
+request and slice in its meta block and its first line, and the request's own
+`## Status` says how far it got: `not cut` (the product partner's default), `cut in
+part` with which slice became which ticket, or `cut`.
 
 It ends with the **Definition of Ready** and a card on the board:
 

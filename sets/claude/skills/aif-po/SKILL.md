@@ -36,8 +36,8 @@ brought and run the rules below.
 
 **An existing request.** The user named a file (`/aif-po requests/<slug>.md`), a slug, or
 asked to rework what is in `requests/`. If they did not say which, list `requests/*.md`
-with each file's title line and let them pick. One at a time: finish and write one before
-opening the next. Then:
+with each file's title line and its `## Status`, and let them pick. One at a time:
+finish and write one before opening the next. Then:
 
 1. **Read the whole file.** Do not summarise it back; the user wrote it.
 2. **Hold it to the bar, section by section**, and say what holds and what fails, in one
@@ -61,6 +61,11 @@ opening the next. Then:
    or stays deferred. Do not convert silently.
 4. **Rewrite the file in the format below, keeping the filename.** If the outcome moved
    enough that the slug now lies, say so; renaming is the user's call.
+5. **Keep what is already cut.** A slice that `## Status` maps to a ticket keeps its
+   number and its words here: changing it means changing the ticket, which is the
+   analyst's rework path. A request with no `## Status` was written before the line
+   existed — derive one from the tickets in `tasks/` that name this file, in the
+   analyst's format, or `not cut` when none does, and write it.
 
 Reworking a request changes no ticket already cut from it. A ticket that is wrong goes
 back through the project manager and the analyst; the request is the record of why the
@@ -148,7 +153,14 @@ point; omit if none>
 
 ## Watch out
 <weak oracles, dependencies, risks named in conversation; omit if none>
+
+## Status
+not cut
 ```
+
+`## Status` is the analyst's line, not yours. Every new request starts `not cut`, and
+`/aif-ba` rewrites it as it cuts — `cut in part`, with which slice became which
+ticket, then `cut`. Write `not cut` and leave the rest to the analyst.
 
 Show it, take an edit, and stop. Then say where it is, and name the next step without
 running it:

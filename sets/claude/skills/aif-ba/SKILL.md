@@ -1,6 +1,6 @@
 ---
 name: aif-ba
-description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything. Writes the GIVEN/WHEN/THEN criteria WITH the user, in conversation, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
+description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything; afterwards marks the request cut, cut in part (which slice became which ticket) or not cut. Writes the GIVEN/WHEN/THEN criteria WITH the user, in conversation, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
 requires: [claude, board]
 ---
 
@@ -81,6 +81,12 @@ them:
 - **A request without `## Slices`** was written before they existed and has one slice:
   its `## Scope`. Treat it as such and say so. If it plainly holds more than one
   outcome, the fix is `/aif-po requests/<slug>.md`, not a bigger ticket.
+
+Read `## Status` first. It is the analyst's own line on the request — `not cut` when
+the product partner wrote it, `cut in part` or `cut` once tickets exist — and a slice
+it maps to a ticket is not on the table again. A request written before the line
+existed has none: derive it from every `tasks/*/ticket.md` whose `request` names this
+file, and write it when you mark the request (step 5).
 
 If `slice N` was named, cut only that slice. Otherwise propose the whole cut, in one
 block, and wait for a yes:
@@ -179,6 +185,25 @@ A single ticket goes to Ready. A cut of several: the first slice's ticket goes t
 and the project manager (`/aif-pjm`) labels and releases them when it is due. The user
 can say otherwise.
 
+**Then mark the request.** Rewrite its `## Status` — the last section of
+`requests/<slug>.md` — from what now exists in `tasks/`, not from memory. The first
+line is exactly one of `not cut`, `cut in part`, `cut`; the two cut states list every
+slice, one per line, with the tickets it became or `not cut`:
+
+```markdown
+## Status
+cut in part
+- slice 1 → OPES-61
+- slice 2 → OPES-62, OPES-63
+- slice 3 → not cut
+```
+
+`cut` when every slice has at least one ticket; `cut in part` when some do; `not cut`
+when none does, and then there is no list — a conversation that made no ticket leaves
+the line as it was. Recompute it from the tickets that name the request every time
+you touch one, so the line says what `tasks/` says. Nothing machine-side reads it: it
+is for the human who opens `requests/`, and for you the next time.
+
 **End by saying where everything you made is, in plain paths.** A conversation that
 ends "I created the ticket" leaves the one concrete thing it produced for the user to
 go hunting for — which is exactly what happened the first time this ran. Say all four,
@@ -191,10 +216,11 @@ ready:   <what aif _ready printed>
 build:   aif work <ID>        ← in your own terminal, not here
 ```
 
-For a cut, every ticket, and what was left in the request:
+A single ticket cut from a request adds the `request:` line below, with the status. For
+a cut, every ticket, and what was left in the request:
 
 ```
-request: requests/<slug>.md — 3 slices, 2 cut now
+request: requests/<slug>.md — cut in part: slice 1 → OPES-61, slice 2 → OPES-62, slice 3 not cut
 tickets: tasks/OPES-61/ticket.md   slice 1   Ready
          tasks/OPES-62/ticket.md   slice 2   Backlog — needs OPES-61 first
 ready:   OPES-61 <what aif _ready printed> · OPES-62 <what it printed>

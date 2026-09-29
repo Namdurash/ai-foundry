@@ -275,6 +275,49 @@ _aif_work_ready_worktree() {
   return 0
 }
 
+# _aif_work_reprepare <root> <wt> <work> — install the dependencies again when
+# the station just dispatched changed a dependency manifest or its lockfile.
+#
+# "prepare" runs once, when the worktree is cut, and after that node_modules was
+# whatever the stations left. On a live ticket that was a package installed
+# around its lockfile: npm re-resolved packages nobody had asked to move, into
+# an incompatible pair, and green then blamed the implementation three times
+# for twelve pre-existing tests that no edit to its files could reach
+# (docs/DEFECTS-6.md #3). A lockfile is the promise of what an install builds;
+# the gates should judge THAT, so the install is made again from it, the way
+# CI and the next developer will make it. `npm ci` refuses a manifest the lock
+# does not match — which turns "installed around the lock" from a silent drift
+# into a complaint the station can act on.
+#
+# Read from the developer's config, like the first prepare. Nothing to do
+# without a "prepare", or when the station changed neither kind of file.
+# rc 0 nothing to do, or installed · 1 prepare failed; AIF_WORK_REPREPARE holds
+# the complaint for the station.
+_aif_work_reprepare() {
+  local root="$1" wt="$2" work="$3" prepare base files log rc=0
+  AIF_WORK_REPREPARE=""
+  prepare="$(jq -r '.prepare // empty' "$(aif_project_config "$root")" 2>/dev/null)"
+  [ -n "$prepare" ] || return 0
+  base="$(aif_run_get "$work" '.dispatch_base')" || base=""
+  [ -n "$base" ] || return 0
+  files="$({
+    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+  } | grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u)" || files=""
+  [ -n "$files" ] || return 0
+
+  _aif_work_say "prepare" "$(printf '%s' "$files" | paste -sd ' ' -) changed — $prepare"
+  mkdir -p "$wt/.aif/tmp"
+  log="$wt/.aif/tmp/prepare.log"
+  (cd "$wt" && eval "$prepare") </dev/null >"$log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+
+  AIF_WORK_REPREPARE="The station changed $(printf '%s' "$files" | paste -sd ' ' - | sed 's/ /, /g'), and \"prepare\" ($prepare) cannot install what it left — exit $rc:
+$(grep -v '^[[:space:]]*$' "$log" | sed 's/\x1b\[[0-9;]*m//g' | tail -12 | cut -c1-240 | sed 's/^/    /')
+A dependency manifest and its lockfile change together: change dependencies through the package manager, so the lockfile records what the manifest asks for (npm install <package>), never around it (--no-save, --no-package-lock, a hand edit). The worker installs from the lockfile after every station that touches either. If the plan does not name the lockfile, stop and say so — that is the plan's defect."
+  return 1
+}
+
 # _aif_work_intake <root> <wt> <ticket> — carry the ticket in, judge it ready,
 # and open (or resume) the run record.
 #
@@ -999,6 +1042,19 @@ $complaint"
       status="stopped"
       why="budget: spent \$$spent of \$$budget — each station priced from its tokens where .aif/prices.json knows the model, else as the runner reported it."
       break
+    fi
+
+    # Before any gate: a station that moved a dependency manifest or lockfile
+    # gets its dependencies installed again from the lock, and one whose files
+    # cannot be installed is sent back like a rejection — recorded as the
+    # "prepare" verdict, retried with prepare's own words, capped the same way.
+    if ! _aif_work_reprepare "$root" "$wt" "$work"; then
+      complaint="$AIF_WORK_REPREPARE"
+      _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
+      aif_ledger_gate "$work" prepare fail "" "" "" \
+        "$(printf '%s' "$AIF_WORK_REPREPARE" | sed -n 1p)"
+      _aif_work_say "prepare" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — the dependencies it left do not install; retrying with prepare's output"
+      continue
     fi
 
     # The tool writes the provenance the station was never asked to carry.

@@ -47,6 +47,15 @@ later means the code satisfies the specification and not merely itself.
   broken, not the behaviour being absent, and they are rejected.
 - **Be a real test.** `assert result is not None` passes against any stub and
   proves nothing. Assert the actual expected value from the criterion.
+- **Type-correct, where the project is typed.** A test runner may not check
+  types — jest runs TypeScript through babel, which strips them — so a mock
+  typed one way and assigned another passes the suite and then fails the
+  project's typecheck, in a file nobody may edit once it is frozen. Give mocks
+  and fixtures the types the code under test declares. The one thing allowed to
+  fail type-checking is what the plan has not built yet: an import of a module
+  in `files.create`, a new export the plan adds to a file in `files.change`.
+  verify-red holds your files to the project's red-phase checks and sends
+  anything else back to you.
 
 ## After you write them
 

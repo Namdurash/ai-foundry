@@ -68,6 +68,15 @@ aif_cmd_amend_plan() {
     tests/* | test/* | */tests/* | */test/* | *_test.* | *test_*.py | *.test.* | *.spec.*)
       aif_die "refusing to amend for '$path': the tests are frozen by verify-red. If a test is wrong, stop and report it — the ticket returns to have its tests or spec revised."
       ;;
+    # A lockfile moves only with its manifest, and only when the PLAN named
+    # both: a dependency is a planning decision, and the plan gate is where the
+    # pair is checked (docs/DEFECTS-6.md #3). scope permits no amended lockfile
+    # either; this says so before anything is written.
+    package-lock.json | */package-lock.json | npm-shrinkwrap.json | */npm-shrinkwrap.json | \
+      yarn.lock | */yarn.lock | pnpm-lock.yaml | */pnpm-lock.yaml | poetry.lock | */poetry.lock | \
+      uv.lock | */uv.lock | Cargo.lock | */Cargo.lock | go.sum | */go.sum)
+      aif_die "refusing to amend for '$path': a lockfile changes only when the plan names it together with its manifest. A dependency the plan did not foresee is a planning decision — stop and say so."
+      ;;
   esac
 
   local plan_meta plan_hash

@@ -9,8 +9,11 @@
 # oracle through and calls it a passing gate. So this gate checks the FAILURE
 # MODE, not the failure:
 #
-#   - the pre-existing suite is green (a repo already broken makes "red"
-#     meaningless) → exit 3 if not
+#   - the pre-existing suite was green before this ticket's tests existed (a
+#     repo already broken makes "red" meaningless) → exit 3 if not, naming the
+#     tests. A pre-existing test that was green WITHOUT the new test files and
+#     is red with them is a different thing, told apart by running the suite
+#     once more without them (see "Pre-existing tests" below)
 #   - each new test is present in the report, and each failing one fails for a
 #     legitimate class (assertion, missing module), not a broken one (syntax,
 #     collection error) → exit 3 if broken
@@ -121,7 +124,9 @@ rm -f "$root/$report_path"
 # worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
 # #14): the removals were written on the pass paths only, and a rejection is the
 # common case. A gate is its own process, so a plain EXIT trap is the whole fix.
-trap 'rm -f "$work/.suite.out"' EXIT
+# The copy the baseline runs in (below) goes the same way.
+scratch=""
+trap 'rm -f "$work/.suite.out"; [ -z "$scratch" ] || rm -rf "${scratch:?}"' EXIT
 
 suite_rc=0
 (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
@@ -174,6 +179,7 @@ suite_rows=""
 green_ids=""
 green_count=0
 red_count=0
+red_with_tests=""
 if [ "$mode" = "per-test" ]; then
   # jq emits plain rows; classification happens in bash against the project's
   # failure-class patterns. Keeping the jq single-line and pattern-free is what
@@ -182,12 +188,100 @@ if [ "$mode" = "per-test" ]; then
   broken_re="$(jq -r '.failure_classes.broken | join("|")' "$project")"
   legit_re="$(jq -r '.failure_classes.legitimate | join("|")' "$project")"
 
-  # Pre-existing tests (not in a declared test file) must all pass: a repo
-  # already red makes this gate blind, so that is a stop, not a reject.
+  # Pre-existing tests — everything outside a declared test file — that fail.
+  #
+  # A repo already red makes this gate blind, so that is a stop, not a reject.
+  # But this run happens AFTER the tests station has written its files, and for
+  # one release every failure outside them was reported as "the pre-existing
+  # suite is not green — fix the repo". A test green before the new files and
+  # red with them is not the repo: on a live project it was a jest test that
+  # runs `tsc --noEmit` over the whole tree, turned red by a new test importing
+  # `./utils` — which the plan's files.create had not produced yet, exactly as a
+  # red-first test in TypeScript must. Two tickets in a row stopped here with
+  # advice that was false for them (docs/DEFECTS-6.md #1).
+  #
+  # So a failure outside the declared files is measured against a BASELINE:
+  # the suite once more, in a copy of the tree as it stood when the tests
+  # station was dispatched — the tree those files landed in. Only on this path,
+  # so a green suite pays nothing for it. Three answers:
+  #   red before   the repo. A stop, naming the tests.
+  #   green before the tests' interaction with the suite. Admitted, recorded in
+  #                the lock as red_with_tests and printed on the pass path:
+  #                green requires the whole suite, and it can tell a failure
+  #                the implementation clears from one it cannot reach.
+  #   absent       a test that exists only with this ticket's files but lives
+  #                outside the declared ones — the tests' own, not the repo's.
   pre_red="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-    '[ .[] | select(((.file // "") as $f | $tf | index($f)) | not) | select(.status != "pass" and .status != "skipped") ] | length')"
-  if [ "${pre_red:-0}" -gt 0 ]; then
-    aif_g_error "the pre-existing suite is not green ($pre_red failing) — fix the repo before authoring tests; red is meaningless otherwise"
+    '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | select(.status == "failure" or .status == "error") | .id')"
+  if [ -n "$pre_red" ]; then
+    base="$(aif_g_dispatch_base "$work" "$root")"
+    baseline=""
+    classes=""
+    base_why=""
+    if [ -z "$base" ] || [ ! -e "$root/.git" ]; then
+      base_why="there is no commit to measure it at"
+    else
+      scratch="$(aif_g_scratch_at "$root" "$base")"
+      mkdir -p "$scratch/$(dirname "$report_path")" "$scratch/.aif/tmp"
+      rm -f "${scratch:?}/${report_path:?}"
+      (cd "$scratch" && eval "$test_cmd") >"$scratch/.aif/tmp/baseline.out" 2>&1 || true
+      if [ ! -f "$scratch/$report_path" ]; then
+        base_why="the suite wrote no report there — $(grep -v '^[[:space:]]*$' "$scratch/.aif/tmp/baseline.out" | tail -1 | cut -c1-160)"
+      else
+        baseline="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"
+        [ -n "$baseline" ] || base_why="the report it wrote could not be read"
+      fi
+    fi
+    if [ -n "$baseline" ]; then
+      printf '%s' "$baseline" >"$scratch/.aif/tmp/baseline.json"
+      classes="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
+        --slurpfile before "$scratch/.aif/tmp/baseline.json" '
+        ($before[0] | map({ (.id): .status }) | add // {}) as $b
+        | .[] | select(((.file // "") as $f | $tf | index($f)) | not)
+        | select(.status == "failure" or .status == "error")
+        | ($b[.id] // "") as $s
+        | (if $s == "failure" or $s == "error" then "before" elif $s == "" then "absent" else "with" end)
+          + "\t" + .id + "\t" + (.file // "")' 2>/dev/null)" || classes=""
+      [ -n "$classes" ] || base_why="the run without them could not be compared with this one"
+    fi
+    [ -z "$scratch" ] || rm -rf "${scratch:?}"
+    scratch=""
+
+    # No baseline, no attribution: the stop that was always here, with names.
+    if [ -z "$classes" ]; then
+      printf 'ERROR  the pre-existing suite is not green (%s failing: %s) — fix the repo before authoring tests; red is meaningless otherwise\n' \
+        "$(printf '%s\n' "$pre_red" | grep -c .)" "$(printf '%s\n' "$pre_red" | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')" >&2
+      printf '%s\n' "$pre_red" | sed -n '1,20p' | sed 's/^/  - /' >&2
+      printf '  Whether they were red before this ticket'"'"'s test files existed could not be told: %s.\n' "$base_why" >&2
+      exit "$AIF_G_ERROR"
+    fi
+    red_before="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "before" { print $2 }')"
+    red_with_tests="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "with" { print $2 }')"
+    absent_nofile="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "absent" && $3 == "" { print $2 }')"
+    absent_elsewhere="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "absent" && $3 != "" { print $2 " (in " $3 ")" }')"
+
+    if [ -n "$red_before" ]; then
+      printf 'ERROR  the pre-existing suite is red without this ticket'"'"'s test files too (%s failing: %s) — fix the repo before authoring tests; red is meaningless otherwise\n' \
+        "$(printf '%s\n' "$red_before" | grep -c .)" "$(printf '%s\n' "$red_before" | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')" >&2
+      printf '%s\n' "$red_before" | sed -n '1,20p' | sed 's/^/  - /' >&2
+      printf '  Measured in a copy of the tree as it stood when the tests station was dispatched,\n' >&2
+      printf '  before any of this ticket'"'"'s test files existed. They are the repository'"'"'s.\n' >&2
+      if [ -n "$red_with_tests" ]; then
+        printf '  Separately, these were green there and are red with the new test files:\n' >&2
+        printf '%s\n' "$red_with_tests" | sed -n '1,20p' | sed 's/^/  - /' >&2
+      fi
+      exit "$AIF_G_ERROR"
+    fi
+    if [ -n "$absent_nofile" ]; then
+      printf 'ERROR  %s failing test(s) exist only with this ticket'"'"'s test files, and the report names no file for them:\n' \
+        "$(printf '%s\n' "$absent_nofile" | grep -c .)" >&2
+      printf '%s\n' "$absent_nofile" | sed -n '1,20p' | sed 's/^/  - /' >&2
+      printf '  This gate tells a new test from a pre-existing one by the file on each test case\n' >&2
+      printf '  in %s. Make the reporter write it (jest-junit: addFileAttribute "true").\n' "$report_path" >&2
+      exit "$AIF_G_ERROR"
+    fi
+    aif_g_report "$(printf '%s\n' "$absent_elsewhere" |
+      sed '/^$/d; s/$/ fails, and exists only with this ticket'"'"'s test files — in a file files.tests does not declare; write the tests in the declared files/')" "tests"
   fi
 
   # Each new test as "file<TAB>id<TAB>status<TAB>message". The file travels with
@@ -334,9 +428,27 @@ aif_g_report "${cov# }" "coverage"
 # Bound to "red" deliberately: at this moment no implementation exists, so a
 # compiler or a build would fail CORRECTLY and a phase-blind checks list would
 # reject the red phase for being red by design. Only a check that is true of the
-# test files alone belongs here; compilers, linters and builds bind to "green".
+# test files alone belongs here; compilers, linters and builds bind to "green" —
+# unless the project says which of their failures are the missing
+# implementation's (`legitimate_at_red`), in which case the test files are held
+# to everything else. That is the one moment a type error inside a test can be
+# sent back to the station that wrote it; after the freeze nobody may edit it,
+# and green could only stop (docs/DEFECTS-6.md #2).
 mkdir -p "$root/.aif/tmp"
-check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json")"
+check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json" "$test_files")"
+# A check that failed without naming one of the test files is not the tests
+# station's to fix, and a retry would burn an opus attempt on it — a stop.
+if [ "$(jq '[ .[]? | select(.required and .result == "unlocated") ] | length' \
+  "$root/.aif/tmp/checks-red.json" 2>/dev/null)" != "0" ]; then
+  printf 'ERROR  a check bound to red fails somewhere other than this ticket'"'"'s test files — the tests station cannot clear it:\n' >&2
+  printf '%s\n' "$check_viol" |
+    sed '/^[[:space:]]*$/d; /^[[:space:]]/s/^/    /; /^[^[:space:]]/s/^/  - /' >&2
+  printf '  legitimate_at_red lets through what the missing implementation causes IN the test\n' >&2
+  printf '  files, and nothing of this names one. Either the repository fails the check without\n' >&2
+  printf '  this ticket — fix it there — or the check prints paths that are not relative to the\n' >&2
+  printf '  project root, and cannot be read against the plan'"'"'s files.tests.\n' >&2
+  exit "$AIF_G_ERROR"
+fi
 aif_g_report "$check_viol" "checks"
 
 # --- freeze: write tests.lock.json ------------------------------------------
@@ -443,7 +555,8 @@ jq -n \
   --rawfile suite_raw <(printf '%s' "${suite_rows:-}") \
   --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" \
-  --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" '
+  --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson with "$(printf '%s' "$red_with_tests" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
     | map({ (.[0]): .[1] }) | add // {};
   { schema: 1, plan_sha256: $plan_hash, mode: $mode, mode_reason: $mode_reason, at: $at,
@@ -452,7 +565,8 @@ jq -n \
     green_at_freeze: $green,
     impl_frozen: rows($impl_raw),
     impl_created: $create,
-    suite_at_freeze: rows($suite_raw) }' >"$work/tests.lock.json"
+    suite_at_freeze: rows($suite_raw),
+    red_with_tests: $with }' >"$work/tests.lock.json"
 
 # The file was called tests.lock until the content stopped being a secret: it is
 # JSON, editors did not highlight it, jq did not pick it up by glob, and diffs
@@ -470,8 +584,19 @@ if [ "$mode" = "coarse" ]; then
   printf '  ! why: %s\n' "$mode_why"
   printf '  ! the lock records covering: [] — green has no test to revert-recheck against.\n'
 else
-  printf 'verify-red: %s new test(s) red for the right reason, all criteria covered\n' \
-    "$red_count"
+  with_count="$(printf '%s' "$red_with_tests" | grep -c . || true)"
+  printf 'verify-red: %s new test(s) red for the right reason, all criteria covered' "$red_count"
+  # On the first line, because that is the line the ledger and the report keep.
+  [ "${with_count:-0}" -eq 0 ] ||
+    printf ' — and %s pre-existing test(s) red only with them' "$with_count"
+  printf '\n'
+  if [ "${with_count:-0}" -gt 0 ]; then
+    printf '  ! RED WITH THE NEW TESTS — green without this ticket'"'"'s test files, red once they landed:\n'
+    printf '%s\n' "$red_with_tests" | sed 's/^/    - /'
+    printf '  Not the repository'"'"'s: measured against the tree the tests station started from.\n'
+    printf '  The implementation has to clear them — green requires the whole suite, and\n'
+    printf '  stops rather than retries on one that fails the same way without the code.\n'
+  fi
   if [ "$green_count" -gt 0 ]; then
     # On the PASS path, always — the same rule the other gates follow for what
     # they allowed. A degradation only readable out of a lock file is silent.

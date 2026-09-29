@@ -119,7 +119,7 @@ aif_g_report "${drift# }" "test tree"
 
 # --- the suite is green ------------------------------------------------------
 #
-# "No skips" is the right rule for THIS TICKET'"'"'S tests and the wrong rule for
+# "No skips" is the right rule for THIS TICKET'S tests and the wrong rule for
 # everything else, and for one release it was applied to everything. A skip in
 # a frozen covering test is the cheapest way to make red go away without
 # implementing anything, so it is a rejection. A skip somewhere else in the
@@ -129,11 +129,11 @@ aif_g_report "${drift# }" "test tree"
 # and could then never pass green. The two gates disagreed about what a skip
 # means, and the one that was wrong was this one.
 #
-# What is still caught: a pre-existing test that was PASSING when the tests
-# were frozen and is skipped now. The implementation cannot edit a test — the
-# tree is hash-locked — but it can change source so one stops collecting, and
-# that is a regression however it happened. verify-red records the rest of the
-# suite'"'"'s status at freeze so this can be told apart from a skip that was
+# What is still caught: a pre-existing test that RAN when the tests were
+# frozen and is skipped now. The implementation cannot edit a test — the tree
+# is hash-locked — but it can change source so one stops collecting, and that
+# is a regression however it happened. verify-red records the rest of the
+# suite's status at freeze so this can be told apart from a skip that was
 # always there. A lock written before that field existed carries no such
 # record, and the gate says so rather than pretending to check it.
 test_cmd="$(jq -r '.test.command' "$project")"
@@ -150,7 +150,11 @@ rm -f "$root/$report_path"
 # worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
 # #14): the removals were written on the pass paths only, and a rejection is the
 # common case. A gate is its own process, so a plain EXIT trap is the whole fix.
-trap 'rm -f "$work/.suite.out"' EXIT
+# The reverted copy of the tree and this gate's own scratch go the same way.
+scratch=""
+gtmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-green-XXXXXX")"
+trap 'rm -f "$work/.suite.out"; [ -z "$scratch" ] || rm -rf "${scratch:?}"; [ -z "$gtmp" ] || rm -rf "${gtmp:?}"' EXIT
+tab="$(printf '\t')"
 
 suite_rc=0
 (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
@@ -160,6 +164,105 @@ suite_rc=0
 # empty, and the three checks below that read them therefore check nothing. That
 # was invisible — this gate printed the same confident sentence either way.
 lock_mode="$(jq -r '.mode // "per-test"' "$lock")"
+
+# --- the tree without this ticket's implementation ---------------------------
+#
+# One copy of the working tree with everything the implement station changed
+# put back as it stood when the station was dispatched — which is the tree the
+# tests were frozen on, plus whatever git ignores (installed dependencies,
+# caches) as it is NOW. Made on first use and shared by the three questions
+# that need it:
+#
+#   - the revert-recheck: do the covering tests fail without the code?
+#   - a pre-existing test that fails: does it fail without the code too?
+#   - a check that fails in a frozen test file: the same way without the code?
+#
+# The last two are the attribution this gate was missing. It used to reject the
+# implement station for every failure it could not explain, and the station
+# was then retried against things no edit to its files could reach: twelve
+# pre-existing tests broken by a dependency re-resolved in node_modules, a type
+# error inside a frozen test file. Three attempts each, 49 minutes for one of
+# them (docs/DEFECTS-6.md #2, #3). A failure the implementation can clear is
+# one that CHANGES when the implementation is taken away; one that does not
+# change is out of its reach, and the run stops instead of retrying.
+#
+# The whole diff since dispatch is reverted, not only the manifest's files: an
+# amended path, or a stray file scope has yet to reject, is the implementation
+# too, and leaving it in would blame the environment for what it did.
+base=""
+reverted=""
+reverted_ran=0
+reverted_why=""
+
+# revert_tree — make the copy (once), and prove the revert happened.
+#
+# From the commit the worker recorded at dispatch, not from the index. The
+# implement station has Bash, and after one `git commit` from it the index
+# already held the implementation: the revert was a no-op, every covering test
+# stayed green, and this gate told the station its tests were worthless when
+# what had happened was that it committed (docs/DEFECTS-3.md #8).
+revert_tree() {
+  local rel want not_restored=""
+  [ -z "$scratch" ] || return 0
+  base="$(aif_g_dispatch_base "$work" "$root")"
+  scratch="$(aif_g_scratch_at "$root" "$base")"
+  [ -n "$scratch" ] && [ -d "$scratch" ] ||
+    aif_g_error "could not copy the tree to revert the implementation in"
+  jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    rm -f "${scratch:?}/${rel:?}"
+  done
+
+  # The revert is proven, file by file, against the hashes verify-red froze. A
+  # revert that did not happen used to be indistinguishable from tests that
+  # assert nothing; now it is named for what it is, and it is a 3, because no
+  # retry of the implementation changes what the baseline holds.
+  while IFS="$tab" read -r rel want; do
+    [ -n "$rel" ] || continue
+    [ "$(aif_g_sha256 "$scratch/$rel")" = "$want" ] || not_restored="$not_restored
+$rel"
+  done <<EOF
+$(jq -r '.impl_frozen | to_entries[] | [.key, .value] | @tsv' "$lock")
+EOF
+  not_restored="$(printf '%s' "${not_restored# }" | grep -v '^$' || true)"
+  if [ -n "$not_restored" ]; then
+    printf 'ERROR  the implementation could not be reverted to what the tests were frozen against, from %s:\n' \
+      "$(printf '%s' "$base" | cut -c1-10)" >&2
+    printf '%s\n' "$not_restored" | sed 's/^/  - /' >&2
+    printf '  At that commit the file does not match its hash in tests.lock.json. When a gate\n' >&2
+    printf '  is run by hand there is no dispatch baseline, only HEAD — and if the station\n' >&2
+    printf '  committed its work, HEAD already holds the change being reverted.\n' >&2
+    exit "$AIF_G_ERROR"
+  fi
+}
+
+# reverted_suite — the suite in that copy, parsed, once. Sets $reverted, or
+# $reverted_why when there is nothing to read.
+#
+# The copy is of the tree AFTER this gate's own run, so it carries that run's
+# report. It is deleted first: a reverted run that fails to produce one would
+# otherwise be read from the stale file — every covering test "pass", and a
+# correct implementation rejected for tests that "do not depend on" it.
+reverted_suite() {
+  [ "$reverted_ran" -eq 0 ] || return 0
+  reverted_ran=1
+  revert_tree
+  mkdir -p "$scratch/$(dirname "$report_path")"
+  rm -f "${scratch:?}/${report_path:?}"
+  (cd "$scratch" && eval "$test_cmd") >"$gtmp/reverted.out" 2>&1 || true
+  if [ ! -f "$scratch/$report_path" ]; then
+    reverted_why="the suite wrote no report at $report_path"
+  else
+    reverted="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"
+    [ -n "$reverted" ] || reverted_why="the report it wrote at $report_path could not be read"
+  fi
+}
+
+# render — a list of problems as the gates print them: a bullet per problem, and
+# the indented lines under one (a failure's own words) as its continuation.
+render() {
+  sed '/^[[:space:]]*$/d; /^[[:space:]]/s/^/    /; /^[^[:space:]]/s/^/  - /'
+}
 
 allowed_skips=0
 freeze_known=yes
@@ -197,67 +300,124 @@ if aif_g_have python3; then
       printf '  - a suite that fails to RUN emits no test case, so the report is silent about it\n' >&2
       printf '  - the last lines of the run were:\n' >&2
       tail -5 "$work/.suite.out" | sed 's/^/      /' >&2
-      rm -f "$work/.suite.out"
       exit "$AIF_G_ERROR"
     fi
-    # Bound once, read four times below. They were four identical sub-shells.
+    # Bound once, read below. $mine is small; the freeze record is the whole
+    # suite and goes through a file — as an argument it would meet ARG_MAX on
+    # exactly the projects large enough to need this gate.
     mine_json="$(jq -c '((.covering // []) + (.green_at_freeze // []))' "$lock")"
-    freeze_json="$(jq -c '.suite_at_freeze // null' "$lock")"
+    jq -c '.suite_at_freeze // null' "$lock" >"$gtmp/freeze.json"
 
+    # Every result that is not what it should be, classified once:
+    #   mine    — a test this ticket froze, not passing
+    #   pre     — a failing test the freeze recorded: it existed when the tests
+    #             were frozen, so it is not this ticket's own
+    #   post    — a failing test absent from that record
+    #   unknown — a failing test, and a lock with no record to tell by
+    #   quiet   — a test that ran at the freeze and is skipped now
+    #
     # A failing test that is not one of this ticket's own used to be reported,
     # unconditionally, as "the pre-existing suite broke". That sentence is a
     # claim about WHERE a test came from, and the gate was not checking: on a
     # live ticket it was printed about six tests in a file the run had just
     # created, and the human read it as a regression in their own repository.
-    #
-    # The freeze knows. verify-red records the whole suite's status at freeze
-    # time, so an id absent from that record did not exist when the tests were
+    # The freeze knows: an id absent from it did not exist when the tests were
     # frozen and cannot be pre-existing — whatever else it is.
-    notpass="$(printf '%s' "$results" | jq -r \
-      --argjson mine "$mine_json" \
-      --argjson freeze "$freeze_json" '
-      .[]
-      | . as $t
-      | if ($mine | index($t.id)) != null then
-          (if $t.status != "pass"
-            then $t.id + " (" + $t.status + ") — a test this ticket froze, so it must pass; a skip here is red made to go away without implementing anything"
-            else empty end)
-        elif ($t.status == "failure" or $t.status == "error") then
-          (if $freeze == null then
-             $t.id + " (" + $t.status + ") — origin unknown: this lock predates suite_at_freeze, so a pre-existing test cannot be told from one this ticket authored"
-           elif (($freeze[$t.id] // "") == "") then
-             $t.id + " (" + $t.status + ") — NOT pre-existing: absent from the suite when the tests were frozen, so it arrived with this ticket'"'"'s own test files"
-           else
-             $t.id + " (" + $t.status + ") — the pre-existing suite broke"
-           end)
-        elif $t.status == "skipped" then
-          (if $freeze != null and (($freeze[$t.id] // "") == "pass")
-            then $t.id + " (skipped) — it was passing when the tests were frozen, so something in this change silenced it"
-            else empty end)
-        else empty end')"
+    rows="$(printf '%s' "$results" | jq -r \
+      --argjson mine "$mine_json" --slurpfile fz "$gtmp/freeze.json" '
+      $fz[0] as $freeze
+      | .[] | . as $t
+      | (($freeze // {})[$t.id] // "") as $fs
+      | (if ($mine | index($t.id)) != null then (if $t.status != "pass" then "mine" else empty end)
+         elif ($t.status == "failure" or $t.status == "error") then
+           (if $freeze == null then "unknown" elif $fs == "" then "post" else "pre" end)
+         elif $t.status == "skipped" and $fs != "" and $fs != "skipped" then "quiet"
+         else empty end) as $k
+      | $k + "\t" + $t.id + "\t" + $t.status + "\t" + $fs')"
+    kind_n() { printf '%s\n' "$rows" | awk -F'\t' -v k="$1" '$1 == k { n++ } END { print n + 0 }'; }
+    mine_fail="$(kind_n mine)"
+    pre_fail="$(kind_n pre)"
+    post_fail="$(kind_n post)"
 
-    # The same three populations, counted, because the counts decide WHO is
-    # being rejected — and that is a different question from what to print.
-    counts="$(printf '%s' "$results" | jq -r \
-      --argjson mine "$mine_json" \
-      --argjson freeze "$freeze_json" '
-      # Each arm is parenthesised. In jq the comma binds TIGHTER than the pipe,
-      # so [A] | length, [B] | length is not three counts but one pipeline that
-      # ends up calling .[] on a number. It did, and the error went into the
-      # output of this gate and became the recorded reason for a PASS.
-      ([ .[] | . as $t | select(($mine | index($t.id)) != null)
-             | select($t.status != "pass") ] | length),
-      ([ .[] | . as $t | select(($mine | index($t.id)) == null)
-             | select($t.status == "failure" or $t.status == "error")
-             | select($freeze != null and (($freeze[$t.id] // "") != "")) ] | length),
-      ([ .[] | . as $t | select(($mine | index($t.id)) == null)
-             | select($t.status == "failure" or $t.status == "error")
-             | select($freeze != null and (($freeze[$t.id] // "") == "")) ] | length)')"
-    mine_fail="$(printf '%s\n' "$counts" | sed -n 1p)"
-    pre_fail="$(printf '%s\n' "$counts" | sed -n 2p)"
-    post_fail="$(printf '%s\n' "$counts" | sed -n 3p)"
+    # The pre-existing failures, attributed. Each is run against the tree
+    # without the implementation, and the answer decides who it belongs to:
+    #   passes there              — this change broke it: the implement station's
+    #   fails there, passed at the freeze
+    #                             — the tree without this change is the tree
+    #                               that passed, so what moved is outside it:
+    #                               installed dependencies, a cache, a service.
+    #                               Unless the change moved a dependency
+    #                               manifest or lockfile — then the dependencies
+    #                               it installs are its own, and so is this
+    #   fails there, red at the freeze (red_with_tests: it went red when the
+    #   test files landed)
+    #                             — compared line by line. If nothing in its
+    #                               failure is new with the implementation, the
+    #                               implementation does not reach it
+    # Without the copy there is nothing to measure, and the old sentence stands.
+    pre_text="$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "pre" { print $2 " (" $3 ") — the pre-existing suite broke" }')"
+    unreached_n=0 moved_n=0 interaction_n=0
+    if [ "${pre_fail:-0}" -gt 0 ] && [ -e "$root/.git" ]; then
+      reverted_suite
+      if [ -n "$reverted" ]; then
+        printf '%s' "$reverted" >"$gtmp/reverted.json"
+        printf '%s\n' "$rows" | awk -F'\t' '$1 == "pre" { print $2 }' | jq -R . | jq -s . >"$gtmp/pre.json"
+        deps="$(aif_g_dep_changes "$root" "$base" | paste -sd ' ' -)"
+        attrib="$(printf '%s' "$results" | jq -c \
+          --slurpfile rev "$gtmp/reverted.json" --slurpfile fz "$gtmp/freeze.json" \
+          --slurpfile ids "$gtmp/pre.json" --arg deps "$deps" --arg here_root "$root" \
+          --arg there "$scratch" --arg there_p "$(cd "$scratch" && pwd -P)" '
+          # Each root spelling becomes "<root>", the longer first, so the same
+          # failure read in two copies of the tree compares equal.
+          def lines($m; $roots):
+            reduce ($roots | sort_by(-length))[] as $r (($m // "") | gsub("\r"; "");
+              if $r == "" then . else split($r) | join("<root>") end)
+            | split("\n") | map(gsub("\u001b\\[[0-9;]*m"; "")) | map(select(test("[^ \t]")));
+          ($rev[0] | map({ (.id): . }) | add // {}) as $R
+          | ($fz[0] // {}) as $F
+          | [ .[] | . as $t | select($ids[0] | index($t.id))
+              | $R[$t.id] as $r | ($F[$t.id] // "") as $fs
+              | ($t.id + " (" + $t.status + ") — ") as $head
+              | if $r == null then
+                  { out: false, text: ($head + "the pre-existing suite broke; the suite without the implementation does not collect it, so where it broke could not be measured") }
+                elif ($r.status == "pass" or $r.status == "skipped") then
+                  { out: false, text: ($head + "the pre-existing suite broke: it passes with the implementation reverted, so this change broke it") }
+                elif ($fs == "pass" or $fs == "skipped") then
+                  ((if $fs == "pass" then "passed" else "was skipped" end) as $then
+                  | if $deps != "" then
+                    { out: false, text: ($head + "it " + $then + " when the tests were frozen and fails with the implementation reverted too; this change moved " + $deps + ", and the breakage follows the dependencies that installs — keep what the lockfile already pinned") }
+                  else
+                    { out: true, kind: "moved", text: ($head + "it " + $then + " when the tests were frozen and fails with the implementation reverted too: the tree without this change is the tree the tests were frozen on, so what moved is outside it") }
+                  end)
+                else
+                  ((lines($t.message; [$here_root]) - lines($r.message; [$there, $there_p])) as $d
+                  | if ($d | length) == 0 then
+                      { out: true, kind: "interaction", text: ($head + "red since this ticket'"'"'s test files landed, and it fails the same way with the implementation reverted: the implementation does not reach it") }
+                    else
+                      { out: false, text: ($head + "red since this ticket'"'"'s test files landed; the implementation changes how it fails and has not cleared it — new with it:"),
+                        detail: ($d[0:8] | map(.[0:240])) }
+                    end)
+                end ]')"
+        pre_text="$(printf '%s' "$attrib" | jq -r '.[] | .text, (.detail[]? | "    " + .)')"
+        unreached_n="$(printf '%s' "$attrib" | jq '[ .[] | select(.out) ] | length')"
+        moved_n="$(printf '%s' "$attrib" | jq '[ .[] | select(.kind == "moved") ] | length')"
+        interaction_n="$(printf '%s' "$attrib" | jq '[ .[] | select(.kind == "interaction") ] | length')"
+      else
+        pre_text="$pre_text
+    (not attributed: the suite without the implementation could not be read — $reverted_why)"
+      fi
+    fi
 
-    if [ -n "$notpass" ]; then
+    notpass="$(
+      printf '%s\n' "$rows" | awk -F'\t' '
+        $1 == "mine"    { print $2 " (" $3 ") — a test this ticket froze, so it must pass; a skip here is red made to go away without implementing anything" }
+        $1 == "unknown" { print $2 " (" $3 ") — origin unknown: this lock predates suite_at_freeze, so a pre-existing test cannot be told from one this ticket authored" }
+        $1 == "post"    { print $2 " (" $3 ") — NOT pre-existing: absent from the suite when the tests were frozen, so it arrived with this ticket'"'"'s own test files" }
+        $1 == "quiet"   { print $2 " (skipped) — it ran when the tests were frozen (" $4 "), so something in this change silenced it" }'
+      [ -z "$pre_text" ] || printf '%s\n' "$pre_text"
+    )"
+
+    if [ -n "$(printf '%s' "$notpass" | grep -v '^[[:space:]]*$' || true)" ]; then
       # Whose defect is it? The implement station may write only files.change,
       # and every test file is hash-locked by tests.lock.json — so when nothing
       # failing is either one of this ticket's frozen tests or a pre-existing
@@ -271,15 +431,36 @@ if aif_g_have python3; then
       if [ "$lock_mode" = "per-test" ] && [ "${mine_fail:-0}" -eq 0 ] &&
         [ "${pre_fail:-0}" -eq 0 ] && [ "${post_fail:-0}" -gt 0 ]; then
         printf 'ERROR  the failing tests are the oracle, not the implementation:\n' >&2
-        printf '%s\n' "$notpass" | sed 's/^/  - /' >&2
+        printf '%s\n' "$notpass" | render >&2
         printf '  Every one of them arrived with this ticket'"'"'s own test files, which are frozen by\n' >&2
         printf '  tests.lock.json and outside files.change. The implement station cannot fix what it\n' >&2
         printf '  is being rejected for. Re-run the tests station against this plan.\n' >&2
-        rm -f "$work/.suite.out"
+        exit "$AIF_G_ERROR"
+      fi
+      # The same rule, reached by measurement rather than by origin: a failure
+      # that is the same with the implementation taken away cannot be cleared
+      # by any change to it, and while one of those stands no retry can pass —
+      # so the run stops now, with every failure listed and attributed, rather
+      # than after attempts_max of them.
+      if [ "${unreached_n:-0}" -gt 0 ]; then
+        printf 'ERROR  %s failing test(s) are out of the implementation'"'"'s reach — the run stops instead of retrying:\n' \
+          "$unreached_n" >&2
+        printf '%s\n' "$notpass" | render >&2
+        printf '  Each of those fails the same way with this ticket'"'"'s implementation reverted, so\n' >&2
+        printf '  no change the implement station may make can clear it.\n' >&2
+        if [ "${moved_n:-0}" -gt 0 ]; then
+          printf '  Passed at the freeze, fails now without the code: something outside the tracked\n' >&2
+          printf '  tree moved — installed dependencies are the usual suspect (a package installed\n' >&2
+          printf '  around the lockfile). Run "prepare" in the worktree, then resume.\n' >&2
+        fi
+        if [ "${interaction_n:-0}" -gt 0 ]; then
+          printf '  Red since the test files landed, and the code does not reach it: the new tests\n' >&2
+          printf '  break it, and they have to change.\n' >&2
+        fi
         exit "$AIF_G_ERROR"
       fi
       printf 'REJECT suite is not green:\n' >&2
-      printf '%s\n' "$notpass" | sed 's/^/  - /' >&2
+      printf '%s\n' "$notpass" | render >&2
       if [ "$lock_mode" != "per-test" ]; then
         printf '  The lock is COARSE (%s), so it names no covering test and no suite at freeze —\n' \
           "$(jq -r '.mode_reason // "reason not recorded"' "$lock")" >&2
@@ -330,7 +511,6 @@ fi
 # nothing to learn from it.
 recheck_ok=1
 recheck_why="needs git and python3"
-scratch=""
 covering_n="$(jq -r '(.covering // []) | length' "$lock")"
 if [ "${covering_n:-0}" -eq 0 ]; then
   recheck_ok=0
@@ -340,92 +520,35 @@ if [ "${covering_n:-0}" -eq 0 ]; then
 elif [ ! -e "$root/.git" ] || ! aif_g_have python3; then
   recheck_ok=0
 else
-  scratch="$(mktemp -d "${TMPDIR:-/tmp}/aif-green-XXXXXX")"
-  cp -R "$root/." "$scratch/" 2>/dev/null || true
-
-  # change files: back to frozen content. create files: remove them.
-  #
-  # From the commit the worker recorded at dispatch, not from the index. The
-  # implement station has Bash, and after one `git commit` from it the index
-  # already held the implementation: the checkout was a no-op, every covering
-  # test stayed green, and this gate told the station its tests were worthless
-  # when what had happened was that it committed (docs/DEFECTS-3.md #8).
-  base="$(aif_g_dispatch_base "$work" "$root")"
-  jq -r '.impl_frozen | to_entries[] | .key' "$lock" | while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    # The frozen content is not stored, only its hash — so revert by checking
-    # out the baseline's version, and prove it below against that hash.
-    git -C "$scratch" checkout -q "$base" -- "$rel" 2>/dev/null || true
-  done
-  jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    rm -f "$scratch/$rel"
-  done
-
-  # The revert is proven, file by file, against the hashes verify-red froze. A
-  # revert that did not happen used to be indistinguishable from tests that
-  # assert nothing; now it is named for what it is, and it is a 3, because no
-  # retry of the implementation changes what the baseline holds.
-  tab="$(printf '\t')"
-  not_restored=""
-  while IFS="$tab" read -r rel want; do
-    [ -n "$rel" ] || continue
-    [ "$(aif_g_sha256 "$scratch/$rel")" = "$want" ] || not_restored="$not_restored
-$rel"
-  done <<EOF
-$(jq -r '.impl_frozen | to_entries[] | [.key, .value] | @tsv' "$lock")
-EOF
-  not_restored="$(printf '%s' "${not_restored# }" | grep -v '^$' || true)"
-  if [ -n "$not_restored" ]; then
-    rm -rf "$scratch"
-    printf 'ERROR  the revert-recheck could not restore the frozen implementation from %s:\n' \
-      "$(printf '%s' "$base" | cut -c1-10)" >&2
-    printf '%s\n' "$not_restored" | sed 's/^/  - /' >&2
-    printf '  At that commit the file does not match its hash in tests.lock.json. When a gate\n' >&2
-    printf '  is run by hand there is no dispatch baseline, only HEAD — and if the station\n' >&2
-    printf '  committed its work, HEAD already holds the change being reverted.\n' >&2
-    exit "$AIF_G_ERROR"
-  fi
-
-  # The scratch is a copy of the tree AFTER the green run, so it carries that
-  # run's report. If the reverted run fails to produce one, that stale file is
-  # what gets parsed — every covering test reads as "pass", and the gate rejects
-  # a correct implementation for tests that "do not depend on" it.
-  rm -f "$scratch/$report_path"
-  (cd "$scratch" && eval "$test_cmd") >"$scratch/.out" 2>&1 || true
-  if [ -f "$scratch/$report_path" ]; then
-    reverted="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"
-    # Every covering test must now be failing. One that stays green did not
-    # depend on the implementation.
-    still_green=""
-    while IFS= read -r tid; do
-      [ -n "$tid" ] || continue
-      st="$(printf '%s' "$reverted" | jq -r --arg i "$tid" '[ .[] | select(.id==$i) | .status ] | .[0] // ""' 2>/dev/null)"
-      [ "$st" = "pass" ] && still_green="$still_green
-$tid stays green with the implementation reverted — it does not test the behaviour"
-    done <<EOF
-$(jq -r '.covering[]?' "$lock")
-EOF
-    if [ -n "$still_green" ]; then
-      rm -rf "$scratch" "$work/.suite.out"
-      printf 'REJECT the tests do not depend on the implementation:\n' >&2
-      printf '%s\n' "${still_green# }" | sed 's/^/  - /' >&2
-      exit "$AIF_G_REJECT"
-    fi
-  else
+  reverted_suite
+  if [ -z "$reverted" ]; then
     # The green run above wrote a report and this one did not, on the same
     # tree minus the implementation. Whatever stopped it, the one proof this
     # gate exists to produce — that the covering tests fail without the code —
     # was not produced, and a pass with a caveat is the wrong answer to that.
-    rm -rf "$scratch"
-    printf 'ERROR  the revert-recheck did not run — the reverted suite wrote no report at %s:\n' "$report_path" >&2
-    tail -8 "$scratch/.out" 2>/dev/null | sed 's/^/      /' >&2
+    printf 'ERROR  the revert-recheck did not run — %s:\n' "$reverted_why" >&2
+    tail -8 "$gtmp/reverted.out" 2>/dev/null | sed 's/^/      /' >&2
     printf '  Nothing established that the covering tests depend on the implementation.\n' >&2
     exit "$AIF_G_ERROR"
   fi
+  # Every covering test must now be failing. One that stays green did not
+  # depend on the implementation.
+  still_green=""
+  while IFS= read -r tid; do
+    [ -n "$tid" ] || continue
+    st="$(printf '%s' "$reverted" | jq -r --arg i "$tid" '[ .[] | select(.id==$i) | .status ] | .[0] // ""' 2>/dev/null)"
+    [ "$st" = "pass" ] && still_green="$still_green
+$tid stays green with the implementation reverted — it does not test the behaviour"
+  done <<EOF
+$(jq -r '.covering[]?' "$lock")
+EOF
+  if [ -n "$still_green" ]; then
+    printf 'REJECT the tests do not depend on the implementation:\n' >&2
+    printf '%s\n' "${still_green# }" | render >&2
+    exit "$AIF_G_REJECT"
+  fi
 fi
 
-[ -z "$scratch" ] || rm -rf "$scratch"
 rm -f "$work/.suite.out"
 
 # --- the rest of the Definition of Done ------------------------------------
@@ -435,9 +558,58 @@ rm -f "$work/.suite.out"
 # up in scope's diff as an implementation editing the pipeline's own machinery,
 # and scope would reject a correct implementation for the bookkeeping of the gate
 # that admitted it. `aif _gate` folds the record into the ledger afterwards.
-mkdir -p "$root/.aif/tmp"
-check_viol="$(aif_g_checks_run "$project" "$root" "green" "$root/.aif/tmp/checks-green.json")"
-aif_g_report "$check_viol" "checks"
+#
+# A failing check is attributed the way a failing pre-existing test is. If its
+# failure names a frozen test file, the same check runs once more in the tree
+# without the implementation, and when every line of it recurs there the
+# implementation added none of it — the error is in the oracle, which the
+# implement station may not edit. That is a stop, not a retry: on a live ticket
+# a mock typed `Mock<Category, []>` against a field declared
+# `Mock<Category | null, [string]>` failed the project's typecheck inside a
+# frozen test, and three attempts at the implementation could not touch it
+# (docs/DEFECTS-6.md #2). A line that appears only with the implementation is
+# the implementation's to fix — a signature a test calls in a way the new code
+# does not accept — and that stays a rejection, with the check's own words.
+mkdir -p "$root/.aif/tmp" "$gtmp/checks"
+check_viol="$(aif_g_checks_run "$project" "$root" "green" "$root/.aif/tmp/checks-green.json" "" "$gtmp/checks")"
+if [ -n "$check_viol" ]; then
+  unreached=""
+  if [ -f "$gtmp/checks/failed.tsv" ] && [ -e "$root/.git" ]; then
+    jq -r '.tests | keys[]' "$lock" >"$gtmp/checks/frozen.txt"
+    while IFS="$tab" read -r idx name; do
+      [ -n "$idx" ] || continue
+      # Compared normalised — root spellings, colour, CRs — and shown as the
+      # tool printed them.
+      named="$(aif_g_located "$gtmp/checks/$idx.out" "$gtmp/checks/frozen.txt")"
+      [ -n "$named" ] || continue
+      aif_g_lines "$gtmp/checks/$idx.out" "$root" >"$gtmp/checks/$idx.here"
+      cmd="$(jq -r --arg n "$name" '[ .checks[]? | select(.name == $n) | .command ] | .[0] // empty' "$project")"
+      [ -n "$cmd" ] || continue
+      revert_tree
+      (cd "$scratch" && eval "$cmd") </dev/null >"$gtmp/checks/$idx.rev" 2>&1 || true
+      aif_g_lines "$gtmp/checks/$idx.rev" "$scratch" >"$gtmp/checks/$idx.there"
+      added="$(awk 'NR == FNR { seen[$0] = 1; next } !seen[$0]' \
+        "$gtmp/checks/$idx.there" "$gtmp/checks/$idx.here")"
+      [ -z "$added" ] || continue
+      unreached="$unreached
+check \"$name\" fails in frozen test files, and every line of the failure recurs with the implementation reverted:
+$(printf '%s\n' "$named" | sed -n '1,12p' | cut -c1-240 | sed 's/^/    /')"
+    done <"$gtmp/checks/failed.tsv"
+  fi
+  if [ -n "$unreached" ]; then
+    printf 'ERROR  a check fails in the frozen tests, not in the implementation — the run stops instead of retrying:\n' >&2
+    printf '%s\n' "$unreached" | render >&2
+    printf '  None of it comes from the implementation: the same lines are printed without it,\n' >&2
+    printf '  and they name files the freeze holds, which the implement station may not edit.\n' >&2
+    printf '  The tests have to change. A check bound to "red" with legitimate_at_red would have\n' >&2
+    printf '  sent this back to the tests station before the freeze.\n' >&2
+    other="$(printf '%s\n' "$check_viol" | grep -c '^[^[:space:]]' || true)"
+    [ "${other:-0}" -le 1 ] ||
+      printf '  (%s check(s) failed in all; each is in the ledger by name.)\n' "$other" >&2
+    exit "$AIF_G_ERROR"
+  fi
+  aif_g_report "$check_viol" "checks"
+fi
 
 checks_ran="$(jq 'length' "$root/.aif/tmp/checks-green.json" 2>/dev/null || echo 0)"
 

@@ -169,7 +169,17 @@ aif_project_validate() {
             end),
           (if ($c.required | type) != "boolean"
             then "checks[" + ($i|tostring) + "].required must be true or false"
-            else empty end)
+            else empty end),
+          # legitimate_at_red — optional: the failures of a red-phase check
+          # that a missing implementation causes (tsc: TS2307, TS2305). Present,
+          # it has to be read by something, and only the red phase reads it.
+          (if ($c | has("legitimate_at_red")) | not then empty
+           elif ($c.legitimate_at_red | type) != "array"
+             or ($c.legitimate_at_red | map(type == "string" and length > 0) | all | not)
+             then "checks[" + ($i|tostring) + "].legitimate_at_red must be an array of non-empty patterns"
+           elif (($c.phase // []) | index("red")) == null
+             then "checks[" + ($i|tostring) + "].legitimate_at_red is set, but the check is not bound to \"red\" — only the red phase reads it"
+           else empty end)
         )
       ),
       ( (if (.checks // []) | type == "array" then [(.checks // [])[].name] else [] end)

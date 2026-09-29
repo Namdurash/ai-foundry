@@ -36,6 +36,20 @@ AIF_TASKS_DIR="tasks"
 # shellcheck disable=SC2034
 AIF_WORK_WORKTREES=".aif/worktrees"
 
+# Dependency manifests and their lockfiles, as path patterns: a checkout whose
+# station changed one of these no longer has the dependencies "prepare"
+# installed, and the worker installs them again from the lock before any gate
+# reads a suite that runs against them (lib/cmd_work.sh).
+#
+# Copies of AIF_G_MANIFESTS and AIF_G_LOCKFILES in the gates' _lib.sh — which
+# is where the policy they carry is written down. The gates cannot source lib/
+# and lib/ does not reach into an installed set, so the two are kept equal by
+# scripts/check-work.sh instead.
+# shellcheck disable=SC2034
+AIF_DEP_MANIFESTS='(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$'
+# shellcheck disable=SC2034
+AIF_DEP_LOCKFILES='(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|go\.sum)$'
+
 # Where the product partner's requests live, relative to the project root.
 #
 # Parallel to tasks/, and deliberately not inside it: a request is what a

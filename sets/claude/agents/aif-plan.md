@@ -85,6 +85,15 @@ Checked mechanically. Satisfy them the first time.
   you write them.
 - **Tests are disjoint** from create and change — the test station and the
   implement station are separate on purpose.
+- **A dependency manifest comes with its lockfile.** If the implementation
+  adds or changes a dependency, `files.change` names the manifest
+  (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) AND the lockfile
+  that pins it — the nearest one at or above it (`package-lock.json`,
+  `yarn.lock`, `poetry.lock`…). Naming the manifest for any other reason (a
+  script, a tool's config) needs the lockfile named too; naming it only
+  permits a change. A lockfile named without its manifest is refused. The
+  implementer installs through the package manager, and the worker reinstalls
+  from the lockfile before the gates read the suite.
 - **Cover every criterion.** `ac_coverage` maps every AC id from the ticket to at
   least one file in create or change. This is how the plan proves the reasoning
   reached the implementer: an uncovered criterion is a gap the implementer would

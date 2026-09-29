@@ -14,7 +14,8 @@
 # checkable without re-running a gate that can no longer be re-run.
 #
 # Exit: 0 all gates pass · 1 an artifact was rejected · 3 a gate could not render
-# a verdict (the environment, not the artifact).
+# a verdict on this station's work (the environment, or an artifact the station
+# may not touch — the gate's own words say which).
 #
 # There used to be a fourth code: "the station changed nothing since this gate
 # last rejected it", keyed to a hash of whatever the station declared it would
@@ -118,7 +119,13 @@ aif_cmd_gate() {
 "
       _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
-      aif_err "$gate could not render a verdict — that is the environment, not the artifact:"
+      # No verdict on THIS station's work, and nothing more: a 3 is the
+      # environment, or a defect in an artifact this station may not touch —
+      # a frozen test, say. This line used to name the first of those for all
+      # of them, and it headed a report that blamed a green repository for a
+      # red its new tests had caused (docs/DEFECTS-6.md #1). The gate's own
+      # words below say which it is.
+      aif_err "$gate could not render a verdict on the $station station's work — not a rejection; the gate says why:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
       return 3
     fi

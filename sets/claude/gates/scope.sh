@@ -128,6 +128,12 @@ amend_rel="${amend_file#"$root"/}"
 ledger_rel="${work#"$root"/}/ledger.json"
 run_rel="${work#"$root"/}/run.json"
 
+# A lockfile moves only when the PLAN named it — the plan gate made sure it
+# named the manifest beside it. Not the amendments: `aif _amend-plan` refuses
+# lockfiles, and this is the line behind that refusal, because a dependency is
+# the plan's decision and not something to widen into mid-implementation.
+planned="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []))[]')"
+
 viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
@@ -136,6 +142,9 @@ while IFS= read -r p; do
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol
 $p is off-limits to any implementation (pipeline, config, or CI)"
+  elif printf '%s' "$p" | grep -qE "$AIF_G_LOCKFILES"; then
+    printf '%s\n' "$planned" | in_set "$p" || viol="$viol
+$p is a lockfile, and the plan does not name it — a lockfile changes only when the plan names it together with its manifest"
   elif under_test_root "$p"; then
     viol="$viol
 $p is a test file — the implementation must not touch tests"

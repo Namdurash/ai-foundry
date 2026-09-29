@@ -173,6 +173,9 @@ checkout that cannot run the suite is refused, not built against. The jest
 template ships `"prepare": "npm ci"`; add yours to a project set up before the
 field existed. The worker reads it from your checkout's config, not the
 branch's, so adding it after a refusal works without re-cutting the worktree.
+It runs again after any station that changes a dependency manifest or its
+lockfile, from the lockfile, before a gate reads the suite — see
+[Dependencies](#dependencies-the-manifest-and-its-lockfile-together).
 
 `aif work` is the entry point for anything other than your default provider.
 Routing is applied by exporting into the child process, so **a bare `claude` in
@@ -529,6 +532,23 @@ environment. `verify-red`: a real failing test is
 `0`; a `SyntaxError` test is `3` (not a usable oracle); a test that already passes
 is `1`.
 
+A `3` is not always the environment, and the gates say which it is rather than
+assuming. **`verify-red`** stops on a pre-existing test that is red *before*
+this ticket's test files exist — measured once more, only on that path, in a
+copy of the tree the tests station started from, and named. One the new files
+turned red is a different thing: a whole-tree `tsc` inside the suite, say,
+failing on a red-first import of a module the plan has not created yet. That is
+admitted, recorded in the lock as `red_with_tests`, printed on the pass path,
+and left for `green`, which requires the whole suite. **`green`**, for every
+failure it cannot pin on the implementation, runs the same thing again with the
+implementation reverted: a pre-existing test that passed at the freeze and
+fails there too moved outside the tracked tree — installed dependencies, most
+often; one red since the test files landed that fails the same way without the
+code is their interaction with the suite; a check that fails in a frozen test
+file, every line of it recurring without the code, is the oracle's. Each is a
+`3`, and the run stops at the first attempt rather than the third: no edit to
+the manifest's files can clear it.
+
 ### What "done" means here, beyond the tests
 
 `green` used to read exactly one thing to decide whether a station passed:
@@ -560,7 +580,32 @@ failure and a broken one.
 `green` runs every check bound to its phase, fails the station if a required one
 does, and each result lands in the ledger by name — so a failure is attributable
 to `typecheck` rather than to "the implement station". `test.command` keeps
-working unchanged.
+working unchanged. The complaint a station gets back is the check's own
+**first** lines, file and line included. It used to be the last one, and for
+`tsc` that is often `Source has 0 element(s) but target requires 1.` — no file,
+no line, and three attempts spent not finding it.
+
+**A type-check can read the tests at `red` too, once the project says what a
+missing implementation looks like.** A whole-tree `tsc` fails at red on every
+import of a module the plan has not created — red by design. With
+`legitimate_at_red` those failures are let through, and the test files are held
+to everything else:
+
+```json
+{ "name": "typecheck", "command": "npx tsc --noEmit", "phase": ["red", "green"],
+  "required": true, "legitimate_at_red": ["error TS2307", "error TS2305", "error TS2724"] }
+```
+
+At red, a line of its output that names one of this ticket's declared test
+files and matches none of the patterns rejects the tests, and the tests station
+gets the line back while it can still fix it. That is the moment for a mock
+typed `Mock<Category, []>` against a field declared `Mock<Category | null,
+[string]>`: jest runs it happily — babel strips types — and after the freeze
+nobody may edit it. A red check that fails without naming any test file stops
+the run: the repository fails it already, or it prints paths that are not
+relative to the project root. A red-first test that calls a signature the plan
+changes in an existing file fails with other codes (`TS2554`, `TS2339`); add
+them if your tickets do that, knowing the tests are then held to less.
 
 ### The test freeze, and what it actually holds
 
@@ -792,12 +837,38 @@ neighbouring module, a handler only takes effect once registered somewhere.
   the plan would invalidate `tests.lock.json`, which binds to the plan's bytes, so
   `green` would then reject the implementation the amendment existed to permit.
 
-The hatch is bounded rather than trusted: it refuses test files and pipeline
-paths, it refuses a file that does not exist, it is capped
+The hatch is bounded rather than trusted: it refuses test files, pipeline
+paths and lockfiles, it refuses a file that does not exist, it is capped
 (`limits.plan_amendments_max`, default 3), every entry carries a reason, and
 `scope` prints the amendments on its *pass* path — a widened manifest nobody sees
 is the same as no manifest. Past the cap the honest answer is that the plan was
 wrong, and the ticket goes back to planning.
+
+### Dependencies: the manifest and its lockfile, together
+
+A dependency used to have half a door. The lockfiles were refused outright,
+until a sanctioned route for dependency changes was decided; the manifests were
+not, so a plan could name `package.json` and nothing else. On a live ticket that
+is exactly what happened: a station installed a native package without the
+lockfile, npm re-resolved packages nobody had asked to move into an
+incompatible pair, and twelve pre-existing tests went red where no edit to the
+manifest's files could reach them — three implement attempts, all rejected for
+them. The route now runs through four places:
+
+- **the plan gate** requires the lockfile whenever the plan names a manifest —
+  the nearest one at or above it: `package.json` → `package-lock.json`,
+  `npm-shrinkwrap.json`, `yarn.lock` or `pnpm-lock.yaml`; `pyproject.toml` →
+  `poetry.lock` or `uv.lock`; `Cargo.toml` → `Cargo.lock`; `go.mod` → `go.sum` —
+  and refuses a lockfile named without its manifest;
+- **`scope`** lets a lockfile move only when the plan names it, and
+  `aif _amend-plan` refuses lockfiles: a new dependency is the plan's decision;
+- **the worker** runs `prepare` again, from the lockfile, after any station that
+  changed a manifest or a lockfile, before any gate reads the suite. `npm ci`
+  refuses a manifest the lockfile does not match, so a package installed around
+  the lock comes back to the station as a rejection in npm's own words;
+- **`green`**, when a pre-existing test fails, runs it again with the
+  implementation reverted: one that passed at the freeze and still fails there
+  moved outside the tracked tree, and the run stops instead of retrying.
 
 ### What each station cost
 

@@ -126,6 +126,23 @@ _aif_doctor_project() {
   [ "$missing" -eq 0 ] && printf '  %s %-14s all skill agent targets exist\n' "$(aif_ok)" "skill targets"
 }
 
+# _aif_doctor_unroot <root> — stdin with every spelling of <root> taken out, as
+# literal text (a path is not a regex). What remains of a path under the root
+# is relative to it.
+_aif_doctor_unroot() {
+  local r1="$1" r2
+  r2="$(cd "$r1" 2>/dev/null && pwd -P)" || r2="$r1"
+  AIF_D_R1="$r1" AIF_D_R2="$r2" awk '
+    function cut(s, from,   out, i) {
+      if (from == "") return s
+      out = ""
+      while ((i = index(s, from)) > 0) { out = out substr(s, 1, i - 1); s = substr(s, i + length(from)) }
+      return out s
+    }
+    BEGIN { a = ENVIRON["AIF_D_R1"]; b = ENVIRON["AIF_D_R2"]; if (length(b) > length(a)) { t = a; a = b; b = t } }
+    { print cut(cut($0, a), b) }'
+}
+
 # aif_doctor_probe <root> — does this project's test toolchain actually work?
 #
 # The other checks read; this one RUNS the project's test command. That is the
@@ -206,8 +223,15 @@ aif_doctor_probe() {
   # buffer, and a grep that leaves at the first match hands printf SIGPIPE —
   # which `pipefail` turns into "not found" for exactly the suites large enough
   # to matter (docs/DEFECTS-5.md #3). Without -q grep reads to the end.
-  if printf '%s' "$out" | grep "$AIF_WORK_WORKTREES/" >/dev/null ||
-    grep -q "$AIF_WORK_WORKTREES/" "$root/$report_path" 2>/dev/null; then
+  #
+  # The probed root's own path is taken out first. The worker probes INSIDE a
+  # worktree, whose every absolute path runs through .aif/worktrees/ — so a
+  # red test whose stack trace names its own file read as "this runner
+  # collects the worker's checkouts", and the run was refused for a collision
+  # that was not there (docs/DEFECTS-6.md #5).
+  if printf '%s' "$out" | _aif_doctor_unroot "$root" | grep "$AIF_WORK_WORKTREES/" >/dev/null ||
+    { [ -f "$root/$report_path" ] &&
+      _aif_doctor_unroot "$root" <"$root/$report_path" | grep "$AIF_WORK_WORKTREES/" >/dev/null; }; then
     printf '  %s %-14s it collects %s%s/%s too — the worker'"'"'s own checkouts\n' \
       "$(aif_no)" "test scope" "$AIF_C_YELLOW" "$AIF_WORK_WORKTREES" "$AIF_C_RESET"
     printf '       %severy suite is then counted twice, once from a copy on another branch,\n' "$AIF_C_DIM"

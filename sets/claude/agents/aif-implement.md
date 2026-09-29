@@ -62,6 +62,16 @@ that it can be.
 - **Follow the plan's decisions.** If the plan says to enforce uniqueness with a
   database index, do that, not an application-level check. The reasoning was done
   upstream; re-deciding it here is how the pipeline drifts.
+- **Dependencies move with their lockfile, through the package manager.** Only
+  when the plan names a manifest (`package.json`) and its lockfile
+  (`package-lock.json`) may you add or change a dependency, and then only with
+  the package manager itself — `npm install <package>` — so the lockfile records
+  what the manifest asks for. Never around it: no `--no-save`, no
+  `--no-package-lock`, no hand edit of the manifest's dependencies, nothing
+  written into `node_modules`. After you, the worker installs from the lockfile
+  as CI will (`prepare`), and a manifest the lockfile does not match comes back
+  as a rejection. If the plan names no lockfile and you need a dependency, stop
+  and say so — that is the plan's decision, not yours.
 
 ## If you cannot
 

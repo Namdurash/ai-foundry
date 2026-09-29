@@ -173,10 +173,56 @@ while IFS= read -r p; do
   [ -n "$p" ] || continue
   if printf '%s' "$p" | grep -qE "$AIF_G_DENYLIST"; then
     fs="$fs
-the manifest names \"$p\", which no implementation may touch (pipeline, config, CI, or a dependency lockfile) — scope would reject the work this plan orders; plan around it"
+the manifest names \"$p\", which no implementation may touch (pipeline, config or CI) — scope would reject the work this plan orders; plan around it"
   fi
 done <<EOF
 $(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.tests // []))[]? // empty')
+EOF
+
+# --- a dependency manifest and its lockfile, together -----------------------
+#
+# Both directions, because both are how a dependency gets in crooked. A
+# manifest without its lockfile is what happened: the plan named package.json,
+# the station installed a package, the lock stayed as it was, and what landed
+# in node_modules was whatever npm resolved that afternoon — an incompatible
+# pair, twelve pre-existing tests red, three implement attempts at something
+# none of them could reach (docs/DEFECTS-6.md #3). A lockfile without its
+# manifest is a dependency moved by hand, with nothing saying why.
+impl_paths="$(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []))[]? // empty')"
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if printf '%s' "$p" | grep -qE "$AIF_G_MANIFESTS"; then
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      printf '%s\n' "$impl_paths" | grep -xF -- "$l" >/dev/null || fs="$fs
+the manifest names \"$p\" but not \"$l\", its lockfile — a dependency manifest and its lockfile change together, so the worker can install from the lock after the station; add \"$l\" to files.change"
+    done <<EOF2
+$(aif_g_lockfiles_for "$root" "$p")
+EOF2
+  fi
+  if printf '%s' "$p" | grep -qE "$AIF_G_LOCKFILES"; then
+    paired=1
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      printf '%s' "$m" | grep -qE "$AIF_G_MANIFESTS" || continue
+      ! aif_g_locks "$p" "$m" || paired=0
+    done <<EOF2
+$impl_paths
+EOF2
+    [ "$paired" -eq 0 ] || fs="$fs
+the manifest names \"$p\", a lockfile, and no manifest it pins — a lockfile changes only with its manifest; name the manifest too, or leave both alone"
+  fi
+done <<EOF
+$impl_paths
+EOF
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if printf '%s' "$p" | grep -qE "$AIF_G_LOCKFILES|$AIF_G_MANIFESTS"; then
+    fs="$fs
+files.tests names \"$p\", a dependency manifest or lockfile — it is not a test, and the tests station may not move dependencies"
+  fi
+done <<EOF
+$(printf '%s' "$meta" | jq -r '(.files.tests // [])[]? // empty')
 EOF
 
 # --- the repository as it actually is ---------------------------------------

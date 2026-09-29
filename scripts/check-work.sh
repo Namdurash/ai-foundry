@@ -29,6 +29,19 @@
 #  19  land: the yes after review — merge, suite on the result, Done, the
 #      worktree and branch gone, the ticket that depended on it released; a
 #      red suite or a conflict undoes the merge and posts why
+#  20  verify-red measures a failing pre-existing test against the tree the
+#      tests station started from: red there is the repo's (a stop, named);
+#      green there is the new tests' interaction (admitted, recorded, and
+#      green stops if the implementation does not reach it)
+#  21  a check's complaint carries its first lines; at red, legitimate_at_red
+#      sends a mistyped test back before the freeze; at green, a failure in a
+#      frozen test that recurs without the implementation stops the run
+#  22  a pre-existing test broken outside the tracked tree stops the run
+#      instead of being retried against the implementation
+#  23  a dependency manifest and its lockfile are planned together, scope lets
+#      only a planned lockfile move, and no amendment reaches one
+#  24  a station that moves the dependencies has them installed again from
+#      the lock, and one that went around the lock is sent back
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -123,7 +136,9 @@ row() { # <id> <file> <green?>
   if [ "$3" = 1 ]; then
     printf '<testcase classname="%s" name="%s"/>' "$(cn "$2")" "$1"
   else
-    printf '<testcase classname="%s" name="%s"><failure message="assert marker missing">AssertionError: assert marker missing</failure></testcase>' "$(cn "$2")" "$1"
+    # With the stack line a real runner prints: an absolute path, which is the
+    # copy's path when a gate runs the suite in a copy of the tree.
+    printf '<testcase classname="%s" name="%s"><failure message="assert marker missing">AssertionError: assert marker missing\n    at %s/%s:1</failure></testcase>' "$(cn "$2")" "$1" "$PWD" "$2"
   fi
 }
 body="$(row t0 tests/t0.py 1)<testcase classname=\"tests.t9\" name=\"t9\"><skipped message=\"not on this platform\"/></testcase>"
@@ -153,6 +168,14 @@ SUITE
 # FAKE_STALL makes every implement attempt identical and wrong, FAKE_COMMIT
 # has the implement station commit its own work (a station with Bash can),
 # FAKE_ZERO_COST reports total_cost_usd 0 the way subscription auth does.
+# The misbehaviours of docs/DEFECTS-6.md: FAKE_TYPEBUG (every attempt) and
+# FAKE_TESTS_TYPEBUG_FIRST put a mistyped mock in each test, FAKE_IMPL_BADTYPE_FIRST
+# a type error in the first implementation, FAKE_DRIFT has the implement
+# station change an installed dependency nobody tracks, and FAKE_DEPS has the
+# plan name package.json and its lockfile, the first implement attempt add a
+# dependency around the lock and the retry through it. Each dispatch's prompt
+# is kept as .aif/tmp/fake-prompt-<station>-<n>, so a scenario can read what a
+# retry was told.
 cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 #!/bin/bash
 set -u
@@ -161,6 +184,7 @@ work="$wt/tasks/$ticket"
 count_file="$wt/.aif/tmp/fake-$station.count"
 mkdir -p "$wt/.aif/tmp"
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); printf '%s' "$n" >"$count_file"
+printf '%s' "$prompt" >"$wt/.aif/tmp/fake-prompt-$station-$n"
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
@@ -175,6 +199,7 @@ tests_json="$(printf '%s\n' "$nums" | jq -R 'select(length>0) | "tests/t" + . + 
 case "$station" in
   plan)
     change='["src/app.py"]'
+    [ "${FAKE_DEPS:-0}" = 1 ] && change='["src/app.py", "package.json", "package-lock.json"]'
     if [ "${FAKE_PLAN_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then change='["src/nowhere.py"]'; fi
     cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" \
       'map({ key: ., value: $c }) | from_entries')"
@@ -205,7 +230,11 @@ PLAN
         # gate passes `--`, and without it this scenario fails outright.
         exp="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' |
           jq -r --arg id "AC-00$i" '.acceptance[] | select(.id==$id) | .expect')"
-        printf '# AC-00%s asserts impl%s — expects %s\n' "$i" "$i" "$exp" >"$wt/tests/t$i.py"
+        typebug=""
+        if [ "${FAKE_TYPEBUG:-0}" = 1 ] || { [ "${FAKE_TESTS_TYPEBUG_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; }; then
+          typebug=" TYPEBUG"
+        fi
+        printf '# AC-00%s asserts impl%s — expects %s%s\n' "$i" "$i" "$exp" "$typebug" >"$wt/tests/t$i.py"
       fi
     done
     ;;
@@ -215,7 +244,15 @@ PLAN
     else
       body=""
       for i in $nums; do [ -n "$i" ] && body="$body impl$i"; done
+      [ "${FAKE_IMPL_BADTYPE_FIRST:-0}" = 1 ] && [ "$retry" = 0 ] && body="$body BADTYPE"
       printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
+    fi
+    if [ "${FAKE_DRIFT:-0}" = 1 ]; then
+      mkdir -p "$wt/deps" && : >"$wt/deps/drift"
+    fi
+    if [ "${FAKE_DEPS:-0}" = 1 ]; then
+      printf '{ "dependencies": { "dep-a": "1", "dep-new": "2" } }\n' >"$wt/package.json"
+      [ "$retry" = 0 ] || cp "$wt/package.json" "$wt/package-lock.json"
     fi
     if [ "${FAKE_COMMIT:-0}" = 1 ]; then
       git -C "$wt" add src >/dev/null 2>&1
@@ -877,6 +914,364 @@ eq "the merge was aborted" "$(git rev-parse HEAD)" "$head_before"
 eq "no merge in progress" "$([ -f .git/MERGE_HEAD ] && echo yes || echo no)" "no"
 eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
 eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c 'does not merge cleanly')" "1"
+
+
+# ====== 20. verify-red measures a pre-existing failure against a baseline =====
+#
+# verify-red runs the suite after the tests station has written its files, and
+# for one release it read every failure outside them as "the pre-existing suite
+# is not green — fix the repo". On a live project the failure was a jest test
+# that runs tsc over the whole tree, and what turned it red was a new test
+# importing a module the plan had not created yet — as a red-first test in a
+# typed project must. Two tickets in a row stopped there on false advice
+# (docs/DEFECTS-6.md #1). The stub below makes the pre-existing t0 fail under a
+# condition each case sets.
+#
+# t0_red_when <shell condition> — the pre-existing t0 fails whenever it holds.
+t0_red_when() {
+  local tmp
+  tmp="$(mktemp)"
+  awk -v cond="$1" '
+    /^body="\$\(row t0 tests\/t0.py 1\)/ {
+      print "g0=1; if " cond "; then g0=0; fi"
+      sub(/row t0 tests\/t0.py 1/, "row t0 tests/t0.py \"$g0\"")
+    }
+    { print }' .aif/suite.sh >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+}
+printf '\n20. a pre-existing test the new test files turn red is told apart from a red repo\n'
+fresh_project "$SANDBOX/p20"
+t0_red_when '[ -f tests/t1.py ] && ! grep -q impl1 src/app.py 2>/dev/null'
+ticket_for AIF-20
+git add -A && git commit -qm "ticket 20" >/dev/null
+rc=0
+"$AIF" work AIF-20 --no-worktree >"$OUT/run20.out" 2>&1 || rc=$?
+eq "red only with the new tests, cleared by the implementation: built" "$rc" "0"
+eq "verify-red admitted it, and says so on the line the ledger keeps" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-20/ledger.json |
+     grep -c '1 pre-existing test(s) red only with them')" "1"
+eq "the lock names it" "$(jq -c '.red_with_tests' tasks/AIF-20/tests.lock.json)" '["tests.t0::t0"]'
+eq "and green passed once the code existed" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-20/ledger.json)" "pass"
+
+# A repository already red: still a stop — but naming the test, and saying it
+# was measured without this ticket's files. In a worktree, as the worker runs
+# by default: every absolute path there runs through .aif/worktrees/, and the
+# probe used to read the red test's own stack trace as the runner collecting
+# the worker's checkouts, and refuse the run.
+fresh_project "$SANDBOX/p20b"
+t0_red_when 'true'
+ticket_for AIF-20
+git add -A && git commit -qm "ticket 20b" >/dev/null
+rc=0
+"$AIF" work AIF-20 >"$OUT/run20b.out" 2>&1 || rc=$?
+w20=.aif/worktrees/AIF-20/tasks/AIF-20
+eq "red before the new tests existed: stopped" "$rc" "1"
+eq "…and not refused as a runner collecting the worker's checkouts" \
+  "$(grep -c 'it collects .aif/worktrees/ too' "$OUT/run20b.out")" "0"
+eq "verify-red could not render a verdict" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' "$w20/ledger.json")" "error"
+eq "and it names the test, on the line the ledger keeps" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' "$w20/ledger.json" |
+     grep -c 'red without this ticket.s test files too (1 failing: tests.t0::t0)')" "1"
+eq "nothing was frozen" "$(test -f "$w20/tests.lock.json" && echo yes || echo no)" "no"
+
+# Red with the new tests and NOT cleared by the implementation — a test that
+# the new files break whatever the code does. Admitted at the freeze; green
+# measures it without the implementation, finds it failing the same way, and
+# stops instead of retrying the implement station against it.
+fresh_project "$SANDBOX/p20c"
+t0_red_when '[ -f tests/t1.py ]'
+ticket_for AIF-20
+git add -A && git commit -qm "ticket 20c" >/dev/null
+rc=0
+"$AIF" work AIF-20 --no-worktree >"$OUT/run20c.out" 2>&1 || rc=$?
+eq "red with the tests, out of the implementation's reach: stopped" "$rc" "1"
+eq "verify-red admitted it" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-20/ledger.json)" "pass"
+eq "green could not render a verdict on the implementation" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-20/ledger.json)" "error"
+eq "and said it is out of the implementation's reach" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-20/ledger.json |
+     grep -c 'out of the implementation.s reach')" "1"
+eq "implement was dispatched once, not attempts_max times" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-20/ledger.json)" "1"
+eq "the report says the new tests break it, and not to reinstall" \
+  "$(grep -c 'the new tests' tasks/AIF-20/report.md),$(grep -c 'Run "prepare"' tasks/AIF-20/report.md)" "1,0"
+eq "and its first line no longer blames the environment" \
+  "$(grep -c 'that is the environment, not the artifact' tasks/AIF-20/report.md)" "0"
+
+# ====== 21. a check's failure carries its location, and is attributed ========
+#
+# The project's typecheck is a check, and a check's complaint used to be its
+# LAST line: for tsc, "Source has 0 element(s) but target requires 1." — no
+# file, no line. And a type error inside a frozen test file sent the implement
+# station round three times at something it may not edit (docs/DEFECTS-6.md
+# #2). The stand-in for tsc below prints one located line per problem: a
+# missing module for every new test whose implementation is absent, a mistyped
+# mock in a test marked TYPEBUG, a bad argument in code marked BADTYPE.
+typed() { # <dir> <checks json>
+  fresh_project "$1"
+  cat >.aif/typecheck.sh <<'TSC'
+#!/bin/bash
+out=""
+add() { out="$out$1
+"; }
+for f in tests/t[1-8].py; do
+  [ -f "$f" ] || continue
+  n="${f#tests/t}"
+  n="${n%.py}"
+  grep -q "impl$n" src/app.py 2>/dev/null ||
+    add "$f(1,1): error TS2307: Cannot find module '../src/impl$n' or its corresponding type declarations."
+  if grep -q TYPEBUG "$f"; then
+    # Absolute, the way eslint prints paths — and the gates run it in copies.
+    add "$PWD/$f(2,5): error TS2322: Type 'Mock<Category, []>' is not assignable to type 'Mock<Category | null, [string]>'."
+    add "  Types of parameters 'args' and 'args' are incompatible."
+    add "    Source has 0 element(s) but target requires 1."
+  fi
+done
+if grep -q BADTYPE src/app.py 2>/dev/null; then
+  add "src/app.py(2,12): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'."
+fi
+[ -n "$out" ] || exit 0
+printf '%s' "$out"
+exit 2
+TSC
+  chmod +x .aif/typecheck.sh
+  local tmp
+  tmp="$(mktemp)"
+  jq --argjson c "$2" '.checks = $c' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+  git add -A && git commit -qm "a typecheck" >/dev/null
+}
+printf '\n21. a check says where it failed, and a failure in the frozen tests stops the run\n'
+
+# At red, with legitimate_at_red: the missing modules are let through, and the
+# mistyped mock is sent back to the tests station — before the freeze, while
+# it can still be fixed.
+typed "$SANDBOX/p21" '[{ "name": "typecheck", "command": "bash .aif/typecheck.sh",
+  "phase": ["red", "green"], "required": true, "legitimate_at_red": ["error TS2307"] }]'
+eq "legitimate_at_red validates" "$("$AIF" project check >/dev/null 2>&1; echo $?)" "0"
+ticket_for AIF-21
+git add -A && git commit -qm "ticket 21" >/dev/null
+rc=0
+FAKE_TESTS_TYPEBUG_FIRST=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21.out" 2>&1 || rc=$?
+eq "a mistyped test is sent back before the freeze, and the retry builds" "$rc" "0"
+eq "verify-red rejected it, then admitted the fix" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-21/ledger.json)" "fail,pass"
+eq "the retry was told where the error is" \
+  "$(grep -c 'tests/t1.py(2,5): error TS2322' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "…all of it, not the last line alone" \
+  "$(grep -c 'Source has 0 element(s) but target requires 1' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "…and nothing the missing implementation causes" \
+  "$(grep -c 'TS2307' .aif/tmp/fake-prompt-tests-2)" "0"
+eq "the red check that let the missing module through says so" \
+  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "red")] | last | .result' tasks/AIF-21/ledger.json)" "expected"
+eq "and the same check passed at green" \
+  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "green")] | last | .result' tasks/AIF-21/ledger.json)" "pass"
+eq "legitimate_at_red on a check not bound to red is refused" \
+  "$(jq '.checks[0].phase = ["green"]' .aif/project.json >"$OUT/bad21.json" &&
+     /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/project.sh"; aif_project_validate "$2"' \
+       _ "$ROOT" "$OUT/bad21.json" 2>&1 | grep -c 'only the red phase reads it')" "1"
+
+# A red check that fails and names none of the test files cannot be read as
+# the tests' — and read as "expected" it would be a check that never fails.
+typed "$SANDBOX/p21d" '[{ "name": "legacy", "phase": ["red"], "required": true,
+  "command": "echo \"src/legacy.py(3,1): error TS1005: ; expected.\"; exit 2",
+  "legitimate_at_red": ["error TS2307"] }]'
+ticket_for AIF-21
+git add -A && git commit -qm "ticket 21d" >/dev/null
+rc=0
+"$AIF" work AIF-21 --no-worktree >"$OUT/run21d.out" 2>&1 || rc=$?
+eq "a red check failing outside the tests: stopped" "$rc" "1"
+eq "verify-red could not render a verdict, and said where it failed" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' tasks/AIF-21/ledger.json |
+     grep -c '^error: .*fails somewhere other than this ticket.s test files')" "1"
+eq "the tests station was not sent round again for it" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-21/ledger.json)" "1"
+
+# Green only: the mistyped mock is frozen. The typecheck fails in the frozen
+# test, fails the same way without the implementation, and the run stops at
+# the first attempt instead of the third.
+typed "$SANDBOX/p21b" '[{ "name": "typecheck", "command": "bash .aif/typecheck.sh",
+  "phase": ["green"], "required": true }]'
+ticket_for AIF-21
+git add -A && git commit -qm "ticket 21b" >/dev/null
+rc=0
+FAKE_TYPEBUG=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21b.out" 2>&1 || rc=$?
+eq "a type error frozen into a test: stopped" "$rc" "1"
+eq "green could not render a verdict on the implementation" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-21/ledger.json)" "error"
+eq "…and says the failure is the frozen tests'" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-21/ledger.json |
+     grep -c 'fails in the frozen tests, not in the implementation')" "1"
+eq "implement was dispatched once, not attempts_max times" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-21/ledger.json)" "1"
+eq "the report carries the located line" \
+  "$(grep -c 'tests/t1.py(2,5): error TS2322' tasks/AIF-21/report.md)" "1"
+
+# Green only, and the type error is the implementation's own: a rejection, with
+# the check's first lines in the complaint rather than its last.
+typed "$SANDBOX/p21c" '[{ "name": "typecheck", "command": "bash .aif/typecheck.sh",
+  "phase": ["green"], "required": true }]'
+ticket_for AIF-21
+git add -A && git commit -qm "ticket 21c" >/dev/null
+rc=0
+FAKE_IMPL_BADTYPE_FIRST=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21c.out" 2>&1 || rc=$?
+eq "a type error the implementation added: rejected, retried, built" "$rc" "0"
+eq "green rejected it, then passed" \
+  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-21/ledger.json)" "fail,pass"
+eq "the retry was told the file and the line" \
+  "$(grep -c 'src/app.py(2,12): error TS2345' .aif/tmp/fake-prompt-implement-2)" "1"
+
+# ====== 22. a pre-existing test broken outside the tree stops the run ========
+#
+# A station installed a package around the lockfile and node_modules drifted:
+# twelve pre-existing tests red, and green blamed the implementation for them
+# three times (docs/DEFECTS-6.md #3). Here the drift is a file in a gitignored
+# directory the implement station writes and the suite reads. Without the
+# implementation the tree is the tree that passed at the freeze — and it still
+# fails, so what moved is outside it.
+printf '\n22. a pre-existing test broken outside the tracked tree stops the run\n'
+fresh_project "$SANDBOX/p22"
+printf 'deps/\n' >>.gitignore
+t0_red_when '[ -f deps/drift ]'
+ticket_for AIF-22
+git add -A && git commit -qm "ticket 22" >/dev/null
+rc=0
+FAKE_DRIFT=1 "$AIF" work AIF-22 --no-worktree >"$OUT/run22.out" 2>&1 || rc=$?
+eq "an installed dependency moved under the run: stopped" "$rc" "1"
+eq "green could not render a verdict on the implementation" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-22/ledger.json)" "error"
+eq "and said the test is out of the implementation's reach" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-22/ledger.json |
+     grep -c 'out of the implementation.s reach')" "1"
+eq "implement was dispatched once" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-22/ledger.json)" "1"
+eq "the report says where to look" "$(grep -c 'Run "prepare" in the worktree' tasks/AIF-22/report.md)" "1"
+eq "…and gives no advice that belongs to another kind of failure" \
+  "$(grep -c 'the new tests' tasks/AIF-22/report.md)" "0"
+
+# ====== 23. a manifest and its lockfile move together, or not at all ==========
+printf '\n23. a dependency manifest and its lockfile move together, or not at all\n'
+mkdir -p "$SANDBOX/p23"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p23/" 2>/dev/null || true
+cd "$SANDBOX/p23" || exit 1
+printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
+cp package.json package-lock.json
+mkdir -p packages/web && printf '{ "name": "web" }\n' >packages/web/package.json
+git add -A && git commit -qm "dependencies" >/dev/null
+plan_files() { # <files.change json> — the plan's manifest, rewritten through jq
+  local meta
+  meta="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' |
+    jq -c --argjson c "$1" '.files.change = $c | .ac_coverage |= map_values(["src/app.py"])')"
+  printf '<!-- aif:meta\n%s\n-->\n# AIF-1 — plan\n' "$meta" >tasks/AIF-1/plan.md
+}
+pg() { /bin/bash .aif/gates/plan.sh "$PWD/tasks/AIF-1" 2>&1; }
+plan_files '["src/app.py", "package.json"]'
+eq "a manifest without its lockfile is refused" \
+  "$(pg | grep -c 'names "package.json" but not "package-lock.json"')" "1"
+plan_files '["src/app.py", "package.json", "package-lock.json"]'
+rc=0
+pg >"$OUT/plan23.out" || rc=$?
+eq "with it, the plan is admitted" "$rc" "0"
+plan_files '["src/app.py", "package-lock.json"]'
+eq "a lockfile without its manifest is refused" \
+  "$(pg | grep -c '"package-lock.json", a lockfile, and no manifest it pins')" "1"
+plan_files '["src/app.py", "packages/web/package.json"]'
+eq "a workspace manifest needs the lockfile at the root" \
+  "$(pg | grep -c 'names "packages/web/package.json" but not "package-lock.json"')" "1"
+plan_files '["src/app.py", "packages/web/package.json", "package-lock.json"]'
+rc=0
+pg >"$OUT/plan23b.out" || rc=$?
+eq "…and is admitted with it" "$rc" "0"
+
+sg() { /bin/bash .aif/gates/scope.sh "$PWD/tasks/AIF-1" 2>&1; }
+dispatched_now() {
+  jq --arg b "$(git rev-parse HEAD)" '.dispatch_base = $b' tasks/AIF-1/run.json >"$OUT/run23.json" &&
+    cp "$OUT/run23.json" tasks/AIF-1/run.json
+}
+plan_files '["src/app.py", "package.json", "package-lock.json"]'
+git add -A && git commit -qm "the plan names the lockfile" >/dev/null
+dispatched_now
+printf '{ "dependencies": { "dep-a": "1", "dep-b": "2" } }\n' >package.json
+cp package.json package-lock.json
+rc=0
+sg >"$OUT/scope23.out" || rc=$?
+eq "scope lets a lockfile the plan names move" "$rc" "0"
+git checkout -q -- package.json package-lock.json
+plan_files '["src/app.py"]'
+git add -A && git commit -qm "the plan names neither" >/dev/null
+dispatched_now
+printf '{ "dependencies": { "dep-a": "2" } }\n' >package-lock.json
+eq "and refuses one it does not" \
+  "$(sg | grep -c 'package-lock.json is a lockfile, and the plan does not name it')" "1"
+git checkout -q -- package-lock.json
+
+# Every lockfile the table knows is refused as an amendment — the table lives
+# in the gates' _lib.sh and the refusal in lib/cmd_amend.sh.
+refused=0
+known=0
+for n in $(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"
+  for m in package.json pyproject.toml Cargo.toml go.mod; do aif_g_lock_names "$m"; done' _ "$ROOT"); do
+  known=$((known + 1))
+  # Held, then matched: piped, pipefail would hand the pipeline aif's own exit
+  # 1 — which is the refusal this counts — and read every match as a miss.
+  said="$("$AIF" _amend-plan AIF-1 "packages/web/$n" "a dependency" 2>&1)"
+  case "$said" in
+    *"a lockfile changes only"*) refused=$((refused + 1)) ;;
+  esac
+done
+eq "an amendment may not reach any lockfile ($known known)" "$refused" "$known"
+eq "the worker's dependency patterns are the gates' own" \
+  "$(/bin/bash -c '. "$1/lib/paths.sh"; printf "%s|%s" "$AIF_DEP_MANIFESTS" "$AIF_DEP_LOCKFILES"' _ "$ROOT")" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s|%s" "$AIF_G_MANIFESTS" "$AIF_G_LOCKFILES"' _ "$ROOT")"
+eq "and the gates' table agrees with their patterns" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"
+     for m in package.json pyproject.toml Cargo.toml go.mod; do
+       printf "%s\n" "$m" | grep -Ev "$AIF_G_MANIFESTS"
+       aif_g_lock_names "$m" | grep -Ev "$AIF_G_LOCKFILES"
+     done' _ "$ROOT" | wc -l | tr -d ' ')" "0"
+
+# ====== 24. a station that moves the dependencies gets them installed again ===
+#
+# "prepare" is the project's install (npm ci). The stand-in below installs what
+# the lockfile pins and refuses a manifest the lockfile does not match, as npm
+# ci does. The first implement attempt adds a dependency to package.json alone —
+# around the lock — and is sent back with prepare's own words; the retry adds
+# it through the lock, and the dependencies are installed from it.
+printf '\n24. a station that moves the dependencies has them installed again from the lock\n'
+fresh_project "$SANDBOX/p24"
+printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
+cp package.json package-lock.json
+printf 'deps/\n' >>.gitignore
+cat >.aif/prepare.sh <<'PREP'
+#!/bin/bash
+want="$(grep -o '"dep-[a-z]*"' package.json | sort | tr '\n' ' ')"
+have="$(grep -o '"dep-[a-z]*"' package-lock.json | sort | tr '\n' ' ')"
+if [ "$want" != "$have" ]; then
+  echo "npm error \`npm ci\` can only install packages when your package.json and package-lock.json are in sync."
+  echo "npm error Missing: dep-new@2 from lock file"
+  exit 1
+fi
+mkdir -p deps
+printf '%s\n' $have >deps/installed
+PREP
+chmod +x .aif/prepare.sh
+tmp="$(mktemp)"
+jq '.prepare = "bash .aif/prepare.sh"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+ticket_for AIF-24
+git add -A && git commit -qm "ticket 24" >/dev/null
+rc=0
+FAKE_DEPS=1 "$AIF" work AIF-24 --no-worktree >"$OUT/run24.out" 2>&1 || rc=$?
+eq "a dependency added around the lock, then through it: built" "$rc" "0"
+eq "the first attempt was sent back by prepare, before any gate" \
+  "$(jq -r '[.entries[] | select(.gate == "prepare") | .result] | join(",")' tasks/AIF-24/ledger.json)" "fail"
+eq "with prepare's own words in the retry" "$(grep -c 'are in sync' .aif/tmp/fake-prompt-implement-2)" "1"
+eq "implement was dispatched twice" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-24/ledger.json)" "2"
+eq "the dependencies were installed from the lockfile the retry left" \
+  "$(tr '\n' ' ' <deps/installed)" '"dep-a" "dep-new" '
+eq "and scope let the lockfile the plan names move" \
+  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .result' tasks/AIF-24/ledger.json)" "pass"
 
 # ----------------------------------------------------------------------------
 printf '\n'

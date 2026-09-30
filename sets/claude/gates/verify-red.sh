@@ -18,7 +18,9 @@
 #     legitimate class (assertion, missing module), not a broken one (syntax,
 #     collection error) → exit 3 if broken
 #   - every acceptance criterion is covered by a test, and its expected literal
-#     appears in a test
+#     appears in a test — a test the runner COLLECTED: a declared file the
+#     report holds no new test from counts toward no criterion (coarse mode
+#     cannot tell, so it still reads every declared file, and says so)
 #   - no implementation was written (the plan's create paths must not exist yet)
 #
 # Without a readable per-test report none of that is possible and the gate falls
@@ -386,42 +388,107 @@ fi
 # that collides with the vague-word list (`error` the union value). The
 # backticks are the declaration, not part of the value — strip them, so the
 # tests assert the bare literal.
+#
+# "A test" is one the runner collected. Coverage is a grep over the text of
+# the test files, and it used to read every declared file — including one the
+# runner never collected: a name outside testMatch or python_files, a jest
+# suite that fails to load, which jest-junit leaves out of the report by
+# default. So long as another declared file contributed a test, the run was
+# red, every criterion "covered", and the file frozen with none of its tests in
+# `covering`: green's revert-recheck never targeted them and green's suite
+# never ran them. A criterion whose only test lived there was checked by
+# nothing (docs/DEFECTS-7.md #1). "A test that was never collected did not
+# fail — it is absent", says the header, and that was enforced for the
+# declared files together — no new test at all — never for each one.
+#
+# So in per-test mode the grep reads the declared files the report holds at
+# least one new test from — the file column of new_rows — and names the rest.
+# A declared support file, a conftest or a helper, needs no test of its own:
+# it counts toward no criterion, and is named — on a rejection with the rest,
+# on the pass path as a note. Coarse mode has no per-test report and cannot
+# tell a collected file from one the runner never saw; it reads every declared
+# file, as it always did, and its closing lines say so.
+#
+# listed <line> <lines> — rc 0 when <line> is one of <lines>, matched whole.
+listed() {
+  local needle="$1" line
+  while IFS= read -r line; do
+    [ "$line" = "$needle" ] && return 0
+  done <<EOF
+$2
+EOF
+  return 1
+}
+if [ "$mode" = "per-test" ]; then
+  cov_files="$(printf '%s\n' "$new_rows" | cut -f1 | grep -v '^$' | sort -u)"
+else
+  cov_files="$test_files"
+fi
+uncollected=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  listed "$f" "$cov_files" || uncollected="$uncollected, $f"
+done <<EOF
+$(printf '%s\n' "$test_files" | awk '!seen[$0]++')
+EOF
+uncollected="${uncollected#, }"
+
 cov=""
 while IFS= read -r ac; do
   [ -n "$ac" ] || continue
-  local_hit=0
   expect="$(printf '%s' "$spec_meta" | jq -r --arg id "$ac" \
     '.acceptance[] | select(.id==$id) | .expect | tostring
      | if test("^`[^`]+`$") then .[1:-1] else . end')"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    grep -qF -- "$ac" "$root/$f" 2>/dev/null && local_hit=1
-  done <<EOF
-$test_files
-EOF
-  [ "$local_hit" -eq 1 ] || cov="$cov
-$ac is not referenced by any test file"
 
-  # The expected literal must appear in some test — the cheap guard against a
-  # test that is red now but green against any stub.
+  # The criterion's id, and its expected literal — the cheap guard against a
+  # test that is red now but green against any stub — each in a collected
+  # file. Where either is found only in a file the runner did not collect, the
+  # complaint says so: the test exists, and it does not run.
   #
   # `--` because the pattern is the ticket's own value: an expect of "-1" — what
   # indexOf returns, what a criterion about a missing item asserts — is an
   # OPTION to grep, and the search silently answers "not found" about a test
   # where the literal plainly is. The station cannot fix that; it burns
   # attempts_max runs and stops the ticket.
-  lit_hit=0
+  ref_hit=0 lit_hit=0 ref_only="" lit_only=""
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_hit=1
+    if listed "$f" "$cov_files"; then
+      grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_hit=1
+      grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_hit=1
+    else
+      grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_only="$ref_only, $f"
+      grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_only="$lit_only, $f"
+    fi
   done <<EOF
 $test_files
 EOF
-  [ "$lit_hit" -eq 1 ] || cov="$cov
+  if [ "$ref_hit" -eq 0 ] && [ -n "$ref_only" ]; then
+    cov="$cov
+$ac is referenced only where the runner collected no test: ${ref_only#, }"
+  elif [ "$ref_hit" -eq 0 ]; then
+    cov="$cov
+$ac is not referenced by any test file"
+  fi
+  if [ "$lit_hit" -eq 0 ] && [ -n "$lit_only" ]; then
+    cov="$cov
+$ac expected value ($expect) appears only where the runner collected no test: ${lit_only#, }"
+  elif [ "$lit_hit" -eq 0 ]; then
+    cov="$cov
 $ac expected value ($expect) does not appear in any test"
+  fi
 done <<EOF
 $(printf '%s' "$spec_meta" | jq -r '.acceptance[].id')
 EOF
+# On a rejection, every declared file that contributed no test is named — not
+# only the ones a criterion was found in. A test written there without its id
+# is just as absent, and the station is being sent back anyway.
+if [ -n "$cov" ] && [ -n "$uncollected" ]; then
+  cov="$cov
+the runner collected no test from: $uncollected — a test there runs neither at this gate nor at green
+  A file is not collected when its name or place is outside what the runner selects (testMatch, python_files, the test roots), or when it fails to load and the reporter leaves it out (jest-junit does, unless reportTestSuiteErrors is set).
+  A support file — a helper, a conftest — needs no test of its own, and counts toward no criterion."
+fi
 aif_g_report "${cov# }" "coverage"
 
 # --- the project's own checks, for this phase -------------------------------
@@ -501,15 +568,7 @@ covering_json="$(printf '%s' "$new_rows" | awk -F'\t' '$3 != "pass" { print $2 }
 # lock, it is a lock over the wrong files, and letting it through would record a
 # freeze that guarantees nothing.
 frozen_paths="$(printf '%s' "$tests_json" | cut -f1)"
-in_frozen() {
-  local needle="$1" line
-  while IFS= read -r line; do
-    [ "$line" = "$needle" ] && return 0
-  done <<EOF
-$frozen_paths
-EOF
-  return 1
-}
+in_frozen() { listed "$1" "$frozen_paths"; }
 
 lock_viol=""
 while IFS= read -r f; do
@@ -583,6 +642,7 @@ if [ "$mode" = "coarse" ]; then
   printf 'verify-red: red (COARSE mode — no per-test detail)\n'
   printf '  ! why: %s\n' "$mode_why"
   printf '  ! the lock records covering: [] — green has no test to revert-recheck against.\n'
+  printf '  ! coverage was read from every declared test file — whether the runner collects each one cannot be told here.\n'
 else
   with_count="$(printf '%s' "$red_with_tests" | grep -c . || true)"
   printf 'verify-red: %s new test(s) red for the right reason, all criteria covered' "$red_count"
@@ -603,5 +663,8 @@ else
     printf '  ! GREEN AT FREEZE — never proven red, an earlier round already implemented these:\n'
     printf '%s\n' "$green_ids" | sed 's/^/    - /'
     printf '  Excluded from the revert-recheck; re-emitted on the closing checklist.\n'
+  fi
+  if [ -n "$uncollected" ]; then
+    printf '  ! the runner collected no test from: %s — counted toward no criterion (a support file needs none; a test there never runs)\n' "$uncollected"
   fi
 fi

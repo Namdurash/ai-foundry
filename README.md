@@ -1010,6 +1010,19 @@ is not a weaker red, it is no run at all: an ERROR in both gates, and the
 freeze never happens. Coarse mode is only for a report that exists and cannot
 be read per test.
 
+**A test the runner never collected covers nothing.** `verify-red` requires
+every criterion's id and its `expect` literal in the ticket's tests, and that
+is a grep over their text — so "the tests" are the declared files the report
+holds at least one new test from. A declared file the runner never collected
+(a name outside `testMatch` or `python_files`, or a jest suite that fails to
+load, which jest-junit leaves out of the report unless `reportTestSuiteErrors`
+is set) ran nothing, at the freeze or at `green`. It used to count in full,
+and a criterion whose only test lived there reached review with every gate
+green and nothing having checked it. It goes back to the tests station now,
+with the file named. A declared support file — a conftest, a helper — needs no
+test of its own; it counts toward no criterion. Coarse mode has no per-test
+report to tell by: it still reads every declared file, and says so.
+
 **Coarse mode is a real downgrade, and it now says so out loud.** Without a
 readable per-test report the gates fall back to the suite's exit code alone,
 which cannot tell a legitimate failure from a broken one. `verify-red` still

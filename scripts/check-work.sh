@@ -46,6 +46,10 @@
 #      suite's verdict says it ran against the install from before the merge,
 #      with the command; with it the install is made here, and made again
 #      after an undo
+#  26  verify-red counts a criterion covered only by a test the runner
+#      collected: its only test in a declared file the runner never collects
+#      is sent back to the tests station, naming the file, which may stay as
+#      a helper; coarse mode, which cannot tell, reads every file and says so
 #  27  a land stopped between its merge and its verdict — Ctrl-C to its
 #      process group, an INT or a TERM to its pid, an error on the way —
 #      undoes the merge, leaves the card in Review and names an install it
@@ -181,9 +185,11 @@ SUITE
 # a type error in the first implementation, FAKE_DRIFT has the implement
 # station change an installed dependency nobody tracks, and FAKE_DEPS has the
 # plan name package.json and its lockfile, the first implement attempt add a
-# dependency around the lock and the retry through it. Each dispatch's prompt
-# is kept as .aif/tmp/fake-prompt-<station>-<n>, so a scenario can read what a
-# retry was told.
+# dependency around the lock and the retry through it. For docs/DEFECTS-7.md,
+# FAKE_TESTS_REHOME has a retried tests station move every test into
+# tests/t1.py and leave the other declared files in place as helpers. Each
+# dispatch's prompt is kept as .aif/tmp/fake-prompt-<station>-<n>, so a
+# scenario can read what a retry was told.
 cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 #!/bin/bash
 set -u
@@ -245,6 +251,15 @@ PLAN
         printf '# AC-00%s asserts impl%s — expects %s%s\n' "$i" "$i" "$exp" "$typebug" >"$wt/tests/t$i.py"
       fi
     done
+    if [ "${FAKE_TESTS_REHOME:-0}" = 1 ] && [ "$retry" = 1 ]; then
+      # Told that a criterion's only test is in a file the runner never
+      # collects: every test moves into the first file, which it collects.
+      for i in $nums; do
+        [ -n "$i" ] && [ "$i" != 1 ] || continue
+        cat "$wt/tests/t$i.py" >>"$wt/tests/t1.py"
+        printf '# a helper: no test in here\n' >"$wt/tests/t$i.py"
+      done
+    fi
     ;;
   implement)
     if [ "${FAKE_STALL:-0}" = 1 ]; then
@@ -1433,6 +1448,78 @@ eq "the summary says so" \
   "$(grep -c '^deps: .*moved — installed here (bash .aif/prepare.sh)' "$OUT/land25f.out")" "1"
 eq "so does the landing note" "$(last_comment AIF-25 | grep -c '^- dependencies: .*installed here (bash')" "1"
 eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# ====== 26. a criterion is covered only by a test the runner collected ========
+#
+# verify-red read coverage from the text of every declared test file, and asked
+# only that the declared files, together, contribute a collected test. One the
+# runner never collects — a name outside testMatch or python_files, a jest
+# suite that fails to load, which jest-junit leaves out of the report — then
+# counted in full: "all criteria covered", the file frozen, none of its tests
+# in `covering`, and none of them run at green either. A criterion whose only
+# test lived there was checked by nothing (docs/DEFECTS-7.md #1). The stub
+# runner below never collects tests/t2.py, and the tests station's first
+# attempt puts AC-002's only test in it.
+#
+# never_collects <n> — the stub runner leaves tests/t<n>.py out of its report.
+never_collects() {
+  local tmp
+  tmp="$(mktemp)"
+  awk -v n="$1" '
+    { print }
+    index($0, "[ -f \"tests/t$n.py\" ] || continue") { print "  [ \"$n\" != " n " ] || continue" }
+  ' .aif/suite.sh >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+}
+printf '\n26. a criterion is covered only by a test the runner collected\n'
+fresh_project "$SANDBOX/p26"
+never_collects 2
+ticket_for AIF-26 '[]' ',
+    { "id": "AC-002", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl2" }'
+git add -A && git commit -qm "ticket 26" >/dev/null
+rc=0
+FAKE_TESTS_REHOME=1 "$AIF" work AIF-26 --no-worktree >"$OUT/run26.out" 2>&1 || rc=$?
+eq "a criterion whose only test is never collected: sent back, then built" "$rc" "0"
+eq "verify-red rejected it — the tests station's to fix — then admitted the fix" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-26/ledger.json)" "fail,pass"
+eq "the retry was told which criterion, and the file its test is in" \
+  "$(grep -c 'AC-002 is referenced only where the runner collected no test: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "…where its literal is too" \
+  "$(grep -c 'AC-002 expected value (impl2) appears only where the runner collected no test: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "…and that a test in that file runs nowhere" \
+  "$(grep -c 'the runner collected no test from: tests/t2.py — a test there runs neither' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "the file stayed declared, as a helper, and is frozen with the rest" \
+  "$(jq -r '.tests | has("tests/t2.py")' tasks/AIF-26/tests.lock.json)" "true"
+eq "the covering test is the one the runner collects" \
+  "$(jq -c '.covering' tasks/AIF-26/tests.lock.json)" '["tests.t1::t1"]'
+
+# By hand, on the tree before the implementation: the helper passes and is
+# named on the way through, and the first attempt's files are exit 1.
+printf 'def users():\n    return []\n' >src/app.py
+rc=0
+/bin/bash .aif/gates/verify-red.sh "$PWD/tasks/AIF-26" >"$OUT/red26.out" 2>&1 || rc=$?
+eq "a declared helper with no test in it passes" "$rc" "0"
+eq "…and is named on the pass path" \
+  "$(grep -c '! the runner collected no test from: tests/t2.py' "$OUT/red26.out")" "1"
+printf '# AC-001 asserts impl1 — expects -1\n' >tests/t1.py
+printf '# AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
+rc=0
+/bin/bash .aif/gates/verify-red.sh "$PWD/tasks/AIF-26" >"$OUT/red26b.out" 2>&1 || rc=$?
+eq "the first attempt's files: exit 1, a rejection" "$rc" "1"
+eq "…of coverage" "$(sed -n 1p "$OUT/red26b.out")" "REJECT coverage: 3 problem(s)"
+
+# Coarse mode has no per-test report and cannot tell a collected file from one
+# the runner never saw. It reads every declared file, as it did — the same two
+# files pass it — and says what it could not tell.
+tmp="$(mktemp)"
+jq '.test.command = "mkdir -p .aif/tmp && printf \"<testsuites/>\" >.aif/tmp/report.xml && exit 1"' \
+  .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+rc=0
+/bin/bash .aif/gates/verify-red.sh "$PWD/tasks/AIF-26" >"$OUT/red26c.out" 2>&1 || rc=$?
+eq "coarse: the same two files are red, and pass" "$rc" "0"
+eq "…saying the coverage could not see what the runner collects" \
+  "$(grep -c 'coverage was read from every declared test file' "$OUT/red26c.out")" "1"
 
 # ====== 27. a land stopped before its verdict undoes itself ====================
 #

@@ -97,6 +97,48 @@ else
   bad "aif-implement and aif-implement-careful have drifted — the engine may differ, the instructions may not"
 fi
 
+printf '\na station is told to do only what its tools can\n'
+# The runner gets the frontmatter's tools and nothing else (_aif_work_dispatch);
+# the aif:meta copy is read by no code, so it can only mislead a reader who
+# trusts it. And the station never sees either: its prompt is the body after
+# the meta block. So nothing but this check stands between a station without
+# Bash and a prompt telling it to run the suite — the tests station was told
+# twice to run the tests and read the output, holding Read, Grep, Glob, Write
+# and Edit. An order a station cannot carry out invites a claim that it did.
+# The match is "Run" or "Execute" opening a line, a list item or a sentence:
+# the spellings that happened, not a parse of English.
+for f in "$AGENTS"/aif-*.md; do
+  base="$(basename "$f")"
+  meta="$(aif_meta_json "$f")"
+  [ -n "$meta" ] || continue
+  tools="$(frontmatter_get "$f" tools | tr -d ' ')"
+  declared="$(printf '%s' "$meta" | jq -r '.tools // ""' | tr -s ' ' ',')"
+  if [ -n "$declared" ] && [ "$declared" != "$tools" ]; then
+    bad "$base: aif:meta says tools '$declared', the runner is given the frontmatter's '$tools'"
+    continue
+  fi
+  case ",$tools," in
+    *,Bash,*)
+      ok "$base: $tools"
+      continue
+      ;;
+  esac
+  # Numbered as lines of the file, not of the body, since the file is what
+  # gets edited.
+  open="$(awk '/^-->$/ { print NR; exit }' "$f")"
+  runs="$(aif_meta_body "$f" |
+    grep -nE '(^[[:space:]]*(([0-9]+\.|[-*])[[:space:]]+)?|[.!?][[:space:]]+)(Run|Re-run|Execute)[[:space:]]' || true)"
+  if [ -z "$runs" ]; then
+    ok "$base: $tools — no Bash, and its prompt orders no run"
+    continue
+  fi
+  while IFS= read -r hit; do
+    bad "$base: no Bash in '$tools', yet line $((open + ${hit%%:*})) orders a run: ${hit#*:}"
+  done <<EOF
+$runs
+EOF
+done
+
 printf '\nhooks are executable\n'
 # The one property of these files no other check covers, and the one that broke.
 # Every test below invokes a hook as `/bin/bash <path>`, which works at any mode —

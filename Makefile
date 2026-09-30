@@ -5,7 +5,8 @@ SHELL := /bin/bash
 SHELL_SOURCES := bin/aif $(wildcard lib/*.sh) \
                  $(wildcard sets/*/gates/*.sh) $(wildcard sets/*/hooks/*.sh) \
                  scripts/check-set.sh scripts/check-work.sh \
-                 scripts/check-board.sh scripts/release.sh scripts/cycle.sh
+                 scripts/check-board.sh scripts/check-release.sh \
+                 scripts/release.sh scripts/cycle.sh
 
 # Where `make link` puts the symlink. Homebrew's prefix when there is one, so
 # the link lands on the same PATH entry the tap would have used.
@@ -71,6 +72,7 @@ check:
 	@/bin/bash scripts/check-work.sh
 	@/bin/bash scripts/check-board.sh
 	@/bin/bash scripts/cycle.sh --verify
+	@/bin/bash scripts/check-release.sh
 	@/bin/bash scripts/release.sh --verify
 	@echo "ok"
 

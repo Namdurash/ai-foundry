@@ -17,14 +17,17 @@
 # exist until the tag is pushed. There is therefore a window where the tag is
 # out and the tap is not, and the script is built for that window — every step
 # checks whether it has already happened, so running it again with the same
-# version resumes at the first thing that has not.
+# version resumes at the first thing that has not. scripts/check-release.sh
+# stops it at each of those steps and runs it again, offline.
 #
 # usage: scripts/release.sh <version>   cut it, end to end
 #        scripts/release.sh --verify    is the tap serving what is tagged?
 #
 # --verify is what `make check` runs. It is silent between releases (a version
 # nobody has tagged owes the tap nothing) and starts failing the moment a tag
-# exists that the formula does not serve.
+# exists that the formula does not serve — except the version a release run is
+# cutting, which the run names in AIF_RELEASING: that tag is the window above,
+# and the run that closes it goes through `make check` on its way.
 
 set -uo pipefail
 
@@ -52,8 +55,13 @@ tap_dir() {
   printf '%s/Library/Taps/namdurash/homebrew-tap' "$base"
 }
 
-aif_version() { sed -n 's/^AIF_VERSION="\(.*\)"$/\1/p' "$ROOT/bin/aif" | head -1; }
-set_version() { sed -n 's/^SET_VERSION=\(.*\)$/\1/p' "$ROOT/sets/claude/set.meta" | head -1; }
+# The version markers as they are on disk — or, given a revision, as committed
+# there.
+marker_file() {
+  if [ -n "${2:-}" ]; then git -C "$ROOT" show "$2:$1" 2>/dev/null; else cat "$ROOT/$1"; fi
+}
+aif_version() { marker_file bin/aif "${1:-}" | sed -n 's/^AIF_VERSION="\(.*\)"$/\1/p' | head -1; }
+set_version() { marker_file sets/claude/set.meta "${1:-}" | sed -n 's/^SET_VERSION=\(.*\)$/\1/p' | head -1; }
 formula_version() { sed -n 's|.*/archive/refs/tags/v\(.*\)\.tar\.gz.*|\1|p' "$1" | head -1; }
 
 # write_version <file> <sed-expression> — `sed -i` is not portable (FINDINGS #6).
@@ -72,6 +80,11 @@ verify() {
   v="$(aif_version)"
   [ -n "$v" ] || die "cannot read AIF_VERSION from bin/aif"
 
+  # A local tag counts, pushed or not. Whether origin has it is a network
+  # question, `make check` is offline, and git keeps no remote-tracking refs for
+  # tags to answer it from. Nor should it ask: a tag that never left this
+  # machine is a release stopped halfway, and this machine should keep hearing
+  # about it until the release is finished or the tag is dropped.
   if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/v$v" >/dev/null 2>&1; then
     printf 'release: %s is unreleased (no tag) — the tap owes it nothing yet\n' "$v"
     return 0
@@ -92,6 +105,15 @@ verify() {
     printf 'release: v%s is tagged and the tap serves it\n' "$v"
     return 0
   fi
+  # The one tag allowed ahead of the tap: the one the running release is
+  # cutting. A run that stopped after tagging leaves exactly this state, and the
+  # run that finishes it passes through its own `make check` first — which,
+  # told nothing, failed it, so the one command that could finish a release
+  # could not (DEFECTS-6 #7). That version only, and only inside that run.
+  if [ "${AIF_RELEASING:-}" = "$v" ]; then
+    printf 'release: v%s is tagged and being released — the tap is the last step of this run\n' "$v"
+    return 0
+  fi
   # shellcheck disable=SC2016  # backticks are prose here, not substitution
   printf 'release: v%s is tagged, the tap still serves %s — `brew install` hands out the old one\n' "$v" "${fv:-?}" >&2
   printf '         make release V=%s\n' "$v" >&2
@@ -102,7 +124,7 @@ verify() {
 # cut — the release itself
 # --------------------------------------------------------------------------
 cut_release() {
-  local version="$1" tap formula branch sha tarball tmp try verb
+  local version="$1" tap formula branch sha tarball tmp try got verb pushed
   case "$version" in
     [0-9]*.[0-9]*.[0-9]*) ;;
     *) die "version must look like 1.2.3, got '$version'" ;;
@@ -133,11 +155,13 @@ cut_release() {
   [ "$(aif_version)" = "$version" ] || die "bin/aif still says $(aif_version)"
   [ "$(set_version)" = "$version" ] || die "set.meta still says $(set_version)"
 
-  # 2. nothing ships that does not pass its own checks.
+  # 2. nothing ships that does not pass its own checks. One of them is
+  #    --verify, told which version this run is cutting: when an earlier run
+  #    stopped past the tag, that tag is ahead of the tap because of this run.
   say "make lint"
   (cd "$ROOT" && make lint >/dev/null) || die "lint is not clean"
   say "make check"
-  (cd "$ROOT" && make check >/dev/null) || die "check is not green"
+  (cd "$ROOT" && AIF_RELEASING="$version" make check >/dev/null) || die "check is not green"
 
   # 3. the version bump, if it was one.
   if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
@@ -150,29 +174,45 @@ cut_release() {
   [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
     die "the working tree is dirty with something that is not the bump — commit or stash it"
 
-  # 4. the tag, then main, then the tag's push. Each skipped if already done.
-  if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/v$version" >/dev/null 2>&1; then
+  # 4. the tag, then main, then the tag's push. Each skipped if already done —
+  #    but a tag an earlier run left is resumed only if it is this release: on
+  #    main, and $version in both markers. Rebasing main to get a refused push
+  #    through leaves the tag on a commit main no longer has, and pushing it
+  #    then would publish a release that is not on main.
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/v$version" >/dev/null 2>&1; then
+    git -C "$ROOT" merge-base --is-ancestor "v$version" HEAD ||
+      die "v$version is on a commit main does not contain — if it never left this machine: git tag -d v$version, and re-run"
+    if [ "$(aif_version "v$version")" != "$version" ] || [ "$(set_version "v$version")" != "$version" ]; then
+      die "v$version is on a commit that does not say $version in both markers — if it never left this machine: git tag -d v$version, and re-run"
+    fi
+  else
     git -C "$ROOT" tag -a "v$version" -m "aif $version" || die "could not tag"
     say "tagged v$version"
   fi
-  git -C "$ROOT" push -q origin main || die "could not push main"
-  git -C "$ROOT" push -q origin "v$version" || die "could not push the tag"
+  git -C "$ROOT" push -q origin main || die "could not push main — re-run: make release V=$version"
+  git -C "$ROOT" push -q origin "v$version" || die "could not push the tag — re-run: make release V=$version"
   say "pushed main and v$version"
 
   # 5. the tarball GitHub builds from the tag we just pushed. It can take a
-  #    moment to appear, which is a bad reason to fail a release.
+  #    moment to appear, which is a bad reason to fail a release. Fetched is
+  #    curl's word, not a file being there: a transfer cut short leaves a file,
+  #    and its hash in the formula is a version nobody can install.
   tarball="https://github.com/$REPO/archive/refs/tags/v$version.tar.gz"
   tmp="$(mktemp "${TMPDIR:-/tmp}/aif-release-XXXXXX")"
   try=1
+  got=""
   while [ "$try" -le 3 ]; do
-    curl -fsSL -o "$tmp" "$tarball" && break
+    if curl -fsSL -o "$tmp" "$tarball"; then
+      got=1
+      break
+    fi
     try=$((try + 1))
     sleep 2
   done
-  [ -s "$tmp" ] || {
+  if [ -z "$got" ] || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     die "could not fetch $tarball — the tag is pushed, so re-run: make release V=$version"
-  }
+  fi
   sha="$(shasum -a 256 "$tmp" | cut -d' ' -f1)"
   rm -f "$tmp"
   say "tarball sha256 $sha"
@@ -191,11 +231,19 @@ cut_release() {
     git -C "$tap" add "$FORMULA"
     git -C "$tap" commit -q -m "$verb: point aif at the v$version tarball" ||
       die "could not commit the formula"
-    git -C "$tap" push -q origin HEAD || die "the formula is committed but NOT pushed — push it by hand"
-    say "tap → v$version, pushed"
-  else
-    say "tap already served v$version"
   fi
+  # Pushed whether this run made the commit or an earlier one did. A run that
+  # stopped between the two left a tap that serves the release on this machine
+  # and nowhere else, and --verify, which reads this copy, calls that green
+  # (DEFECTS-6 #8). The remote's answer says which of the two it was.
+  pushed="$(git -C "$tap" push --porcelain origin HEAD)" || {
+    [ -z "$pushed" ] || printf '%s\n' "$pushed" >&2
+    die "the formula is committed but NOT pushed — re-run: make release V=$version"
+  }
+  case "$pushed" in
+    *"[up to date]"*) say "tap already served v$version" ;;
+    *) say "tap → v$version, pushed" ;;
+  esac
 
   printf '\nreleased %s\n' "$version"
   printf '  install:  brew update && brew upgrade %s/aif\n' "$TAP_NAME"
@@ -206,7 +254,7 @@ cut_release() {
 case "${1:-}" in
   --verify) verify ;;
   "" | -h | --help)
-    sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *) cut_release "$1" ;;
 esac

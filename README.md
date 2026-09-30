@@ -1079,10 +1079,13 @@ tarball and pushes that too.
 
 GitHub only builds the tarball once the tag is pushed, so the two halves cannot
 be simultaneous. Every step is therefore idempotent: if it stops in between, run
-the same command again and it resumes at the first thing that did not happen.
+the same command again and it resumes at the first thing that did not happen;
+`scripts/check-release.sh`, part of `make check`, stops a release at each step
+against local stand-ins for GitHub and the tap, and proves the re-run finishes.
 `make check` ends with `scripts/release.sh --verify`, which is silent while a
 version is unreleased and fails the moment a tag exists that the tap does not
-serve.
+serve — except for the version `make release` is itself cutting, so that the
+run finishing an interrupted release can get past its own check.
 
 Never `git tag` a release by hand.
 

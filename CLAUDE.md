@@ -23,8 +23,11 @@ make release V=0.5.1
 - GitHub builds the tarball only after the tag is pushed, so the halves cannot
   be simultaneous. Every step checks whether it already happened — if the
   command stops between them, run it again with the same version.
+  `scripts/check-release.sh` stops it at each step and runs it again, offline.
 - `make check` ends with `scripts/release.sh --verify`: silent while a version
-  is unreleased, failing as soon as a tag exists that the tap does not serve.
+  is unreleased, failing as soon as a tag exists that the tap does not serve —
+  except the version `make release` is cutting, named in `AIF_RELEASING`, or
+  the re-run could never get past its own check (`docs/DEFECTS-6.md` #7).
 - Both version markers move together: `AIF_VERSION` in `bin/aif` and
   `SET_VERSION` in `sets/claude/set.meta`. The formula's own test asserts they
   agree, because a release that bumps only the CLI ships last release's stations

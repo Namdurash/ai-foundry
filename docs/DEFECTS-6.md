@@ -4,7 +4,8 @@ Three problems reported from one `aif work --loop` on a React Native /
 TypeScript project (jest + jest-junit, a Trello board): OPES-69 and OPES-52
 stopped at `verify-red`, OPES-45 at `green` after three attempts, OPES-41 at
 `green` after three attempts. The loop's two-in-a-row stop then parked two
-healthy cards in Needs Human. #4–#6 turned up while fixing them.
+healthy cards in Needs Human. #4–#6 turned up while fixing them, #7–#9 while
+releasing the fix as 0.10.0.
 
 Worked against `c8058a2` (0.9.0) on 2026-09-29, macOS 26.6.2 (Darwin 25.6.0),
 bash 3.2.57, jq 1.8.2, git 2.50.1. Each entry says how it was established:
@@ -15,7 +16,8 @@ bash 3.2.57, jq 1.8.2, git 2.50.1. Each entry says how it was established:
   the trigger is not.
 
 Every fix is exercised by `scripts/check-work.sh`, scenarios 20–24, through the
-scripted runner: no model, no network.
+scripted runner: no model, no network. #7–#9 by `scripts/check-release.sh`,
+against local stand-ins for GitHub and the tap: no network either.
 
 ---
 
@@ -243,3 +245,73 @@ scenario 17 still catches that.
 It had not parsed since `12830b1`: an apostrophe escaped for a
 single-quoted string (`'"'"'`) inside two double-quoted `note` lines. It is not
 run by `make check`, which is how that lasted; it runs clean again.
+
+### 7. `make release` could not finish a release it had tagged — probed
+
+Cutting 0.10.0 (`2c5bfba`), `git push origin main` got a 500 from GitHub after
+the script had committed the bump and made the tag, and it stopped with
+`release: could not push main`. The script's header and CLAUDE.md promise that
+a stopped release is finished by running it again with the same version. The
+re-run died in its own second step:
+
+```
+release: v0.10.0 is tagged, the tap still serves 0.9.0 — `brew install` hands out the old one
+         make release V=0.10.0
+make: *** [check] Error 1
+release: check is not green
+```
+
+`make check` ends with `release.sh --verify`, which reads any tag of
+`bin/aif`'s version as a release the tap owes — and inside `make release`,
+after a run that stopped anywhere past the tag (main's push, the tag's, the
+tarball), that is the state by construction. Its advice was the command that
+had just failed. 0.10.0 went out after the unpushed tag was deleted by hand.
+Reproduced offline with stand-ins for origin and the tap, same lines.
+
+**Fixed.** `make release` names the version it is cutting in `AIF_RELEASING`
+for its own `make check`, and `--verify` lets that version — only that one, only
+in that run — be tagged ahead of the tap. Everyone else's check is unchanged:
+green between releases, failing on a tag the tap does not serve, and a release
+cutting another version gets no pass either.
+
+Resuming makes a leftover tag load-bearing, so the script now checks that it is
+this release before pushing it: main must contain it, and it must say the
+version in both markers. The usual way to get a refused push through — rebasing
+onto what someone else pushed — leaves the unpushed tag on a commit main no
+longer has; a tag made by hand before the bump carries the old markers. The
+old `--verify` blocked both by accident; each is now refused by name, with
+`git tag -d` as the way out. Every push or fetch that fails past the tag ends
+in `re-run: make release V=<version>`, and a re-run now finishes the release.
+
+**Not done: counting only a tag origin has.** `--verify` runs in `make check`,
+which is offline, and git keeps no remote-tracking refs for tags to answer from.
+Nor should it ask: a tag that never left the machine is a release stopped
+halfway, and that machine should keep hearing about it.
+
+### 8. A re-run after a refused tap push said "released" and pushed nothing — probed
+
+Found reading step 6 for #7: the tap was pushed only on the path that had just
+committed the formula. A run whose tap push failed left the commit in the local
+tap; the re-run found that tap clean and said:
+
+```
+  tap already served v0.10.2
+
+released 0.10.2
+```
+
+— with the tap's origin still on 0.10.1, and `--verify`, which reads the local
+tap, green. That is 0.5.0's failure with every light on. The message said "push
+it by hand", which avoided it; running it again, as CLAUDE.md says to, walked
+into it. **Fixed:** the tap is pushed on every run, whichever run made the
+commit; git's own answer (`[up to date]` or not) picks the message.
+
+### 9. A tarball cut short on every try was hashed into the formula — probed
+
+Step 5 retried curl three times and then asked whether the file was non-empty,
+not whether curl had succeeded. A transfer that drops mid-body leaves part of
+the file behind, and after three such tries the script hashed that part into
+the formula: a url that resolves and a sha256 that never matches, which
+`brew install` refuses. The stand-in GitHub, sending 64 bytes and exiting 18
+each time, got a release out of the old script. **Fixed:** fetched is curl's
+word, not a file being there.

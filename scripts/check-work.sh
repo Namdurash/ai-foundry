@@ -42,6 +42,10 @@
 #      only a planned lockfile move, and no amendment reaches one
 #  24  a station that moves the dependencies has them installed again from
 #      the lock, and one that went around the lock is sent back
+#  25  land, when the merge moves the dependencies: without --prepare the
+#      suite's verdict says it ran against the install from before the merge,
+#      with the command; with it the install is made here, and made again
+#      after an undo
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -1272,6 +1276,158 @@ eq "the dependencies were installed from the lockfile the retry left" \
   "$(tr '\n' ' ' <deps/installed)" '"dep-a" "dep-new" '
 eq "and scope let the lockfile the plan names move" \
   "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .result' tasks/AIF-24/ledger.json)" "pass"
+
+# ====== 25. land, when the merge moves the dependencies =======================
+#
+# land runs the suite on the merge in the developer's checkout, against what is
+# installed THERE — and a merge that moved package.json and its lockfile was
+# judged against the install from before it: "the suite is red", the merge
+# undone, a ticket with nothing wrong in it in Needs Human (docs/DEFECTS-6.md
+# #3). Installing in someone's own checkout is theirs to allow. Without
+# --prepare a red says what it was measured against and gives the command that
+# lands it installed, and a green lands and says the install is not the
+# merge's; with it, "prepare" runs before the suite, and again after an undo,
+# for the lockfile the undo put back. The stand-in is scenario 24's npm ci,
+# which can also be offline — and then, as npm ci does, leaves no install at
+# all. t0 is red while the lockfile pins dep-new and the install lacks it: a
+# test importing a package that is not installed.
+printf '\n25. land, when the merge moves the dependencies: named, or installed when asked\n'
+fresh_project "$SANDBOX/p25"
+printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
+cp package.json package-lock.json
+printf 'deps/\n' >>.gitignore
+cat >.aif/prepare.sh <<'PREP'
+#!/bin/bash
+if [ -n "${PREP_OFFLINE:-}" ]; then
+  rm -rf deps
+  echo "npm error request to https://registry.npmjs.org/dep-new failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org"
+  exit 1
+fi
+want="$(grep -o '"dep-[a-z]*"' package.json | sort | tr '\n' ' ')"
+have="$(grep -o '"dep-[a-z]*"' package-lock.json | sort | tr '\n' ' ')"
+if [ "$want" != "$have" ]; then
+  echo "npm error \`npm ci\` can only install packages when your package.json and package-lock.json are in sync."
+  exit 1
+fi
+rm -rf deps && mkdir -p deps
+printf '%s\n' $have >deps/installed
+# npm install, where npm ci was meant: it installs, and rewrites the lockfile
+[ -z "${PREP_REWRITES:-}" ] || printf '\n' >>package-lock.json
+PREP
+chmod +x .aif/prepare.sh
+tmp="$(mktemp)"
+jq '.prepare = "bash .aif/prepare.sh"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+t0_red_when 'grep -q dep-new package-lock.json && ! grep -q dep-new deps/installed 2>/dev/null'
+ticket_for AIF-25
+git add -A && git commit -qm "ticket 25, and a lockfile" >/dev/null
+bash .aif/prepare.sh # the developer's own install
+installed() { cat deps/installed 2>/dev/null | tr '\n' ' '; }
+last_comment() { "$AIF" board show "$1" --json | jq -r '.comments[-1].text'; }
+"$AIF" board create tasks/AIF-25/ticket.md --column ready >/dev/null
+rc=0
+FAKE_DEPS=1 "$AIF" work AIF-25 >"$OUT/run25.out" 2>&1 || rc=$?
+eq "a ticket that adds a dependency through the lock: built, in Review" "$rc,$(col AIF-25)" "0,review"
+
+# without --prepare: red against the install from before the merge, and the
+# reason says so, with a command that works from Needs Human
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-25 >"$OUT/land25a.out" 2>&1 || rc=$?
+eq "red against the old install: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
+eq "it named what moved, before the suite ran" "$(grep -E '^(deps|suite) ' "$OUT/land25a.out" | head -1)" \
+  "deps      package-lock.json, package.json moved — not installed here (--prepare installs them)"
+eq "the install here was not touched" "$(installed)" '"dep-a" '
+eq "the reason says what the suite ran against" \
+  "$(last_comment AIF-25 | grep -c 'the suite ran against the dependencies installed here before it')" "1"
+eq "…and the command that lands it installed" \
+  "$(last_comment AIF-25 | grep -c 'aif board move AIF-25 review && aif land AIF-25 --prepare')" "1"
+eq "the terminal has the command too" \
+  "$(grep -c 'aif board move AIF-25 review && aif land AIF-25 --prepare' "$OUT/land25a.out")" "1"
+eq "the card is in Needs Human" "$(col AIF-25)" "needs_human"
+
+# green without --prepare: in a copy of this checkout whose developer had
+# installed dep-new by hand, trying the branch. It lands, and says the install
+# here was not made from the lockfile it merged.
+mkdir -p "$SANDBOX/p25b"
+cp -R "$SANDBOX/p25/." "$SANDBOX/p25b/"
+cd "$SANDBOX/p25b" || exit 1
+"$AIF" board move AIF-25 review >/dev/null
+printf '"dep-a"\n"dep-new"\n' >deps/installed
+rc=0
+"$AIF" land AIF-25 >"$OUT/land25b.out" 2>&1 || rc=$?
+eq "green against the install from before the merge: landed" "$rc,$(col AIF-25)" "0,done"
+eq "the summary says it was not installed from the merge, and how to" \
+  "$(grep -c '^deps: .*not installed here; the suite ran against the install from before the merge. Install them: bash .aif/prepare.sh' "$OUT/land25b.out")" "1"
+eq "so does the landing note" "$(last_comment AIF-25 | grep -c '^- dependencies: .*not installed here')" "1"
+eq "and the install was left alone" "$(installed)" '"dep-a" "dep-new" '
+cd "$SANDBOX/p25" || exit 1
+
+# --prepare with no "prepare" to run is refused, and nothing moves
+"$AIF" board move AIF-25 review >/dev/null
+jq 'del(.prepare)' .aif/project.json >"$OUT/p25.json" && cp "$OUT/p25.json" .aif/project.json
+rc=0
+"$AIF" land AIF-25 --prepare >"$OUT/land25c.out" 2>&1 || rc=$?
+eq "--prepare with no prepare to run: refused" "$rc" "1"
+eq "…saying so" "$(grep -c 'names no "prepare"' "$OUT/land25c.out")" "1"
+eq "…before anything moved" "$(git rev-parse HEAD),$(col AIF-25)" "$head_before,review"
+git checkout -q -- .aif/project.json
+
+# --prepare, and red anyway: main grew a test after the build. Installed
+# before the suite — only the new test fails, not t0 — and installed again,
+# for the lockfile the undo put back.
+printf '# t2 waits for impl2\n' >tests/t2.py
+git add -A && git commit -qm "main grew a test after the build" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-25 --prepare >"$OUT/land25d.out" 2>&1 || rc=$?
+eq "--prepare, red on the result: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
+eq "it installed, before the suite ran" "$(grep -E '^(prepare|suite) ' "$OUT/land25d.out" | head -1)" \
+  "prepare   package-lock.json, package.json moved — bash .aif/prepare.sh"
+eq "…so only the new test failed" "$(grep -c '(exit 0, 1 failing)' "$OUT/land25d.out")" "1"
+eq "the undo installed again, from the lockfile it put back" "$(installed)" '"dep-a" '
+eq "…and the reason says so" \
+  "$(last_comment AIF-25 | grep -c 'installed again, from the lockfile the undo put back')" "1"
+eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# --prepare, offline: the install fails on the result and again after the
+# undo, and leaves nothing installed. Said, with the command.
+"$AIF" board move AIF-25 review >/dev/null
+rc=0
+PREP_OFFLINE=1 "$AIF" land AIF-25 --prepare >"$OUT/land25e.out" 2>&1 || rc=$?
+eq "--prepare and the install fails: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
+eq "the reason is prepare's, in its own words" \
+  "$(last_comment AIF-25 | grep -c 'failed on the result (exit 1)'),$(last_comment AIF-25 | grep -c 'getaddrinfo ENOTFOUND')" "1,1"
+eq "…and says the install here may not match, with the command" \
+  "$(last_comment AIF-25 | grep -c 'what is installed here may not match it. Run:')" "1"
+eq "the terminal says so too" "$(grep -c 'what is installed here may not match it' "$OUT/land25e.out")" "1"
+eq "landing it again keeps --prepare" \
+  "$(last_comment AIF-25 | grep -c 'run: aif board move AIF-25 review && aif land AIF-25 --prepare$')" "1"
+bash .aif/prepare.sh # the developer runs it, online again
+
+# --prepare, and the install rewrites the lockfile: not the install the merge
+# pinned, and it would leave the checkout dirty. Refused like a failed one —
+# and the undo's own install rewrites it too, which the undo puts back.
+"$AIF" board move AIF-25 review >/dev/null
+rc=0
+PREP_REWRITES=1 "$AIF" land AIF-25 --prepare >"$OUT/land25g.out" 2>&1 || rc=$?
+eq "--prepare and the install rewrites the lockfile: exit 1, the merge undone" \
+  "$rc,$(git rev-parse HEAD)" "1,$head_before"
+eq "…saying which file" "$(grep -c '(bash .aif/prepare.sh) rewrote package-lock.json' "$OUT/land25g.out")" "1"
+eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# --prepare, green: landed, with what the merged lockfile pins installed here
+"$AIF" board move AIF-25 review >/dev/null
+git rm -q tests/t2.py
+git commit -qm "main dropped the test" >/dev/null
+rc=0
+"$AIF" land AIF-25 --prepare >"$OUT/land25f.out" 2>&1 || rc=$?
+eq "--prepare: landed" "$rc,$(col AIF-25)" "0,done"
+eq "as one merge commit" "$(git log --format=%s -1)" "aif: land AIF-25 — one-command user export"
+eq "with the merged lockfile's dependencies installed here" "$(installed)" '"dep-a" "dep-new" '
+eq "the summary says so" \
+  "$(grep -c '^deps: .*moved — installed here (bash .aif/prepare.sh)' "$OUT/land25f.out")" "1"
+eq "so does the landing note" "$(last_comment AIF-25 | grep -c '^- dependencies: .*installed here (bash')" "1"
+eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
 
 # ----------------------------------------------------------------------------
 printf '\n'

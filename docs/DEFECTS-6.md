@@ -15,7 +15,7 @@ bash 3.2.57, jq 1.8.2, git 2.50.1. Each entry says how it was established:
 - **reported** — taken on the reporter's word; the mechanism is confirmed,
   the trigger is not.
 
-Every fix is exercised by `scripts/check-work.sh`, scenarios 20–24, through the
+Every fix is exercised by `scripts/check-work.sh`, scenarios 20–25, through the
 scripted runner: no model, no network. #7–#9 by `scripts/check-release.sh`,
 against local stand-ins for GitHub and the tap: no network either.
 
@@ -191,10 +191,31 @@ The station prompts say the same: the plan names the lockfile with the
 manifest; the implementer uses the package manager, never `--no-save`,
 `--no-package-lock` or a hand edit.
 
-**Not done.** `aif land` runs the suite on the merge result in the developer's
-checkout, against whatever is installed there; a merge that changes the
-lockfile is judged against the old `node_modules`. It says "suite is red" and
-undoes the merge, which is safe and unhelpful. Left for its own change.
+**And `aif land`, after 0.10.0 — probed.** It runs the suite on the merge in the
+developer's checkout, against whatever is installed there, so a merge that moved
+the lockfile was judged against the old `node_modules`: "suite is red", the
+merge undone, the card in Needs Human — safe, and misleading. Reproduced in
+scenario 25: a ticket the worker built with a dependency added through its lock,
+red at land over a test that needs the package, green once it is installed.
+
+Installing there is not done unasked. `prepare` was written to provision a
+fresh worktree; in the developer's checkout `npm ci` deletes `node_modules`
+before it installs, a `cp .env.example .env` beside it would overwrite theirs,
+and `reset --hard` cannot take an install back. **Fixed**, in two halves:
+
+- **without `--prepare`** land names the moved files before the suite. A red
+  says it was measured against the install from before the merge and gives the
+  command that lands it installed: `aif board move <ID> review && aif land <ID>
+  --prepare` — land refuses a card in Needs Human, so every failure note's
+  command now carries the move, and the flags the land was run with. A green
+  lands, and the summary and the card say the install is not the merge's, with
+  the command that makes it so;
+- **with `--prepare`** `prepare` runs after the merge and before the suite.
+  When the land is then undone — a red, or an install that failed — the reset
+  is followed by `prepare` again, for the lockfile it put back, and the note
+  says whether that worked. An install that rewrites a tracked file
+  (`npm install` where `npm ci` was meant) is refused like a failed one: it did
+  not install what the merge pinned, and would leave the checkout dirty.
 
 ### 4. `green`'s revert-recheck wrote into the real worktree's index — probed
 

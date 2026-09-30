@@ -79,7 +79,11 @@ Ask for one word and take it:
   ```
 
   It merges the branch into the checkout's branch, runs the suite on the result,
-  moves the card to Done, removes the worktree and releases the next slice.
+  moves the card to Done, removes the worktree and releases the next slice. When
+  the diff moves a dependency manifest or its lockfile, say `aif land <ID> --prepare`
+  instead: the suite runs against what is installed in the human's checkout, and
+  `--prepare` installs the merge's dependencies there first — with the project's
+  `prepare`, in their checkout, which is why it is theirs to choose.
 - **wrong** — write the rework comment in the reviewer's own words, one line per thing
   that is wrong, criteria-shaped where they can be ("AC-002 passes but the export
   still includes deleted users"). Show it, take an edit, then post it with

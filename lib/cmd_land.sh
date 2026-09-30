@@ -12,10 +12,13 @@
 # authority on whether a yes is allowed at all.
 #
 #   refuse      not the main checkout, no branch, the card not in Review, the
-#               run record not `built`, uncommitted changes — nothing touched
+#               run record not `built`, uncommitted changes, --prepare with no
+#               "prepare" to run — nothing touched
 #   merge       aif/<ID> into the checkout's branch, --no-ff so the ticket
 #               stays one commit to find. A conflict is aborted and reported,
 #               never resolved by a model
+#   install     only with --prepare, and only when the merge moved a dependency
+#               manifest or lockfile: project.json's "prepare", here
 #   suite       .test.command on the RESULT, here: the gates proved the branch
 #               alone, this proves it with everything landed since. Red undoes
 #               the merge — the tree was clean, so a reset to the sha from
@@ -26,6 +29,19 @@
 #               dependencies are Done, moves Backlog → Ready. That is how a
 #               request's slices flow without the project manager touching
 #               each one
+#
+# A merge that moves a manifest or a lockfile changes what the suite needs
+# installed, and what is installed here is not in the merge: the suite judged
+# it against node_modules from before it, went red over a package it lacked,
+# and undid a ticket with nothing wrong in it (docs/DEFECTS-6.md #3).
+# Installing is not done unasked. "prepare" was written to provision a fresh
+# worktree; here it runs in the developer's own checkout, where `npm ci`
+# deletes node_modules before it installs, a `cp .env.example .env` beside it
+# would overwrite theirs, and a reset cannot take an install back. So by
+# default the moved files are only named — before the suite, in a red's
+# reason with the command that lands it installed, in a green's summary. With
+# --prepare the install runs after the merge and before the suite, and an
+# undo runs it again for the lockfile the reset put back.
 #
 # It never runs a model and never starts a build. Exit: 0 landed · 1 refused,
 # or undone (the card and the comment say why) · 3 the environment cannot land
@@ -45,8 +61,16 @@ usage: aif land <ticket> [options]
   uncommitted. A merge conflict or a red suite undoes the merge and moves the
   card to Needs Human with the reason; the branch is untouched either way.
 
+  A merge that moves a dependency manifest or lockfile (package.json,
+  package-lock.json, ...) is judged against the dependencies installed here
+  before it, and says so — unless --prepare installs them first.
+
   --no-suite         land without running .test.command on the result
   --keep             keep the worktree and the branch after landing
+  --prepare          when the merge moves a manifest or a lockfile, run
+                     "prepare" from .aif/project.json HERE before the suite
+                     (npm ci replaces node_modules), and again after an undo,
+                     for the lockfile it put back
 EOF
 }
 
@@ -54,10 +78,13 @@ _aif_land_say() {
   printf '%s%-9s%s %s\n' "$AIF_C_DIM" "$1" "$AIF_C_RESET" "$2" >&2
 }
 
-# _aif_land_fail <root> <ticket> <headline> <detail-file> — after the merge was
-# undone: the reason on the card, the card in Needs Human, exit 1.
+# _aif_land_fail <root> <ticket> <headline> <detail-file> <again> [<more>] —
+# after the merge was undone: the reason on the card, the card in Needs Human,
+# exit 1. <again> is the command that lands it once it is resolved. <more>
+# follows the detail, on the card and here: what the red was measured against,
+# what became of the install, a better command than <again> when there is one.
 _aif_land_fail() {
-  local root="$1" ticket="$2" headline="$3" detail="$4" note
+  local root="$1" ticket="$2" headline="$3" detail="$4" again="$5" more="${6:-}" note
   note="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
   {
     printf '# %s — not landed\n\n%s\n' "$ticket" "$headline"
@@ -66,15 +93,50 @@ _aif_land_fail() {
       sed 's/\x1b\[[0-9;]*m//g' "$detail" | sed -n '1,20p'
       printf '```\n'
     fi
-    printf '\nThe merge was undone and aif/%s is untouched. Rework the ticket, or resolve by hand and run: aif land %s\n' \
-      "$ticket" "$ticket"
+    [ -z "$more" ] || printf '\n%s\n' "$more"
+    printf '\nThe merge was undone and aif/%s is untouched. Rework the ticket, or resolve by hand and run: %s\n' \
+      "$ticket" "$again"
   } >"$note"
   (AIF_BOARD_BY="aif land" aif_board_comment "$root" "$ticket" "$note" >/dev/null) || true
   (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
   rm -f "${note:?}" "${detail:?}"
   aif_err "$headline"
+  [ -z "$more" ] || printf '%s\n' "$more" | sed '/./s/^/  /' >&2
   _aif_land_say "board" "$ticket → needs_human, the reason posted"
   exit 1
+}
+
+# _aif_land_prepare <root> <prepare> <log> — the project's install, here, rc
+# its own. stdin closed, as the worker closes it: the output goes to a file, so
+# a prompt would wait for an answer nobody can see.
+_aif_land_prepare() {
+  local rc=0
+  (cd "$1" && eval "$2") </dev/null >"$3" 2>&1 || rc=$?
+  return "$rc"
+}
+
+# _aif_land_undo <root> <pre> <prepare> — back to the commit from before the
+# merge. The tree was clean, so the reset loses nothing git tracks, and an
+# install is not something it tracks. <prepare> is the command when this land
+# ran it on the merge, and empty when it did not. When it did, what is
+# installed here is the merge's, or whatever a failed install left, so it runs
+# again for the lockfile the reset put back — and the reset once more after
+# it, for anything it rewrote. Prints what became of the install, for the card.
+_aif_land_undo() {
+  local root="$1" pre="$2" prepare="$3" log rc=0
+  git -C "$root" reset --hard "$pre" >/dev/null 2>&1
+  [ -n "$prepare" ] || return 0
+  _aif_land_say "prepare" "again, for the lockfile the undo put back — $prepare"
+  log="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
+  _aif_land_prepare "$root" "$prepare" "$log" || rc=$?
+  rm -f "${log:?}"
+  git -C "$root" reset --hard "$pre" >/dev/null 2>&1
+  if [ "$rc" -eq 0 ]; then
+    printf 'The dependencies were installed again, from the lockfile the undo put back.'
+  else
+    printf 'Installing the dependencies again from the lockfile the undo put back failed (exit %s): what is installed here may not match it. Run:\n\n    %s' \
+      "$rc" "$prepare"
+  fi
 }
 
 # _aif_land_column <root> <ticket> — the card's column, or empty when there is
@@ -128,11 +190,12 @@ _aif_land_release() {
 }
 
 aif_cmd_land() {
-  local ticket="" run_suite=1 keep=0
+  local ticket="" run_suite=1 keep=0 run_prepare=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-suite) run_suite=0 ;;
       --keep) keep=1 ;;
+      --prepare) run_prepare=1 ;;
       -h | --help)
         _aif_land_usage
         return 0
@@ -142,7 +205,14 @@ aif_cmd_land() {
     esac
     shift
   done
-  [ -n "$ticket" ] || aif_die "usage: aif land <ticket> [--no-suite] [--keep]"
+  [ -n "$ticket" ] || aif_die "usage: aif land <ticket> [--no-suite] [--keep] [--prepare]"
+
+  # This land again, as a failure note gives it: the card will be in Needs
+  # Human, and land refuses a card that is not in Review.
+  local again="aif board move $ticket review && aif land $ticket"
+  [ "$run_suite" -eq 1 ] || again="$again --no-suite"
+  [ "$keep" -eq 0 ] || again="$again --keep"
+  [ "$run_prepare" -eq 0 ] || again="$again --prepare"
 
   local root main
   root="$(aif_require_project)"
@@ -156,6 +226,13 @@ aif_cmd_land() {
   pattern="$(aif_board_ticket_re "$root")"
   printf '%s' "$ticket" | grep -qE "$pattern" ||
     aif_die "ticket '$ticket' does not match $pattern (from project.json)"
+
+  # The install --prepare runs, from this checkout's config as it stands — the
+  # developer's own instruction, which is where the worker reads it too.
+  local prepare
+  prepare="$(jq -r '.prepare // empty' "$(aif_project_config "$root")" 2>/dev/null)" || prepare=""
+  [ "$run_prepare" -eq 0 ] || [ -n "$prepare" ] ||
+    aif_die "--prepare: .aif/project.json names no \"prepare\" — set it to the project's install (e.g. \"npm ci\")"
 
   local branch="aif/$ticket"
   git -C "$root" show-ref --verify --quiet "refs/heads/$branch" ||
@@ -218,7 +295,7 @@ aif_cmd_land() {
     else
       git -C "$root" merge --abort >/dev/null 2>&1 || git -C "$root" reset --hard "$pre" >/dev/null 2>&1
       _aif_land_fail "$root" "$ticket" \
-        "$branch does not merge cleanly into $target — a conflict is a human's to resolve, and nothing here resolves it" "$out"
+        "$branch does not merge cleanly into $target — a conflict is a human's to resolve, and nothing here resolves it" "$out" "$again"
     fi
   fi
 
@@ -235,11 +312,46 @@ aif_cmd_land() {
     fi
   fi
 
-  # 3. the suite, on the result. Exit code first; then the report the gates
+  # 3. the dependencies: the manifests and lockfiles the merge moved, pre..HEAD.
+  #    Installed here with --prepare, and named without it.
+  local deps="" prepared=0 prep_rc=0 rewrote="" headline="" more=""
+  if [ "$merged" -eq 1 ]; then
+    deps="$(git -C "$root" -c core.quotePath=false diff --name-only "$pre" HEAD 2>/dev/null |
+      grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u | paste -sd ',' - | sed 's/,/, /g')" || deps=""
+  fi
+  if [ -z "$deps" ]; then
+    [ "$run_prepare" -eq 0 ] ||
+      _aif_land_say "prepare" "not run — no dependency manifest or lockfile moved"
+  elif [ "$run_prepare" -eq 0 ]; then
+    _aif_land_say "deps" "$deps moved — not installed here${prepare:+ (--prepare installs them)}"
+  else
+    _aif_land_say "prepare" "$deps moved — $prepare"
+    prepared=1
+    _aif_land_prepare "$root" "$prepare" "$out" || prep_rc=$?
+    # An install from the lockfile leaves the tree as the merge made it. One
+    # that rewrites a tracked file installed something the merge did not pin,
+    # and would leave this checkout dirty besides.
+    rewrote="$(git -C "$root" -c core.quotePath=false diff --name-only HEAD 2>/dev/null |
+      paste -sd ',' - | sed 's/,/, /g')" || rewrote=""
+    if [ "$prep_rc" -ne 0 ] || [ -n "$rewrote" ]; then
+      # Install tools print the reason last.
+      { grep -v '^[[:space:]]*$' "$out" | tail -20 >"$out.tail"; } || true
+      mv "$out.tail" "$out"
+      if [ "$prep_rc" -ne 0 ]; then
+        headline="the merge moved $deps, and \"prepare\" ($prepare) failed on the result (exit $prep_rc) — the merge was undone"
+      else
+        headline="the merge moved $deps, and \"prepare\" ($prepare) rewrote $rewrote — it has to install what the lockfile pins, as it pins it (npm ci, not npm install); the merge was undone"
+      fi
+      more="$(_aif_land_undo "$root" "$pre" "$prepare")"
+      _aif_land_fail "$root" "$ticket" "$headline" "$out" "$again" "$more"
+    fi
+  fi
+
+  # 4. the suite, on the result. Exit code first; then the report the gates
   #    read, because a runner that exits 0 with failures in the report exists
   #    (the offline harness's stub is one), and green does not trust the exit
   #    code alone either.
-  local project test_cmd suite suite_rc=0 report_path="" failures=0 junit
+  local project test_cmd suite suite_ran=0 suite_rc=0 report_path="" failures=0 junit
   project="$(aif_project_config "$root")"
   test_cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
   if [ "$run_suite" -eq 0 ]; then
@@ -259,16 +371,44 @@ aif_cmd_land() {
       [ -n "$failures" ] || failures=0
     fi
     if [ "$suite_rc" -ne 0 ] || [ "$failures" -gt 0 ]; then
-      git -C "$root" reset --hard "$pre" >/dev/null 2>&1
+      if [ "$prepared" -eq 1 ]; then
+        more="The merge moved $deps, and the suite ran with them installed here ($prepare). $(_aif_land_undo "$root" "$pre" "$prepare")"
+      else
+        _aif_land_undo "$root" "$pre" ""
+        if [ -n "$deps" ]; then
+          more="The merge moved $deps, and the suite ran against the dependencies installed here before it — the red may be that install, not the change. "
+          if [ -n "$prepare" ]; then
+            more="${more}To land it with them installed from the lockfile, here ($prepare):"
+          else
+            more="${more}There is no \"prepare\" in .aif/project.json to install them with: set it (e.g. \"npm ci\"), then:"
+          fi
+          more="$more$(printf '\n\n    %s --prepare' "$again")"
+        fi
+      fi
       _aif_land_fail "$root" "$ticket" \
-        "the suite is red on $target with $branch merged (exit $suite_rc, $failures failing) — the merge was undone" "$out"
+        "the suite is red on $target with $branch merged (exit $suite_rc, $failures failing) — the merge was undone" "$out" "$again" "$more"
     fi
     suite="green ($test_cmd)"
+    suite_ran=1
     _aif_land_say "suite" "green"
   fi
   rm -f "${out:?}"
 
-  # 4. the branch, and the card.
+  # What is installed now, when the merge moved what should be.
+  local dep_line=""
+  if [ "$prepared" -eq 1 ]; then
+    dep_line="$deps moved — installed here ($prepare)"
+  elif [ -n "$deps" ]; then
+    dep_line="$deps moved — not installed here"
+    [ "$suite_ran" -eq 0 ] || dep_line="$dep_line; the suite ran against the install from before the merge"
+    if [ -n "$prepare" ]; then
+      dep_line="$dep_line. Install them: $prepare"
+    else
+      dep_line="$dep_line. Install them from the lockfile"
+    fi
+  fi
+
+  # 5. the branch, and the card.
   local br_note="kept"
   if [ "$keep" -eq 0 ]; then
     if git -C "$root" branch -d "$branch" >/dev/null 2>&1; then
@@ -290,6 +430,7 @@ aif_cmd_land() {
       printf -- '- `%s` was already in `%s` (at `%s`)\n' "$branch" "$target" "$sha"
     fi
     printf -- '- suite on the result: %s\n' "$suite"
+    [ -z "$dep_line" ] || printf -- '- dependencies: %s\n' "$dep_line"
     printf -- '- worktree %s; branch %s\n' "$wt_note" "$br_note"
   } >"$note"
   (AIF_BOARD_BY="aif land" aif_board_comment "$root" "$ticket" "$note" >/dev/null) ||
@@ -299,7 +440,7 @@ aif_cmd_land() {
     aif_warn "could not move $ticket to Done on the board — run: aif board move $ticket done"
   fi
 
-  # 5. whoever was waiting on it.
+  # 6. whoever was waiting on it.
   local released
   released="$(_aif_land_release "$root" "$ticket")"
 
@@ -308,6 +449,7 @@ aif_cmd_land() {
   [ "$merged" -eq 0 ] || printf ' (merge of %s, %s commits)' "$branch" "$n_commits"
   printf '\n'
   printf 'suite:    %s\n' "$suite"
+  [ -z "$dep_line" ] || printf 'deps:     %s\n' "$dep_line"
   printf 'board:    %s is in Done  (aif board show %s)\n' "$ticket" "$ticket"
   if [ -n "$released" ]; then
     printf 'released: %s → Ready\n' "$released"

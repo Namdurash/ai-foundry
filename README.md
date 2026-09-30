@@ -118,6 +118,11 @@ removes the worktree and the branch, and releases the tickets whose `depends_on`
 names it from Backlog to Ready — which is how a request's slices flow without the
 project manager touching each one. A conflict or a red suite undoes the merge and
 moves the card to Needs Human with the reason; nothing is ever resolved by a model.
+The suite runs against what is installed in *your* checkout, so a merge that moves a
+dependency manifest or lockfile is judged against the install from before it — land
+says so, and a red gives the command that lands it installed: `--prepare` runs
+`prepare` (`npm ci`) in your checkout before the suite, and again after an undo, for
+the lockfile the undo put back. It is never run there unasked.
 
 One thing to know about those worktrees: they are complete checkouts *inside*
 the repository, and git hiding them does not mean your test runner will. A
@@ -480,7 +485,7 @@ the gates rather than remembered.
 | `aif project check` | validate it |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
 | `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, or two in a row that did not build |
-| `aif land <ID> [--no-suite] [--keep]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready |
+| `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
@@ -853,7 +858,7 @@ is exactly what happened: a station installed a native package without the
 lockfile, npm re-resolved packages nobody had asked to move into an
 incompatible pair, and twelve pre-existing tests went red where no edit to the
 manifest's files could reach them — three implement attempts, all rejected for
-them. The route now runs through four places:
+them. The route now runs through five places:
 
 - **the plan gate** requires the lockfile whenever the plan names a manifest —
   the nearest one at or above it: `package.json` → `package-lock.json`,
@@ -868,7 +873,15 @@ them. The route now runs through four places:
   the lock comes back to the station as a rejection in npm's own words;
 - **`green`**, when a pre-existing test fails, runs it again with the
   implementation reverted: one that passed at the freeze and still fails there
-  moved outside the tracked tree, and the run stops instead of retrying.
+  moved outside the tracked tree, and the run stops instead of retrying;
+- **`aif land`** runs the suite in your checkout, against what is installed
+  there. When the merge moves a manifest or a lockfile it says so, and a red
+  says it was measured against the install from before the merge, with the
+  command that lands it installed: `aif land <ID> --prepare`, which runs
+  `prepare` in your checkout before the suite — and again if the land is
+  undone, for the lockfile the undo put back. An install that rewrites a
+  tracked file (`npm install` where `npm ci` was meant) is refused like a
+  failed one.
 
 ### What each station cost
 

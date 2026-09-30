@@ -55,7 +55,7 @@ aif_ledger_append() {
   #
   # mkdir is the lock: atomic on every POSIX filesystem, needs no flock (absent
   # from stock macOS), and leaves a directory a human can see and delete.
-  local lock="$ledger.lock" waited=0
+  local lock="$ledger.lock" waited=0 sig
   while ! mkdir "$lock" 2>/dev/null; do
     waited=$((waited + 1))
     if [ "$waited" -gt 100 ]; then
@@ -67,9 +67,12 @@ aif_ledger_append() {
   # by then the local is out of scope. The caller's handler is appended rather
   # than displaced: a signal arriving mid-write must still do whatever the
   # command had arranged for it, and `trap -` on the way out used to take that
-  # handler with it (docs/DEFECTS-3.md #1).
-  # shellcheck disable=SC2064 # expanding now is the point, see above
-  trap "rmdir '$lock' 2>/dev/null || true; ${AIF_TRAP_ARMED:-}" EXIT INT TERM
+  # handler with it (docs/DEFECTS-3.md #1). One trap per signal, because the
+  # handler is told which one fired (aif_trap_arm).
+  for sig in EXIT INT TERM; do
+    # shellcheck disable=SC2064 # expanding now is the point, see above
+    trap "rmdir '$lock' 2>/dev/null || true; ${AIF_TRAP_ARMED:+$AIF_TRAP_ARMED $sig}" "$sig"
+  done
 
   seq=$(($(jq '.entries | length' "$ledger") + 1))
   if [ "$seq" -eq 1 ]; then

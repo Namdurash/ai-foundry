@@ -36,21 +36,33 @@ fi
 # shellcheck disable=SC2034  # read by the modules that source this file
 AIF_TRAP_ARMED=""
 
-# aif_trap_arm <handler> — run <handler> on EXIT, INT and TERM.
+# aif_trap_arm <handler> — run <handler> on EXIT, INT and TERM, with the name
+# of the one that fired as its argument. A handler that ends the process needs
+# it: an interrupt ends in 130 and a TERM in 143, while an exit — an aif_die, a
+# command failing under set -e — keeps its own code.
 aif_trap_arm() {
   AIF_TRAP_ARMED="$1"
-  # shellcheck disable=SC2064  # the handler IS the argument; expanding it now
-  trap "$1" EXIT INT TERM
+  aif_trap_restore
 }
 
 # aif_trap_restore — put back whatever was armed, or clear if nothing was.
 aif_trap_restore() {
-  if [ -n "${AIF_TRAP_ARMED:-}" ]; then
-    # shellcheck disable=SC2064  # same: put back the handler, not a reference
-    trap "$AIF_TRAP_ARMED" EXIT INT TERM
-  else
+  local sig
+  if [ -z "${AIF_TRAP_ARMED:-}" ]; then
     trap - EXIT INT TERM
+    return 0
   fi
+  for sig in EXIT INT TERM; do
+    # shellcheck disable=SC2064  # the handler IS the argument; expanding it now
+    trap "$AIF_TRAP_ARMED $sig" "$sig"
+  done
+}
+
+# aif_trap_disarm — the command that armed a handler takes it back, once what
+# it guarded has settled. Only that command: a library restores.
+aif_trap_disarm() {
+  AIF_TRAP_ARMED=""
+  aif_trap_restore
 }
 
 aif_err() {

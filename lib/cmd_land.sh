@@ -43,9 +43,15 @@
 # --prepare the install runs after the merge and before the suite, and an
 # undo runs it again for the lockfile the reset put back.
 #
+# From the merge to the verdict the developer's branch carries a commit nobody
+# has judged, for as long as the install and the suite take. A land stopped
+# there — Ctrl-C, a TERM, an error on the way — undoes the merge, leaves the
+# card in Review and names what it could not take back (_aif_land_stopped).
+#
 # It never runs a model and never starts a build. Exit: 0 landed · 1 refused,
 # or undone (the card and the comment say why) · 3 the environment cannot land
-# anything (not a project, a worktree, the board unreachable).
+# anything (not a project, a worktree, the board unreachable) · 130 or 143
+# stopped by an INT or a TERM before the verdict, and undone.
 
 _aif_land_usage() {
   cat <<EOF
@@ -59,7 +65,9 @@ usage: aif land <ticket> [options]
   Refused, touching nothing, unless this is the main checkout, the branch
   exists, the card is in Review, the run ended built, and nothing here is
   uncommitted. A merge conflict or a red suite undoes the merge and moves the
-  card to Needs Human with the reason; the branch is untouched either way.
+  card to Needs Human with the reason. Stopped before the verdict — Ctrl-C, a
+  TERM — it undoes the merge and leaves the card in Review. The branch is
+  untouched either way.
 
   A merge that moves a dependency manifest or lockfile (package.json,
   package-lock.json, ...) is judged against the dependencies installed here
@@ -85,6 +93,9 @@ _aif_land_say() {
 # what became of the install, a better command than <again> when there is one.
 _aif_land_fail() {
   local root="$1" ticket="$2" headline="$3" detail="$4" again="$5" more="${6:-}" note
+  # A verdict, reached with the merge undone: the stop handler has nothing left
+  # to undo, and this exit 1 must not come back through EXIT as a stop.
+  aif_trap_disarm
   note="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
   {
     printf '# %s — not landed\n\n%s\n' "$ticket" "$headline"
@@ -137,6 +148,71 @@ _aif_land_undo() {
     printf 'Installing the dependencies again from the lockfile the undo put back failed (exit %s): what is installed here may not match it. Run:\n\n    %s' \
       "$rc" "$prepare"
   fi
+}
+
+# What a stop acts on, in globals, as the worker's handler has it: a trap fires
+# with nothing but the signal's name, and on EXIT the locals may already be
+# gone. AIF_LAND_PRE is the commit to go back to, and empty whenever there is
+# nothing to undo; AIF_LAND_PREPARE is the install, once --prepare started it.
+AIF_LAND_ROOT=""
+AIF_LAND_PRE=""
+AIF_LAND_CARD=""
+AIF_LAND_AGAIN=""
+AIF_LAND_PREPARE=""
+AIF_LAND_OUT=""
+
+# _aif_land_stopped <EXIT|INT|TERM> — the land stopped between its merge and
+# its verdict: Ctrl-C, a supervisor's TERM, or an error on the way (an aif_die,
+# a command failing under set -e). Each used to leave the merge commit on the
+# developer's branch, the card in Review, the worktree gone and, with
+# --prepare, half an install — and nothing said so.
+#
+# The merge is undone: the tree was clean before it, so the reset loses nothing
+# git tracks. Nothing else is. The card stays in Review: the land did not
+# fail, it was stopped, and a stop decides nothing about the ticket. An install
+# --prepare had started is named with its command, not run again — npm ci takes
+# minutes, and whoever pressed Ctrl-C wants the prompt back.
+#
+# Armed with aif_trap_arm just before the merge, and disarmed at the verdict:
+# by the land after a green, by _aif_land_fail after an undo.
+_aif_land_stopped() {
+  local pre="$AIF_LAND_PRE" why target short undone=1
+  # Once: the exit an INT ends in comes back through EXIT.
+  [ -n "$pre" ] || return 0
+  AIF_LAND_PRE=""
+  # And whole. This ends the process, so nothing after it relies on errexit,
+  # and a second Ctrl-C must not cut the reset in half.
+  set +e
+  trap '' INT TERM
+  case "${1:-EXIT}" in
+    INT) why="interrupted" ;;
+    TERM) why="terminated" ;;
+    *) why="stopped by the error above" ;;
+  esac
+  git -C "$AIF_LAND_ROOT" reset --hard "$pre" >/dev/null 2>&1 || undone=0
+  [ -z "$AIF_LAND_OUT" ] || rm -f "$AIF_LAND_OUT" "$AIF_LAND_OUT.tail"
+  printf '\n' >&2
+  if [ "$undone" -eq 1 ]; then
+    target="$(git -C "$AIF_LAND_ROOT" symbolic-ref --short HEAD 2>/dev/null)"
+    short="$(git -C "$AIF_LAND_ROOT" rev-parse --short "$pre" 2>/dev/null)"
+    aif_err "$why — the merge was undone: ${target:-HEAD} is back at ${short:-$pre}"
+  else
+    aif_err "$why — and the merge could not be undone. Run: git -C '$AIF_LAND_ROOT' reset --hard $pre"
+  fi
+  {
+    printf '%s is still in Review, and aif/%s is untouched: a stop decides nothing.\n' \
+      "$AIF_LAND_CARD" "$AIF_LAND_CARD"
+    if [ -n "$AIF_LAND_PREPARE" ]; then
+      printf '"prepare" had started here, and a stop does not run it again: what is\n'
+      printf "installed may be partial, or the merge's. Install from the lockfile the\n"
+      printf 'undo put back:\n\n    %s\n\n' "$AIF_LAND_PREPARE"
+    fi
+    printf 'To land it: %s\n' "$AIF_LAND_AGAIN"
+  } | sed '/./s/^/  /' >&2
+  case "${1:-EXIT}" in
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+  esac
 }
 
 # _aif_land_column <root> <ticket> — the card's column, or empty when there is
@@ -207,12 +283,14 @@ aif_cmd_land() {
   done
   [ -n "$ticket" ] || aif_die "usage: aif land <ticket> [--no-suite] [--keep] [--prepare]"
 
-  # This land again, as a failure note gives it: the card will be in Needs
-  # Human, and land refuses a card that is not in Review.
-  local again="aif board move $ticket review && aif land $ticket"
-  [ "$run_suite" -eq 1 ] || again="$again --no-suite"
-  [ "$keep" -eq 0 ] || again="$again --keep"
-  [ "$run_prepare" -eq 0 ] || again="$again --prepare"
+  # This land again: as a stop gives it, from Review, and as a failure note
+  # gives it — the card will be in Needs Human, and land refuses a card that is
+  # not in Review.
+  local rerun="aif land $ticket"
+  [ "$run_suite" -eq 1 ] || rerun="$rerun --no-suite"
+  [ "$keep" -eq 0 ] || rerun="$rerun --keep"
+  [ "$run_prepare" -eq 0 ] || rerun="$rerun --prepare"
+  local again="aif board move $ticket review && $rerun"
 
   local root main
   root="$(aif_require_project)"
@@ -289,6 +367,15 @@ aif_cmd_land() {
     _aif_land_say "merge" "$branch is already in $target"
   else
     n_commits="$(git -C "$root" rev-list --count "HEAD..$branch" 2>/dev/null || printf '?')"
+    # From here to the verdict, a stop undoes the merge (_aif_land_stopped).
+    # Armed before git merges rather than after: a merge cut off halfway
+    # leaves a half-merged tree, and the same reset clears that.
+    AIF_LAND_ROOT="$root"
+    AIF_LAND_PRE="$pre"
+    AIF_LAND_CARD="$ticket"
+    AIF_LAND_AGAIN="$rerun"
+    AIF_LAND_OUT="$out"
+    aif_trap_arm "_aif_land_stopped"
     if git -C "$root" merge --no-ff --no-edit -m "aif: land $ticket — $title" "$branch" >"$out" 2>&1; then
       merged=1
       _aif_land_say "merge" "$branch into $target — $n_commits commit(s)"
@@ -327,6 +414,8 @@ aif_cmd_land() {
   else
     _aif_land_say "prepare" "$deps moved — $prepare"
     prepared=1
+    # From here a stop cannot say what is installed, so it names the install.
+    AIF_LAND_PREPARE="$prepare"
     _aif_land_prepare "$root" "$prepare" "$out" || prep_rc=$?
     # An install from the lockfile leaves the tree as the merge made it. One
     # that rewrites a tracked file installed something the merge did not pin,
@@ -392,6 +481,9 @@ aif_cmd_land() {
     suite_ran=1
     _aif_land_say "suite" "green"
   fi
+  # The verdict, and the merge stays. From here a stop leaves it landed, with
+  # the branch and the board still to do.
+  aif_trap_disarm
   rm -f "${out:?}"
 
   # What is installed now, when the merge moved what should be.

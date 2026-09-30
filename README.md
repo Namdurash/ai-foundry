@@ -122,7 +122,10 @@ The suite runs against what is installed in *your* checkout, so a merge that mov
 dependency manifest or lockfile is judged against the install from before it — land
 says so, and a red gives the command that lands it installed: `--prepare` runs
 `prepare` (`npm ci`) in your checkout before the suite, and again after an undo, for
-the lockfile the undo put back. It is never run there unasked.
+the lockfile the undo put back. It is never run there unasked. A land stopped before
+its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, an error
+on the way — undoes its own merge and leaves the card in Review, since a stop decides
+nothing; an install `--prepare` had started is named, with its command, not run again.
 
 One thing to know about those worktrees: they are complete checkouts *inside*
 the repository, and git hiding them does not mean your test runner will. A

@@ -46,6 +46,10 @@
 #      suite's verdict says it ran against the install from before the merge,
 #      with the command; with it the install is made here, and made again
 #      after an undo
+#  27  a land stopped between its merge and its verdict — Ctrl-C to its
+#      process group, an INT or a TERM to its pid, an error on the way —
+#      undoes the merge, leaves the card in Review and names an install it
+#      had started; a red land's own exit is a verdict, not a stop
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -519,6 +523,7 @@ armed="$(/bin/bash -c '
 ' _ "$ROOT" "$SANDBOX/trapwork" 2>&1)"
 eq "a ledger write leaves the armed handler in place" \
   "$(printf '%s' "$armed" | grep -c 'SENTINEL')" "1"
+eq "…still told which signal fired" "$(printf '%s' "$armed" | grep -c "SENTINEL INT'")" "1"
 
 # =========== 8. a report that contradicts the runner is not a verdict ========
 #
@@ -1428,6 +1433,178 @@ eq "the summary says so" \
   "$(grep -c '^deps: .*moved — installed here (bash .aif/prepare.sh)' "$OUT/land25f.out")" "1"
 eq "so does the landing note" "$(last_comment AIF-25 | grep -c '^- dependencies: .*installed here (bash')" "1"
 eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# ====== 27. a land stopped before its verdict undoes itself ====================
+#
+# land merges into the developer's checkout first, and only then installs
+# (--prepare) and runs the suite: minutes, with npm ci, which empties
+# node_modules before it fills it. A Ctrl-C there, or a supervisor's TERM, left
+# the merge commit on the branch, the card in Review, the worktree gone and
+# half an install, and nothing said so. A stop now undoes the merge and says
+# so; the card stays in Review, because a stop decides nothing; and an install
+# that had started is named with its command, not run again. The stand-ins
+# wait where the land is to be stopped (STOP_IN) until released or killed.
+#
+# A signal arrives two ways, and both are sent. Ctrl-C goes to the terminal's
+# whole foreground process group, so the stand-in dies with the land. A signal
+# to the land's pid alone reaches bash while it waits on a child, and bash runs
+# the trap only once the child returns — here a suite that came back green,
+# which the stop must still beat. With no trap, that INT was not even a stop:
+# bash saw the suite exit normally, took it that the suite had handled the
+# INT, and the land went on to Done.
+printf '\n27. a land stopped between its merge and its verdict undoes itself\n'
+fresh_project "$SANDBOX/p27"
+printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
+cp package.json package-lock.json
+printf 'deps/\n' >>.gitignore
+cat >.aif/stop-here.sh <<'STOP'
+#!/bin/bash
+# stop-here.sh <point> — where the land is to be stopped, say so and wait:
+# until released, and for thirty seconds at most.
+[ "${STOP_IN:-}" = "$1" ] || exit 0
+touch "$STOP_MARK"
+i=0
+while [ ! -f "$STOP_GO" ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+STOP
+# scenario 24's npm ci, with the wait where the real one spends its minutes:
+# after node_modules is emptied, before it is filled
+cat >.aif/prepare.sh <<'PREP'
+#!/bin/bash
+[ -z "${STOP_LOG:-}" ] || echo prepare >>"$STOP_LOG"
+want="$(grep -o '"dep-[a-z]*"' package.json | sort | tr '\n' ' ')"
+have="$(grep -o '"dep-[a-z]*"' package-lock.json | sort | tr '\n' ' ')"
+if [ "$want" != "$have" ]; then
+  echo "npm error \`npm ci\` can only install packages when your package.json and package-lock.json are in sync."
+  exit 1
+fi
+rm -rf deps
+bash .aif/stop-here.sh prepare
+mkdir -p deps
+printf '%s\n' $have >deps/installed
+PREP
+tmp="$(mktemp)"
+jq '.prepare = "bash .aif/prepare.sh"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+tmp="$(mktemp)"
+{
+  head -1 .aif/suite.sh
+  printf 'bash .aif/stop-here.sh suite\n'
+  tail -n +2 .aif/suite.sh
+} >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+ticket_for AIF-27
+git add -A && git commit -qm "ticket 27, a lockfile, and stand-ins that can be stopped" >/dev/null
+bash .aif/prepare.sh # the developer's own install
+"$AIF" board create tasks/AIF-27/ticket.md --column ready >/dev/null
+rc=0
+FAKE_DEPS=1 "$AIF" work AIF-27 >"$OUT/run27.out" 2>&1 || rc=$?
+eq "a ticket that moves the dependencies: built, in Review" "$rc,$(col AIF-27)" "0,review"
+head_before="$(git rev-parse HEAD)"
+branch_sha="$(git rev-parse aif/AIF-27)"
+changed() { git status --porcelain --untracked-files=no | wc -l | tr -d ' '; }
+
+# land_bg <stop-at> <out> [land options] — aif land AIF-27 in the background,
+# back once its stand-in waits at <stop-at>. Not a bare `"$AIF" land … &`: a
+# job a script puts in the background starts with SIGINT ignored, and bash can
+# neither trap nor reset a signal it started ignoring — the INT would reach
+# nothing, and the land would finish as if it had never been sent. python3 puts
+# SIGINT back as a terminal leaves it, and the land in a process group of its
+# own, for a Ctrl-C to signal whole.
+STOP_MARK="$SANDBOX/p27.at"
+STOP_GO="$SANDBOX/p27.go"
+STOP_LOG="$SANDBOX/p27.log"
+land_bg() {
+  local at="$1" out="$2" i=0
+  shift 2
+  rm -f "$STOP_MARK" "$STOP_GO" "$STOP_LOG"
+  STOP_IN="$at" STOP_MARK="$STOP_MARK" STOP_GO="$STOP_GO" STOP_LOG="$STOP_LOG" python3 -c '
+import os, signal, sys
+os.setpgrp()
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" land AIF-27 ${1+"$@"} >"$out" 2>&1 &
+  LAND_PID=$!
+  while [ ! -f "$STOP_MARK" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# An error on the way is a stop too — here a worktree the land cannot remove,
+# which failed under set -e with the merge already made. The exit keeps its
+# own code. (Root removes a read-only directory anyway, so not as root.)
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p .aif/worktrees/AIF-27/build/ro && touch .aif/worktrees/AIF-27/build/ro/f
+  chmod 555 .aif/worktrees/AIF-27/build/ro
+  rc=0
+  "$AIF" land AIF-27 >"$OUT/land27a.out" 2>&1 || rc=$?
+  chmod -R u+w .aif/worktrees/AIF-27
+  eq "an error after the merge: its exit 1 kept, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
+  eq "…said as a stop" "$(grep -c 'stopped by the error above — the merge was undone' "$OUT/land27a.out")" "1"
+  eq "…the card still in Review, the checkout clean" "$(col AIF-27),$(changed)" "review,0"
+fi
+
+# INT to the land's pid alone, during the suite: bash runs the trap once the
+# suite returns, and it returns green — the stop still wins
+land_bg suite "$OUT/land27b.out"
+kill -INT "$LAND_PID" 2>/dev/null
+touch "$STOP_GO"
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "INT to the land during the suite: exit 130, the merge undone" "$rc,$(git rev-parse HEAD)" "130,$head_before"
+eq "…though the suite had come back green" \
+  "$([ -f .aif/tmp/report.xml ] && grep -c '<failure' .aif/tmp/report.xml)" "0"
+eq "…the card still in Review, the branch untouched" "$(col AIF-27),$(git rev-parse aif/AIF-27)" "review,$branch_sha"
+eq "…the checkout clean" "$(changed)" "0"
+eq "…and it said so, with the command that lands it from there" \
+  "$(grep -c 'interrupted — the merge was undone' "$OUT/land27b.out"),$(grep -c 'To land it: aif land AIF-27$' "$OUT/land27b.out")" "1,1"
+eq "…naming no install, as none had started" "$(grep -c 'may be partial' "$OUT/land27b.out")" "0"
+
+# Ctrl-C during --prepare's install, as a terminal sends it: to the whole
+# group, so the install dies with the land, its deps/ emptied and not filled
+land_bg prepare "$OUT/land27c.out" --prepare
+kill -INT -- "-$LAND_PID" 2>/dev/null
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "Ctrl-C during --prepare's install: exit 130, the merge undone" "$rc,$(git rev-parse HEAD)" "130,$head_before"
+eq "…the card still in Review, the checkout clean" "$(col AIF-27),$(changed)" "review,0"
+eq "…the install run once, and not again: what it emptied stays empty" \
+  "$(grep -c prepare "$STOP_LOG" 2>/dev/null),$([ -e deps/installed ] && echo filled || echo empty)" "1,empty"
+eq "…said to be partial, with its command" \
+  "$(grep -c 'installed may be partial' "$OUT/land27c.out"),$(grep -c '^ *bash .aif/prepare.sh$' "$OUT/land27c.out")" "1,1"
+eq "…and landing it again keeps --prepare" "$(grep -c 'To land it: aif land AIF-27 --prepare$' "$OUT/land27c.out")" "1"
+
+# a supervisor's TERM, to the land's pid: the same undo, and 143
+land_bg suite "$OUT/land27d.out"
+kill -TERM "$LAND_PID" 2>/dev/null
+touch "$STOP_GO"
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "TERM during the suite: exit 143, the merge undone, still in Review" \
+  "$rc,$(git rev-parse HEAD),$(col AIF-27)" "143,$head_before,review"
+eq "…said" "$(grep -c 'terminated — the merge was undone' "$OUT/land27d.out")" "1"
+
+# a verdict is not a stop: a red land undoes its merge itself, and its own
+# exit 1 does not come back through the handler as a second undo
+printf '# t2 waits for impl2\n' >tests/t2.py
+git add -A && git commit -qm "main grew a test after the build" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-27 >"$OUT/land27e.out" 2>&1 || rc=$?
+eq "red on the result: exit 1, the merge undone, Needs Human" \
+  "$rc,$(git rev-parse HEAD),$(col AIF-27)" "1,$head_before,needs_human"
+eq "…a verdict, not a stop" "$(grep -c 'a stop decides nothing' "$OUT/land27e.out")" "0"
+
+# and what every stop left is landable
+git rm -q tests/t2.py
+git commit -qm "main dropped the test" >/dev/null
+"$AIF" board move AIF-27 review >/dev/null
+rc=0
+"$AIF" land AIF-27 --prepare >"$OUT/land27f.out" 2>&1 || rc=$?
+eq "then it lands: exit 0, Done, as one merge commit" "$rc,$(col AIF-27),$(git log --format=%s -1)" \
+  "0,done,aif: land AIF-27 — one-command user export"
+eq "…installed from the lockfile it merged, the checkout clean" \
+  "$(tr '\n' ' ' <deps/installed),$(changed)" '"dep-a" "dep-new" ,0'
 
 # ----------------------------------------------------------------------------
 printf '\n'

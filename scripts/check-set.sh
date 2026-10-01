@@ -183,6 +183,33 @@ g "tests writes a test"                    '{"agent_type":"aif-tests","tool_inpu
 g "an unrelated subagent"                  '{"agent_type":"general-purpose","tool_input":{"file_path":"tests/t.py"}}' allow
 g "a station via AIF_STATION (the live route)" '{"tool_input":{"file_path":"tests/t.py"}}' deny implement
 g "payload beats a stale environment"      '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow implement
+# The contract: the plan station writes the plan and the skeleton, not the
+# tests and not the rest of the ticket's record (docs/REBUILD-4.md §2.1).
+g "plan writes the plan"                   '{"agent_type":"aif-plan","tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow
+g "plan writes a skeleton"                 '{"agent_type":"aif-plan","tool_input":{"file_path":"src/new/module.ts"}}' allow
+g "plan writes a test"                     '{"agent_type":"aif-plan","tool_input":{"file_path":"tests/t.py"}}' deny
+g "plan writes the lock"                   '{"agent_type":"aif-plan","tool_input":{"file_path":"tasks/T-1/tests.lock.json"}}' deny
+# Each station's note is the one file under tasks/ it may write.
+g "tests writes its note"                  '{"agent_type":"aif-tests","tool_input":{"file_path":"tasks/T-1/tests.note.json"}}' allow
+g "tests writes the implementer's note"    '{"agent_type":"aif-tests","tool_input":{"file_path":"tasks/T-1/implement.note.json"}}' deny
+g "implement writes its note"              '{"agent_type":"aif-implement","tool_input":{"file_path":"tasks/T-1/implement.note.json"}}' allow
+g "implement writes the tests' note"       '{"agent_type":"aif-implement","tool_input":{"file_path":"tasks/T-1/tests.note.json"}}' deny
+
+printf '\nguard hook: the tests station runs one command\n'
+# Its Bash is for `aif _verify <ID>` and nothing else — and this rule fails
+# CLOSED, unlike the commit rule, because the tool exists only for this.
+b() { # <label> <command> <deny|allow> <AIF_STATION>
+  g "$1" "$(jq -nc --arg c "$2" '{tool_name:"Bash",tool_input:{command:$c}}')" "$3" "$4"
+}
+b "tests: aif _verify"                     'aif _verify OPES-69' allow tests
+b "tests: aif _verify --dry"               'aif _verify OPES-69 --dry' allow tests
+b "tests: aif _verify, then more"          'aif _verify OPES-69 && npx jest' deny tests
+b "tests: the suite itself"                'npx jest src/x.test.ts' deny tests
+b "tests: an install"                      'npm install left-pad' deny tests
+b "tests: a type-checker"                  'npx tsc --noEmit' deny tests
+b "implement: the suite"                   'npx jest' allow implement
+b "implement: a commit"                    'git commit -am wip' deny implement
+b "plain session: anything"                'npm install left-pad' allow ""
 
 printf '\nguard hook: a plain session is not policed\n'
 # The guard binds to a STATION, not to a session. A project with aif installed

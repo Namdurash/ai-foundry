@@ -49,6 +49,8 @@ flowchart TB
     G_implement -.-> S_implement
     REPORT["report.md, beside the diff on the branch"]
     G_implement --> REPORT
+    G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ 2 per ticket"| S_tests
+    G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ 1 per ticket"| S_plan
     LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
   end
 
@@ -57,6 +59,7 @@ flowchart TB
   READY -->|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.->|"the card"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
+  G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA
@@ -117,6 +120,9 @@ may set others. The wall clock and the dispatch cap always apply.
 | cap | value | setting |
 |---|---|---|
 | a station rejected in a row | 3 | limits.attempts_max |
-| station runs in one ticket's run | 12 | limits.run_dispatches_max |
+| the same complaint twice in a row | stop | the convergence rule, lib/cmd_work.sh |
+| repairs of the oracle, per ticket | 2 | limits.repairs_max |
+| replans, per ticket | 1 | limits.replans_max |
+| station runs in one ticket's run | 16 | limits.run_dispatches_max |
 | wall clock, minutes | 120 | limits.run_max_minutes |
 | dollars | off unless a project or the caller sets it | limits.run_budget_usd |

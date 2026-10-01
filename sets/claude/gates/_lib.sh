@@ -9,17 +9,36 @@
 #
 # Targets bash 3.2: no associative arrays, no ${var,,}, no mapfile.
 
-# Exit codes are the contract, and the 1/3 split drives the state machine:
+# Exit codes are the contract, and each one sends the worker somewhere else:
 #   0  the artifact passes
-#   1  the artifact is rejected — fix it and retry
-#   3  the gate could not run — stop looping, something upstream is broken
+#   1  the artifact is rejected — the station that wrote it fixes it and retries
+#   2  the TICKET is the problem, not the artifact — a criterion already true,
+#      unfalsifiable, in conflict, undecided. A spec stop: to the analyst, with
+#      the gate's words, and no retry of anything (docs/REBUILD-4.md §2.1)
+#   3  the gate could not render a verdict — the environment, or a defect no
+#      loop in the stage can reach. Stop looping
+#   4  the ORACLE is the problem, found at green: a frozen test the implement
+#      station may not touch. Not a stop any more — the tests station repairs
+#      it in a copy of the tree with the implementation reverted, under the
+#      same gates that admitted the original (docs/REBUILD-4.md §2.3)
 #
 # AIF_G_PASS is documentation for whoever writes the next gate; nothing exits
 # with a variable when the answer is a plain 0.
 # shellcheck disable=SC2034
 AIF_G_PASS=0
 AIF_G_REJECT=1
+AIF_G_SPEC=2
 AIF_G_ERROR=3
+AIF_G_REPAIR=4
+
+# The marker a skeleton throws. The plan station writes every new export as a
+# signature whose body throws exactly this, so a test of this ticket is red
+# for one of two reasons only: an assertion failed, or the behaviour is not
+# built yet. Anything else a new test fails with is the test's own defect —
+# a name the contract does not export, a fixture that does not exist — and it
+# is caught before the freeze instead of three attempts after it.
+# shellcheck disable=SC2034
+AIF_G_NOT_IMPLEMENTED='aif: not implemented'
 
 # Paths no implementation may touch, whatever the plan says: the pipeline's own
 # machinery, config and CI. Anchored so they match from the repo root only.
@@ -136,6 +155,87 @@ aif_g_reject() {
 aif_g_error() {
   printf 'ERROR  %s\n' "$*" >&2
   exit "$AIF_G_ERROR"
+}
+
+# aif_g_spec <lines> — the ticket, not the artifact: a spec stop. Every line
+# is a question for the analyst, printed as the gates print problems.
+aif_g_spec() {
+  printf 'SPEC   the ticket, not the artifact — for the analyst:\n' >&2
+  printf '%s\n' "$1" |
+    sed '/^[[:space:]]*$/d; /^[[:space:]]/s/^/    /; /^[^[:space:]]/s/^/  - /' >&2
+  exit "$AIF_G_SPEC"
+}
+
+# aif_g_norm <text> — a test id or a marker, normalised for matching: lower
+# case, every run of non-alphanumerics one underscore. A jest name
+# "OPES-69 AC-003 — titles the sheet" and a pytest function
+# test_opes_69_ac_003_titles then both contain opes_69_ac_003, which is how a
+# criterion's marker is looked for in a collected test's id rather than in a
+# file's text, where a comment or another ticket's test would satisfy it.
+aif_g_norm() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/_/g'
+}
+
+# aif_g_imports_unresolved <root> <file> — every relative import in a test
+# file that resolves to nothing on disk, one "<specifier>" per line.
+#
+# The misspelled path is the one defect verify-red could never tell from a
+# legitimate red: both are "cannot find module", and a misspelling was frozen
+# as red and surfaced at green in a file nobody may edit by then. With the
+# contract on disk before the tests are written, a relative import that
+# resolves to no file IS a misspelling, and it is the tests station's to fix.
+#
+# Only the unambiguous cases: a JavaScript or TypeScript specifier that
+# starts with "." (resolved with the runner's extensions and index files),
+# and a python relative import ("from .x import", "from ..x import"). A bare
+# package name, or a python absolute module, depends on a resolver or a
+# sys.path this gate does not know, and is left alone.
+aif_g_imports_unresolved() {
+  local root="$1" file="$2" dir spec base cand found e
+  dir="$(dirname "$file")"
+  case "$file" in
+    *.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.mts | *.cts)
+      # import … from './x'  ·  require('./x')  ·  import('./x')  ·  jest.mock('./x'
+      # The first group is the specifier; a specifier that starts with a dot
+      # is relative to the file.
+      sed -n -E "s/.*(from|require|import|jest\.mock|vi\.mock|jest\.requireActual)[[:space:]]*\(?[[:space:]]*['\"](\.[^'\"]*)['\"].*/\2/p" "$file" |
+        sort -u | while IFS= read -r spec; do
+        [ -n "$spec" ] || continue
+        base="$dir/$spec"
+        found=0
+        for cand in "$base" "$base.ts" "$base.tsx" "$base.js" "$base.jsx" "$base.mjs" "$base.cjs" \
+          "$base.mts" "$base.cts" "$base.json" "$base.d.ts" \
+          "$base/index.ts" "$base/index.tsx" "$base/index.js" "$base/index.jsx"; do
+          if [ -f "$root/$cand" ]; then
+            found=1
+            break
+          fi
+        done
+        [ "$found" -eq 1 ] || printf '%s\n' "$spec"
+      done
+      ;;
+    *.py)
+      # from .x import …  ·  from ..pkg.x import … — resolved against the
+      # file's own package: one dot is this directory, each further dot one up.
+      sed -n -E 's/^[[:space:]]*from[[:space:]]+(\.+)([A-Za-z0-9_.]*)[[:space:]]+import.*/\1 \2/p' "$file" |
+        sort -u | while IFS=' ' read -r dots mod; do
+        [ -n "$dots" ] || continue
+        base="$dir"
+        e="${#dots}"
+        while [ "$e" -gt 1 ]; do
+          base="$(dirname "$base")"
+          e=$((e - 1))
+        done
+        if [ -n "$mod" ]; then
+          base="$base/$(printf '%s' "$mod" | tr '.' '/')"
+        fi
+        if [ -f "$root/$base.py" ] || [ -f "$root/$base/__init__.py" ] || [ -d "$root/$base" ]; then
+          continue
+        fi
+        printf '%s%s\n' "$dots" "$mod"
+      done
+      ;;
+  esac
 }
 
 aif_g_need() {

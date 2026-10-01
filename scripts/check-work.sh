@@ -154,10 +154,35 @@ row() { # <id> <file> <green?>
   fi
 }
 body="$(row t0 tests/t0.py 1)<testcase classname=\"tests.t9\" name=\"t9\"><skipped message=\"not on this platform\"/></testcase>"
+# One test per marker line a declared file holds — `# <ticket> AC-nnn asserts
+# <word> — expects <literal>` — NAMED with its marker, the way verify-red reads
+# a criterion off a collected test's id and not off a file's text. Red until
+# <word> is in src/app.py; for the word `feat`, until src/feat.py stops
+# throwing the not-implemented marker (the plan's skeleton). Words after the
+# dash are the harness's switches: BUG is red whatever the code does, BROKEN a
+# syntax error, BADCALL a TypeError, FLAKY flips on every run.
+fails() { # <id> <file> <message-attr> <message>
+  printf '<testcase classname="%s" name="%s"><failure message="%s">%s\n    at %s/%s:1</failure></testcase>' "$(cn "$2")" "$1" "$3" "$4" "$PWD" "$2"
+}
+flip="$(cat .aif/tmp/flip 2>/dev/null || echo 0)"; flip=$((flip + 1)); printf '%s' "$flip" >.aif/tmp/flip
 for n in 1 2 3; do
   [ -f "tests/t$n.py" ] || continue
-  g=0; grep -q "impl$n" src/app.py 2>/dev/null && g=1
-  body="$body$(row "t$n" "tests/t$n.py" "$g")"
+  while IFS= read -r line; do
+    case "$line" in "# "*AC-[0-9]*) ;; *) continue ;; esac
+    id="$(printf '%s' "$line" | sed 's/^# \(\([A-Za-z0-9-]* \)\{0,1\}AC-[0-9]*\).*/\1/') t$n"
+    word="$(printf '%s' "$line" | sed -n 's/.*asserts \([a-z0-9]*\).*/\1/p')"
+    g=0
+    if [ "$word" = feat ]; then grep -q 'not implemented' src/feat.py 2>/dev/null || g=1
+    else grep -q "$word" src/app.py 2>/dev/null && g=1; fi
+    case "$line" in
+      *" BUG"*) body="$body$(fails "$id" "tests/t$n.py" 'wrong literal' 'AssertionError: wrong literal')" ;;
+      *" BROKEN"*) body="$body$(fails "$id" "tests/t$n.py" 'invalid syntax' 'SyntaxError: invalid syntax')" ;;
+      *" BADCALL"*) body="$body$(fails "$id" "tests/t$n.py" 'not a function' 'TypeError: users_v2 is not a function')" ;;
+      *" FLAKY"*) body="$body$(row "$id" "tests/t$n.py" $((flip % 2)))" ;;
+      *) if [ "$word" = feat ] && [ "$g" = 0 ]; then body="$body$(fails "$id" "tests/t$n.py" 'not implemented' 'NotImplementedError: aif: not implemented: feat')"
+         else body="$body$(row "$id" "tests/t$n.py" "$g")"; fi ;;
+    esac
+  done <"tests/t$n.py"
 done
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
@@ -203,6 +228,10 @@ printf '%s' "$prompt" >"$wt/.aif/tmp/fake-prompt-$station-$n"
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
+repair=0; printf '%s' "$prompt" | grep -q "^REPAIR" && repair=1
+# What the worker handed this dispatch: the turn cap and the tools.
+printf '%s' "${7:-}" >"$wt/.aif/tmp/fake-turns-$station-$n"
+printf '%s' "${9:-}" >"$wt/.aif/tmp/fake-tools-$station-$n"
 
 # The criteria the ticket actually carries — so a reworked ticket with a new
 # criterion produces a plan and a test for it, exactly as a real station would.
@@ -215,12 +244,26 @@ case "$station" in
     change='["src/app.py"]'
     [ "${FAKE_DEPS:-0}" = 1 ] && change='["src/app.py", "package.json", "package-lock.json"]'
     if [ "${FAKE_PLAN_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then change='["src/nowhere.py"]'; fi
-    cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" \
-      'map({ key: ., value: $c }) | from_entries')"
+    # The contract: with FAKE_CREATE the plan creates src/feat.py and writes
+    # its skeleton — a signature whose body throws the marker — the way the
+    # plan station does; AC-001 is then served by it.
+    create='[]'
+    if [ "${FAKE_CREATE:-0}" = 1 ]; then
+      create='["src/feat.py"]'
+      printf 'def feat():\n    raise NotImplementedError("aif: not implemented: feat")\n' >"$wt/src/feat.py"
+    fi
+    cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" --argjson cr "$create" \
+      'map({ key: ., value: (if . == "AC-001" and ($cr | length) > 0 then $cr else $c end) }) | from_entries')"
+    # A verdict per criterion: buildable, unless the harness says AC-001 is
+    # something else (a spec stop).
+    verdicts="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --arg v "${FAKE_VERDICT:-buildable}" \
+      'map({ key: ., value: (if . == "AC-001" and $v != "buildable" then { verdict: $v, because: "src/app.py:2 — the harness says so" } else { verdict: "buildable" } end) }) | from_entries')"
     cat >"$work/plan.md" <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "$ticket", "risk": "low",
-  "files": { "create": [], "change": $change, "tests": $tests_json },
+{ "schema": 3, "ticket": "$ticket", "risk": "low",
+  "files": { "create": $create, "change": $change, "tests": $tests_json },
+  "no_skeleton": [],
+  "verdicts": $verdicts,
   "decisions": [
     { "id": "D-001", "statement": "Write the markers from the app module.",
       "because": "every criterion is about the app's own output", "serves": [] } ],
@@ -244,13 +287,38 @@ PLAN
         # gate passes `--`, and without it this scenario fails outright.
         exp="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' |
           jq -r --arg id "AC-00$i" '.acceptance[] | select(.id==$id) | .expect')"
-        typebug=""
+        suffix=""
         if [ "${FAKE_TYPEBUG:-0}" = 1 ] || { [ "${FAKE_TESTS_TYPEBUG_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; }; then
-          typebug=" TYPEBUG"
+          suffix=" TYPEBUG"
         fi
-        printf '# AC-00%s asserts impl%s — expects %s%s\n' "$i" "$i" "$exp" "$typebug" >"$wt/tests/t$i.py"
+        # The station's own defects, each a rejection it gets back: a test
+        # that always fails (BUG — the repair loop's subject, dropped when the
+        # station is dispatched to repair), one that did not load, one calling
+        # a name the contract does not export, one that flips.
+        if [ "${FAKE_TESTS_BUG:-0}" = 1 ] && [ "$repair" = 0 ]; then suffix="$suffix BUG"; fi
+        if [ "${FAKE_TESTS_BROKEN_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix BROKEN"; fi
+        if [ "${FAKE_TESTS_BADCALL_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix BADCALL"; fi
+        if [ "${FAKE_TESTS_FLAKY_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix FLAKY"; fi
+        word="impl$i"
+        [ "${FAKE_CREATE:-0}" = 1 ] && [ "$i" = 1 ] && word="feat"
+        # The marker carries the ticket — `AIF-1 AC-001` — unless the harness
+        # asks for the old, unscoped spelling, which the gate refuses.
+        marker="$ticket AC-00$i"
+        if [ "${FAKE_TESTS_NONAME_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then marker="AC-00$i"; fi
+        printf '# %s asserts %s — expects %s%s\n' "$marker" "$word" "$exp" "$suffix" >"$wt/tests/t$i.py"
       fi
     done
+    # The station's note: what it cannot write a red test for.
+    if [ "${FAKE_TESTS_NOTE_UNF:-0}" = 1 ]; then
+      printf '{ "unfalsifiable": [{ "id": "AC-001", "because": "no literal observation decides it" }] }\n' >"$work/tests.note.json"
+    fi
+    if [ "${FAKE_TESTS_NOTE_BUILT:-0}" = 1 ]; then
+      printf '{ "already_built": ["AC-001"] }\n' >"$work/tests.note.json"
+    fi
+    # A tests station that edits the contract it was handed.
+    if [ "${FAKE_SKELETON_EDIT:-0}" = 1 ]; then
+      printf 'def feat():\n    return 7  # the tests station wrote the behaviour\n' >"$wt/src/feat.py"
+    fi
     if [ "${FAKE_TESTS_REHOME:-0}" = 1 ] && [ "$retry" = 1 ]; then
       # Told that a criterion's only test is in a file the runner never
       # collects: every test moves into the first file, which it collects.
@@ -262,6 +330,14 @@ PLAN
     fi
     ;;
   implement)
+    # The implementer's note: a replan (the contract cannot hold it), or a
+    # claim that a frozen test is wrong.
+    if [ "${FAKE_REPLAN:-0}" = 1 ] || { [ "${FAKE_REPLAN_FIRST:-0}" = 1 ] && [ "$n" = 1 ]; }; then
+      printf '{ "replan": "the contract cannot hold the behaviour: users() has nowhere to put the marker" }\n' >"$work/implement.note.json"
+    fi
+    if [ "${FAKE_IMPL_CLAIMS:-0}" = 1 ]; then
+      printf '{ "tests_wrong": [{ "test": "AC-001", "because": "it asserts the wrong literal" }] }\n' >"$work/implement.note.json"
+    fi
     if [ "${FAKE_STALL:-0}" = 1 ]; then
       printf 'def users():\n    return []  # wrong\n' >"$wt/src/app.py"
     else
@@ -269,6 +345,8 @@ PLAN
       for i in $nums; do [ -n "$i" ] && body="$body impl$i"; done
       [ "${FAKE_IMPL_BADTYPE_FIRST:-0}" = 1 ] && [ "$retry" = 0 ] && body="$body BADTYPE"
       printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
+      # The skeleton, filled: the marker's throw replaced by the behaviour.
+      [ "${FAKE_CREATE:-0}" != 1 ] || printf 'def feat():\n    return 7\n' >"$wt/src/feat.py"
     fi
     if [ "${FAKE_DRIFT:-0}" = 1 ]; then
       mkdir -p "$wt/deps" && : >"$wt/deps/drift"
@@ -286,8 +364,8 @@ esac
 
 cost=0.01
 [ "${FAKE_ZERO_COST:-0}" = 1 ] && cost=0
-jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" \
-  '{type:"result",subtype:"success",is_error:false,result:("fake " + $st + " done"),
+jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "$prompt" \
+  '{type:"result",subtype:"success",is_error:false,result:("fake " + $st + " done\n" + $prompt),
     num_turns:2,total_cost_usd:$cost,duration_ms:5,
     usage:{input_tokens:10,output_tokens:(20*$n),cache_read_input_tokens:0,cache_creation_input_tokens:0},
     modelUsage:{"fake-model":{}}}' >"$out"
@@ -368,6 +446,16 @@ eq "the report carries the gap as a checklist item" \
 eq "the tree is clean after the run" "$(git status --porcelain | wc -l | tr -d ' ')" "0"
 eq "nothing staged is left behind" "$(find .aif/tmp -name 'meter-*.jsonl' 2>/dev/null | wc -l | tr -d ' ')" "0"
 if grep -q "the runner produced no envelope" "$OUT/run1.out"; then bad "runner errors in output"; fi
+# The numbers the stability figure is read from (docs/REBUILD-4.md §0).
+eq "the report carries the convergence numbers" \
+  "$(grep -c '^- tests: 1 declared file(s), 1 collected; 1 red at the freeze, 0 green at the freeze$' tasks/AIF-1/report.md),$(grep -c '^- loops: 0 repair(s) of the oracle, 0 replan(s)$' tasks/AIF-1/report.md)" "1,1"
+# Each station's own turn cap, from its aif:meta, over the project-wide one.
+eq "the plan and tests stations got their own turn caps, implement its own" \
+  "$(cat .aif/tmp/fake-turns-plan-1),$(cat .aif/tmp/fake-turns-tests-1),$(cat .aif/tmp/fake-turns-implement-1)" "60,60,45"
+# The tests station's Bash is for `aif _verify`, and it is granted only once
+# `aif doctor --probe` has watched the guard deny a command here. It has not.
+eq "the tests station ran without Bash — the guard has not been seen to deny here" \
+  "$(cat .aif/tmp/fake-tools-tests-1 | tr ',' '\n' | grep -c '^Bash$')" "0"
 
 # =============================== 2. retry ====================================
 printf '\n2. a rejection is retried with the complaint, and both attempts are recorded\n'
@@ -453,7 +541,11 @@ git add -A && git commit -qm "ticket 5" >/dev/null
 rc=0
 FAKE_STALL=1 "$AIF" work AIF-5 --no-worktree >"$OUT/run5.out" 2>&1 || rc=$?
 eq "exit 1 — stopped" "$rc" "1"
-eq "the report says why" "$(grep -c 'rewrote nothing\|rejected .* time' tasks/AIF-5/report.md)" "1"
+eq "the report says why" "$(grep -c 'rewrote nothing\|rejected .* time\|same complaint twice' tasks/AIF-5/report.md)" "1"
+# The convergence rule: the same complaint twice in a row is a station that
+# cannot act on it, and the third attempt it used to get was the same coin.
+eq "implement was dispatched twice, not attempts_max times — the same complaint twice is a stop" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-5/ledger.json)" "2"
 eq "the accepted stations are committed, the failed one is not" \
   "$(git log --format=%s | grep -c '^aif: implement AIF-5')" "0"
 eq "run.json status" "$(jq -r '.status' tasks/AIF-5/run.json)" "stopped"
@@ -498,11 +590,11 @@ eq "and rebound to the new ticket" \
   "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -r '.ticket_sha256')" \
   "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
 eq "the round-one test was green at freeze, never proven red" \
-  "$(jq -c '.green_at_freeze' tasks/AIF-1/tests.lock.json)" '["tests.t1::t1"]'
+  "$(jq -c '.green_at_freeze' tasks/AIF-1/tests.lock.json)" '["tests.t1::AIF-1 AC-001 t1"]'
 eq "so only the new test is covering" \
-  "$(jq -c '.covering' tasks/AIF-1/tests.lock.json)" '["tests.t2::t2"]'
+  "$(jq -c '.covering' tasks/AIF-1/tests.lock.json)" '["tests.t2::AIF-1 AC-002 t2"]'
 eq "and the report says the green-at-freeze test was never proven red" \
-  "$(grep -c 'tests tests.t1::t1' tasks/AIF-1/report.md)" "1"
+  "$(grep -c 'tests tests.t1::AIF-1 AC-001 t1' tasks/AIF-1/report.md)" "1"
 eq "the ticket's own gap is on the checklist too" \
   "$(grep -c 'ticket VG-001' tasks/AIF-1/report.md)" "1"
 
@@ -912,8 +1004,12 @@ eq "nothing merged" "$(git rev-parse HEAD)" "$head_before"
 "$AIF" board move AIF-17 review >/dev/null
 
 # a red suite on the RESULT undoes the merge: main grew a test after the
-# build, and the branch does not satisfy it
-printf '# t2 waits for impl2\n' >tests/t2.py
+# build, and the branch does not satisfy it. AIF-16's and AIF-17's tests both
+# live in tests/t1.py and each carries its own ticket's marker, so main holds
+# AIF-16's; it adopts AIF-17's first, so that this step is about the red suite
+# and not about a conflict — which is the step after.
+git show aif/AIF-17:tests/t1.py >tests/t1.py
+printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -1011,16 +1107,24 @@ rc=0
 "$AIF" work AIF-20 --no-worktree >"$OUT/run20c.out" 2>&1 || rc=$?
 eq "red with the tests, out of the implementation's reach: stopped" "$rc" "1"
 eq "verify-red admitted it" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-20/ledger.json)" "pass"
-eq "green could not render a verdict on the implementation" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-20/ledger.json)" "error"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .result' tasks/AIF-20/ledger.json)" "pass"
+# Out of the implementation's reach and the new tests' doing: not a stop any
+# more but a REPAIR — the tests station is dispatched in a copy without the
+# implementation, twice, and when the oracle still breaks the suite the run
+# stops at limits.repairs_max rather than at a human on the first attempt.
+eq "green attributed it to the oracle, as a repair" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' tasks/AIF-20/ledger.json)" "repair"
 eq "and said it is out of the implementation's reach" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-20/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' tasks/AIF-20/ledger.json |
      grep -c 'out of the implementation.s reach')" "1"
 eq "implement was dispatched once, not attempts_max times" \
   "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-20/ledger.json)" "1"
+eq "the tests station was dispatched for each repair, in the copy" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-20/ledger.json),$(jq -r '.repairs' tasks/AIF-20/run.json)" "3,2"
+eq "and the run stopped at the repair cap, saying so" \
+  "$(grep -c 'after 2 repair(s)' tasks/AIF-20/report.md)" "1"
 eq "the report says the new tests break it, and not to reinstall" \
-  "$(grep -c 'the new tests' tasks/AIF-20/report.md),$(grep -c 'Run "prepare"' tasks/AIF-20/report.md)" "1,0"
+  "$(grep -q 'the new tests' tasks/AIF-20/report.md && echo yes),$(grep -c 'Run "prepare"' tasks/AIF-20/report.md)" "yes,0"
 eq "and its first line no longer blames the environment" \
   "$(grep -c 'that is the environment, not the artifact' tasks/AIF-20/report.md)" "0"
 
@@ -1121,14 +1225,20 @@ ticket_for AIF-21
 git add -A && git commit -qm "ticket 21b" >/dev/null
 rc=0
 FAKE_TYPEBUG=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21b.out" 2>&1 || rc=$?
-eq "a type error frozen into a test: stopped" "$rc" "1"
-eq "green could not render a verdict on the implementation" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-21/ledger.json)" "error"
+eq "a type error frozen into a test, repaired twice to the same type error: stopped" "$rc" "1"
+# A check failing in a frozen test file the same way without the code is the
+# oracle's: a REPAIR, not a stop. This station mistypes the mock on every
+# attempt, so the repair cap is what stops it — at the cap, not at a human on
+# the first attempt.
+eq "green attributed it to the frozen tests, as a repair" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' tasks/AIF-21/ledger.json)" "repair"
 eq "…and says the failure is the frozen tests'" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-21/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' tasks/AIF-21/ledger.json |
      grep -c 'fails in the frozen tests, not in the implementation')" "1"
 eq "implement was dispatched once, not attempts_max times" \
   "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-21/ledger.json)" "1"
+eq "the tests station was dispatched twice more, in the copy" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-21/ledger.json)" "3"
 eq "the report carries the located line" \
   "$(grep -c 'tests/t1.py(2,5): error TS2322' tasks/AIF-21/report.md)" "1"
 
@@ -1395,7 +1505,7 @@ git checkout -q -- .aif/project.json
 # --prepare, and red anyway: main grew a test after the build. Installed
 # before the suite — only the new test fails, not t0 — and installed again,
 # for the lockfile the undo put back.
-printf '# t2 waits for impl2\n' >tests/t2.py
+printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -1484,15 +1594,13 @@ eq "a criterion whose only test is never collected: sent back, then built" "$rc"
 eq "verify-red rejected it — the tests station's to fix — then admitted the fix" \
   "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-26/ledger.json)" "fail,pass"
 eq "the retry was told which criterion, and the file its test is in" \
-  "$(grep -c 'AC-002 is referenced only where the runner collected no test: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
-eq "…where its literal is too" \
-  "$(grep -c 'AC-002 expected value (impl2) appears only where the runner collected no test: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
+  "$(grep -c 'AC-002 is named only in a file the runner collected no test from: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
 eq "…and that a test in that file runs nowhere" \
   "$(grep -c 'the runner collected no test from: tests/t2.py — a test there runs neither' .aif/tmp/fake-prompt-tests-2)" "1"
 eq "the file stayed declared, as a helper, and is frozen with the rest" \
   "$(jq -r '.tests | has("tests/t2.py")' tasks/AIF-26/tests.lock.json)" "true"
-eq "the covering test is the one the runner collects" \
-  "$(jq -c '.covering' tasks/AIF-26/tests.lock.json)" '["tests.t1::t1"]'
+eq "the covering tests are the ones the runner collects, both now in t1" \
+  "$(jq -c '.covering' tasks/AIF-26/tests.lock.json)" '["tests.t1::AIF-26 AC-001 t1","tests.t1::AIF-26 AC-002 t1"]'
 
 # By hand, on the tree before the implementation: the helper passes and is
 # named on the way through, and the first attempt's files are exit 1.
@@ -1502,12 +1610,12 @@ rc=0
 eq "a declared helper with no test in it passes" "$rc" "0"
 eq "…and is named on the pass path" \
   "$(grep -c '! the runner collected no test from: tests/t2.py' "$OUT/red26.out")" "1"
-printf '# AC-001 asserts impl1 — expects -1\n' >tests/t1.py
-printf '# AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
+printf '# AIF-26 AC-001 asserts impl1 — expects -1\n' >tests/t1.py
+printf '# AIF-26 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 rc=0
 /bin/bash .aif/gates/verify-red.sh "$PWD/tasks/AIF-26" >"$OUT/red26b.out" 2>&1 || rc=$?
 eq "the first attempt's files: exit 1, a rejection" "$rc" "1"
-eq "…of coverage" "$(sed -n 1p "$OUT/red26b.out")" "REJECT coverage: 3 problem(s)"
+eq "…of coverage" "$(sed -n 1p "$OUT/red26b.out")" "REJECT coverage: 2 problem(s)"
 
 # Coarse mode has no per-test report and cannot tell a collected file from one
 # the runner never saw. It reads every declared file, as it did — the same two
@@ -1673,7 +1781,7 @@ eq "…said" "$(grep -c 'terminated — the merge was undone' "$OUT/land27d.out"
 
 # a verdict is not a stop: a red land undoes its merge itself, and its own
 # exit 1 does not come back through the handler as a second undo
-printf '# t2 waits for impl2\n' >tests/t2.py
+printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -1692,6 +1800,276 @@ eq "then it lands: exit 0, Done, as one merge commit" "$rc,$(col AIF-27),$(git l
   "0,done,aif: land AIF-27 — one-command user export"
 eq "…installed from the lockfile it merged, the checkout clean" \
   "$(tr '\n' ' ' <deps/installed),$(changed)" '"dep-a" "dep-new" ,0'
+
+# ====== 28. the contract: the plan writes the skeleton the tests are red against
+#
+# A test file importing a module that does not exist yet fails to load, and
+# jest-junit drops the whole file from the report: on the batch of 2026-09-29,
+# 24 new tests were never seen by any gate that way (docs/FINDINGS.md #22). So
+# the plan station writes every new module as a SKELETON — the real exports,
+# bodies that throw "aif: not implemented" — and the tests are red against
+# something that loads. Here the plan creates src/feat.py, AC-001's test calls
+# it, and the stub reports the marker until the implementation replaces it.
+printf '\n28. the contract: a skeleton on disk, red against it, the skeleton restored for the recheck\n'
+fresh_project "$SANDBOX/p28"
+ticket_for AIF-28
+git add -A && git commit -qm "ticket 28" >/dev/null
+rc=0
+FAKE_CREATE=1 "$AIF" work AIF-28 --no-worktree >"$OUT/run28.out" 2>&1 || rc=$?
+eq "a ticket that creates a module: built" "$rc" "0"
+plan_commit="$(git log --format='%H %s' | awk '/aif: plan AIF-28/ { print $1; exit }')"
+eq "the plan's commit carries the skeleton, throwing the marker" \
+  "$(git show "$plan_commit:src/feat.py" | grep -c 'aif: not implemented: feat')" "1"
+eq "the plan gate counted it" \
+  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .reason' tasks/AIF-28/ledger.json | grep -c '1 skeleton(s)')" "1"
+eq "verify-red saw the test red for the marker, twice" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-28/ledger.json)" \
+  "verify-red: 1 new test(s) red for the right reason, twice, all criteria covered"
+eq "the freeze holds the skeleton's hash, and creates nothing" \
+  "$(jq -r '(.impl_frozen | has("src/feat.py") | tostring) + "," + (.impl_created | length | tostring)' tasks/AIF-28/tests.lock.json)" "true,0"
+eq "green's recheck put the skeleton back and the test went red again" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-28/ledger.json | grep -c 'depend on the implementation')" "1"
+eq "the branch has the behaviour" "$(grep -c 'return 7' src/feat.py)" "1"
+
+# A tests station that edits the contract it was handed is sent back, before
+# the freeze: the skeleton is the plan's, measured against the plan's commit.
+fresh_project "$SANDBOX/p28b"
+ticket_for AIF-28
+git add -A && git commit -qm "ticket 28b" >/dev/null
+rc=0
+FAKE_CREATE=1 FAKE_SKELETON_EDIT=1 "$AIF" work AIF-28 --no-worktree >"$OUT/run28b.out" 2>&1 || rc=$?
+eq "a tests station that wrote the behaviour into the skeleton: stopped" "$rc" "1"
+eq "verify-red rejected it, every time, naming the skeleton" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | map(.result) | join(",")' tasks/AIF-28/ledger.json)" "fail,fail"
+eq "…with the reason" \
+  "$(grep -c 'the test station changed the skeleton src/feat.py' .aif/tmp/fake-prompt-tests-2)" "1"
+eq "…and the convergence rule stopped it at the second identical complaint" \
+  "$(grep -c 'same complaint twice' tasks/AIF-28/report.md)" "1"
+
+# ====== 29. spec stops: the ticket's problem, found first and cheaply ==========
+#
+# The plan station is the first thing that reads the criteria against the real
+# code, so "already true" is found there — one dispatch, nothing frozen, and
+# the analyst gets the plan's reason (docs/REBUILD-4.md §2.1). The tests
+# station's note is the second place: a criterion it cannot falsify, or every
+# criterion already built, by its own account, confirmed green by the gate.
+printf '\n29. a spec stop: the ticket, not the artifact, at the first station that can tell\n'
+fresh_project "$SANDBOX/p29"
+ticket_for AIF-29
+git add -A && git commit -qm "ticket 29" >/dev/null
+rc=0
+FAKE_VERDICT=already_true "$AIF" work AIF-29 --no-worktree >"$OUT/run29.out" 2>&1 || rc=$?
+eq "a criterion the plan finds already true: exit 1, for a human" "$rc" "1"
+eq "the run's status is spec" "$(jq -r '.status' tasks/AIF-29/run.json)" "spec"
+eq "the plan gate recorded a spec verdict" \
+  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .result' tasks/AIF-29/ledger.json)" "spec"
+eq "with the plan's reason, for the analyst" \
+  "$(grep -c 'AC-001 is already_true: src/app.py:2' tasks/AIF-29/report.md)" "1"
+eq "one dispatch, and the tests station never ran" \
+  "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-29/ledger.json)" "1"
+eq "nothing was frozen" "$(test -f tasks/AIF-29/tests.lock.json && echo yes || echo no)" "no"
+eq "the card went to Needs Human" "$(jq -r '.column' .aif/board/AIF-29.json)" "needs_human"
+eq "the report is headed as a spec stop" "$(head -1 tasks/AIF-29/report.md)" "# AIF-29 — spec"
+
+fresh_project "$SANDBOX/p29b"
+ticket_for AIF-29
+git add -A && git commit -qm "ticket 29b" >/dev/null
+rc=0
+FAKE_TESTS_NOTE_UNF=1 "$AIF" work AIF-29 --no-worktree >"$OUT/run29b.out" 2>&1 || rc=$?
+eq "a criterion the tests station cannot falsify: a spec stop" "$rc,$(jq -r '.status' tasks/AIF-29/run.json)" "1,spec"
+eq "verify-red recorded it as spec, with the station's reason" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-29/ledger.json),$(grep -c 'AC-001 cannot be falsified: no literal observation decides it' tasks/AIF-29/report.md)" "spec,1"
+eq "the tests station was dispatched once" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-29/ledger.json)" "1"
+
+# Every criterion already built, said in the note and confirmed green: the
+# ticket is done, which is the human's to say — not three attempts at red.
+fresh_project "$SANDBOX/p29c"
+printf 'def users():\n    return []  # impl1\n' >src/app.py
+ticket_for AIF-29
+git add -A && git commit -qm "ticket 29c, already built" >/dev/null
+rc=0
+FAKE_TESTS_NOTE_BUILT=1 "$AIF" work AIF-29 --no-worktree >"$OUT/run29c.out" 2>&1 || rc=$?
+eq "every criterion already built, by the station's account: a spec stop" "$rc,$(jq -r '.status' tasks/AIF-29/run.json)" "1,spec"
+eq "…saying so" "$(grep -c 'every criterion is already built' tasks/AIF-29/report.md)" "1"
+eq "…after one tests dispatch, not attempts_max" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-29/ledger.json)" "1"
+# Without the note, the same tree is the old rejection: nothing red remains.
+fresh_project "$SANDBOX/p29d"
+printf 'def users():\n    return []  # impl1\n' >src/app.py
+ticket_for AIF-29
+git add -A && git commit -qm "ticket 29d, already built, unsaid" >/dev/null
+rc=0
+"$AIF" work AIF-29 --no-worktree >"$OUT/run29d.out" 2>&1 || rc=$?
+eq "unsaid, it is a rejection the station gets back, and the convergence rule stops it" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-29/ledger.json)" "1,fail"
+eq "…naming the note as the way to say it" \
+  "$(grep -c 'tests.note.json, already_built' .aif/tmp/fake-prompt-tests-2)" "1"
+
+# ====== 30. the tests station's own defects come back to it, not to a human ====
+#
+# A test that did not load used to be a stop at the first attempt — "verify-red
+# cannot certify a broken oracle". It cannot; but the author is still there,
+# and a rejection with the runner's message is what it needs. The same for a
+# test failing in a way that is neither an assertion nor the skeleton's marker
+# (it calls a name the contract does not export), a marker not in the test's
+# own name, and a test that flips between two runs.
+printf '\n30. a broken, mis-calling, unnamed or flaky test is a rejection, with the reason\n'
+red_rejection() { # <label> <env> <reason-grep>
+  local dir="$SANDBOX/p30-$1" rc=0
+  fresh_project "$dir"
+  ticket_for AIF-30
+  git add -A && git commit -qm "ticket 30 $1" >/dev/null
+  env "$2=1" "$AIF" work AIF-30 --no-worktree >"$OUT/run30-$1.out" 2>&1 || rc=$?
+  eq "$1: sent back, then built" "$rc" "0"
+  eq "$1: verify-red rejected then admitted" \
+    "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-30/ledger.json)" "fail,pass"
+  eq "$1: the retry was told why" "$(grep -c "$3" .aif/tmp/fake-prompt-tests-2)" "1"
+}
+red_rejection broken FAKE_TESTS_BROKEN_FIRST 'did not run — it is broken, not red: .*SyntaxError: invalid syntax'
+red_rejection badcall FAKE_TESTS_BADCALL_FIRST 'neither an assertion nor the missing implementation: .*TypeError: users_v2 is not a function'
+red_rejection unnamed FAKE_TESTS_NONAME_FIRST 'AC-001 is carried by no collected test — put "AIF-30 AC-001" in the name'
+red_rejection flaky FAKE_TESTS_FLAKY_FIRST 'is non-deterministic'
+
+# And the station's own loop: `aif _verify` is the same gate, dry. Red tests on
+# the tree before the implementation pass it and nothing is frozen; a file
+# the station broke is told so, with exit 1.
+cd "$SANDBOX/p30-broken" || exit 1
+printf 'def users():\n    return []\n' >src/app.py
+rm -f tasks/AIF-30/tests.lock.json
+rc=0
+"$AIF" _verify AIF-30 >"$OUT/verify30.out" 2>&1 || rc=$?
+eq "aif _verify on red tests: exit 0, the verdict, nothing frozen" \
+  "$rc,$(grep -c 'verify-red (dry): 1 new test(s) red for the right reason' "$OUT/verify30.out"),$(test -f tasks/AIF-30/tests.lock.json && echo frozen || echo none)" "0,1,none"
+eq "…and it said it froze nothing" "$(grep -c 'nothing frozen' "$OUT/verify30.out")" "1"
+printf '# AIF-30 AC-001 asserts impl1 — expects -1 BROKEN\n' >tests/t1.py
+rc=0
+"$AIF" _verify AIF-30 >"$OUT/verify30b.out" 2>&1 || rc=$?
+eq "aif _verify on a broken test: exit 1, the complaint" "$rc,$(grep -c 'it is broken, not red' "$OUT/verify30b.out")" "1,1"
+eq "no checks record was left for the real gate to fold" "$(test -f .aif/tmp/checks-red.json && echo left || echo none)" "none"
+
+# ====== 31. the repair loop: a frozen test the implementer declares wrong =======
+#
+# A red-first test is red without the code by design, so green cannot tell a
+# wrong frozen test from wrong code by measurement. What the implementer may do
+# is SAY so, in its note, naming the test. green then hands the claim to the
+# tests station — dispatched in a copy of the tree with the implementation
+# reverted to the skeleton, so it cannot read the code — which amends the test
+# or keeps it; the amended oracle must be red there and comes back here, and
+# the implementation is judged again without a dispatch (docs/REBUILD-4.md §2.3).
+printf '\n31. the repair loop: the oracle is repaired without the implementation in view\n'
+fresh_project "$SANDBOX/p31"
+ticket_for AIF-31
+git add -A && git commit -qm "ticket 31" >/dev/null
+rc=0
+FAKE_TESTS_BUG=1 FAKE_IMPL_CLAIMS=1 "$AIF" work AIF-31 --no-worktree >"$OUT/run31.out" 2>&1 || rc=$?
+eq "a wrong frozen test, claimed and repaired: built" "$rc" "0"
+eq "green said repair, then passed" \
+  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-31/ledger.json)" "repair,pass"
+eq "the tests station was dispatched twice: the freeze, and the repair" \
+  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-31/ledger.json)" "2"
+eq "implement was dispatched once — judged again, not run again" \
+  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-31/ledger.json)" "1"
+# The repair ran in the copy, so its prompt file went with the copy; the
+# envelope the worker kept carries the prompt (the fake runner puts it there).
+eq "the repair dispatch was told it was one, with the claim, and its envelope was kept as the fourth" \
+  "$(jq -r '.result' tasks/AIF-31/stations/04-tests.json | grep -c '^REPAIR'),$(jq -r '.result' tasks/AIF-31/stations/04-tests.json | grep -c 'it asserts the wrong literal')" "1,1"
+eq "the repaired oracle was admitted in the copy, red against the skeleton" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-31/ledger.json | grep -c '^repair 1: verify-red: 1 new test(s) red')" "1"
+repair_commit="$(git log --format='%H %s' | awk '/aif: tests AIF-31 \(repair 1\)/ { print $1; exit }')"
+eq "the repair commit holds the oracle and not the implementation" \
+  "$(git show "$repair_commit:tests/t1.py" | grep -c BUG),$(git show "$repair_commit:src/app.py" | grep -c impl1)" "0,0"
+eq "the run record counts it" "$(jq -r '.repairs' tasks/AIF-31/run.json)" "1"
+eq "and the report does too" "$(grep -c '^- loops: 1 repair(s) of the oracle, 0 replan(s)$' tasks/AIF-31/report.md)" "1"
+eq "the branch is clean, with the implementation committed at the end" \
+  "$(git status --porcelain | wc -l | tr -d ' '),$(git show HEAD~1:src/app.py | grep -c impl1)" "0,1"
+
+# Unclaimed, a failing frozen test is the implementation's: rejected, retried,
+# and the convergence rule stops the second identical complaint.
+fresh_project "$SANDBOX/p31b"
+ticket_for AIF-31
+git add -A && git commit -qm "ticket 31b" >/dev/null
+rc=0
+FAKE_TESTS_BUG=1 "$AIF" work AIF-31 --no-worktree >"$OUT/run31b.out" 2>&1 || rc=$?
+eq "unclaimed: rejected, and stopped on the same complaint twice" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-31/ledger.json)" "1,fail,fail"
+eq "…without a repair" "$(jq -r '.repairs' tasks/AIF-31/run.json)" "0"
+
+# ====== 32. the replan loop: the contract cannot hold the behaviour ============
+#
+# The implementer's other declaration. The tree goes back to what the plan
+# station first saw — skeleton, tests, lock and plan gone — and the plan
+# station runs again with the declaration in front of it. One per ticket.
+printf '\n32. the replan loop: the plan station again, with the implementer'"'"'s declaration\n'
+fresh_project "$SANDBOX/p32"
+ticket_for AIF-32
+git add -A && git commit -qm "ticket 32" >/dev/null
+rc=0
+FAKE_CREATE=1 FAKE_REPLAN_FIRST=1 "$AIF" work AIF-32 --no-worktree >"$OUT/run32.out" 2>&1 || rc=$?
+eq "a contract declared unable to hold it, replanned once: built" "$rc" "0"
+eq "every station ran twice" \
+  "$(jq -r '[.entries[] | select(.station != null) | .station] | join(",")' tasks/AIF-32/ledger.json)" "plan,tests,implement,plan,tests,implement"
+eq "the replan is in the ledger" \
+  "$(jq -r '[.entries[] | select(.gate == "replan")] | last | .result' tasks/AIF-32/ledger.json)" "pass"
+eq "the second plan dispatch was told it was a replan, with the words" \
+  "$(grep -c '^REPLAN' .aif/tmp/fake-prompt-plan-2),$(grep -c 'nowhere to put the marker' .aif/tmp/fake-prompt-plan-2)" "1,1"
+eq "the run record counts it, and the report" \
+  "$(jq -r '.replans' tasks/AIF-32/run.json),$(grep -c '^- loops: 0 repair(s) of the oracle, 1 replan(s)$' tasks/AIF-32/report.md)" "1,1"
+eq "the first attempt's note did not survive into the second plan's tree" \
+  "$(git log --format=%s | grep -c '^aif: plan AIF-32')" "2"
+eq "the branch is clean" "$(git status --porcelain | wc -l | tr -d ' ')" "0"
+
+fresh_project "$SANDBOX/p32b"
+ticket_for AIF-32
+git add -A && git commit -qm "ticket 32b" >/dev/null
+rc=0
+FAKE_REPLAN=1 "$AIF" work AIF-32 --no-worktree >"$OUT/run32b.out" 2>&1 || rc=$?
+eq "declared twice: stopped at the replan cap" "$rc,$(jq -r '.status' tasks/AIF-32/run.json)" "1,stopped"
+eq "…saying so" "$(grep -q 'after 1 replan(s)' tasks/AIF-32/report.md && echo yes)" "yes"
+eq "…with the replan recorded as refused" \
+  "$(jq -r '[.entries[] | select(.gate == "replan") | .result] | join(",")' tasks/AIF-32/ledger.json)" "pass,fail"
+
+# ====== 33. the tests station's Bash, once the guard has been seen to deny ======
+# Granted only once `aif doctor --probe` has watched the hook deny a command in
+# a spawned run on this machine, and remembered per runner version. The
+# scripted runner stands in for that run here; the marker is what the worker
+# reads.
+printf '\n33. the tests station gets Bash only once the guard has been seen to deny\n'
+fresh_project "$SANDBOX/p33"
+mkdir -p .aif/state && printf 'probed\n' >.aif/state/guard-probed
+ticket_for AIF-33
+git add -A && git commit -qm "ticket 33" >/dev/null
+rc=0
+"$AIF" work AIF-33 --no-worktree >"$OUT/run33.out" 2>&1 || rc=$?
+eq "built" "$rc" "0"
+eq "the tests station was handed Bash, for aif _verify" \
+  "$(tr ',' '\n' <.aif/tmp/fake-tools-tests-1 | grep -c '^Bash$')" "1"
+eq "the implement station always had it" \
+  "$(tr ',' '\n' <.aif/tmp/fake-tools-implement-1 | grep -c '^Bash$')" "1"
+eq "doctor reports the capability from the marker" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["station-guard"].ok')" "true"
+
+# ====== 34. aif project init writes the type-check the project already has ====
+# Bound to contract, red and green, without a question: the plan's skeleton,
+# the tests and the code are all held to the project's own compiler. Only
+# what the project declares — a tsconfig and typescript installed, or a
+# typecheck script; a project with neither gets nothing.
+printf '\n34. project init binds the project'"'"'s own type-check to every phase\n'
+mkdir -p "$SANDBOX/p34" && cd "$SANDBOX/p34" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+printf '{ "name": "p34", "devDependencies": { "jest": "29", "typescript": "5" } }\n' >package.json
+printf '{}\n' >tsconfig.json
+"$AIF" init anthropic >/dev/null 2>&1
+rc=0
+"$AIF" project init </dev/null >"$OUT/init34.out" 2>&1 || rc=$?
+eq "detected jest, and recorded the kind" "$rc,$(jq -r '.test.kind' .aif/project.json)" "0,jest"
+eq "typecheck bound to contract, red and green" \
+  "$(jq -c '[.checks[] | select(.name == "typecheck") | .command, (.phase | join(","))]' .aif/project.json)" '["npx tsc --noEmit","contract,red,green"]'
+eq "…said so" "$(grep -c 'typecheck.*bound to contract, red and green' "$OUT/init34.out")" "1"
+eq "a contract phase validates" "$("$AIF" project check >/dev/null 2>&1; echo $?)" "0"
+rm -f .aif/project.json
+"$AIF" project init --no-checks >/dev/null 2>&1
+eq "--no-checks writes none, as it says" "$(jq '.checks | length' .aif/project.json)" "0"
 
 # ----------------------------------------------------------------------------
 printf '\n'

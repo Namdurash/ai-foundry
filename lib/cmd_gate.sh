@@ -13,9 +13,11 @@
 # to the bytes it judged, is what makes the next station's precondition
 # checkable without re-running a gate that can no longer be re-run.
 #
-# Exit: 0 all gates pass · 1 an artifact was rejected · 3 a gate could not render
-# a verdict on this station's work (the environment, or an artifact the station
-# may not touch — the gate's own words say which).
+# Exit: 0 all gates pass · 1 an artifact was rejected · 2 the ticket is the
+# problem (a spec stop, for the analyst) · 3 a gate could not render a verdict
+# on this station's work (the environment, or a defect no loop reaches) · 4 the
+# oracle is the problem (a repair, for the tests station). The gate's own words
+# say which.
 #
 # There used to be a fourth code: "the station changed nothing since this gate
 # last rejected it", keyed to a hash of whatever the station declared it would
@@ -120,14 +122,39 @@ aif_cmd_gate() {
       _aif_gate_record_meter "$root" "$work"
       _aif_gate_record "$work" "$root" "$records"
       # No verdict on THIS station's work, and nothing more: a 3 is the
-      # environment, or a defect in an artifact this station may not touch —
-      # a frozen test, say. This line used to name the first of those for all
-      # of them, and it headed a report that blamed a green repository for a
-      # red its new tests had caused (docs/DEFECTS-6.md #1). The gate's own
-      # words below say which it is.
+      # environment, or a defect no loop in the stage reaches. This line used
+      # to name the first of those for all of them, and it headed a report
+      # that blamed a green repository for a red its new tests had caused
+      # (docs/DEFECTS-6.md #1). The gate's own words below say which it is.
       aif_err "$gate could not render a verdict on the $station station's work — not a rejection; the gate says why:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
       return 3
+    fi
+
+    # The ticket's, not the station's: recorded as "spec", and the worker sends
+    # it to the analyst with the gate's lines, retrying nothing.
+    if [ "$rc" -eq 2 ]; then
+      records="$records$gate$sep""spec$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
+"
+      _aif_gate_record_meter "$root" "$work"
+      _aif_gate_record "$work" "$root" "$records"
+      aif_err "$gate found the ticket not buildable as written — a spec stop, for the analyst:"
+      printf '%s\n' "$out" | sed 's/^/  /' >&2
+      return 2
+    fi
+
+    # The oracle's, not the implementation's: recorded as "repair", and the
+    # worker sends the tests station to fix it in a copy of the tree with the
+    # implementation reverted (docs/REBUILD-4.md §2.3).
+    if [ "$rc" -eq 4 ]; then
+      records="$records$gate$sep""repair$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
+"
+      _aif_gate_record_meter "$root" "$work"
+      _aif_gate_record "$work" "$root" "$records"
+      _aif_gate_record_checks "$root" "$work"
+      aif_err "$gate attributes the failure to the frozen tests, not to the $station station — a repair, for the tests station:"
+      printf '%s\n' "$out" | sed 's/^/  /' >&2
+      return 4
     fi
 
     # sed -n 1p, not head -1: the first line of a gate's output goes into an
@@ -279,6 +306,39 @@ _aif_gate_record() {
   done <<EOF
 $records
 EOF
+}
+
+# `aif _verify <ticket> [--dry]` — verify-red over the tree as it stands,
+# freezing nothing, recording nothing: the tests station's own loop.
+#
+# The station has no way to run the suite and must not have one — the suite
+# runs whatever its files contain. What it may run is this: the same gate the
+# worker runs when it finishes, with AIF_VERIFY_DRY=1, which makes every check
+# run and every complaint print and skips the freeze. So the station reads the
+# gate's verdict while it can still act on it, instead of being handed it as a
+# rejection one dispatch later. The guard hook lets the tests station run
+# exactly this command and nothing else (sets/claude/hooks/guard.sh).
+#
+# Exit: the gate's own — 0 red for the right reason, 1 rejected (the output
+# says why), 2 a spec stop, 3 the gate could not run.
+aif_cmd_verify() {
+  case "${1:-}" in
+    -h | --help | "")
+      printf 'usage: aif _verify <ticket> [--dry]\n\n  Runs the verify-red gate over the tree as it stands and prints its verdict.\n  Nothing is frozen and nothing is recorded; the worker runs the gate for real\n  when the station finishes. --dry is accepted and is what this always is.\n'
+      return 0
+      ;;
+  esac
+  local ticket="$1" root work out rc=0
+  root="$(aif_require_project)"
+  work="$(aif_task_dir "$root" "$ticket")"
+  [ -d "$work" ] || aif_die "no such ticket: $ticket"
+  out="$(AIF_VERIFY_DRY=1 aif_gate_run "$root" verify-red "$work")" || rc=$?
+  if [ "$rc" -eq 127 ]; then
+    aif_err "the verify-red gate is not installed in this project — run 'aif init'"
+    return 3
+  fi
+  printf '%s\n' "$out"
+  return "$rc"
 }
 
 # `aif _commit <station> <ticket>` — one commit per accepted station.

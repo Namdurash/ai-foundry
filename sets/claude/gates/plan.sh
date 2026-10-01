@@ -15,9 +15,30 @@
 #   external      what the run will not validate, re-emitted on the checklist
 #
 # So this gate checks that those fields are there, are literal, and name the
-# repository as it actually is. Nothing else. Whether the plan is any GOOD is
-# answered by the outcome — tests that will not go green, a diff that leaves the
-# manifest — and a wrong plan therefore costs a retry rather than a judge.
+# repository as it actually is. Whether the plan is any GOOD is answered by the
+# outcome — tests that will not go green, a diff that leaves the manifest — and
+# a wrong plan therefore costs a retry rather than a judge.
+#
+# Two things the plan carries since docs/REBUILD-4.md, and both are checked
+# here because both are what the later stations stand on:
+#
+#   the contract   every path in files.create that is code exists already, as
+#                  a SKELETON the plan station wrote: real signatures, real
+#                  types, bodies that throw the not-implemented marker. The
+#                  tests are then red against something that loads — a test
+#                  file importing a module that does not exist vanishes from a
+#                  junit report whole (24 tests never seen by any gate on one
+#                  batch) — and the seams are decided once, in code, instead of
+#                  guessed twice. The project's checks bound to the `contract`
+#                  phase (a compiler) run over the tree as the plan left it: a
+#                  contract that calls a library wrongly does not compile, and
+#                  the plan is rejected with the compiler's own lines
+#   the verdicts   one per criterion. `buildable`, or the reason it is not —
+#                  already true in the tree, unfalsifiable, in conflict with
+#                  another, waiting on a product decision. Anything but
+#                  buildable is a SPEC STOP (exit 2): the ticket's problem,
+#                  found by the first station that read the code, at the cost
+#                  of one dispatch, with nothing frozen
 #
 # What went, and why it is not missed: a hedged `statement`, a `because` that
 # names an achievement rather than a constraint, a `serves` pointing at nothing,
@@ -26,7 +47,8 @@
 # settled. They are still written (the report and `aif explain` draw them); they
 # are no longer gates.
 #
-# Exit 0 admitted · 1 the plan is rejected · 3 the gate could not run.
+# Exit 0 admitted · 1 the plan is rejected · 2 the ticket is not buildable as
+# written (a spec stop) · 3 the gate could not run.
 
 set -uo pipefail
 
@@ -71,10 +93,13 @@ violations="$(
     | ($m.ac_coverage // {}) as $cov
     | ([ $cov[]? ] | flatten) as $covered
     | ($m.uncovered // []) as $unc
+    | ($m.no_skeleton // []) as $nosk
+    | ($m.verdicts // {}) as $verd
+    | ["buildable", "already_true", "unfalsifiable", "conflict", "needs_decision"] as $kinds
     | [
       # ---- the envelope, and the one binding -----------------------------
-      (if ($m.schema? // null) != 2
-        then "meta.schema must be 2" else empty end),
+      (if ($m.schema? // null) != 3
+        then "meta.schema must be 3 — a plan carries a verdict per criterion and writes the contract (docs/REBUILD-4.md)" else empty end),
       (if ($m.ticket? // "") != $ticket_id
         then "meta.ticket \"" + ($m.ticket? // "") + "\" does not match ticket.md (" + $ticket_id + ")"
         else empty end),
@@ -138,6 +163,40 @@ violations="$(
         | select(. as $p | ($unc | index($p)) == null)
         | "files.create names \"" + .
           + "\", which no criterion covers — give it one, or list it in meta.uncovered so it is seen" ),
+
+      # ---- what is not code gets no skeleton, and says so -----------------
+      ( $nosk[]?
+        | select(. as $p | (($m.files.create // []) | index($p)) == null)
+        | "no_skeleton names \"" + . + "\", which is not in files.create" ),
+
+      # ---- a verdict per criterion ----------------------------------------
+      # The plan station is the first thing that reads the criteria against
+      # the real code, so it is where "already done", "cannot be falsified"
+      # and "the product has not decided" are cheapest to find. A verdict that
+      # is not buildable needs its reason: it goes to the analyst as written.
+      (if ($m | has("verdicts") | not)
+        then "meta.verdicts is required — one entry per criterion: { \"AC-001\": { \"verdict\": \"buildable\" } }"
+        else empty end),
+      ( $acs[]?
+        | select(. as $ac | ($verd | has($ac)) | not)
+        | "verdicts is missing " + . + " — every criterion gets buildable, already_true, unfalsifiable, conflict or needs_decision" ),
+      ( ($verd | keys[]?)
+        | select(. as $ac | ($acs | index($ac)) == null)
+        | "verdicts names " + . + ", which is not a criterion in ticket.md" ),
+      ( ($verd | to_entries[]?)
+        | .key as $ac | .value as $v
+        | ( (if ($v | type) != "object" or (($v.verdict // "") | type) != "string"
+              then "verdicts." + $ac + " must be an object with a \"verdict\"" else empty end),
+            (if ($v | type) == "object" and (($v.verdict // "") | type) == "string"
+                and ($kinds | index($v.verdict // "")) == null
+              then "verdicts." + $ac + ".verdict \"" + ($v.verdict // "" | tostring)
+                   + "\" is not one of " + ($kinds | join(", ")) else empty end),
+            (if ($v | type) == "object" and ($v.verdict // "") != "buildable"
+                and ($kinds | index($v.verdict // "")) != null
+                and (($v.because // "") | length) == 0
+              then "verdicts." + $ac + " is " + ($v.verdict // "")
+                   + " and says no \"because\" — the analyst reads that reason, so it has to be there"
+              else empty end) ) ),
 
       # ---- the external surface: name a validator you have, or none --------
       (if ($m | has("external") | not)
@@ -229,10 +288,28 @@ EOF
 #
 # The most common failure of a planning model, and entirely mechanical to
 # catch: a plan written against a repository it imagined.
+#
+# A create path is code unless the plan says otherwise, and code the plan
+# creates exists ALREADY — as the skeleton the station wrote beside the plan.
+# A create path the station did not write is a contract nobody can test
+# against; a path in no_skeleton (documentation, a fixture) is the old rule:
+# it must not exist yet.
+no_skeleton="$(printf '%s' "$meta" | jq -r '.no_skeleton[]? // empty')"
+skeletons=0
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  [ -e "$root/$p" ] && fs="$fs
-files.create names \"$p\", which already exists — use files.change"
+  if printf '%s\n' "$no_skeleton" | grep -qxF -- "$p"; then
+    [ -e "$root/$p" ] && fs="$fs
+files.create names \"$p\" with no skeleton, and it already exists — use files.change"
+  elif [ ! -f "$root/$p" ]; then
+    fs="$fs
+files.create names \"$p\", and no skeleton was written there — the plan writes every new module as signatures whose bodies throw \"$AIF_G_NOT_IMPLEMENTED: <name>\"; a path that is not code goes in no_skeleton"
+  elif [ ! -s "$root/$p" ]; then
+    fs="$fs
+files.create names \"$p\", and the skeleton there is empty — it has to carry the exports the tests will import"
+  else
+    skeletons=$((skeletons + 1))
+  fi
 done <<EOF
 $(printf '%s' "$meta" | jq -r '.files.create[]? // empty')
 EOF
@@ -247,10 +324,33 @@ EOF
 
 aif_g_report "$(printf '%s\n%s' "$violations" "${fs# }" | grep -v '^$' || true)" "plan.md"
 
-printf 'plan: %s implementation file(s), %s test file(s), %s criteria covered\n' \
+# --- the contract compiles ---------------------------------------------------
+# The project's checks bound to the `contract` phase, over the tree as the plan
+# left it. A compiler here is the linker for the skeleton: a signature that
+# calls a third-party API the way the station remembered it rather than the
+# way it is does not compile, and the rejection carries the compiler's lines.
+# This is the gate that would have caught the two decisions that asserted a
+# library's shape from memory (docs/DEFECTS-4.md).
+mkdir -p "$root/.aif/tmp"
+check_viol="$(aif_g_checks_run "$project" "$root" "contract" "$root/.aif/tmp/checks-contract.json")"
+aif_g_report "$check_viol" "contract"
+
+# --- the verdicts: anything but buildable is the ticket's, not the plan's -----
+# After the form, so the analyst reads a well-formed plan's reasons and not a
+# half-written one's. Exit 2: nothing is retried, nothing is frozen, and the
+# card goes to the human with these lines.
+spec="$(printf '%s' "$meta" | jq -r '
+  (.verdicts // {}) | to_entries[] | select(.value.verdict != "buildable")
+  | .key + " is " + .value.verdict + ": " + (.value.because // "")')"
+if [ -n "$spec" ]; then
+  aif_g_spec "$spec"
+fi
+
+printf 'plan: %s implementation file(s), %s test file(s), %s criteria covered, %s skeleton(s)\n' \
   "$(printf '%s' "$meta" | jq '(.files.create // []) + (.files.change // []) | length')" \
   "$(printf '%s' "$meta" | jq '.files.tests | length')" \
-  "$(printf '%s' "$meta" | jq '.ac_coverage | length')"
+  "$(printf '%s' "$meta" | jq '.ac_coverage | length')" \
+  "$skeletons"
 
 # --- what passed, and what passed unwatched ---------------------------------
 # On the PASS path, always. Each is a hole the plan is allowed to have and a

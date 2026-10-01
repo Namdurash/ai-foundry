@@ -221,6 +221,17 @@ main() {
       . "$AIF_ROOT/lib/cmd_gate.sh"
       aif_cmd_commit ${1+"$@"}
       ;;
+    _verify)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_amend.sh
+      . "$AIF_ROOT/lib/cmd_amend.sh"
+      # shellcheck source=lib/cmd_gate.sh
+      . "$AIF_ROOT/lib/cmd_gate.sh"
+      aif_cmd_verify ${1+"$@"}
+      ;;
     _ticket-init)
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"

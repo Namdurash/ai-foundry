@@ -26,6 +26,18 @@
 # report can be entirely silent about a broken file and read as a clean pass.
 # When the runner and its own report disagree, this gate answers 3 — it cannot
 # render a verdict — rather than picking the more convenient of the two.
+#
+# And one answer this gate gives that is neither a rejection nor a stop: 4,
+# REPAIR. A failure that is the ORACLE's — a test that arrived with the
+# ticket's own files and fails whatever the code does, a check failing in a
+# frozen test file the same way without the implementation, a pre-existing
+# test the new test files break, a frozen test the implementer declares wrong
+# in its note — is nothing the implement station can clear, and it used to be
+# a stop for a human. It goes to the tests station now, which repairs it in a
+# copy of the tree with the implementation reverted to the skeleton, under the
+# same gate that admitted the original (docs/REBUILD-4.md §2.3). The one
+# attribution that stays a stop is a dependency that moved outside the tracked
+# tree: no station's edit reaches that.
 
 set -uo pipefail
 
@@ -426,38 +438,79 @@ if aif_g_have python3; then
       # unfair, it is unsatisfiable: measured at three dispatches, 93 turns and
       # 51 580 output tokens before limits.attempts_max stopped the run.
       #
-      # So it is a 3, not a 1: the gate cannot render a verdict on THIS
-      # station's work, and the loop must stop instead of retrying.
+      # So it is a 4, not a 1: the oracle's, and the tests station repairs it
+      # in the copy of the tree without the implementation.
       if [ "$lock_mode" = "per-test" ] && [ "${mine_fail:-0}" -eq 0 ] &&
         [ "${pre_fail:-0}" -eq 0 ] && [ "${post_fail:-0}" -gt 0 ]; then
-        printf 'ERROR  the failing tests are the oracle, not the implementation:\n' >&2
+        printf 'REPAIR the failing tests are the oracle, not the implementation:\n' >&2
         printf '%s\n' "$notpass" | render >&2
         printf '  Every one of them arrived with this ticket'"'"'s own test files, which are frozen by\n' >&2
         printf '  tests.lock.json and outside files.change. The implement station cannot fix what it\n' >&2
-        printf '  is being rejected for. Re-run the tests station against this plan.\n' >&2
-        exit "$AIF_G_ERROR"
+        printf '  is being rejected for; the tests station can, without the implementation in view.\n' >&2
+        exit "$AIF_G_REPAIR"
       fi
       # The same rule, reached by measurement rather than by origin: a failure
       # that is the same with the implementation taken away cannot be cleared
-      # by any change to it, and while one of those stands no retry can pass —
-      # so the run stops now, with every failure listed and attributed, rather
-      # than after attempts_max of them.
+      # by any change to it, and while one of those stands no retry can pass.
+      # What moved OUTSIDE the tracked tree — installed dependencies — no
+      # station's edit reaches, and that is a stop; a pre-existing test the
+      # new test files broke is the tests', and goes back to them.
       if [ "${unreached_n:-0}" -gt 0 ]; then
-        printf 'ERROR  %s failing test(s) are out of the implementation'"'"'s reach — the run stops instead of retrying:\n' \
-          "$unreached_n" >&2
-        printf '%s\n' "$notpass" | render >&2
-        printf '  Each of those fails the same way with this ticket'"'"'s implementation reverted, so\n' >&2
-        printf '  no change the implement station may make can clear it.\n' >&2
         if [ "${moved_n:-0}" -gt 0 ]; then
+          printf 'ERROR  %s failing test(s) are out of the implementation'"'"'s reach — the run stops instead of retrying:\n' \
+            "$unreached_n" >&2
+          printf '%s\n' "$notpass" | render >&2
+          printf '  Each of those fails the same way with this ticket'"'"'s implementation reverted, so\n' >&2
+          printf '  no change the implement station may make can clear it.\n' >&2
           printf '  Passed at the freeze, fails now without the code: something outside the tracked\n' >&2
           printf '  tree moved — installed dependencies are the usual suspect (a package installed\n' >&2
           printf '  around the lockfile). Run "prepare" in the worktree, then resume.\n' >&2
+          exit "$AIF_G_ERROR"
         fi
-        if [ "${interaction_n:-0}" -gt 0 ]; then
-          printf '  Red since the test files landed, and the code does not reach it: the new tests\n' >&2
-          printf '  break it, and they have to change.\n' >&2
+        printf 'REPAIR %s failing test(s) are out of the implementation'"'"'s reach, and are the new tests'"'"' doing:\n' \
+          "$unreached_n" >&2
+        printf '%s\n' "$notpass" | render >&2
+        printf '  Each of those fails the same way with this ticket'"'"'s implementation reverted, so\n' >&2
+        printf '  no change the implement station may make can clear it. %s went red when the test\n' \
+          "$interaction_n" >&2
+        printf '  files landed, and the code does not reach them: the new tests break them, and they have to change.\n' >&2
+        exit "$AIF_G_REPAIR"
+      fi
+      # The implementer's own claim. A frozen test of this ticket that fails
+      # with the code in place is, by default, the code's: a red-first test is
+      # red without the code by design, so "the same without it" says nothing
+      # here. What the implement station may do is SAY the test is wrong, in
+      # its note, naming it and why — and when every failing frozen test is
+      # named, the claim goes to the tests station as a repair, which keeps the
+      # test or changes it under the gate that admitted it. A claim that covers
+      # only some of the failures is not a claim about the rest.
+      claims=""
+      [ ! -f "$work/implement.note.json" ] ||
+        claims="$(jq -r '.tests_wrong[]? | (.test // "") + "\t" + (.because // "")' "$work/implement.note.json" 2>/dev/null)"
+      if [ "${mine_fail:-0}" -gt 0 ] && [ "${pre_fail:-0}" -eq 0 ] && [ "${post_fail:-0}" -eq 0 ] && [ -n "$claims" ]; then
+        unclaimed=""
+        while IFS="$tab" read -r kind tid rest; do
+          [ "$kind" = "mine" ] || continue
+          : "$rest"
+          printf '%s\n' "$claims" | awk -F'\t' -v id="$tid" '$1 != "" && index(id, $1) > 0 { f = 1 } END { exit !f }' ||
+            unclaimed="$unclaimed
+$tid"
+        done <<EOF
+$rows
+EOF
+        if [ -z "$(printf '%s' "$unclaimed" | grep -v '^$' || true)" ]; then
+          printf 'REPAIR the implementer declares the failing frozen test(s) wrong, naming each:\n' >&2
+          printf '%s\n' "$claims" | awk -F'\t' '$1 != "" { print "  - " $1 ": " $2 }' >&2
+          printf '%s\n' "$notpass" | render >&2
+          printf '  The tests station reads the claim, without the implementation in view, and either\n' >&2
+          printf '  amends the test or keeps it; the implementation is judged again after that.\n' >&2
+          exit "$AIF_G_REPAIR"
         fi
-        exit "$AIF_G_ERROR"
+        printf 'REJECT suite is not green, and the note'"'"'s claim does not cover every failing frozen test:\n' >&2
+        printf '%s\n' "$notpass" | render >&2
+        printf '  not claimed:\n' >&2
+        printf '%s\n' "$unclaimed" | grep -v '^$' | sed 's/^/    - /' >&2
+        exit "$AIF_G_REJECT"
       fi
       printf 'REJECT suite is not green:\n' >&2
       printf '%s\n' "$notpass" | render >&2
@@ -597,16 +650,16 @@ $(printf '%s\n' "$named" | sed -n '1,12p' | cut -c1-240 | sed 's/^/    /')"
     done <"$gtmp/checks/failed.tsv"
   fi
   if [ -n "$unreached" ]; then
-    printf 'ERROR  a check fails in the frozen tests, not in the implementation — the run stops instead of retrying:\n' >&2
+    printf 'REPAIR a check fails in the frozen tests, not in the implementation:\n' >&2
     printf '%s\n' "$unreached" | render >&2
     printf '  None of it comes from the implementation: the same lines are printed without it,\n' >&2
     printf '  and they name files the freeze holds, which the implement station may not edit.\n' >&2
-    printf '  The tests have to change. A check bound to "red" with legitimate_at_red would have\n' >&2
-    printf '  sent this back to the tests station before the freeze.\n' >&2
+    printf '  The tests have to change, and the tests station changes them. A check bound to\n' >&2
+    printf '  "red" would have caught this before the freeze.\n' >&2
     other="$(printf '%s\n' "$check_viol" | grep -c '^[^[:space:]]' || true)"
     [ "${other:-0}" -le 1 ] ||
       printf '  (%s check(s) failed in all; each is in the ledger by name.)\n' "$other" >&2
-    exit "$AIF_G_ERROR"
+    exit "$AIF_G_REPAIR"
   fi
   aif_g_report "$check_viol" "checks"
 fi

@@ -127,6 +127,10 @@ amend_rel="${amend_file#"$root"/}"
 # any station that tries to write under tasks/.
 ledger_rel="${work#"$root"/}/ledger.json"
 run_rel="${work#"$root"/}/run.json"
+# And the implementer's own note — the one file under tasks/ it may write: a
+# frozen test it declares wrong, a contract it declares unable to hold the
+# behaviour. Read by green and the worker, not by this gate.
+note_rel="${work#"$root"/}/implement.note.json"
 
 # A lockfile moves only when the PLAN named it — the plan gate made sure it
 # named the manifest beside it. Not the amendments: `aif _amend-plan` refuses
@@ -137,7 +141,7 @@ planned="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.ch
 viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ] || [ "$p" = "$run_rel" ]; then
+  if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ] || [ "$p" = "$run_rel" ] || [ "$p" = "$note_rel" ]; then
     continue
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol

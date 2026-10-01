@@ -84,7 +84,10 @@ mkdir -p .aif/tmp
 row() { if [ "$3" = 1 ]; then printf '<testcase name="%s" file="%s"/>' "$1" "$2"
   else printf '<testcase name="%s" file="%s"><failure message="assert marker missing">AssertionError: assert marker missing</failure></testcase>' "$1" "$2"; fi; }
 body="$(row t0 tests/t0.py 1)"
-if [ -f tests/t1.py ]; then g=0; grep -q impl1 src/app.py 2>/dev/null && g=1; body="$body$(row t1 tests/t1.py "$g")"; fi
+# The test is named with its marker, `<ticket> AC-001`, read off the first
+# line the fake tests station writes: verify-red looks for the marker in a
+# collected test's id, not in the file's text.
+if [ -f tests/t1.py ]; then g=0; grep -q impl1 src/app.py 2>/dev/null && g=1; body="$body$(row "$(sed -n '1s/^# \([A-Z0-9-]* AC-[0-9]*\).*/\1/p' tests/t1.py) t1" tests/t1.py "$g")"; fi
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
   chmod +x .aif/suite.sh
@@ -128,8 +131,9 @@ case "$station" in
   plan)
     cat >"$work/plan.md" <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "$ticket", "ticket_sha256": "$(bind ticket_sha256)", "risk": "low",
+{ "schema": 3, "ticket": "$ticket", "ticket_sha256": "$(bind ticket_sha256)", "risk": "low",
   "files": { "create": [], "change": ["src/app.py"], "tests": ["tests/t1.py"] },
+  "no_skeleton": [], "verdicts": { "AC-001": { "verdict": "buildable" } },
   "decisions": [ { "id": "D-001", "statement": "Write the marker from the app module.",
       "because": "AC-001 is about the app's own output", "serves": ["AC-001"] } ],
   "ac_coverage": { "AC-001": ["src/app.py"] }, "uncovered": [],
@@ -141,7 +145,7 @@ PLAN
   plan-judge)
     jq -n --arg s "$(bind subject_sha256)" '{schema:1,gate:"plan-judge",subject:"plan.md",subject_sha256:$s,
       judge_agent:"aif-plan-judge",at:"t",guesses:[],missing_files:[]}' >"$work/verdict-plan.json" ;;
-  tests) printf '# AC-001 asserts impl1\n' >"$wt/tests/t1.py" ;;
+  tests) printf '# %s AC-001 asserts impl1\n' "$ticket" >"$wt/tests/t1.py" ;;
   implement) printf 'def users():\n    return []  # impl1\n' >"$wt/src/app.py" ;;
 esac
 jq -n --arg st "$station" '{type:"result",subtype:"success",is_error:false,result:("fake " + $st),

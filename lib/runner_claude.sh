@@ -231,6 +231,63 @@ aif_runner_claude_probe() {
   return 1
 }
 
+# aif_runner_claude_guard_probe <root> — does the station guard DENY a command
+# in a spawned run here?
+#
+# The tests station's Bash exists for one command, `aif _verify`, and the
+# guard hook is what holds it to that. A hook is fail-open by nature: one that
+# does not fire looks exactly like one that allowed everything, and the
+# station would then have the shell. So the worker grants the tool only once
+# this probe has watched the hook deny something — the rule every other
+# readiness check here follows (docs/FINDINGS.md #14): ask the question the
+# answer will be read as answering.
+#
+# One run, Bash only, as the tests station: AIF_STATION=tests in the
+# environment, the project's settings loaded, bypassPermissions as the worker
+# dispatches. The prompt asks for a command the guard refuses and asks the
+# model to quote the refusal. Probed 2026-10-01: the hook fires under
+# bypassPermissions and the denial reaches the model (docs/FINDINGS.md #21).
+# rc 0 the hook denied, and the marker is written · 1 it did not, with why.
+aif_runner_claude_guard_probe() {
+  local root="$1" out rc=0 err errfile marker
+  errfile="$(mktemp "${TMPDIR:-/tmp}/aif-probe-XXXXXX")"
+  [ -f "$root/.claude/settings.json" ] || {
+    rm -f "$errfile"
+    printf 'no .claude/settings.json here — the guard hook is not registered (aif init)'
+    return 1
+  }
+  out="$(cd "$root" && AIF_STATION=tests claude -p 'Run exactly this with the Bash tool: echo AIF_GUARD_PROBE. If the tool call is denied, reply with the word DENIED and the reason, verbatim. If it ran, reply with the word RAN and its output.' \
+    --output-format json \
+    --max-turns 3 \
+    --tools Bash \
+    --no-session-persistence \
+    --permission-mode bypassPermissions \
+    --setting-sources project,local \
+    2>"$errfile" </dev/null)" || rc=$?
+  if [ -z "$out" ]; then
+    err="$(head -1 "$errfile")"
+    rm -f "$errfile"
+    printf 'the runner produced no envelope (exit %s)%s' "$rc" \
+      "$([ -n "$err" ] && printf ' — %s' "$err")"
+    return 1
+  fi
+  rm -f "$errfile"
+  if ! printf '%s' "$out" | jq -e '.is_error == false' >/dev/null 2>&1; then
+    printf '%s' "$(printf '%s' "$out" | jq -r '(.result // "the run failed") | split("\n")[0]' 2>/dev/null)"
+    return 1
+  fi
+  if printf '%s' "$out" | jq -r '.result // ""' | grep -q 'aif _verify'; then
+    marker="$root/.aif/state/guard-probed"
+    mkdir -p "$(dirname "$marker")"
+    aif_runner_version claude >"$marker"
+    printf 'the guard denied a command in a spawned run (claude %s)' "$(cat "$marker")"
+    return 0
+  fi
+  printf 'a spawned run with Bash was NOT denied by the guard — the hook did not fire, or did not reach the model: %s' \
+    "$(printf '%s' "$out" | jq -r '(.result // "") | split("\n")[0] | .[0:160]' 2>/dev/null)"
+  return 1
+}
+
 # aif_runner_claude_result_usage <result.json> — the four token classes, as a
 # JSON object. Zeros where the envelope has none, so a row is never missing a
 # key — the failure path must record the same fields as the success path.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Gate: verify-red — do the new tests fail, for the right reason, before any
-# implementation exists?
+# Gate: verify-red — do the new tests fail, for the right reason, against the
+# contract, before any implementation exists?
 #
 # "The tests fail" is far too weak to be worth checking. A SyntaxError fails. A
 # misspelled import fails. A test that was never collected did not fail — it is
@@ -14,14 +14,27 @@
 #     tests. A pre-existing test that was green WITHOUT the new test files and
 #     is red with them is a different thing, told apart by running the suite
 #     once more without them (see "Pre-existing tests" below)
-#   - each new test is present in the report, and each failing one fails for a
-#     legitimate class (assertion, missing module), not a broken one (syntax,
-#     collection error) → exit 3 if broken
-#   - every acceptance criterion is covered by a test, and its expected literal
-#     appears in a test — a test the runner COLLECTED: a declared file the
-#     report holds no new test from counts toward no criterion (coarse mode
-#     cannot tell, so it still reads every declared file, and says so)
-#   - no implementation was written (the plan's create paths must not exist yet)
+#   - each new test is present in the report, and each failing one fails for
+#     one of two reasons: an assertion did not hold, or the skeleton threw the
+#     not-implemented marker. The plan station wrote the contract — every
+#     module the plan creates exists as signatures whose bodies throw — so a
+#     test that fails any other way is calling something the contract does not
+#     export, or is broken (syntax, a fixture that is not there). Both are the
+#     tests station's own, and both come back to it as a REJECTION, while it
+#     is still there to fix them. "Broken" used to be a stop (docs/REBUILD-4.md)
+#   - every acceptance criterion is carried by a collected test: its marker,
+#     ticket id and criterion id — `OPES-69 AC-003` — in the test's own name,
+#     not merely in a file's text, where a comment or another ticket's marker
+#     in a shared file used to satisfy it. And the criterion's literal in that
+#     test's file
+#   - every relative import in a declared file resolves to a file that exists.
+#     With the contract on disk that is what a misspelling looks like, and it
+#     used to be frozen as red and surface at green, in a file nobody may edit
+#   - the new red tests are red twice: the suite runs once more at the freeze,
+#     and a test whose status moved is non-deterministic, not red
+#   - no implementation was written: the skeleton is byte-identical to the
+#     plan's commit, and a create path the plan marked no_skeleton does not
+#     exist yet
 #
 # Without a readable per-test report none of that is possible and the gate falls
 # to COARSE mode — the suite's exit code alone. Only a report that exists and
@@ -47,7 +60,13 @@
 # target a test that never depended on this round's code), and re-surfaced on
 # the closing checklist. If EVERY new test is green, that is still a rejection:
 # nothing red remains, so either the ticket is already done or the tests assert
-# nothing.
+# nothing — unless the station SAID so, in tests.note.json, in which case it is
+# the ticket's problem and a spec stop (exit 2).
+#
+# The station runs this gate itself, before the freeze, as `aif _verify <ID>`:
+# AIF_VERIFY_DRY=1 makes every check run and every complaint print, and freezes
+# nothing. That is the execute-and-repair loop every working test generator
+# has, and the blind station never had.
 #
 # On success it writes tests.lock.json, the frozen record of this boundary: the test
 # hashes, the implementation hashes at red-time (for green's revert-recheck), the
@@ -65,8 +84,11 @@ aif_g_need jq
 work="${1:-}"
 [ -n "$work" ] || aif_g_error "usage: verify-red.sh <work-dir>"
 
+dry="${AIF_VERIFY_DRY:-0}"
+
 plan="$work/plan.md"
 spec="$work/ticket.md"
+note="$work/tests.note.json"
 project="$(aif_g_project "$work")" || exit $?
 root="$(dirname "$(dirname "$project")")"
 
@@ -83,11 +105,30 @@ if [ "$(printf '%s' "$plan_meta" | jq -r '.ticket_sha256 // ""')" != "$(aif_g_sh
   aif_g_reject "plan.md is bound to a different ticket — re-run the plan station"
 fi
 
+ticket_id="$(printf '%s' "$spec_meta" | jq -r '.ticket // ""')"
 test_files="$(printf '%s' "$plan_meta" | jq -r '.files.tests[]? // empty')"
 create_files="$(printf '%s' "$plan_meta" | jq -r '.files.create[]? // empty')"
 change_files="$(printf '%s' "$plan_meta" | jq -r '.files.change[]? // empty')"
+no_skeleton="$(printf '%s' "$plan_meta" | jq -r '.no_skeleton[]? // empty')"
 
-# --- the test files must exist; implementation must NOT --------------------
+# --- the station's note: what it could not write a red test for --------------
+# A structured way to say "this criterion is already built" or "this one
+# cannot be falsified", read here rather than guessed from a closing message.
+# Unfalsifiable is the ticket's problem whoever found it: a spec stop, now,
+# before anything is frozen and before three attempts at the impossible.
+note_built=""
+note_unf=""
+if [ -f "$note" ]; then
+  printf '%s' "$(cat "$note")" | jq -e . >/dev/null 2>&1 ||
+    aif_g_reject "tests.note.json is not valid JSON"
+  note_built="$(jq -r '.already_built[]? // empty' "$note")"
+  note_unf="$(jq -r '.unfalsifiable[]? | (.id // "") + " cannot be falsified: " + (.because // "no reason given")' "$note")"
+fi
+if [ -n "$note_unf" ]; then
+  aif_g_spec "$(printf '%s\n%s' "$note_unf" "the tests station could not write a test that would fail for it; the criterion needs a literal observation, or it is not a criterion")"
+fi
+
+# --- the test files must exist; the contract must be what the plan left -----
 viol=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
@@ -97,14 +138,47 @@ done <<EOF
 $test_files
 EOF
 
-# A create path that already exists means the test-author wrote implementation —
-# the one thing this station must not do.
+# The skeleton is the plan's. A create path that changed since the plan's
+# commit means the test station wrote implementation — the one thing it must
+# not do — or edited the contract it was handed; a create path the plan marked
+# no_skeleton must not exist until implement. Measured against the commit the
+# worker dispatched this station from; by hand, with no record, against HEAD.
+base="$(aif_g_dispatch_base "$work" "$root")"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  [ -e "$root/$f" ] && viol="$viol
-implementation was written by the test station: $f exists (it must not until implement)"
+  if printf '%s\n' "$no_skeleton" | grep -qxF -- "$f"; then
+    [ -e "$root/$f" ] && viol="$viol
+implementation was written by the test station: $f exists (the plan marked it no_skeleton; it must not exist until implement)"
+    continue
+  fi
+  if [ ! -f "$root/$f" ]; then
+    viol="$viol
+the skeleton $f the plan wrote is gone — the tests are red against the contract, and the contract has to be there"
+    continue
+  fi
+  if [ -n "$base" ] && [ -e "$root/.git" ] && git -C "$root" cat-file -e "$base:$f" 2>/dev/null; then
+    if [ "$(git -C "$root" show "$base:$f" 2>/dev/null | aif_g_sha256 /dev/stdin)" != "$(aif_g_sha256 "$root/$f")" ]; then
+      viol="$viol
+the test station changed the skeleton $f — the contract is the plan's; a test is written against it, not over it, and an implementation is the implement station's"
+    fi
+  fi
 done <<EOF
 $create_files
+EOF
+
+# --- every relative import resolves --------------------------------------------
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$root/$f" ] || continue
+  while IFS= read -r spec_unres; do
+    [ -n "$spec_unres" ] || continue
+    viol="$viol
+$f imports '$spec_unres', which resolves to no file — the contract is on disk, so a path that is not there is misspelled, or the plan created nothing at it"
+  done <<EOF2
+$(aif_g_imports_unresolved "$root" "$f")
+EOF2
+done <<EOF
+$test_files
 EOF
 aif_g_report "${viol# }" "tests"
 
@@ -216,7 +290,6 @@ if [ "$mode" = "per-test" ]; then
   pre_red="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
     '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | select(.status == "failure" or .status == "error") | .id')"
   if [ -n "$pre_red" ]; then
-    base="$(aif_g_dispatch_base "$work" "$root")"
     baseline=""
     classes=""
     base_why=""
@@ -303,34 +376,39 @@ if [ "$mode" = "per-test" ]; then
     '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | .id + "\t" + .status')"
 
   # Three kinds of outcome, and they part ways here:
-  #   reject (exit 1) — a real test asserting the wrong thing (skipped, since a
-  #     skip is the cheapest way to make red disappear). The test-author
-  #     rewrites it.
-  #   broke  (exit 3) — not a usable oracle at all (syntax/collection error, or
-  #     an error we cannot classify). verify-red cannot certify it as red, the
-  #     same way a judge cannot certify a hallucinated verdict.
+  #   reject (exit 1) — a test that is not red for the right reason: skipped
+  #     (the cheapest way to make red disappear), broken (syntax, a fixture
+  #     that is not there — it did not run), or failing in a way that is
+  #     neither an assertion nor the skeleton's marker (it calls a name the
+  #     contract does not export). All three are the author's, and the author
+  #     is still here: they come back to it, verbatim, with the message.
   #   green  (recorded) — passes at freeze. On a second round that is the
   #     honest test for an already-implemented criterion; see the header. It is
   #     kept, named in the lock, and kept OUT of covering.
   reject=""
-  broke=""
   green_ids=""
   while IFS="$(printf '\t')" read -r file id status msg; do
     [ -n "$id" ] || continue
     : "$file"
     new_count=$((new_count + 1))
-    if [ -n "$broken_re" ] && printf '%s' "$msg" | grep -qE "$broken_re"; then
-      broke="$broke
-$id failed for a broken reason, not a missing feature — it is not a usable test"
-    elif [ "$status" = "pass" ]; then
+    if [ "$status" = "pass" ]; then
       green_ids="$green_ids
 $id"
     elif [ "$status" = "skipped" ]; then
       reject="$reject
 $id is skipped — a skipped test is not a red test"
-    elif [ "$status" = "error" ] && [ -n "$legit_re" ] && ! printf '%s' "$msg" | grep -qE "$legit_re"; then
-      broke="$broke
-$id errored for an unrecognised reason — treat as broken, not as red"
+    elif printf '%s' "$msg" | grep -qF -- "$AIF_G_NOT_IMPLEMENTED"; then
+      : # red because the behaviour is not built: the skeleton threw
+    elif [ -n "$broken_re" ] && printf '%s' "$msg" | grep -qE "$broken_re"; then
+      reject="$reject
+$id did not run — it is broken, not red: $(printf '%s' "$msg" | cut -c1-240)
+    fix the test: it must fail because a criterion does not hold yet, and this is a test that could not be loaded or collected"
+    elif [ -n "$legit_re" ] && printf '%s' "$msg" | grep -qE "$legit_re"; then
+      : # an assertion did not hold
+    else
+      reject="$reject
+$id fails for a reason that is neither an assertion nor the missing implementation: $(printf '%s' "$msg" | cut -c1-240)
+    the contract is on disk, so a name it does not export, a wrong signature, or a fixture that is not there is the test's own defect — or add the class to failure_classes.legitimate if this project counts it as red"
     fi
   done <<EOF
 $new_rows
@@ -338,20 +416,11 @@ EOF
 
   [ "$new_count" -gt 0 ] || aif_g_reject "no new tests were collected from the declared test files"
 
-  broke="$(printf '%s' "${broke# }" | grep -v '^$' || true)"
-  if [ -n "$broke" ]; then
-    printf 'ERROR  the new tests are not a usable oracle — fix them, do not proceed:\n' >&2
-    printf '%s\n' "$broke" | sed 's/^/  - /' >&2
-    exit "$AIF_G_ERROR"
-  fi
   aif_g_report "${reject# }" "tests"
 
   green_ids="$(printf '%s' "${green_ids# }" | grep -v '^$' || true)"
   green_count="$(printf '%s' "$green_ids" | grep -c . || true)"
   red_count=$((new_count - green_count))
-  if [ "$red_count" -eq 0 ]; then
-    aif_g_reject "all $new_count new test(s) are already green — nothing red remains to implement; either the ticket is already done, or the tests assert nothing"
-  fi
 else
   # coarse: the suite as a whole must be observably non-green.
   #
@@ -365,12 +434,12 @@ else
   # them too, and it is what this branch has.
   broken_re="$(jq -r '.failure_classes.broken | join("|")' "$project")"
   if [ -n "$broken_re" ] && grep -qE "$broken_re" "$work/.suite.out"; then
-    printf 'ERROR  the new tests are not a usable oracle — the run matches a broken-failure class:\n' >&2
+    printf 'REJECT the new tests are not a usable oracle — the run matches a broken-failure class:\n' >&2
     grep -ohE "$broken_re" "$work/.suite.out" | sort -u | sed 's/^/  - /' >&2
     printf '  This is coarse mode (%s), so the gate cannot say WHICH test broke —\n' "$mode_why" >&2
     printf '  only that the suite did not merely fail, it failed to run.\n' >&2
     rm -f "$work/.suite.out"
-    exit "$AIF_G_ERROR"
+    exit "$AIF_G_REJECT"
   fi
   # The runner's exit code, and nothing else. This used to grep the output for
   # "passed" and the absence of "fail|error": a red pytest run prints "failed"
@@ -383,31 +452,24 @@ else
   fi
 fi
 
-# --- coverage: every criterion has a test, with its literal present ---------
+# --- coverage: every criterion is carried by a collected test ---------------
 # A fully-backticked expect is the ready gate's convention for a domain literal
 # that collides with the vague-word list (`error` the union value). The
 # backticks are the declaration, not part of the value — strip them, so the
 # tests assert the bare literal.
 #
-# "A test" is one the runner collected. Coverage is a grep over the text of
-# the test files, and it used to read every declared file — including one the
-# runner never collected: a name outside testMatch or python_files, a jest
-# suite that fails to load, which jest-junit leaves out of the report by
-# default. So long as another declared file contributed a test, the run was
-# red, every criterion "covered", and the file frozen with none of its tests in
-# `covering`: green's revert-recheck never targeted them and green's suite
-# never ran them. A criterion whose only test lived there was checked by
-# nothing (docs/DEFECTS-7.md #1). "A test that was never collected did not
-# fail — it is absent", says the header, and that was enforced for the
-# declared files together — no new test at all — never for each one.
+# "A test" is one the runner collected, and the criterion's marker is in that
+# test's own id — `<ticket> AC-nnn`, matched after normalising both (see
+# aif_g_norm) so a jest title and a python function name both carry it. It
+# used to be a grep over the TEXT of the declared files, and that was
+# satisfied by a comment listing the criteria, and by another ticket's
+# AC-001 in a shared file (OPES-69's eight calculation criteria were "covered"
+# by OPES-62's markers that way). The literal is then looked for in the file
+# that test lives in.
 #
-# So in per-test mode the grep reads the declared files the report holds at
-# least one new test from — the file column of new_rows — and names the rest.
-# A declared support file, a conftest or a helper, needs no test of its own:
-# it counts toward no criterion, and is named — on a rejection with the rest,
-# on the pass path as a note. Coarse mode has no per-test report and cannot
-# tell a collected file from one the runner never saw; it reads every declared
-# file, as it always did, and its closing lines say so.
+# Coarse mode has no per-test report and cannot tell a collected test from
+# one the runner never saw; it reads every declared file's text, as it always
+# did, and its closing lines say so.
 #
 # listed <line> <lines> — rc 0 when <line> is one of <lines>, matched whole.
 listed() {
@@ -433,48 +495,90 @@ $(printf '%s\n' "$test_files" | awk '!seen[$0]++')
 EOF
 uncollected="${uncollected#, }"
 
+# Every new test's normalised id with its file and status, for the marker
+# search: "<norm-id><TAB><file><TAB><status>".
+norm_rows=""
+if [ "$mode" = "per-test" ]; then
+  norm_rows="$(printf '%s\n' "$new_rows" | while IFS="$(printf '\t')" read -r file id status msg; do
+    [ -n "$id" ] || continue
+    : "$msg"
+    printf '%s\t%s\t%s\n' "$(aif_g_norm "$id")" "$file" "$status"
+  done)"
+fi
+
 cov=""
+built_ok=""
 while IFS= read -r ac; do
   [ -n "$ac" ] || continue
   expect="$(printf '%s' "$spec_meta" | jq -r --arg id "$ac" \
     '.acceptance[] | select(.id==$id) | .expect | tostring
      | if test("^`[^`]+`$") then .[1:-1] else . end')"
+  marker="$(aif_g_norm "$ticket_id $ac")"
 
-  # The criterion's id, and its expected literal — the cheap guard against a
-  # test that is red now but green against any stub — each in a collected
-  # file. Where either is found only in a file the runner did not collect, the
-  # complaint says so: the test exists, and it does not run.
-  #
-  # `--` because the pattern is the ticket's own value: an expect of "-1" — what
-  # indexOf returns, what a criterion about a missing item asserts — is an
-  # OPTION to grep, and the search silently answers "not found" about a test
-  # where the literal plainly is. The station cannot fix that; it burns
-  # attempts_max runs and stops the ticket.
-  ref_hit=0 lit_hit=0 ref_only="" lit_only=""
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    if listed "$f" "$cov_files"; then
-      grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_hit=1
-      grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_hit=1
-    else
-      grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_only="$ref_only, $f"
-      grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_only="$lit_only, $f"
-    fi
-  done <<EOF
+  if [ "$mode" = "per-test" ]; then
+    # The tests whose id carries the marker, and the files they live in.
+    carriers="$(printf '%s\n' "$norm_rows" | awk -F'\t' -v m="$marker" 'index($1, m) > 0 { print $2 "\t" $3 }')"
+    if [ -z "$carriers" ]; then
+      ref_only=""
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        listed "$f" "$cov_files" && continue
+        grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_only="$ref_only, $f"
+      done <<EOF
 $test_files
 EOF
-  if [ "$ref_hit" -eq 0 ] && [ -n "$ref_only" ]; then
-    cov="$cov
-$ac is referenced only where the runner collected no test: ${ref_only#, }"
-  elif [ "$ref_hit" -eq 0 ]; then
-    cov="$cov
+      if [ -n "$ref_only" ]; then
+        cov="$cov
+$ac is named only in a file the runner collected no test from: ${ref_only#, } — a test there runs nowhere"
+      else
+        cov="$cov
+$ac is carried by no collected test — put \"$ticket_id $ac\" in the name of the test that proves it (a jest title, a pytest function name test_${marker}_…), not in a comment"
+      fi
+      continue
+    fi
+    # The criterion's literal, in a file one of its carriers lives in: the
+    # cheap guard against a test that is red now but green against any stub.
+    #
+    # `--` because the pattern is the ticket's own value: an expect of "-1" —
+    # what indexOf returns, what a criterion about a missing item asserts — is
+    # an OPTION to grep, and the search silently answers "not found" about a
+    # test where the literal plainly is. The station cannot fix that; it burns
+    # attempts_max runs and stops the ticket.
+    lit_hit=0
+    while IFS="$(printf '\t')" read -r cf cs; do
+      [ -n "$cf" ] || continue
+      : "$cs"
+      grep -qF -- "$expect" "$root/$cf" 2>/dev/null && lit_hit=1
+    done <<EOF
+$carriers
+EOF
+    [ "$lit_hit" -eq 1 ] || cov="$cov
+$ac expected value ($expect) does not appear in the file of the test that carries it ($(printf '%s\n' "$carriers" | cut -f1 | sort -u | paste -sd, - | sed 's/,/, /g'))"
+    # A criterion the station declared already built must be green, or the
+    # declaration is wrong; one it did not declare and that is green anyway
+    # is recorded as green at freeze below, as before.
+    if printf '%s\n' "$note_built" | grep -qxF -- "$ac"; then
+      if printf '%s\n' "$carriers" | awk -F'\t' '$2 == "pass" { f = 1 } END { exit !f }'; then
+        built_ok="$built_ok
+$ac"
+      else
+        cov="$cov
+$ac is declared already built in tests.note.json, but its test is red — the declaration and the test disagree; one of them is wrong"
+      fi
+    fi
+  else
+    # Coarse: the text of every declared file, as it always was.
+    ref_hit=0 lit_hit=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      grep -qF -- "$ac" "$root/$f" 2>/dev/null && ref_hit=1
+      grep -qF -- "$expect" "$root/$f" 2>/dev/null && lit_hit=1
+    done <<EOF
+$test_files
+EOF
+    [ "$ref_hit" -eq 1 ] || cov="$cov
 $ac is not referenced by any test file"
-  fi
-  if [ "$lit_hit" -eq 0 ] && [ -n "$lit_only" ]; then
-    cov="$cov
-$ac expected value ($expect) appears only where the runner collected no test: ${lit_only#, }"
-  elif [ "$lit_hit" -eq 0 ]; then
-    cov="$cov
+    [ "$lit_hit" -eq 1 ] || cov="$cov
 $ac expected value ($expect) does not appear in any test"
   fi
 done <<EOF
@@ -491,16 +595,27 @@ the runner collected no test from: $uncollected — a test there runs neither at
 fi
 aif_g_report "${cov# }" "coverage"
 
+# Nothing red: the ticket is done already, or the tests assert nothing. The
+# station can say which — every criterion in tests.note.json's already_built,
+# each confirmed green above — and then it is the ticket's, not the tests'.
+if [ "$mode" = "per-test" ] && [ "$red_count" -eq 0 ]; then
+  acs_n="$(printf '%s' "$spec_meta" | jq '.acceptance | length')"
+  built_n="$(printf '%s' "$built_ok" | grep -c . || true)"
+  if [ "${built_n:-0}" -gt 0 ] && [ "$built_n" -eq "$acs_n" ]; then
+    aif_g_spec "$(printf 'every criterion is already built, by the tests station'"'"'s own account, and its tests are green against the tree before any implementation: %s\nthe ticket asks for nothing the repository does not do already; either it is done, or the criteria do not describe what is missing' \
+      "$(printf '%s' "$built_ok" | grep -v '^$' | paste -sd, - | sed 's/,/, /g')")"
+  fi
+  aif_g_reject "all $new_count new test(s) are already green — nothing red remains to implement; either the ticket is already done (say so: tests.note.json, already_built), or the tests assert nothing"
+fi
+
 # --- the project's own checks, for this phase -------------------------------
 # Bound to "red" deliberately: at this moment no implementation exists, so a
-# compiler or a build would fail CORRECTLY and a phase-blind checks list would
-# reject the red phase for being red by design. Only a check that is true of the
-# test files alone belongs here; compilers, linters and builds bind to "green" —
-# unless the project says which of their failures are the missing
-# implementation's (`legitimate_at_red`), in which case the test files are held
-# to everything else. That is the one moment a type error inside a test can be
-# sent back to the station that wrote it; after the freeze nobody may edit it,
-# and green could only stop (docs/DEFECTS-6.md #2).
+# build would fail CORRECTLY and a phase-blind checks list would reject the red
+# phase for being red by design. With the contract on disk a type-check is
+# clean here — every symbol a test touches exists, typed — so a type error at
+# red IS the test's, and it comes back to the station that wrote it. A project
+# without a contract keeps `legitimate_at_red` for what the missing
+# implementation causes (docs/DEFECTS-6.md #2).
 mkdir -p "$root/.aif/tmp"
 check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json" "$test_files")"
 # A check that failed without naming one of the test files is not the tests
@@ -517,6 +632,52 @@ if [ "$(jq '[ .[]? | select(.required and .result == "unlocated") ] | length' \
   exit "$AIF_G_ERROR"
 fi
 aif_g_report "$check_viol" "checks"
+
+# --- a dry run ends here: the verdict, and nothing frozen --------------------
+# The station called this itself. Everything above ran and every complaint
+# would have printed; what does not happen is the second run (the station's
+# loop pays for one) and the lock.
+if [ "$dry" = "1" ]; then
+  if [ "$mode" = "coarse" ]; then
+    printf 'verify-red (dry): red, COARSE mode — %s\n' "$mode_why"
+  else
+    printf 'verify-red (dry): %s new test(s) red for the right reason, all criteria covered\n' "$red_count"
+    [ "$green_count" -eq 0 ] || printf '  ! %s new test(s) green already: %s\n' \
+      "$green_count" "$(printf '%s' "$green_ids" | paste -sd, - | sed 's/,/, /g' | cut -c1-200)"
+    [ -z "$uncollected" ] || printf '  ! the runner collected no test from: %s\n' "$uncollected"
+  fi
+  printf '  nothing frozen — this was aif _verify; the worker runs the gate for real when you finish\n'
+  # The checks record is the real run's to write and `aif _gate`'s to fold; a
+  # dry run's would be folded as if the gate had run.
+  rm -f "$work/.suite.out" "$root/.aif/tmp/checks-red.json"
+  exit 0
+fi
+
+# --- red twice: a test whose status moves is not red, it is random -----------
+# The suite once more, and every new test must come back as it was. A test
+# that flipped is non-deterministic — a clock, an order, a shared state — and
+# a freeze over it would be a coin the implement station is judged with.
+flaky=""
+if [ "$mode" = "per-test" ]; then
+  rm -f "$root/$report_path"
+  (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
+  again=""
+  [ ! -f "$root/$report_path" ] || again="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+  if [ -n "$again" ]; then
+    printf '%s' "$again" >"$work/.suite.again.json"
+    flaky="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" --slurpfile a "$work/.suite.again.json" '
+      ($a[0] | map({ (.id): .status }) | add // {}) as $b
+      | .[] | select((.file // "") as $f | $tf | index($f))
+      | select(($b[.id] // "absent") != .status)
+      | .id + " was " + .status + " then " + ($b[.id] // "absent")' 2>/dev/null)"
+    rm -f "$work/.suite.again.json"
+  else
+    printf '  ! the second run wrote no readable report; red was observed once\n'
+  fi
+  if [ -n "$flaky" ]; then
+    aif_g_report "$(printf '%s\n' "$flaky" | sed 's/$/ — a test whose verdict moves between two runs of the same tree is non-deterministic; it proves nothing about the code/')" "tests"
+  fi
+fi
 
 # --- freeze: write tests.lock.json ------------------------------------------
 # The frozen set is the UNION of two things, and it was one for too long:
@@ -535,11 +696,13 @@ aif_g_report "$check_viol" "checks"
 #                     $test_files has been in scope since line 55.
 #
 # impl_frozen records the implementation as it is NOW (before code) so green can
-# restore it and confirm the tests go red again; create paths do not exist yet,
-# so they are recorded as to-be-created. covering is the new RED test ids, for
-# green's revert-recheck to target; a test green at freeze goes to
-# green_at_freeze instead — reverting this round's code was never going to turn
-# it red, and demanding that would accuse an honest test on a second round.
+# restore it and confirm the tests go red again: the change files, and every
+# create path that exists already — the skeleton. A create path absent now
+# (no_skeleton) is recorded as to-be-created, and green removes it in the
+# reverted copy. covering is the new RED test ids, for green's revert-recheck
+# to target; a test green at freeze goes to green_at_freeze instead — reverting
+# this round's code was never going to turn it red, and demanding that would
+# accuse an honest test on a second round.
 tests_json="$(
   {
     while IFS= read -r rootdir; do
@@ -598,9 +761,19 @@ fi
 impl_frozen="$(
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    [ -f "$root/$f" ] || continue
     printf '%s\t%s\n' "$f" "$(aif_g_sha256 "$root/$f")"
   done <<EOF
 $change_files
+$create_files
+EOF
+)"
+impl_created="$(
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -e "$root/$f" ] || printf '%s\n' "$f"
+  done <<EOF
+$create_files
 EOF
 )"
 
@@ -612,10 +785,12 @@ jq -n \
   --rawfile tests_raw <(printf '%s' "$tests_json") \
   --rawfile impl_raw <(printf '%s' "$impl_frozen") \
   --rawfile suite_raw <(printf '%s' "${suite_rows:-}") \
-  --argjson create "$(printf '%s' "$create_files" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson create "$(printf '%s' "$impl_created" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" \
-  --argjson with "$(printf '%s' "$red_with_tests" | jq -R . | jq -s 'map(select(length>0))')" '
+  --argjson with "$(printf '%s' "$red_with_tests" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson declared "$(printf '%s' "$test_files" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson collected "$(printf '%s' "$cov_files" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
     | map({ (.[0]): .[1] }) | add // {};
   { schema: 1, plan_sha256: $plan_hash, mode: $mode, mode_reason: $mode_reason, at: $at,
@@ -625,7 +800,9 @@ jq -n \
     impl_frozen: rows($impl_raw),
     impl_created: $create,
     suite_at_freeze: rows($suite_raw),
-    red_with_tests: $with }' >"$work/tests.lock.json"
+    red_with_tests: $with,
+    declared_files: $declared,
+    collected_files: (if $mode == "per-test" then $collected else null end) }' >"$work/tests.lock.json"
 
 # The file was called tests.lock until the content stopped being a secret: it is
 # JSON, editors did not highlight it, jq did not pick it up by glob, and diffs
@@ -645,7 +822,7 @@ if [ "$mode" = "coarse" ]; then
   printf '  ! coverage was read from every declared test file — whether the runner collects each one cannot be told here.\n'
 else
   with_count="$(printf '%s' "$red_with_tests" | grep -c . || true)"
-  printf 'verify-red: %s new test(s) red for the right reason, all criteria covered' "$red_count"
+  printf 'verify-red: %s new test(s) red for the right reason, twice, all criteria covered' "$red_count"
   # On the first line, because that is the line the ledger and the report keep.
   [ "${with_count:-0}" -eq 0 ] ||
     printf ' — and %s pre-existing test(s) red only with them' "$with_count"
@@ -655,7 +832,7 @@ else
     printf '%s\n' "$red_with_tests" | sed 's/^/    - /'
     printf '  Not the repository'"'"'s: measured against the tree the tests station started from.\n'
     printf '  The implementation has to clear them — green requires the whole suite, and\n'
-    printf '  stops rather than retries on one that fails the same way without the code.\n'
+    printf '  sends the tests back for one that fails the same way without the code.\n'
   fi
   if [ "$green_count" -gt 0 ]; then
     # On the PASS path, always — the same rule the other gates follow for what

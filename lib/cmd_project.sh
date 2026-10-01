@@ -208,19 +208,47 @@ EOF
     read -r cmd || cmd=""
     [ -n "$cmd" ] || continue
     # phase is not a detail: the tests station writes FAILING tests before any
-    # implementation exists, so a compiler run at that moment fails correctly and
-    # a phase-blind check would reject the red phase for being red by design.
-    printf '  phase — green (after the code exists) or red (test files only) [green]: ' >&2
+    # behaviour exists, so a build run at that moment fails correctly and a
+    # phase-blind check would reject the red phase for being red by design. A
+    # compiler or type-checker is the one check that belongs at every phase:
+    # it is what holds the plan's skeleton to the real library, and the tests
+    # to the skeleton.
+    printf '  phase — green (after the code exists), red (test files, against the skeleton), or all (a compiler: contract, red and green) [green]: ' >&2
     read -r phase || phase=""
     case "$phase" in
-      red | r) phase="red" ;;
-      *) phase="green" ;;
+      red | r) phase='["red"]' ;;
+      all | a | contract | c) phase='["contract","red","green"]' ;;
+      *) phase='["green"]' ;;
     esac
-    checks="$(printf '%s' "$checks" | jq -c --arg n "$name" --arg c "$cmd" --arg p "$phase" \
-      '. + [{ name: $n, command: $c, phase: [$p], required: true }]')"
+    checks="$(printf '%s' "$checks" | jq -c --arg n "$name" --arg c "$cmd" --argjson p "$phase" \
+      '. + [{ name: $n, command: $c, phase: $p, required: true }]')"
   done
 
   printf '%s' "$checks"
+}
+
+# _aif_typecheck_default <root> — the type-check this project already carries,
+# as a check bound to every phase, or nothing. The one check `aif project init`
+# writes without asking, because its command is the project's own and the
+# place it is needed is not negotiable: a type error inside a frozen test
+# file cost 49 minutes on a live ticket before the gate that reads this field
+# existed (docs/DEFECTS-6.md #2), and a skeleton that does not compile is a
+# contract nobody can test against (docs/REBUILD-4.md §2.1).
+#
+# Only what the project declares: a tsconfig.json with typescript installed,
+# a `typecheck` script. Nothing is invented for a project that has none.
+_aif_typecheck_default() {
+  local root="$1" cmd=""
+  if [ -f "$root/package.json" ]; then
+    if jq -e '(.scripts // {}) | has("typecheck")' "$root/package.json" >/dev/null 2>&1; then
+      cmd="npm run typecheck"
+    elif [ -f "$root/tsconfig.json" ] &&
+      jq -e '((.devDependencies // {}) + (.dependencies // {})) | has("typescript")' "$root/package.json" >/dev/null 2>&1; then
+      cmd="npx tsc --noEmit"
+    fi
+  fi
+  [ -n "$cmd" ] || return 0
+  jq -n --arg c "$cmd" '{ name: "typecheck", command: $c, phase: ["contract", "red", "green"], required: true }'
 }
 
 # _aif_write_checks <dest> <checks-json>
@@ -284,7 +312,20 @@ _aif_project_init() {
       "$AIF_C_BOLD" "$AIF_C_RESET" "$launcher" "$AIF_C_DIM" "$why" "$AIF_C_RESET"
   fi
 
-  _aif_write_checks "$dest" "$(_aif_collect_checks "$root" "$ask")"
+  local checks tc
+  checks="$(_aif_collect_checks "$root" "$ask")"
+  # The project's own type-check, bound to every phase, written without a
+  # question when the project declares one — unless the interview already
+  # recorded a check by that name, or --no-checks asked for none at all.
+  if [ "$ask" -eq 1 ]; then
+    tc="$(_aif_typecheck_default "$root")"
+    if [ -n "$tc" ] && ! printf '%s' "$checks" | jq -e 'any(.name == "typecheck")' >/dev/null 2>&1; then
+      checks="$(printf '%s' "$checks" | jq -c --argjson t "$tc" '. + [$t]')"
+      printf '%stypecheck%s bound to contract, red and green — the plan'"'"'s skeleton, the tests and the code are all held to it (%s)\n' \
+        "$AIF_C_BOLD" "$AIF_C_RESET" "$(printf '%s' "$tc" | jq -r .command)"
+    fi
+  fi
+  _aif_write_checks "$dest" "$checks"
 
   local problems
   problems="$(aif_project_validate "$dest")"

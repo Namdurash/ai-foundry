@@ -59,15 +59,35 @@ deny() {
   exit 0
 }
 
-# Bash, one narrow rule: a station does not commit. The worker seals each
-# admitted station itself, and a station that commits moves HEAD under the
-# gates — which used to empty scope's diff outright (docs/DEFECTS-3.md #8).
-# The gates now judge against the baseline the worker recorded, so this is
-# the speed bump in front of that fix, not the fix: it matches the obvious
-# spellings and fails OPEN on anything cleverer, and says so here rather than
-# pretending to parse shell.
+# Bash. Two rules, and the second is the one the tests station's whole
+# executable capability rests on.
+#
+# One: a station does not commit. The worker seals each admitted station
+# itself, and a station that commits moves HEAD under the gates — which used
+# to empty scope's diff outright (docs/DEFECTS-3.md #8). The gates now judge
+# against the baseline the worker recorded, so this is the speed bump in front
+# of that fix, not the fix: it matches the obvious spellings and fails OPEN on
+# anything cleverer, and says so here rather than pretending to parse shell.
+#
+# Two: the tests station may run exactly one thing — `aif _verify <ID>`, the
+# verify-red gate over its own files, which freezes nothing. That is its
+# execute-and-repair loop (docs/REBUILD-4.md §2.2), and it is all it gets: not
+# the suite directly, not a type-checker, not a package manager. Unlike the
+# first rule this one fails CLOSED — anything that is not that one command is
+# denied — because the station has Bash only for this, and a hook that let a
+# second spelling through would hand it the shell. The worker grants the tool
+# only after `aif doctor --probe` has watched this hook deny a command in a
+# spawned run (docs/FINDINGS.md #21).
 if [ "$(printf '%s' "$payload" | jq -r '.tool_name // ""' 2>/dev/null)" = "Bash" ]; then
   cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null)"
+  if [ "$station" = "tests" ]; then
+    # The whole command, start to end: `aif _verify`, a ticket id, an optional
+    # --dry, nothing chained before or after it.
+    if printf '%s' "$cmd" | grep -qE '^[[:space:]]*aif[[:space:]]+_verify[[:space:]]+[A-Za-z0-9_-]+([[:space:]]+--dry)?[[:space:]]*$'; then
+      exit 0
+    fi
+    deny "the tests station runs one command: aif _verify <TICKET> — the verify-red gate over the files you wrote, which prints every complaint the freeze would and freezes nothing. Not the suite, not a type-checker, not an install. Write the tests, run that, read it, fix, run it again."
+  fi
   # At a command position only — the start of the line, or after ; & | — so
   # that `echo git commit` and a message quoting the words are not denied. A
   # subshell or a backtick spelling walks past this on purpose: catching it
@@ -106,25 +126,51 @@ is_test() {
 #     which re-hashes the frozen test tree. This hook exists so the
 #     honest-but-helpful path is closed early and BY NAME — a model told only
 #     "no" gets creative; a model told "no, do X instead" does X.
+# Each station's own note is the one file under tasks/ it may write: a
+# structured way to say what its artifact cannot — "this criterion is already
+# built", "this frozen test is wrong", "the contract cannot hold this" — read
+# by the gates and the worker rather than guessed from a closing message.
+is_note() { # <rel> <name>
+  case "$1" in
+    tasks/*/"$2") return 0 ;;
+  esac
+  return 1
+}
+
 case "$station" in
-  implement)
+  plan)
+    # The plan station writes the plan and the CONTRACT: the skeleton of every
+    # module the plan creates, and a new export's signature in a module it
+    # changes. Not the tests, which are the next station's, and nothing else
+    # under tasks/.
     if is_test "$rel"; then
-      deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — stop and say so; the ticket goes back to the analyst to have its criteria revised."
+      deny "the plan station writes the plan and the contract — the skeleton of what the tests will import — not the tests. The tests station writes those, against your skeleton."
     fi
     case "$rel" in
-      tasks/*)
-        # Including — especially — plan-amendments.json. scope exempts that one
-        # file from its denylist so an amendment can be made at all, which would
-        # otherwise let an implementation hand-write itself permission for
-        # anything. `aif _amend-plan` is the way in: it refuses tests and
-        # pipeline paths, requires a reason, and is capped.
-        deny "the ticket's own record — the ticket, the plan, the ledger, the run — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan."
-        ;;
+      tasks/*/plan.md) ;;
+      tasks/*) deny "the plan station writes tasks/<TICKET>/plan.md and the skeleton files its manifest names; the rest of the ticket's record is not yours." ;;
     esac
     ;;
+  implement)
+    if is_test "$rel"; then
+      deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — say so in tasks/<TICKET>/implement.note.json (tests_wrong: [{ test, because }]); the tests station reads the claim without the implementation in view."
+    fi
+    if ! is_note "$rel" implement.note.json; then
+      case "$rel" in
+        tasks/*)
+          # Including — especially — plan-amendments.json. scope exempts that one
+          # file from its denylist so an amendment can be made at all, which would
+          # otherwise let an implementation hand-write itself permission for
+          # anything. `aif _amend-plan` is the way in: it refuses tests and
+          # pipeline paths, requires a reason, and is capped.
+          deny "the ticket's own record — the ticket, the plan, the ledger, the run — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan. Your note is tasks/<TICKET>/implement.note.json."
+          ;;
+      esac
+    fi
+    ;;
   tests)
-    if ! is_test "$rel"; then
-      deny "the test station writes tests only. Implementation belongs to the implement station — write the failing tests, and let the code come later."
+    if ! is_test "$rel" && ! is_note "$rel" tests.note.json; then
+      deny "the test station writes tests only — and tasks/<TICKET>/tests.note.json for what it cannot test. Implementation belongs to the implement station; the contract is the plan's. Write the failing tests against the skeleton, and let the code come later."
     fi
     ;;
 esac

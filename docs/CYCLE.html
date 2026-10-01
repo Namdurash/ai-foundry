@@ -105,6 +105,8 @@ flowchart TB
     G_implement -.-&gt; S_implement
     REPORT["report.md, beside the diff on the branch"]
     G_implement --&gt; REPORT
+    G_implement -.-&gt;|"the oracle's, not the code's: repaired by the tests station&lt;br/&gt;in a copy without the implementation, ≤ 2 per ticket"| S_tests
+    G_implement -.-&gt;|"the contract cannot hold it, says the implementer: replanned, ≤ 1 per ticket"| S_plan
     LAND["aif land — merge into the checkout's branch,&lt;br/&gt;the suite on the result, Done, the next slice released"]
   end
 
@@ -113,6 +115,7 @@ flowchart TB
   READY --&gt;|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.-&gt;|"the card"| IN_PROGRESS
   G_READY --&gt;|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
+  G_plan --&gt;|"a criterion already true, unfalsifiable, in conflict, undecided:&lt;br/&gt;a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN
   REPORT --&gt;|"built"| REVIEW
   REPORT --&gt;|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW --&gt;|"the card, the diff, the report"| QA
@@ -178,7 +181,10 @@ flowchart TB
 <thead><tr><th>cap</th><th>value</th><th>setting</th></tr></thead>
 <tbody>
 <tr><td>a station rejected in a row</td><td>3</td><td>limits.attempts_max</td></tr>
-<tr><td>station runs in one ticket's run</td><td>12</td><td>limits.run_dispatches_max</td></tr>
+<tr><td>the same complaint twice in a row</td><td>stop</td><td>the convergence rule, lib/cmd_work.sh</td></tr>
+<tr><td>repairs of the oracle, per ticket</td><td>2</td><td>limits.repairs_max</td></tr>
+<tr><td>replans, per ticket</td><td>1</td><td>limits.replans_max</td></tr>
+<tr><td>station runs in one ticket's run</td><td>16</td><td>limits.run_dispatches_max</td></tr>
 <tr><td>wall clock, minutes</td><td>120</td><td>limits.run_max_minutes</td></tr>
 <tr><td>dollars</td><td>off unless a project or the caller sets it</td><td>limits.run_budget_usd</td></tr>
 </tbody>

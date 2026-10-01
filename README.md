@@ -427,8 +427,36 @@ structural rather than advisory: the `ready` gate is the only one that can be
 satisfied by saying less, and it runs before the run starts, with the analyst
 and you.
 
-A rejection that is really the ticket's fault surfaces as a stopped run, and it
-goes back to `/aif-ba`.
+Three things are not retries, and each is bounded on its own
+(`docs/REBUILD-4.md`):
+
+- **A spec stop.** The plan station passes a verdict on every criterion against
+  the real code — `buildable`, or `already_true`, `unfalsifiable`, `conflict`,
+  `needs_decision` with its reason — and anything but buildable stops the run
+  there, after one dispatch, with nothing frozen. The ticket's problem, found by
+  the first station that could tell, and it goes back to `/aif-ba` with the
+  plan's words. The tests station has the same door: a criterion it cannot
+  falsify, or every criterion already built by its own account, in
+  `tasks/<ID>/tests.note.json`.
+- **A repair.** When `green` attributes a failure to the frozen tests rather
+  than to the code — a test that arrived with the oracle and fails whatever the
+  code does, a check failing in a frozen test file the same way without the
+  implementation, a pre-existing test the new files break, a frozen test the
+  implementer declares wrong in `tasks/<ID>/implement.note.json` — the run does
+  not stop. The tests station is dispatched again **in a copy of the tree with
+  the implementation reverted to the skeleton**, so it cannot read the code,
+  amends or keeps the test, and what it leaves must pass `verify-red` there
+  (red against the skeleton) before it comes back and the implementation is
+  judged again without a dispatch. `limits.repairs_max`, 2 per ticket.
+- **A replan.** When the implementer declares, in its note, that the contract
+  cannot hold the behaviour, everything since the first plan dispatch is put
+  back and the plan station runs again with the declaration in front of it.
+  `limits.replans_max`, 1 per ticket.
+
+And one rule across every retry: **the same complaint twice in a row is a
+stop.** A station that cannot act on what it is told does not get the third
+attempt it used to; the complaints are compared as the whole set of problems,
+numbers removed, so fewer problems is progress and the same ones are not.
 
 ### A ticket, in order
 
@@ -498,25 +526,43 @@ the gates rather than remembered.
 
 There is no command per stage. The worker and the skills call a small internal
 surface (`aif _gate`, `_record`, `_commit`, `_ready`, `_ticket-init`,
-`_amend-plan`, `_meter`) that is not listed in `--help` — it is an interface
-between two parts of aif, not something to learn. Each one is something a model
-must not decide or must not carry: `_record` writes the hash a station was once
-asked to copy, `_gate` renders and records a verdict, `_ready` is the one
-Definition of Ready the analyst and the worker share.
+`_amend-plan`, `_meter`, `_verify`) that is not listed in `--help` — it is an
+interface between two parts of aif, not something to learn. Each one is
+something a model must not decide or must not carry: `_record` writes the hash
+a station was once asked to copy, `_gate` renders and records a verdict,
+`_ready` is the one Definition of Ready the analyst and the worker share, and
+`_verify <ID>` is the verify-red gate run dry — the one command the tests
+station may run, over its own files, freezing nothing.
 
 ### Stations and their model tier
 
-| station | tier | produces | its gate(s) |
-|---|---|---|---|
-| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready |
-| `plan` | careful (opus) | `plan.md` | plan |
-| `tests` | careful (opus) | test files + `tests.lock.json` | verify-red |
-| `implement` | **by risk** | code | green, scope |
+| station | tier | produces | its gate(s) | turns |
+|---|---|---|---|---|
+| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready | — |
+| `plan` | careful (opus) | `plan.md`, a verdict per criterion, and the **contract**: every new module as a skeleton on disk | plan | 60 |
+| `tests` | careful (opus) | test files + `tests.lock.json`, red against the skeleton | verify-red | 60 |
+| `implement` | **by risk** | code — the skeleton filled | green, scope | 45 |
 
 There are two tiers, and the question a tier answers is "do the gates catch this
 model's mistakes": `routine` where they do, `careful` where they do not. The tier
 is a label; the profile maps it to a model (`opus` → glm-5.2 on the `glm`
-profile).
+profile). The turn cap is the station's own (`max_turns` in its `aif:meta`),
+over the project-wide `limits.station_max_turns`: the plan and tests stations
+explore and read back, and hit a cap of 30 in three runs of five on one batch,
+leaving half-written files for the gate to judge.
+
+**The contract** is what the tests and the code are both written against. The
+plan station writes every path in `files.create` that is code as a skeleton —
+the real exports, with their real names, signatures and types, and bodies that
+throw `aif: not implemented: <name>` — and the new exports it adds to a file it
+changes the same way. The tests station then imports it statically, like a
+header file, and a test is red for one of two reasons only: an assertion that
+does not hold, or the marker. The implement station fills it. Why: a test file
+importing a module that does not exist yet fails to *load*, and jest-junit
+drops the whole file from its report — on one batch, 24 new tests across three
+tickets were never seen by any gate that way (`docs/FINDINGS.md` #22). And the
+seams — a module path, an export name, an argument shape — are decided once, in
+code a compiler can check, rather than guessed twice.
 
 `implement`'s tier comes from the ticket's `risk`, which stays three-valued
 because it describes the *work* — a human's judgement, made with the analyst —
@@ -527,35 +573,39 @@ while a tier describes an *engine*. `low` and `medium` both map to `routine`, `h
 
 Every gate is `gate.sh <work-dir>` → an exit code:
 
-| code | meaning | what to do |
+| code | meaning | what the worker does |
 |---|---|---|
-| **0** | pass | proceed |
-| **1** | the artifact is rejected | fix it and re-run the station |
-| **3** | the gate could not render a verdict | rerun the judge, or fix the environment |
+| **0** | pass | proceeds |
+| **1** | the artifact is rejected | retries the station with the complaint |
+| **2** | the ticket is the problem — a spec stop | stops, for the analyst, with the gate's lines |
+| **3** | the gate could not render a verdict | stops: the environment, or a defect no loop reaches |
+| **4** | the oracle is the problem — a repair | sends the tests station to fix it, in a copy without the implementation |
 
 `1` versus `3` is the difference between "your plan has a blocker" and "the repo
-was already broken". The worker retries a `1` with the gate's complaint in the
-prompt; it stops on a `3`, because editing the artifact cannot fix the
-environment. `verify-red`: a real failing test is
-`0`; a `SyntaxError` test is `3` (not a usable oracle); a test that already passes
-is `1`.
+was already broken"; `2` and `4` are the two answers that go to somebody other
+than the station that was just judged. `verify-red`: a test red because an
+assertion did not hold, or because the skeleton threw its marker, is `0`; a
+`SyntaxError` test, a skipped one, one failing for any other reason, one whose
+criterion is not in a collected test's name, one that flips between two runs —
+every one of those is `1`, because the author is still there to fix it (a
+broken test used to be a `3`); every new test already green is `1` too, unless
+the station said so in its note, and then it is `2`.
 
 A `3` is not always the environment, and the gates say which it is rather than
 assuming. **`verify-red`** stops on a pre-existing test that is red *before*
 this ticket's test files exist — measured once more, only on that path, in a
 copy of the tree the tests station started from, and named. One the new files
-turned red is a different thing: a whole-tree `tsc` inside the suite, say,
-failing on a red-first import of a module the plan has not created yet. That is
-admitted, recorded in the lock as `red_with_tests`, printed on the pass path,
-and left for `green`, which requires the whole suite. **`green`**, for every
-failure it cannot pin on the implementation, runs the same thing again with the
-implementation reverted: a pre-existing test that passed at the freeze and
-fails there too moved outside the tracked tree — installed dependencies, most
-often; one red since the test files landed that fails the same way without the
-code is their interaction with the suite; a check that fails in a frozen test
-file, every line of it recurring without the code, is the oracle's. Each is a
-`3`, and the run stops at the first attempt rather than the third: no edit to
-the manifest's files can clear it.
+turned red is a different thing: it is admitted, recorded in the lock as
+`red_with_tests`, printed on the pass path, and left for `green`, which
+requires the whole suite. **`green`**, for every failure it cannot pin on the
+implementation, runs the same thing again with the implementation reverted: a
+pre-existing test that passed at the freeze and fails there too moved outside
+the tracked tree — installed dependencies, most often — and that is a `3`, no
+station's edit reaches it; one red since the test files landed that fails the
+same way without the code, a check that fails in a frozen test file with every
+line of it recurring without the code, a test that arrived with the ticket's
+own files, a frozen test the implementer declares wrong — each is the oracle's,
+a `4`, and the tests station repairs it rather than a human.
 
 ### What "done" means here, beyond the tests
 
@@ -576,14 +626,22 @@ human during review rather than by the pipeline.
 ]
 ```
 
-**Every check names a phase, and that is not optional.** The tests station writes
-*failing* tests before any implementation exists — that is its whole purpose — so
-a compiler run at that moment would fail correctly, and a phase-blind check would
-reject the red phase for being red by design. `red` is the tests boundary and
-only a check that is true of the test files alone belongs there; `green` is the
-implement boundary, and compilers, linters and builds go there. It is the same
-distinction `failure_classes` already draws one level down between a legitimate
-failure and a broken one.
+**Every check names a phase, and that is not optional.** Three phases:
+`contract` is the plan boundary — the skeleton the plan station wrote, over the
+tree as it left it, and a compiler there is the linker for the contract: a
+signature that calls a library the way the station remembered it rather than
+the way it is does not compile, and the plan is rejected with the compiler's
+lines. `red` is the tests boundary: with the contract on disk every symbol a
+test touches exists, typed, so a type-check is clean there and a type error is
+the test's; a build is still red by design there and does not belong. `green`
+is the implement boundary, and compilers, linters and builds go there. It is the
+same distinction `failure_classes` already draws one level down between a
+legitimate failure and a broken one.
+
+`aif project init` writes one check without asking: the project's own
+type-check, bound to all three phases, when the project declares one — a
+`tsconfig.json` with `typescript` installed, or a `typecheck` script. Nothing is
+invented for a project that has neither, and `--no-checks` writes none.
 
 `green` runs every check bound to its phase, fails the station if a required one
 does, and each result lands in the ledger by name — so a failure is attributable
@@ -593,8 +651,9 @@ working unchanged. The complaint a station gets back is the check's own
 `tsc` that is often `Source has 0 element(s) but target requires 1.` — no file,
 no line, and three attempts spent not finding it.
 
-**A type-check can read the tests at `red` too, once the project says what a
-missing implementation looks like.** A whole-tree `tsc` fails at red on every
+**A project without a contract — one whose plans create nothing, or an older
+set — can still read the tests at `red`, once it says what a missing
+implementation looks like.** A whole-tree `tsc` then fails at red on every
 import of a module the plan has not created — red by design. With
 `legitimate_at_red` those failures are let through, and the test files are held
 to everything else:
@@ -620,6 +679,11 @@ them if your tickets do that, knowing the tests are then held to less.
 `verify-red` freezes the test tree into `tasks/<ID>/tests.lock.json`, and `green`
 refuses to accept an implementation unless the tree still hashes to it. That is
 what stops the implement station editing the oracle it is judged against.
+
+The lock also holds the implementation as it stood at the freeze —
+`impl_frozen`: every file the plan changes, and every skeleton it created — so
+`green`'s revert-recheck puts exactly that back: the covering tests must go red
+again against the skeleton, which is the tree they were written against.
 
 The frozen set is the **union** of two things, and for a while it was one:
 
@@ -932,11 +996,18 @@ the mode.
 
 A `PreToolUse` hook bounds every writer in a run:
 
-| Writer | May write | Denied |
-|---|---|---|
-| `aif-implement` | code the plan named | test files |
-| `aif-tests` | test files | implementation |
-| a plain `claude` session | everything, as usual | nothing |
+| Writer | May write | May run | Denied |
+|---|---|---|---|
+| `aif-plan` | `plan.md`, and the contract: the skeleton files its manifest names | — | test files, the rest of the ticket's record |
+| `aif-tests` | test files, and `tasks/<ID>/tests.note.json` | `aif _verify <ID>` and nothing else | implementation, the skeleton |
+| `aif-implement` | code the plan named, and `tasks/<ID>/implement.note.json` | the suite, the package manager | test files, a commit |
+| a plain `claude` session | everything, as usual | everything | nothing |
+
+Each station's note is the one file under `tasks/` it may write: a structured
+way to say what its artifact cannot — "this criterion is already built", "this
+one cannot be falsified", "this frozen test is wrong", "the contract cannot hold
+this" — read by the gates and the worker rather than guessed from a closing
+message.
 
 The last row matters as much as the others. The guard binds to a **station**,
 not to a session: a project with aif installed is still an ordinary project, and
@@ -946,20 +1017,27 @@ session dispatched the stations while a human watched, and once finished a
 feature itself after a station ran out of turns. There is no such session now;
 the worker is a subprocess and the only writers are stations.
 
-Whether the hook fires at all inside a worker run is **unverified** — the
-stations run under `--permission-mode bypassPermissions`, and no probe has yet
-watched it deny one (`docs/FINDINGS.md` #12). `scope` and `green` are the
-backstops either way.
+The hook fires under `--permission-mode bypassPermissions`, and its deny
+reaches the model — probed (`docs/FINDINGS.md` #21). One thing rides on that
+and is therefore not assumed: the tests station's Bash exists for `aif _verify`
+and nothing else, and a hook that did not fire would hand it the shell. So the
+worker grants that tool only once `aif doctor --probe` has watched the hook deny
+a command in a spawned run on this machine (`station-guard` in doctor's table,
+remembered per runner version in `.aif/state/guard-probed`); withheld, the
+station still works, with the gate's reject loop as its only loop. `scope` and
+`green` are the backstops either way.
 
 Stated plainly: for files this matches the Write and Edit tools, so `bash -c
-'echo … > src/f.py'` walks past it. For Bash it matches one thing — `git commit`,
-`reset`, `stash` and the like at a command position — because a station that
-commits moves the baseline under the gates, and it deliberately does not try to
-match anything cleverer: parsing shell fails open in ways nobody notices. The
-real backstop for code is `scope`, which diffs against the baseline the worker
-recorded at dispatch and rejects any file the plan did not name regardless of
-who wrote it or what they committed since; the hook exists
-so the honest-but-helpful path is closed early and by name.
+'echo … > src/f.py'` walks past it. For Bash it matches two things: for the
+tests station, the whole command must be `aif _verify <ID>` and this rule fails
+closed; for every station, `git commit`, `reset`, `stash` and the like at a
+command position are refused, because a station that commits moves the baseline
+under the gates, and that rule deliberately does not try to match anything
+cleverer: parsing shell fails open in ways nobody notices. The real backstop for
+code is `scope`, which diffs against the baseline the worker recorded at
+dispatch and rejects any file the plan did not name regardless of who wrote it
+or what they committed since; the hook exists so the honest-but-helpful path is
+closed early and by name.
 
 ### What is verified, and what is trusted
 

@@ -404,16 +404,52 @@ _aif_doctor_caps() {
     p_d="python3 is not installed — verify-red and green degrade to coarse mode"
   fi
 
+  # station-guard — has the guard hook been seen to DENY a command in a
+  # spawned run here? The tests station's `aif _verify` loop rides on it, and
+  # the worker withholds Bash from that station until this says yes. Not a
+  # file check: a registered hook that does not fire is the failure this
+  # exists to catch. Probed by --probe; remembered per runner version in
+  # .aif/state/guard-probed, so a `claude` upgrade asks again.
+  local s_ok s_d s_marker
+  if [ -z "$root" ]; then
+    s_ok=false
+    s_d="not in a project"
+  elif [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
+    s_ok=true
+    s_d="substituted by AIF_WORK_STATION_CMD — a scripted runner is in use"
+  else
+    s_marker="$root/.aif/state/guard-probed"
+    if [ "$probe_runner" -eq 1 ] && [ "$c_ok" = true ]; then
+      # shellcheck source=lib/runner_claude.sh
+      . "$AIF_ROOT/lib/runner_claude.sh"
+      local s_out
+      if s_out="$(aif_runner_claude_guard_probe "$root")"; then
+        s_ok=true
+        s_d="$s_out"
+      else
+        s_ok=false
+        s_d="$s_out — the tests station runs without aif _verify until it does"
+      fi
+    elif [ -f "$s_marker" ] && [ "$(cat "$s_marker" 2>/dev/null)" = "$(aif_runner_version claude)" ]; then
+      s_ok=true
+      s_d="denied a command in a spawned run (claude $(cat "$s_marker"))"
+    else
+      s_ok=null
+      s_d="not asked whether the guard denies a command here (aif doctor --probe); the tests station runs without aif _verify until it is"
+    fi
+  fi
+
   jq -n --argjson c "$c_ok" --arg cd "$c_d" --argjson h "$h_ok" --arg hd "$h_d" \
     --argjson g "$g_ok" --arg gd "$g_d" \
     --argjson t "$t_ok" --arg td "$t_d" --argjson b "$b_ok" --arg bd "$b_d" \
-    --argjson p "$p_ok" --arg pd "$p_d" '
+    --argjson p "$p_ok" --arg pd "$p_d" --argjson s "$s_ok" --arg sd "$s_d" '
     { "claude":          { ok: $c, detail: $cd },
       "claude-headless": { ok: $h, detail: $hd },
       "git-worktree":   { ok: $g, detail: $gd },
       "test-toolchain": { ok: $t, detail: $td },
       "board":          { ok: $b, detail: $bd },
-      "python3":        { ok: $p, detail: $pd } }'
+      "python3":        { ok: $p, detail: $pd },
+      "station-guard":  { ok: $s, detail: $sd } }'
 }
 
 # _aif_doctor_roles <root|""> <caps-json> — per role: ready, and what is

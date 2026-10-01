@@ -1,27 +1,29 @@
 {
   "schema": 1,
   "ticket_pattern": "^[A-Z]{2,10}-[0-9]+$",
-
   "test": {
-    "roots": ["tests"],
+    "kind": "pytest",
+    "roots": [
+      "tests"
+    ],
     "command": "python3 -m pytest -q --junitxml=.aif/tmp/report.xml",
     "select": "python3 -m pytest -q --junitxml=.aif/tmp/report.xml {ids}",
-    "report": { "path": ".aif/tmp/report.xml", "format": "junit" },
+    "report": {
+      "path": ".aif/tmp/report.xml",
+      "format": "junit"
+    },
     "ac_marker": "AC-[0-9]{3}"
   },
-
   "checks": [],
-
-  "explain": { "auto": "ready" },
-
+  "explain": {
+    "auto": "ready"
+  },
   "failure_classes": {
     "legitimate": [
       "AssertionError",
-      "ModuleNotFoundError",
-      "ImportError",
-      "AttributeError",
-      "NameError",
-      "TypeError"
+      "assert ",
+      "NotImplementedError",
+      "aif: not implemented"
     ],
     "broken": [
       "SyntaxError",
@@ -31,7 +33,6 @@
       "INTERNALERROR"
     ]
   },
-
   "limits": {
     "ticket_ac_max": 15,
     "plan_files_max": 12,
@@ -39,15 +40,25 @@
     "attempts_max": 3,
     "plan_amendments_max": 3,
     "station_max_turns": 30,
-    "run_dispatches_max": 12,
+    "run_dispatches_max": 16,
     "run_max_minutes": 120,
-    "run_budget_usd": null
+    "run_budget_usd": null,
+    "repairs_max": 2,
+    "replans_max": 1
   },
-
   "risk_rules": [
-    { "paths": ["**/migrations/**", "**/auth/**", "**/queue/**", "**/payment*/**"],
-      "risk": "high" }
+    {
+      "paths": [
+        "**/migrations/**",
+        "**/auth/**",
+        "**/queue/**",
+        "**/payment*/**"
+      ],
+      "risk": "high"
+    }
   ],
-
-  "tiers": { "routine": "sonnet", "careful": "opus" }
+  "tiers": {
+    "routine": "sonnet",
+    "careful": "opus"
+  }
 }

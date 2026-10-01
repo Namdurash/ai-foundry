@@ -448,16 +448,51 @@ _aif_work_dispatch() {
 
   model="$(_aif_work_frontmatter "$wt" "$agent" model)"
   tools="$(_aif_work_frontmatter "$wt" "$agent" tools | tr -d ' ')"
-  max_turns="$(jq -r '.limits.station_max_turns // 30' "$project" 2>/dev/null)"
+  # The station's own cap first, from its aif:meta: the plan and tests
+  # stations explore and read back, and hit the project-wide 30 in three runs
+  # of five on one batch, leaving half-written files for the gate to judge.
+  max_turns="$(aif_station_meta "$wt" "$station" 2>/dev/null | jq -r '.max_turns // empty' 2>/dev/null)"
+  [ -n "$max_turns" ] || max_turns="$(jq -r '.limits.station_max_turns // 30' "$project" 2>/dev/null)"
   [ -n "$model" ] || model="sonnet"
   [ -n "$tools" ] || tools="Read,Grep,Glob,Write,Edit"
 
+  # The tests station's Bash is for one command, `aif _verify`, and the guard
+  # hook is what holds it to that. The tool is granted only once
+  # `aif doctor --probe` has watched the hook deny a command in a spawned run
+  # on this machine (docs/FINDINGS.md #21) — a hook that did not fire would
+  # hand the station the shell, silently. Withheld, the station still works:
+  # the gate's reject loop is its only loop, slower and not weaker.
+  if [ "$station" = "tests" ]; then
+    case ",$tools," in
+      *,Bash,*)
+        if ! _aif_work_guard_probed "${AIF_WORK_ROOT:-$wt}"; then
+          tools="$(printf '%s' "$tools" | tr ',' '\n' | grep -vx Bash | paste -sd, -)"
+          _aif_work_say "station" "tests runs without aif _verify — the guard hook has not been seen to deny a command here (aif doctor --probe)"
+        fi
+        ;;
+    esac
+  fi
+
   prompt="Ticket $ticket. Your working directory is the project root. Follow your instructions exactly: read the inputs they name under $AIF_TASKS_DIR/$ticket/ and produce what they specify, nothing else. Nobody will answer a question — decide from the ticket and the repository, and record what you decided in the fields your instructions provide for it."
   if [ -n "$complaint" ]; then
-    prompt="$prompt
+    case "$complaint" in
+      "REPAIR"*)
+        prompt="$prompt
+
+$complaint"
+        ;;
+      "REPLAN"*)
+        prompt="$prompt
+
+$complaint"
+        ;;
+      *)
+        prompt="$prompt
 
 The previous attempt was REJECTED. The gate's complaints, verbatim — fix exactly these, and change nothing that was not complained about:
 $complaint"
+        ;;
+    esac
   fi
 
   sys="$(mktemp "${TMPDIR:-/tmp}/aif-sys-XXXXXX")"
@@ -469,6 +504,11 @@ $complaint"
   export AIF_STATION="$station"
 
   _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns"
+  # THIS aif first on the station's PATH: `aif _verify` inside the tests
+  # station must reach the aif that dispatched it, not whatever Homebrew
+  # installed beside it.
+  local path_was="$PATH"
+  export PATH="$AIF_ROOT/bin:$PATH"
   if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
     "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
       "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
@@ -476,6 +516,7 @@ $complaint"
     "aif_runner_${AIF_PROFILE_RUNNER}_station" "$wt" "$sys" "$prompt" "$model" \
       "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
   fi
+  export PATH="$path_was"
   unset AIF_STATION
   rm -f "$sys"
 
@@ -551,6 +592,271 @@ _aif_work_keep_envelope() {
   cp "$env" "$dir/$(printf '%02d' "$n")-$station.json" 2>/dev/null || true
 }
 
+# _aif_work_guard_probed <root> — rc 0 when `aif doctor --probe` has watched
+# the guard hook deny a command in a spawned run on this machine, for the
+# runner version that is installed now (lib/doctor.sh writes the marker).
+_aif_work_guard_probed() {
+  local marker="$1/.aif/state/guard-probed" want
+  [ -f "$marker" ] || return 1
+  [ -z "${AIF_WORK_STATION_CMD:-}" ] || return 0
+  want="$(aif_runner_version claude)"
+  [ -n "$want" ] || return 1
+  [ "$(cat "$marker" 2>/dev/null)" = "$want" ]
+}
+
+# _aif_work_copy_at <wt> <base> — a throwaway copy of the worktree as it stood
+# at <base>, echoed: every path changed since that commit put back, every path
+# added since it removed, what git ignores copied as it is. The same copy the
+# gates' aif_g_scratch_at makes (which lib/ cannot source), for the same two
+# reasons: a suite runs against installed dependencies, and git is never run
+# inside the copy — a copy of a linked worktree carries its .git FILE, and git
+# run there writes the real worktree's index (docs/FINDINGS.md #20).
+_aif_work_copy_at() {
+  local wt="$1" base="$2" copy p q
+  copy="$(mktemp -d "${TMPDIR:-/tmp}/aif-repair-XXXXXX")" || return 1
+  copy="$(cd "$copy" && pwd -P)" || return 1
+  for p in "$wt"/* "$wt"/.[!.]* "$wt"/..?*; do
+    [ -e "$p" ] || [ -L "$p" ] || continue
+    if [ "$p" = "$wt/.aif" ] && [ -d "$p/worktrees" ]; then
+      mkdir -p "$copy/.aif"
+      for q in "$p"/* "$p"/.[!.]* "$p"/..?*; do
+        [ -e "$q" ] || [ -L "$q" ] || continue
+        [ "$q" = "$p/worktrees" ] || cp -R "$q" "$copy/.aif/" 2>/dev/null || true
+      done
+    else
+      cp -R "$p" "$copy/" 2>/dev/null || true
+    fi
+  done
+  {
+    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if git -C "$wt" cat-file -e "$base:$p" 2>/dev/null; then
+      mkdir -p "$copy/$(dirname "$p")"
+      git -C "$wt" show "$base:$p" >"$copy/$p" 2>/dev/null || true
+    else
+      rm -f "${copy:?}/${p:?}"
+    fi
+  done
+  printf '%s' "$copy"
+}
+
+# _aif_work_restore_since <wt> <base> <keep-ere> — put every path the worktree
+# changed since <base> back to <base>, or remove it, except the paths matching
+# <keep-ere>. In the worktree itself, through git's read-only questions and
+# plain file writes — `git checkout` would be shorter and would stage.
+_aif_work_restore_since() {
+  local wt="$1" base="$2" keep="$3" p
+  {
+    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    ! printf '%s' "$p" | grep -qE "$keep" || continue
+    if git -C "$wt" cat-file -e "$base:$p" 2>/dev/null; then
+      mkdir -p "$wt/$(dirname "$p")"
+      git -C "$wt" show "$base:$p" >"$wt/$p" 2>/dev/null || true
+    else
+      rm -f "${wt:?}/${p:?}"
+    fi
+  done
+}
+
+# _aif_work_repair <root> <wt> <ticket> <complaint> <budget-left>
+#
+# green attributed a failure to the frozen tests (exit 4). The tests station
+# repairs them — in a COPY of the tree with the implementation reverted to the
+# skeleton, so it works in the world it authored in and cannot read the code
+# — and the amended files must then pass verify-red there (red against the
+# skeleton) before they come back here, where green judges the implementation
+# against them again without a dispatch (docs/REBUILD-4.md §2.3). Proof by
+# measurement: red without the code, green with it, whichever was written
+# first.
+#
+# Bounded per ticket by limits.repairs_max. The verify-red verdicts in the copy
+# are recorded in THIS ledger; the test files, the lock and the note come back;
+# the commit holds only those, so the implementation stays uncommitted and
+# the next green diffs it against a baseline that already holds the new
+# oracle.
+#
+# rc 0 repaired: run.json has regate=implement and a new dispatch_base ·
+# 1 not repaired, AIF_WORK_REPAIR_WHY says why.
+_aif_work_repair() {
+  local root="$1" wt="$2" ticket="$3" complaint="$4" budget_left="$5" dispatched="${6:-0}"
+  local work project repairs max base tests_base copy cwork agent out rc
+  local attempts_max n=0 verdict reason test_files f
+  AIF_WORK_REPAIR_WHY=""
+  work="$(aif_task_dir "$wt" "$ticket")"
+  project="$(aif_project_config "$wt")"
+  max="$(jq -r '.limits.repairs_max // 2' "$project")"
+  attempts_max="$(jq -r '.limits.attempts_max // 3' "$project")"
+  repairs="$(aif_run_get "$work" '.repairs')"
+  repairs="${repairs:-0}"
+  if [ "$repairs" -ge "$max" ]; then
+    AIF_WORK_REPAIR_WHY="green attributed the failure to the frozen tests again, after $repairs repair(s) (limits.repairs_max). The oracle does not converge on this ticket:
+$complaint"
+    return 1
+  fi
+  repairs=$((repairs + 1))
+  # shellcheck disable=SC2016  # jq's variable, bound by --argjson
+  aif_run_update "$work" '.repairs = $r' --argjson r "$repairs"
+
+  base="$(aif_run_get "$work" '.dispatch_base')"
+  tests_base="$(aif_run_get "$work" '.tests_base')"
+  [ -n "$tests_base" ] || tests_base="$base"
+  _aif_work_say "repair" "$repairs/$max — the tests station, in a copy without the implementation"
+  copy="$(_aif_work_copy_at "$wt" "$base")" || {
+    AIF_WORK_REPAIR_WHY="could not copy the tree to repair the tests in"
+    return 1
+  }
+  cwork="$(aif_task_dir "$copy" "$ticket")"
+  rm -f "$cwork/implement.note.json"
+  # The baseline the gate measures against in the copy: the tree the tests
+  # station started from, before this ticket's test files existed.
+  # shellcheck disable=SC2016  # jq's variable, bound by --arg
+  aif_run_update "$cwork" '.dispatch_base = $b' --arg b "$tests_base"
+
+  agent="$(aif_station_agent "$copy" tests "$cwork" 2>/dev/null)"
+  test_files="$(aif_meta_json "$work/plan.md" | jq -r '.files.tests[]? // empty')"
+  complaint="REPAIR — the implementation of this ticket exists and is NOT in this tree: you are in a copy with it reverted to the plan's skeleton, so that the tests you amend are written against the contract and not against the code. green, judging the implementation, attributed these failures to the frozen tests rather than to the code. Read them, and either amend the tests the complaint names so they describe the criterion — red here, against the skeleton — or keep them as they are if the complaint is wrong and say so in tasks/$ticket/tests.note.json ({ \"kept\": [{ \"test\": \"<id>\", \"because\": \"…\" }] }). The gate runs again on what you leave:
+$complaint"
+  while :; do
+    n=$((n + 1))
+    if [ "$n" -gt "$attempts_max" ]; then
+      AIF_WORK_REPAIR_WHY="the tests station was rejected $attempts_max time(s) in a row repairing the oracle (limits.attempts_max). Last complaint:
+$complaint"
+      break
+    fi
+    out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+    rc=0
+    _aif_work_dispatch "$copy" "$ticket" tests "$agent" "$complaint" "$budget_left" "$out" || rc=$?
+    if [ "$rc" -eq 3 ]; then
+      rm -f "$out"
+      AIF_WORK_REPAIR_WHY="the runner could not run the tests station for the repair (no envelope) — the environment, not the ticket."
+      break
+    fi
+    AIF_WORK_REPAIR_DISPATCHES=$((${AIF_WORK_REPAIR_DISPATCHES:-0} + 1))
+    _aif_work_keep_envelope "$copy" "$ticket" "$((dispatched + AIF_WORK_REPAIR_DISPATCHES))" tests "$out"
+    AIF_WORK_REPAIR_SPENT="$(awk -v s="${AIF_WORK_REPAIR_SPENT:-0}" -v c="$(_aif_work_envelope_cost "$copy" "$out")" 'BEGIN { printf "%.4f", s + c }')"
+    rm -f "$out"
+    # What the copy staged — the cost row, the kept envelope — belongs to this
+    # run's record, not to a directory about to be deleted.
+    if [ -f "$copy/.aif/tmp/meter-$ticket.jsonl" ]; then
+      mkdir -p "$wt/.aif/tmp"
+      cat "$copy/.aif/tmp/meter-$ticket.jsonl" >>"$wt/.aif/tmp/meter-$ticket.jsonl"
+      rm -f "$copy/.aif/tmp/meter-$ticket.jsonl"
+    fi
+    if [ -d "$copy/.aif/tmp/stations-$ticket" ]; then
+      mkdir -p "$wt/.aif/tmp/stations-$ticket"
+      cp "$copy/.aif/tmp/stations-$ticket"/*.json "$wt/.aif/tmp/stations-$ticket/" 2>/dev/null || true
+    fi
+
+    rc=0
+    verdict="$(aif_gate_run "$copy" verify-red "$cwork")" || rc=$?
+    reason="$(printf '%s' "$verdict" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]]*$' | sed -n 1p)"
+    case "$rc" in
+      0) aif_ledger_gate "$work" verify-red pass tests.lock.json "$(aif_sha256 "$cwork/tests.lock.json")" \
+        "$(aif_sha256 "$(aif_gate_path "$copy" verify-red)")" "repair $repairs: $reason" ;;
+      1) aif_ledger_gate "$work" verify-red fail "" "" "$(aif_sha256 "$(aif_gate_path "$copy" verify-red)")" "repair $repairs: $reason" ;;
+      2) aif_ledger_gate "$work" verify-red spec "" "" "$(aif_sha256 "$(aif_gate_path "$copy" verify-red)")" "repair $repairs: $reason" ;;
+      *) aif_ledger_gate "$work" verify-red error "" "" "$(aif_sha256 "$(aif_gate_path "$copy" verify-red)")" "repair $repairs: $reason" ;;
+    esac
+    _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
+    if [ "$rc" -eq 0 ]; then
+      _aif_work_say "gate" "tests admitted in the copy — $reason"
+      break
+    elif [ "$rc" -eq 1 ]; then
+      complaint="REPAIR, again — the amended tests were REJECTED in the copy. The gate's complaints, verbatim — fix exactly these:
+$(printf '%s' "$verdict" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^$' | sed -n '1,40p')"
+      _aif_work_say "gate" "tests rejected in the copy (repair attempt $n/$attempts_max) — retrying with the complaint"
+    else
+      AIF_WORK_REPAIR_WHY="verify-red could not admit the repaired tests (exit $rc):
+$(printf '%s' "$verdict" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,20p')"
+      break
+    fi
+  done
+
+  if [ -n "$AIF_WORK_REPAIR_WHY" ]; then
+    rm -rf "${copy:?}"
+    return 1
+  fi
+
+  # Back here: the oracle, and nothing of the implementation.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -f "$copy/$f" ]; then
+      mkdir -p "$wt/$(dirname "$f")"
+      cp "$copy/$f" "$wt/$f"
+    fi
+  done <<EOF
+$test_files
+EOF
+  cp "$cwork/tests.lock.json" "$work/tests.lock.json"
+  [ ! -f "$cwork/tests.note.json" ] || cp "$cwork/tests.note.json" "$work/tests.note.json"
+  rm -rf "${copy:?}"
+
+  # The commit holds the oracle and the ticket's record, never the code: the
+  # implementation stays uncommitted, and the baseline green diffs it against
+  # is this commit, which carries the tests it is now judged by.
+  git -C "$wt" add -- "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$wt/$f" ] || continue
+    git -C "$wt" add -- "$f" >/dev/null 2>&1 || true
+  done <<EOF
+$test_files
+EOF
+  if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+      commit -q -m "aif: tests $ticket (repair $repairs)" >/dev/null 2>&1 || true
+  fi
+  # shellcheck disable=SC2016  # jq's variables, bound by --arg
+  aif_run_update "$work" '.dispatch_base = $b | .regate = "implement"' \
+    --arg b "$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf '')"
+  _aif_work_say "repair" "the oracle is back, committed; the implementation is judged again"
+  return 0
+}
+
+# _aif_work_replan <wt> <ticket> <reason>
+#
+# The implement station declared, in its note, that the contract cannot hold
+# the behaviour. Everything since the first plan dispatch is put back — the
+# skeleton, the tests, the lock, the plan — and the plan station runs again
+# with the declaration, in a tree exactly as it first saw it. Bounded per
+# ticket by limits.replans_max: a contract that fails twice is a ticket for a
+# human. rc 0 replanning: run.json is at stage plan · 1 not, AIF_WORK_REPLAN_WHY says why.
+_aif_work_replan() {
+  local wt="$1" ticket="$2" reason="$3" work project replans max plan_base
+  AIF_WORK_REPLAN_WHY=""
+  work="$(aif_task_dir "$wt" "$ticket")"
+  project="$(aif_project_config "$wt")"
+  max="$(jq -r '.limits.replans_max // 1' "$project")"
+  replans="$(aif_run_get "$work" '.replans')"
+  replans="${replans:-0}"
+  if [ "$replans" -ge "$max" ]; then
+    AIF_WORK_REPLAN_WHY="the implement station declares the contract cannot hold the behaviour, after $replans replan(s) (limits.replans_max) — the plan does not converge on this ticket:
+$reason"
+    return 1
+  fi
+  plan_base="$(aif_run_get "$work" '.plan_base')"
+  if [ -z "$plan_base" ]; then
+    AIF_WORK_REPLAN_WHY="the implement station declares the contract cannot hold the behaviour, and the run record has no plan baseline to replan from:
+$reason"
+    return 1
+  fi
+  replans=$((replans + 1))
+  _aif_work_say "replan" "$replans/$max — the plan station, with the implementer's declaration"
+  _aif_work_restore_since "$wt" "$plan_base" "^$AIF_TASKS_DIR/$ticket/(ledger\.json|run\.json|stations/)"
+  rm -f "$work/implement.note.json" "$work/tests.note.json" "$work/tests.lock.json" "$work/plan-amendments.json"
+  # shellcheck disable=SC2016  # jq's variables, bound by --argjson/--arg
+  aif_run_update "$work" '.replans = $r | .stage = "plan" | .regate = null | .tests_base = null' --argjson r "$replans"
+  AIF_WORK_REPLAN_COMPLAINT="REPLAN — the implement station declares that the contract this plan wrote cannot hold the behaviour the criteria ask for. Its words, verbatim:
+$reason
+Write the plan again, and the skeleton with it, so that the contract can. Everything since the first plan is gone from the tree; the ticket is unchanged."
+  return 0
+}
+
 # _aif_work_report <root> <wt> <ticket> <status> <why> <started>
 #
 # The artifact the human reviews. Everything in it is read from files the run
@@ -617,6 +923,23 @@ _aif_work_report() {
             | if $c == null then "tokens only" else "$" + ($c | tostring) end ) + " |"
     ' "$ledger" 2>/dev/null
     printf '\n_Costs come from `.aif/prices.json`; a model missing there prints "tokens only". Tokens are always recorded. Each station'"'"'s own account of what it did is kept in `stations/`._\n'
+
+    # The numbers the stability figure is computed from (docs/REBUILD-4.md
+    # §0, §5): what the oracle held at the freeze, and which loops the run
+    # took. Read from the lock and the run record, never narrated.
+    printf '\n## Convergence\n\n'
+    if [ -f "$work/tests.lock.json" ]; then
+      jq -r '
+        "- tests: " + ((.declared_files // []) | length | tostring) + " declared file(s), "
+        + (if .collected_files == null then "collected not known (coarse)" else ((.collected_files | length | tostring) + " collected") end)
+        + "; " + ((.covering // []) | length | tostring) + " red at the freeze, "
+        + ((.green_at_freeze // []) | length | tostring) + " green at the freeze"
+        + (if ((.red_with_tests // []) | length) > 0 then ", " + ((.red_with_tests | length) | tostring) + " pre-existing red with them" else "" end)' \
+        "$work/tests.lock.json" 2>/dev/null
+    else
+      printf -- '- tests: nothing frozen\n'
+    fi
+    jq -r '"- loops: " + ((.repairs // 0) | tostring) + " repair(s) of the oracle, " + ((.replans // 0) | tostring) + " replan(s)"' "$run" 2>/dev/null
 
     # A station can end with a runner error and still be admitted: the gate
     # judges the artifacts, not the exit code. That is the intended behaviour
@@ -946,6 +1269,7 @@ aif_cmd_work() {
   # keeps the shell out of them, hence a disable on each.
   local stage agent expects complaint="" status="" why="" gate_out
   local dispatches=0 spent=0 attempts out rc station_err tool_out budget_left
+  local regate skip_dispatch prev_sha="" prev_stage="" this_sha replan_why
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -975,99 +1299,137 @@ aif_cmd_work() {
       break
     }
 
+    # After a repair the implementation is already in the tree and what moved
+    # is the oracle it is judged against: the gates run, nothing is dispatched.
+    skip_dispatch=0
+    regate="$(aif_run_get "$work" '.regate')"
+    if [ -n "$regate" ] && [ "$regate" = "$stage" ]; then
+      skip_dispatch=1
+      # shellcheck disable=SC2016  # jq's variable
+      aif_run_update "$work" '.regate = null'
+      _aif_work_say "regate" "$stage — the oracle was repaired; the implementation is judged again, not dispatched"
+    fi
+
     attempts="$(aif_run_attempts "$work" "$stage")"
-    if [ "$attempts" -ge "$attempts_max" ]; then
+    if [ "$skip_dispatch" -eq 0 ] && [ "$attempts" -ge "$attempts_max" ]; then
       status="stopped"
       why="$stage was rejected $attempts time(s) in a row (limits.attempts_max). Last complaint:
 $complaint"
       break
     fi
 
-    expects="$(aif_station_meta "$wt" "$stage" 2>/dev/null | jq -r '.expects // ""')"
-    [ -z "$expects" ] || _aif_work_say "expects" "$expects"
+    if [ "$skip_dispatch" -eq 0 ]; then
+      expects="$(aif_station_meta "$wt" "$stage" 2>/dev/null | jq -r '.expects // ""')"
+      [ -z "$expects" ] || _aif_work_say "expects" "$expects"
 
-    dispatches=$((dispatches + 1))
-    # dispatch_base: HEAD as it stands now, for scope and green to judge
-    # against. A station with Bash can commit; after it does, "the last commit"
-    # is its own, and a gate diffing against that sees nothing
-    # (docs/DEFECTS-3.md #8, aif_g_dispatch_base in the gates' _lib.sh).
-    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
-    aif_run_update "$work" \
-      '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1) | .dispatch_base = $b' \
-      --arg s "$stage" --argjson d "$dispatches" \
-      --arg b "$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf '')"
-
-    # The two %f formats — here and on the spend below — print a dot because
-    # bin/aif pins LC_NUMERIC=C. One goes to the station as dollars left, the
-    # other into jq as a JSON number; a decimal comma is wrong in both.
-    out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
-    rc=0
-    # Empty when there is no ceiling, and the runner is then invoked without
-    # --max-budget-usd at all. Computing it anyway would hand the station the
-    # 0.01 floor below — a one-cent cap in place of no cap.
-    budget_left=""
-    if [ -n "$budget" ]; then
-      budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
-    fi
-    _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
-      "$budget_left" "$out" || rc=$?
-    if [ "$rc" -eq 3 ]; then
-      rm -f "$out"
-      status="stopped"
-      why="the runner could not run the $stage station (no envelope) — the environment, not the ticket."
-      break
-    fi
-    _aif_work_keep_envelope "$wt" "$ticket" "$dispatches" "$stage" "$out"
-    spent="$(awk -v s="$spent" -v c="$(_aif_work_envelope_cost "$wt" "$out")" 'BEGIN { printf "%.4f", s + c }')"
-    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
-    aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
-    if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
-      station_err="$("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
-      # A station that ended badly may still have left a usable artifact on
-      # disk, and the GATE decides, not the runner's exit code. That is
-      # deliberate — but on its own it reads as a contradiction: "ended with an
-      # error" followed on the next line by "admitted", with nothing outside
-      # the scrollback remembering it happened. So say which of the two is the
-      # verdict, and put the error in the run record for the report to carry.
-      _aif_work_say "station" "$stage ended with an error: $station_err"
-      _aif_work_say "station" "  the gate below judges the artifacts it left; the runner's exit is not the verdict"
+      dispatches=$((dispatches + 1))
+      # dispatch_base: HEAD as it stands now, for scope and green to judge
+      # against. A station with Bash can commit; after it does, "the last commit"
+      # is its own, and a gate diffing against that sees nothing
+      # (docs/DEFECTS-3.md #8, aif_g_dispatch_base in the gates' _lib.sh).
+      # plan_base and tests_base: the tree each of those stations FIRST saw,
+      # which is where a replan puts the tree back, and where a repair's copy
+      # measures the pre-existing suite from.
       # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
       aif_run_update "$work" \
-        '.station_errors = ((.station_errors // []) + [{ stage: $s, attempt: $a, error: $e }])' \
-        --arg s "$stage" --arg e "$station_err" --argjson a "$((attempts + 1))"
-    fi
-    rm -f "$out"
+        '.dispatches = $d | .attempts[$s] = ((.attempts[$s] // 0) + 1) | .dispatch_base = $b
+         | (if $s == "plan" then .plan_base = (.plan_base // $b) else . end)
+         | (if $s == "tests" then .tests_base = (.tests_base // $b) else . end)' \
+        --arg s "$stage" --argjson d "$dispatches" \
+        --arg b "$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf '')"
 
-    if [ -n "$budget" ] && awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
-      status="stopped"
-      why="budget: spent \$$spent of \$$budget — each station priced from its tokens where .aif/prices.json knows the model, else as the runner reported it."
-      break
-    fi
+      # The two %f formats — here and on the spend below — print a dot because
+      # bin/aif pins LC_NUMERIC=C. One goes to the station as dollars left, the
+      # other into jq as a JSON number; a decimal comma is wrong in both.
+      out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+      rc=0
+      # Empty when there is no ceiling, and the runner is then invoked without
+      # --max-budget-usd at all. Computing it anyway would hand the station the
+      # 0.01 floor below — a one-cent cap in place of no cap.
+      budget_left=""
+      if [ -n "$budget" ]; then
+        budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
+      fi
+      _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
+        "$budget_left" "$out" || rc=$?
+      if [ "$rc" -eq 3 ]; then
+        rm -f "$out"
+        status="stopped"
+        why="the runner could not run the $stage station (no envelope) — the environment, not the ticket."
+        break
+      fi
+      _aif_work_keep_envelope "$wt" "$ticket" "$dispatches" "$stage" "$out"
+      spent="$(awk -v s="$spent" -v c="$(_aif_work_envelope_cost "$wt" "$out")" 'BEGIN { printf "%.4f", s + c }')"
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+      aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
+      if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
+        station_err="$("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
+        # A station that ended badly may still have left a usable artifact on
+        # disk, and the GATE decides, not the runner's exit code. That is
+        # deliberate — but on its own it reads as a contradiction: "ended with an
+        # error" followed on the next line by "admitted", with nothing outside
+        # the scrollback remembering it happened. So say which of the two is the
+        # verdict, and put the error in the run record for the report to carry.
+        _aif_work_say "station" "$stage ended with an error: $station_err"
+        _aif_work_say "station" "  the gate below judges the artifacts it left; the runner's exit is not the verdict"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+        aif_run_update "$work" \
+          '.station_errors = ((.station_errors // []) + [{ stage: $s, attempt: $a, error: $e }])' \
+          --arg s "$stage" --arg e "$station_err" --argjson a "$((attempts + 1))"
+      fi
+      rm -f "$out"
 
-    # Before any gate: a station that moved a dependency manifest or lockfile
-    # gets its dependencies installed again from the lock, and one whose files
-    # cannot be installed is sent back like a rejection — recorded as the
-    # "prepare" verdict, retried with prepare's own words, capped the same way.
-    if ! _aif_work_reprepare "$root" "$wt" "$work"; then
-      complaint="$AIF_WORK_REPREPARE"
-      _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
-      aif_ledger_gate "$work" prepare fail "" "" "" \
-        "$(printf '%s' "$AIF_WORK_REPREPARE" | sed -n 1p)"
-      _aif_work_say "prepare" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — the dependencies it left do not install; retrying with prepare's output"
-      continue
-    fi
+      if [ -n "$budget" ] && awk -v s="$spent" -v b="$budget" 'BEGIN { exit !(s > b) }'; then
+        status="stopped"
+        why="budget: spent \$$spent of \$$budget — each station priced from its tokens where .aif/prices.json knows the model, else as the runner reported it."
+        break
+      fi
 
-    # The tool writes the provenance the station was never asked to carry.
-    # Its failure is the tool's, never the station's — and it used to be
-    # silent: an unstamped plan is rejected by verify-red as "bound to a
-    # different ticket", the station rewrites the same plan, and the loop
-    # repeats to the cap, billing a tool defect to the human as opus retries
-    # (docs/DEFECTS-3.md #7). So it stops, and says whose fault it was.
-    if ! tool_out="$("$AIF_ROOT/bin/aif" _record "$stage" "$ticket" 2>&1)"; then
-      status="stopped"
-      why="aif _record failed after the $stage station — the tool, not the station, and no gate was run:
+      # Before any gate: a station that moved a dependency manifest or lockfile
+      # gets its dependencies installed again from the lock, and one whose files
+      # cannot be installed is sent back like a rejection — recorded as the
+      # "prepare" verdict, retried with prepare's own words, capped the same way.
+      if ! _aif_work_reprepare "$root" "$wt" "$work"; then
+        complaint="$AIF_WORK_REPREPARE"
+        _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
+        aif_ledger_gate "$work" prepare fail "" "" "" \
+          "$(printf '%s' "$AIF_WORK_REPREPARE" | sed -n 1p)"
+        _aif_work_say "prepare" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — the dependencies it left do not install; retrying with prepare's output"
+        continue
+      fi
+
+      # The tool writes the provenance the station was never asked to carry.
+      # Its failure is the tool's, never the station's — and it used to be
+      # silent: an unstamped plan is rejected by verify-red as "bound to a
+      # different ticket", the station rewrites the same plan, and the loop
+      # repeats to the cap, billing a tool defect to the human as opus retries
+      # (docs/DEFECTS-3.md #7). So it stops, and says whose fault it was.
+      if ! tool_out="$("$AIF_ROOT/bin/aif" _record "$stage" "$ticket" 2>&1)"; then
+        status="stopped"
+        why="aif _record failed after the $stage station — the tool, not the station, and no gate was run:
 $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
-      break
+        break
+      fi
+
+      # The implementer's declaration that the contract cannot hold the
+      # behaviour: a replan, bounded, before any gate judges code written
+      # against a contract its author says is wrong (docs/REBUILD-4.md §2.3).
+      if [ "$stage" = "implement" ] && [ -f "$work/implement.note.json" ]; then
+        replan_why="$(jq -r '.replan // empty' "$work/implement.note.json" 2>/dev/null)"
+        if [ -n "$replan_why" ]; then
+          _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
+          if _aif_work_replan "$wt" "$ticket" "$replan_why"; then
+            aif_ledger_gate "$work" replan pass "" "" "" "the implementer declares the contract cannot hold the behaviour — replanning"
+            complaint="$AIF_WORK_REPLAN_COMPLAINT"
+            prev_sha=""
+            continue
+          fi
+          aif_ledger_gate "$work" replan fail "" "" "" "$(printf '%s' "$AIF_WORK_REPLAN_WHY" | sed -n 1p)"
+          status="stopped"
+          why="$AIF_WORK_REPLAN_WHY"
+          break
+        fi
+      fi
     fi
 
     rc=0
@@ -1086,6 +1448,7 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
           break
         fi
         complaint=""
+        prev_sha=""
         # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
         aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"
         ;;
@@ -1094,14 +1457,58 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
         # leaves early under set -e would end the run at the moment of the
         # rejection it was quoting (docs/DEFECTS-5.md #3).
         complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
+        # The convergence rule: the same complaint twice in a row is a station
+        # that cannot act on what it is told, and a third attempt is the same
+        # coin again. Compared as the whole set of problems, with the numbers
+        # the gates count removed, so "3 problem(s)" against "2 problem(s)" is
+        # progress and the same three are not (docs/REBUILD-4.md §2.4).
+        this_sha="$(printf '%s' "$complaint" | sed 's/[0-9]//g; s/[[:space:]]\{1,\}/ /g' | aif_sha256_stdin)"
+        if [ "$prev_stage" = "$stage" ] && [ "$prev_sha" = "$this_sha" ]; then
+          status="stopped"
+          why="$stage was rejected with the same complaint twice in a row — the station cannot act on it, and a third attempt is the same again. The complaint:
+$complaint"
+          break
+        fi
+        prev_stage="$stage"
+        prev_sha="$this_sha"
         _aif_work_say "gate" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — retrying with the complaint"
         ;;
+      2)
+        # The ticket's: a criterion already true, unfalsifiable, in conflict,
+        # undecided. Nothing is retried; the analyst gets the gate's lines.
+        status="spec"
+        why="$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | grep -v '^[[:space:]]*$' | sed -n '1,30p')"
+        break
+        ;;
+      4)
+        # The oracle's: the tests station repairs it in a copy without the
+        # implementation, and the implementation is judged again.
+        budget_left=""
+        if [ -n "$budget" ]; then
+          budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
+        fi
+        AIF_WORK_REPAIR_DISPATCHES=0
+        AIF_WORK_REPAIR_SPENT=0
+        rc=0
+        _aif_work_repair "$root" "$wt" "$ticket" \
+          "$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | grep -v '^[[:space:]]*$' | sed -n '1,40p')" \
+          "$budget_left" "$dispatches" || rc=$?
+        dispatches=$((dispatches + AIF_WORK_REPAIR_DISPATCHES))
+        spent="$(awk -v s="$spent" -v c="$AIF_WORK_REPAIR_SPENT" 'BEGIN { printf "%.4f", s + c }')"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+        aif_run_update "$work" '.dispatches = $d | .spent_usd = $s' --argjson d "$dispatches" --argjson s "$spent"
+        if [ "$rc" -ne 0 ]; then
+          status="stopped"
+          why="$AIF_WORK_REPAIR_WHY"
+          break
+        fi
+        complaint=""
+        prev_sha=""
+        ;;
       3)
-        # Not always the environment. A gate also answers 3 when the defect is
-        # real but lies in an artifact THIS station may not touch — a frozen
-        # test file, say — where retrying is not merely wasteful, it is
-        # unsatisfiable. Either way the loop stops and the gate's own words are
-        # the explanation; this line no longer overrides them with a guess.
+        # The environment, or a defect no loop in the stage reaches. The loop
+        # stops and the gate's own words are the explanation; this line no
+        # longer overrides them with a guess.
         status="stopped"
         why="a gate could not render a verdict on $stage, so the run stopped rather than
 retrying a station that cannot fix what it is being rejected for. The gate says

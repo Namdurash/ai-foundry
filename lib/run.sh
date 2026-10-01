@@ -61,9 +61,24 @@ aif_run_init() {
     --arg stage "${AIF_RUN_STAGES%% *}" \
     '{ schema: $schema, ticket: $t, ticket_sha256: $sha, branch: $br, base: $base,
        worktree: $wt, stage: $stage, attempts: {}, dispatches: 0, spent_usd: 0,
+       repairs: 0, replans: 0, regate: null,
        started_at: $at, finished_at: null, status: "running", why: null }' \
     >"$f.tmp" && mv "$f.tmp" "$f"
 }
+
+# Two loops the stage can take besides a retry, each bounded per TICKET rather
+# than per invocation, because each one is a dispatch of a station the loop
+# had already passed (docs/REBUILD-4.md §2.4):
+#
+#   repairs  — green attributed a failure to the frozen tests; the tests
+#              station fixed them in a copy without the implementation, and
+#              the implementation was judged again. limits.repairs_max, 2.
+#   replans  — the implementer declared the contract cannot hold the
+#              behaviour; the plan station ran again. limits.replans_max, 1.
+#
+# regate — the stage whose gates run next WITHOUT a dispatch: after a repair
+# the implementation is already in the tree, and what changed is the oracle
+# it is judged against.
 
 # aif_run_get <work> <jq-path> — one field, or empty.
 aif_run_get() {

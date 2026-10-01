@@ -17,17 +17,23 @@ aif_project_config() {
 # The phases a check may bind to, as a jq array literal. A phase is the moment
 # in the cycle at which a check is meaningful, and it is not optional:
 #
-#   red    — the tests station's boundary, BEFORE any implementation exists.
-#            The suite is red by design there, and so is anything that compiles
-#            or links the code the tests call. Only a check that is true of the
-#            test files alone belongs here.
-#   green  — the implement station's boundary, after the code exists. Compilers,
-#            linters, builds and dependency-integrity checks belong here.
+#   contract — the plan station's boundary: the skeleton it wrote, over the
+#              tree as it left it. A compiler here is the linker for the
+#              contract — a signature that calls a library the way the station
+#              remembered it rather than the way it is does not compile, and
+#              the plan is rejected with the compiler's lines
+#   red      — the tests station's boundary, BEFORE any behaviour exists. With
+#              the contract on disk every symbol a test touches exists, typed,
+#              so a type-check is clean here and a type error is the test's.
+#              Without one (`legitimate_at_red`), only a check that is true of
+#              the test files alone belongs here.
+#   green    — the implement station's boundary, after the code exists.
+#              Compilers, linters, builds and dependency-integrity checks.
 #
 # A phase-blind `checks` list would reject the red phase for being red by
 # design, which is the same distinction `failure_classes` already draws one
 # level down: a legitimate failure is not a broken one.
-AIF_PROJECT_CHECK_PHASES='["red","green"]'
+AIF_PROJECT_CHECK_PHASES='["contract","red","green"]'
 
 # What `aif explain` does when a SKILL calls it, as opposed to when a person
 # types it. The moments are the places in the cycle where a drawing is worth
@@ -133,6 +139,11 @@ aif_project_validate() {
       (if (.test.roots | type) != "array" or (.test.roots | length) < 1
         then "test.roots must be a non-empty array" else empty end),
       (if (.test.command | type) != "string" then "test.command must be a string" else empty end),
+      # test.kind — optional: the runner, as `aif project init` detected it
+      # (jest, pytest). What chooses the stack fragment the stations read; a
+      # project.json from before the field keeps working without one.
+      (if ((.test.kind // "") | type) != "string"
+        then "test.kind must be a string — the runner, e.g. \"jest\" or \"pytest\"" else empty end),
       (if (.test.report.path | type) != "string" then "test.report.path must be a string" else empty end),
       (if (.test.report.format | type) != "string" then "test.report.format must be a string" else empty end),
       # prepare — optional: the command that makes a fresh worktree able to run
@@ -232,6 +243,16 @@ aif_project_validate() {
        elif .limits.run_budget_usd <= 0
          then "limits.run_budget_usd must be greater than 0, or null for no ceiling"
        else empty end),
+      # repairs_max / replans_max — optional, bounded per ticket: how many
+      # times green may send the oracle back to the tests station, and how
+      # many times the implementer may send the contract back to the plan
+      # (docs/REBUILD-4.md §2.4). Absent, 2 and 1.
+      (if (.limits.repairs_max // null) == null then empty
+       elif (.limits.repairs_max | type) != "number" or .limits.repairs_max < 0
+         then "limits.repairs_max must be a number of 0 or more" else empty end),
+      (if (.limits.replans_max // null) == null then empty
+       elif (.limits.replans_max | type) != "number" or .limits.replans_max < 0
+         then "limits.replans_max must be a number of 0 or more" else empty end),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),
       (if (.tiers.routine // "") == "" then "tiers.routine is required" else empty end),
       (if (.tiers.careful // "") == "" then "tiers.careful is required" else empty end)

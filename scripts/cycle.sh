@@ -189,11 +189,23 @@ for f in $skills; do
 "
 done
 
+repairs_max="$(jq -r '.limits.repairs_max // "?"' "$TEMPLATE")"
+replans_max="$(jq -r '.limits.replans_max // "?"' "$TEMPLATE")"
 cap_rows="a station rejected in a row|$attempts_max|limits.attempts_max
+the same complaint twice in a row|stop|the convergence rule, lib/cmd_work.sh
+repairs of the oracle, per ticket|$repairs_max|limits.repairs_max
+replans, per ticket|$replans_max|limits.replans_max
 station runs in one ticket's run|$dispatches_max|limits.run_dispatches_max
 wall clock, minutes|$minutes_max|limits.run_max_minutes
 dollars|$budget|limits.run_budget_usd
 "
+# The two loops that are not retries, asserted where they live rather than
+# typed in: green's REPAIR verdict sends the tests station round again, and
+# the implementer's note sends the plan station round again.
+grep -q 'AIF_G_REPAIR' "$SET/gates/green.sh" || die "green.sh no longer answers REPAIR (exit 4) — the repair loop is drawn below"
+grep -q '_aif_work_repair' "$ROOT/lib/cmd_work.sh" || die "lib/cmd_work.sh no longer repairs the oracle"
+grep -q '_aif_work_replan' "$ROOT/lib/cmd_work.sh" || die "lib/cmd_work.sh no longer replans"
+grep -q 'aif_g_spec' "$SET/gates/plan.sh" || die "plan.sh no longer answers a spec stop (exit 2)"
 
 # --------------------------------------------------------------------------
 # 5. the drawing
@@ -230,6 +242,8 @@ flowchart TB
     INTAKE --> G_READY
 $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
     $last_gate --> REPORT
+    G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ $repairs_max per ticket"| S_tests
+    G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ $replans_max per ticket"| S_plan
     LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
   end
 
@@ -238,6 +252,7 @@ $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
   READY -->|"the top card — one, or --loop until empty"| INTAKE
   INTAKE -.->|"the card"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
+  G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA

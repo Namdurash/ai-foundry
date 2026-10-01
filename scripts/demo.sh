@@ -131,9 +131,9 @@ cat > .aif/mkreport.sh <<'MK'
 #!/bin/bash
 mkdir -p .aif/tmp
 if grep -q "409" src/api/users.py 2>/dev/null; then
-  BODY='<testcase classname="tests.test_users" name="test_conflict" file="tests/test_users.py" line="3"/>'
+  BODY='<testcase classname="tests.test_users" name="test_proj_1_ac_001_conflict" file="tests/test_users.py" line="3"/>'
 else
-  BODY='<testcase classname="tests.test_users" name="test_conflict" file="tests/test_users.py" line="3"><failure message="assert 200 == 409">AssertionError: assert 200 == 409</failure></testcase>'
+  BODY='<testcase classname="tests.test_users" name="test_proj_1_ac_001_conflict" file="tests/test_users.py" line="3"><failure message="assert 200 == 409">AssertionError: assert 200 == 409</failure></testcase>'
 fi
 cat > .aif/tmp/report.xml <<X
 <testsuites><testsuite tests="2">$BODY<testcase classname="tests.test_platform" name="test_on_device" file="tests/test_platform.py"><skipped message="not on this platform"/></testcase></testsuite></testsuites>
@@ -245,8 +245,9 @@ SH="$(shasum -a 256 tasks/PROJ-1/ticket.md | cut -d' ' -f1)"
 plan_write() { # <ticket-sha> <create> <change> <cov> <extra-json>
   cat > tasks/PROJ-1/plan.md <<PLAN
 <!-- aif:meta
-{ "schema": 2, "ticket": "PROJ-1", "ticket_sha256": "$1", "risk": "low",
+{ "schema": 3, "ticket": "PROJ-1", "ticket_sha256": "$1", "risk": "low",
   "files": { "create": $2, "change": $3, "tests": ["tests/test_users.py"] },
+  "no_skeleton": [], "verdicts": { "AC-001": { "verdict": "buildable" } },
   "decisions": [
     { "id": "D-001", "statement": "Return 409 when the email already exists.",
       "because": "AC-001 names 409 as the observable refusal",
@@ -274,20 +275,33 @@ gate "plan" plan PROJ-1 0
 note "the plan is DATA three later gates dereference — files.tests is what"
 note "verify-red runs, files.create/change is what scope permits, ac_coverage is"
 note "the map from a criterion to the files that serve it. So the gate checks"
-note "that it parses, binds and names the repository as it actually is:"
-plan_write "$SH" '["src/api/users.py"]' '[]' '{ "AC-001": ["src/api/users.py"] }'
+note "that it parses, binds and names the repository as it actually is. A create"
+note "path is the CONTRACT: the plan station writes it as a skeleton — the real"
+note "exports, bodies that throw 'aif: not implemented' — so the tests are red"
+note "against something that loads. A create path with nothing written there:"
+plan_write "$SH" '["src/api/index.py"]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
 gate "plan" plan PROJ-1 1
 /bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
 
 note "and a file the plan orders into existence that no criterion points at is a"
 note "blind spot by construction — on a live ticket that file was the module"
 note "barrel, it threw on import, and no test noticed:"
-plan_write "$SH" '["src/api/index.py"]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
+printf 'def index():\n    raise NotImplementedError("aif: not implemented: index")\n' > src/api/index.py
 gate "plan" plan PROJ-1 1
 note "the way through is not to invent a criterion — it is to say so, in a list"
 note "the human is shown on the pass path:"
 plan_edit '.uncovered = ["src/api/index.py"]'
 gate "plan" plan PROJ-1 0
+/bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
+rm -f src/api/index.py
+
+note "and a verdict per criterion. The plan station is the first thing that reads"
+note "the criteria against the real code, so it is where 'already true' and"
+note "'cannot be falsified' are cheapest to find — a SPEC STOP, exit 2, for the"
+note "analyst, after one dispatch and with nothing frozen:"
+plan_write "$SH" '[]' '["src/api/users.py"]' '{ "AC-001": ["src/api/users.py"] }'
+plan_edit '.verdicts["AC-001"] = { verdict: "already_true", because: "src/api/users.py:2 already refuses a duplicate" }'
+gate "plan" plan PROJ-1 2
 /bin/bash .aif/gates/plan.sh tasks/PROJ-1 2>&1 | tail -2 | sed 's/^/  /'
 
 note "second: the external surface. Every 'because' a planning model writes"
@@ -320,20 +334,20 @@ gate "plan" plan PROJ-1 1
 "$AIF" _record plan PROJ-1 2>&1 | sed 's/^/  /'
 gate "plan" plan PROJ-1 0
 
-note "the plan gate's pass is RECORDED, here, once. One of its premises — every"
-note "files.create path must not exist YET — is exactly what the implement station"
-note "is later paid to falsify, so re-running it against a finished ticket would"
-note "reject a correct plan forever:"
+note "the plan gate's pass is RECORDED, here, once, bound to the plan's bytes:"
 sgate plan PROJ-1 0
 "$AIF" _commit plan PROJ-1 >/dev/null
 
 # ---------------------------------------------------------------------------
 step "5. TEST boundary  —  verify-red (fails for the right reason)"
 cat > tests/test_users.py <<'PY'
-def test_conflict():  # AC-001
+def test_proj_1_ac_001_conflict():
     from src.api.users import create
     assert create() == 409
 PY
+note "the test carries its criterion in its NAME — PROJ-1 AC-001, folded into"
+note "the identifier — where the gate reads it off the collected test, not off a"
+note "comment that any file could hold."
 note "test.roots is the SMUGGLING NET over the shared test tree — the tree green"
 note "re-hashes so logic cannot hide in a fixture no plan lists. It is not the"
 note "source of truth for one ticket's tests. Point it somewhere else entirely and"

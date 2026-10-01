@@ -141,6 +141,24 @@ _aif_work_preflight() {
   [ -f "$root/.claude/agents/aif-implement.md" ] ||
     aif_die "the stations are not installed — run 'aif init'"
 
+  # The project's guide to its own tests, which the plan and tests stations
+  # are handed as part of their instructions (docs/REBUILD-4.md §6). Absent,
+  # the stations would be told to read a file that is not there; stale — a
+  # path it cites gone — they would be sent to one. Both are the environment,
+  # answered before a token is spent, the way a missing project.json is.
+  local guide_missing
+  if [ ! -f "$(aif_guide_path "$root")" ]; then
+    aif_err "no $AIF_GUIDE_FILE — the plan and tests stations read it. Write it from the repository first: aif project guide"
+    exit 3
+  fi
+  guide_missing="$(aif_guide_missing_paths "$root")"
+  if [ -n "$guide_missing" ]; then
+    aif_err "$AIF_GUIDE_FILE names paths that no longer exist — the stations would be sent to them:"
+    printf '%s\n' "$guide_missing" | sed 's/^/  - /' >&2
+    aif_err "aif project guide brings its generated block up to date; what you wrote by hand is yours to fix. Nothing was spent."
+    exit 3
+  fi
+
   aif_profile_load "$profile"
   # shellcheck source=lib/runner_claude.sh
   . "$AIF_ROOT/lib/runner_claude.sh"
@@ -499,11 +517,47 @@ $complaint"
   err="$(mktemp "${TMPDIR:-/tmp}/aif-err-XXXXXX")"
   aif_meta_body "$wt/.claude/agents/$agent.md" >"$sys"
 
+  # The knowledge layer, after the station's own instructions: the runner
+  # fragment the set ships for this project's test runner, then the project's
+  # own guide (docs/REBUILD-4.md §6). Appended rather than named for the
+  # station to go and read — a 60-turn station handed a file name reads it or
+  # does not; handed the text, it has read it. The plan and tests stations
+  # only: the implementer fills a skeleton and runs the suite with its own
+  # Bash, and the seams it needs are in the plan. Stack knowledge is data the
+  # pipeline supplies, not something a station is expected to carry.
+  local knows="" kind frag
+  case "$station" in
+    plan | tests)
+      kind="$(aif_project_kind "$project")"
+      frag="$(aif_stack_fragment "$wt" "$kind")"
+      {
+        printf '\n\n---\n\n'
+        if [ -n "$frag" ]; then
+          cat "$frag"
+          knows=" · stack $kind"
+        elif [ -z "$kind" ]; then
+          printf '# The stack\n\nNo runner fragment: .aif/project.json records no test.kind, and the test command names neither jest nor pytest. Work from the rules above and the project'"'"'s guide below.\n'
+          _aif_work_say "station" "no runner fragment — project.json records no test.kind; $station works from its general rules"
+        else
+          printf '# The stack\n\nNo runner fragment ships for "%s" (%s/%s.md is not installed). Work from the rules above and the project'"'"'s guide below.\n' "$kind" "$AIF_STACKS_DIR" "$kind"
+          _aif_work_say "station" "no runner fragment for '$kind' — $station works from its general rules"
+        fi
+        printf '\n\n---\n\n'
+        if [ -f "$(aif_guide_path "$wt")" ]; then
+          cat "$(aif_guide_path "$wt")"
+          knows="$knows + guide"
+        else
+          printf '# This project'"'"'s guide\n\nThere is none (%s is missing from this checkout). Read the existing tests, fixtures and doubles yourself before writing.\n' "$AIF_GUIDE_FILE"
+        fi
+      } >>"$sys"
+      ;;
+  esac
+
   # The guard hook reads this: a station may write only what its station owns
   # (sets/claude/hooks/guard.sh).
   export AIF_STATION="$station"
 
-  _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns"
+  _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns$knows"
   # THIS aif first on the station's PATH: `aif _verify` inside the tests
   # station must reach the aif that dispatched it, not whatever Homebrew
   # installed beside it.
@@ -1185,6 +1239,15 @@ aif_cmd_work() {
     wt="$(_aif_work_worktree "$root" "$ticket")"
     [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
     _aif_work_ready_worktree "$root" "$wt" "$ticket" || exit 3
+    # The stations read the WORKTREE's copy of the guide, and a worktree is cut
+    # from HEAD: a guide written in the developer's checkout and never
+    # committed is not here. Preflight saw the developer's copy; this is the
+    # one the stations would be told to read.
+    if [ ! -f "$(aif_guide_path "$wt")" ]; then
+      aif_err "$AIF_GUIDE_FILE is not on branch aif/$ticket — it is uncommitted in your checkout, and the stations run in ${wt#"$root"/}, cut from HEAD. Nothing was spent."
+      aif_err "Commit it (git add $AIF_GUIDE_FILE && git commit) and run again; a worktree cut before it existed is remade with: aif work $ticket --clean, then git branch -D aif/$ticket if the branch holds nothing yet"
+      exit 3
+    fi
   else
     wt="$root"
   fi

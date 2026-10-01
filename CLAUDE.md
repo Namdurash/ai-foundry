@@ -44,6 +44,10 @@ make release V=0.5.1
   offline; `check` drives the whole worker with a fake station.
 - **Gates run without `aif`.** Anything under `sets/*/gates/` must work in CI
   from a fresh checkout — it may not source `lib/`.
+- **A runner is two files.** `sets/claude/project.templates/<r>.json` and
+  `sets/claude/stacks/<r>.md` ship together — the fragment is what the worker
+  appends to the plan and tests stations for a project of that `test.kind` —
+  and `scripts/check-set.sh` fails on one without the other.
 - **`docs/` is gitignored** except the defect logs, tracked deliberately, and
   `docs/CYCLE.md` + `docs/CYCLE.html`, which `make cycle` generates from the code
   — never edit them by hand; `make check` fails while they are stale.

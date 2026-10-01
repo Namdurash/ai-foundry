@@ -222,6 +222,42 @@ g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.
 g "plain session writes a plan"            '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow ""
 g "plain session edits a gate"             '{"tool_input":{"file_path":".aif/gates/green.sh"}}' allow ""
 
+printf '\nevery runner template has its stack fragment, and the other way round\n'
+# A runner the set knows is two files: project.templates/<r>.json, which
+# `aif project init` copies, and stacks/<r>.md, which the worker appends to
+# the plan and tests stations' prompts for a project of that kind — the prose
+# twin of the template's failure_classes (docs/REBUILD-4.md §6). One without
+# the other is a runner whose stations work from general rules while the
+# template promises otherwise, or a fragment nothing ever selects.
+TEMPLATES="$ROOT/sets/claude/project.templates"
+STACKS="$ROOT/sets/claude/stacks"
+for t in "$TEMPLATES"/*.json; do
+  [ -f "$t" ] || continue
+  r="$(basename "$t" .json)"
+  if [ -f "$STACKS/$r.md" ]; then
+    ok "$r: template and fragment"
+  else
+    bad "$r: project.templates/$r.json has no stacks/$r.md — its stations would work from general rules"
+  fi
+  kind="$(jq -r '.test.kind // ""' "$t")"
+  [ "$kind" = "$r" ] ||
+    bad "$r: the template records test.kind \"$kind\" — the fragment is chosen by that field, and it must name the template"
+done
+for s in "$STACKS"/*.md; do
+  [ -f "$s" ] || continue
+  r="$(basename "$s" .md)"
+  [ -f "$TEMPLATES/$r.json" ] ||
+    bad "$r: stacks/$r.md has no project.templates/$r.json — nothing would ever select it"
+  # The two facts every fragment is appended to carry: the marker a skeleton
+  # throws, as the gates spell it, and the tests station's one command.
+  grep -qF 'aif: not implemented' "$s" ||
+    bad "$r: stacks/$r.md never names the marker 'aif: not implemented'"
+  grep -qF 'aif _verify' "$s" ||
+    bad "$r: stacks/$r.md never names the tests station's command, aif _verify"
+  [ "$(head -1 "$s" | cut -c1-2)" = "# " ] ||
+    bad "$r: stacks/$r.md does not open with a title — it is appended after a station's instructions and has to announce itself"
+done
+
 printf '\nthe junit parser reads what pytest writes\n'
 # junit.py turns a report into per-test rows and verify-red matches each row's
 # `file` against the test files the plan declared. pytest writes @file only

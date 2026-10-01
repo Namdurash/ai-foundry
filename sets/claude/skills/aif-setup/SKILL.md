@@ -82,6 +82,33 @@ Show the table as it is — one line per role, ✓ / ✗ / ? — before doing an
   the suite collected nothing — a project with no tests yet cannot be worked; say so).
 - Fix, then `aif doctor --probe` again.
 
+**`test-guide`** — the worker needs it. `.aif/guide/tests.md` is this project's guide
+to its own tests, and the worker appends it to the plan and tests stations' prompts;
+`doctor` says which of three things is wrong, and each has one fix:
+
+- *no guide* → `aif project guide`. It writes the file from what the repository
+  declares — the runner's configuration, where the tests, fixtures, doubles and
+  factories live, what the tests import most, which tests to read first — and leaves
+  one section for a human: **How this project mocks its boundaries**. That section is
+  the part worth your turns. Read the tests the guide names under *Tests to read
+  first* and the files under *Fixtures, doubles, factories, setup*, and write it from
+  what you read, not from memory: one line per boundary the tests do not cross for
+  real (the database, the clock, HTTP, the filesystem, a queue, a device) — the
+  double this project uses for it, and where it lives, as a path in backticks.
+  Replace the `_Not written yet._` paragraph with those lines; touch nothing between
+  the `<!-- aif:guide:begin` and `<!-- aif:guide:end -->` markers. Show the user the
+  section and change it as they say; a boundary you could not find a double for is
+  written as such ("no double: the tests hit the real X"), not invented.
+- *paths that no longer exist* → `aif project guide` regenerates the block; a stale
+  path in the human's section you fix by hand, with the user.
+- *not committed* → ask, then `git add .aif/guide/tests.md && git commit` — the
+  stations run in a checkout cut from HEAD and read that copy.
+
+Then `aif doctor --json` again. The `stack` line under *Project* is not a capability:
+a runner aif ships no fragment for leaves the stations on their general rules, and
+you say so rather than fix it; `test.kind` missing from `.aif/project.json` while the
+command plainly runs jest or pytest is one line to add, with the user's yes.
+
 **`claude`** — a session to type a skill into. `brew install --cask claude-code` on
 macOS. If this one is ✗, the user cannot even be reading you, so say it and stop.
 

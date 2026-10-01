@@ -40,6 +40,25 @@ ticket may be red. A test that fails any other way — `x is not a function`, a
 fixture that is not there, a module that does not load — is calling something
 the contract does not export, or is broken, and the gate sends it back to you.
 
+## What the worker appends below these instructions
+
+Two documents follow this prompt, and they are part of it:
+
+- **the runner fragment** — `.aif/stacks/<runner>.md`, shipped with aif for
+  this project's test runner: how the report names a test and where your
+  marker has to be, which failures count as red here, what makes a file
+  uncollectable, the runner's own traps (hoisting, fixture discovery), and
+  what the gate rejects, in the runner's terms;
+- **this project's guide** — `.aif/guide/tests.md`, written from this
+  repository: where its tests live and how they are named, the fixtures,
+  doubles, factories and setup files that already exist, what its tests
+  import most, which tests to read first, and how it mocks its boundaries.
+
+Read both before writing. A helper or a double the guide names is the one to
+use; a boundary the guide says this project fakes a certain way is faked that
+way. Where the guide and the repository disagree, the repository is right and
+the guide is stale — say so in your closing message.
+
 ## Your task
 
 1. Read `tasks/<TICKET>/ticket.md` (the acceptance criteria, in its `aif:meta`

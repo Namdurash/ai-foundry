@@ -66,6 +66,19 @@ _aif_set_files() {
     done
   fi
 
+  # The runner fragments — what a station is told about jest, about pytest —
+  # install beside the gates for the same reason the agents do: a run stays
+  # checkable against the words its stations were given, and the worker reads
+  # the project's copy, not AIF_ROOT's. Every fragment ships, not only the one
+  # for this project's runner: `aif init` runs before `aif project init` knows
+  # which that is, and they are small (lib/project.sh, the knowledge layer).
+  if [ -d "$set_dir/stacks" ]; then
+    find "$set_dir/stacks" -type f -print 2>/dev/null | while IFS= read -r file; do
+      rel="${file#"$set_dir/stacks/"}"
+      printf '%s\t%s\n' "$file" ".aif/stacks/$rel"
+    done
+  fi
+
   # Stations are agents (sets/*/agents/aif-<station>.md) and install with the
   # rest of them, above. They were once a private .aif/stations/ tree; a station
   # the runner cannot see cannot be dispatched as a subagent, and the split had

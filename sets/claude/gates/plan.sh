@@ -309,6 +309,21 @@ files.create names \"$p\", and no skeleton was written there — the plan writes
 files.create names \"$p\", and the skeleton there is empty — it has to carry the exports the tests will import"
   else
     skeletons=$((skeletons + 1))
+    # A skeleton that does not load is a contract nobody can be red against,
+    # and in a project with no compiler bound to `contract` nothing between
+    # here and verify-red would notice: the tests importing it would fail to
+    # load, the reporter would leave them out, and the complaint — "collected
+    # no test from" — would reach the tests station, which may not edit this
+    # file. The relative imports are the part of loading this gate can settle
+    # by itself, as verify-red does for the test files (docs/REBUILD-4.md §2.1:
+    # for an untyped stack, an import of each skeleton).
+    while IFS= read -r spec_unres; do
+      [ -n "$spec_unres" ] || continue
+      fs="$fs
+the skeleton $p imports '$spec_unres', which resolves to no file — a skeleton that does not load makes every test of it uncollectable, and that complaint would reach the tests station, which may not touch it"
+    done <<EOF2
+$(aif_g_imports_unresolved "$root" "$p")
+EOF2
   fi
 done <<EOF
 $(printf '%s' "$meta" | jq -r '.files.create[]? // empty')

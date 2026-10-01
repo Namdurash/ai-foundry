@@ -95,6 +95,26 @@ _aif_doctor_project() {
       printf '  %s %-14s %s\n' "$(aif_ok)" "checks" \
         "$(jq -r '[.checks[] | .name + " [" + (.phase | join(",")) + "]"] | join(", ")' "$config")"
     fi
+
+    # The knowledge layer (docs/REBUILD-4.md §6). The runner fragment is a
+    # line, not a capability: a runner the set has no fragment for is the one
+    # honest limit of the stations' self-sufficiency, and they work from their
+    # general rules there — the worker does not refuse. The guide is the
+    # worker's `test-guide` capability, probed below with the others.
+    local kind recorded
+    kind="$(aif_project_kind "$config")"
+    recorded="$(aif_project_kind_recorded "$config")"
+    if [ -z "$kind" ]; then
+      printf '  %s %-14s %sno test.kind in project.json, and the test command names neither jest nor pytest — the stations get no runner fragment and work from their general rules%s\n' \
+        "$(aif_no)" "stack" "$AIF_C_DIM" "$AIF_C_RESET"
+    elif [ -n "$(aif_stack_fragment "$root" "$kind")" ]; then
+      printf '  %s %-14s %s — %s/%s.md goes to the plan and tests stations%s\n' \
+        "$(aif_ok)" "stack" "$kind" "$AIF_STACKS_DIR" "$kind" \
+        "$([ -n "$recorded" ] || printf ' %s(inferred from test.command; record it as test.kind)%s' "$AIF_C_YELLOW" "$AIF_C_RESET")"
+    else
+      printf '  %s %-14s %sno fragment for %s at %s/%s.md — the stations work from their general rules (aif init installs the ones the set ships)%s\n' \
+        "$(aif_no)" "stack" "$AIF_C_DIM" "$kind" "$AIF_STACKS_DIR" "$kind" "$AIF_C_RESET"
+    fi
   fi
 
   # Every agent a skill dispatches to must exist, or the fork silently falls
@@ -439,17 +459,51 @@ _aif_doctor_caps() {
     fi
   fi
 
+  # test-guide — the project's guide to its own tests, which the worker
+  # appends to the plan and tests stations' prompts (docs/REBUILD-4.md §6).
+  # Three things, and all three are read rather than assumed: it exists, it is
+  # in HEAD (the worker's checkout is cut from there — a guide written and
+  # never committed exists for the developer and nobody else), and every path
+  # it cites still exists. A file check alone would pass a guide that sends
+  # the stations to a helper renamed last week. The human's section being
+  # unwritten is said, not failed: nothing mechanical can write it.
+  local tg_ok tg_d tg_missing tg_n
+  if [ -z "$root" ]; then
+    tg_ok=false
+    tg_d="not in a project"
+  elif [ ! -f "$(aif_guide_path "$root")" ]; then
+    tg_ok=false
+    tg_d="no $AIF_GUIDE_FILE — the plan and tests stations read it; write it from the repository: aif project guide"
+  else
+    tg_missing="$(aif_guide_missing_paths "$root")"
+    tg_n="$(aif_guide_cited_paths "$(aif_guide_path "$root")" | grep -c . || true)"
+    if [ -n "$tg_missing" ]; then
+      tg_ok=false
+      tg_d="$AIF_GUIDE_FILE names paths that no longer exist: $(printf '%s\n' "$tg_missing" | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g') — aif project guide brings its block up to date; what you wrote by hand is yours to fix"
+    elif ! aif_guide_committed "$root"; then
+      tg_ok=false
+      tg_d="$AIF_GUIDE_FILE is not committed — the stations run in a checkout cut from HEAD, which does not have it: git add $AIF_GUIDE_FILE && git commit"
+    else
+      tg_ok=true
+      tg_d="$AIF_GUIDE_FILE — ${tg_n:-0} path(s) cited, all exist"
+      aif_guide_unwritten "$root" &&
+        tg_d="$tg_d; its boundaries section is not written yet (/aif-setup writes it with you, or edit the file)"
+    fi
+  fi
+
   jq -n --argjson c "$c_ok" --arg cd "$c_d" --argjson h "$h_ok" --arg hd "$h_d" \
     --argjson g "$g_ok" --arg gd "$g_d" \
     --argjson t "$t_ok" --arg td "$t_d" --argjson b "$b_ok" --arg bd "$b_d" \
-    --argjson p "$p_ok" --arg pd "$p_d" --argjson s "$s_ok" --arg sd "$s_d" '
+    --argjson p "$p_ok" --arg pd "$p_d" --argjson s "$s_ok" --arg sd "$s_d" \
+    --argjson tg "$tg_ok" --arg tgd "$tg_d" '
     { "claude":          { ok: $c, detail: $cd },
       "claude-headless": { ok: $h, detail: $hd },
       "git-worktree":   { ok: $g, detail: $gd },
       "test-toolchain": { ok: $t, detail: $td },
       "board":          { ok: $b, detail: $bd },
       "python3":        { ok: $p, detail: $pd },
-      "station-guard":  { ok: $s, detail: $sd } }'
+      "station-guard":  { ok: $s, detail: $sd },
+      "test-guide":     { ok: $tg, detail: $tgd } }'
 }
 
 # _aif_doctor_roles <root|""> <caps-json> — per role: ready, and what is
@@ -575,6 +629,14 @@ aif_doctor() {
   fi
   if [ ! -f "$(aif_project_config "$root")" ]; then
     printf 'next: %saif project init%s\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 1
+  fi
+  # The guide comes right after project.json in the order of setting up, and
+  # before the probe: the worker refuses to run without it, and the probe's
+  # cost is better spent once the refusal is out of the way.
+  if [ ! -f "$(aif_guide_path "$root")" ]; then
+    printf 'next: %saif project guide%s — writes %s from what the repository declares; the plan and tests stations read it\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_GUIDE_FILE"
     return 1
   fi
   if [ "$probe_rc" -ne 0 ]; then

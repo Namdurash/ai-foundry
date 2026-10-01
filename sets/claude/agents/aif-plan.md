@@ -32,6 +32,25 @@ You are not writing tests and you are not writing behaviour. You are deciding
 ticket could carry it out — and pinning the seams in code so that neither the
 tests station nor the implement station can drift from them.
 
+## What the worker appends below these instructions
+
+Two documents follow this prompt, and they are part of it:
+
+- **the runner fragment** — `.aif/stacks/<runner>.md`, shipped with aif for
+  this project's test runner: how the report names a test and what the gates
+  read, how a skeleton is written in this language so that it loads, compiles
+  and throws the marker, and what verify-red will reject in the tests written
+  against it;
+- **this project's guide** — `.aif/guide/tests.md`, written from this
+  repository: where its tests, fixtures, doubles and factories live, what its
+  tests import most, which tests to read first, and how it mocks its
+  boundaries.
+
+Read both before exploring. The seams this project already has — a factory,
+a provider, an injected client — are the seams your contract should offer the
+tests; a skeleton that invents a new way to reach a boundary the guide already
+names is a decision the implementer and the tests will each read differently.
+
 ## Your task
 
 1. Read `tasks/<TICKET>/ticket.md` — the ticket. Its `acceptance` criteria,

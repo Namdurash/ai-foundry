@@ -254,6 +254,10 @@ silent: you edit the clone, type `aif`, and run the tap's older copy.
 aif init              # install the set, pick a profile
 aif project init      # detect the runner, and ask what "done" means here —
                       # then REVIEW .aif/project.json, especially test.command
+aif project guide     # write .aif/guide/tests.md from the repository — where the
+                      # tests, fixtures, doubles and factories live, what the
+                      # tests import — for the stations to read; finish its one
+                      # human section (or let /aif-setup), then COMMIT it
 aif doctor --probe    # which ROLES can run here — analyst, project manager,
                       # worker — and what each is missing. --probe is the only
                       # form that ASKS: it runs your test command once and
@@ -514,6 +518,7 @@ the gates rather than remembered.
 | `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
 | `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it |
+| `aif project guide` | write `.aif/guide/tests.md` from what the repository declares, for the plan and tests stations; regenerates its block in place, keeps what you wrote |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
 | `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, or two in a row that did not build |
 | `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
@@ -568,6 +573,46 @@ code a compiler can check, rather than guessed twice.
 because it describes the *work* — a human's judgement, made with the analyst —
 while a tier describes an *engine*. `low` and `medium` both map to `routine`, `high` to
 `careful`.
+
+### What a station knows about the stack
+
+Whether `jest.mock` factories are hoisted, what jest-junit does with a file that
+fails to load, how pytest names a node, how a skeleton is written so that it
+compiles — none of that should be rediscovered per ticket inside a 60-turn
+budget, and a model's memory of it differs from run to run. So stack knowledge
+is **data the pipeline supplies**, appended by the worker to the plan and tests
+stations' prompts after their own instructions, in two layers
+(`docs/REBUILD-4.md` §6):
+
+- **The runner fragment**, shipped with the set — `sets/claude/stacks/jest.md`,
+  `pytest.md`, installed to `.aif/stacks/` — chosen by `test.kind` in
+  `.aif/project.json` (`aif project init` records it; an older file is read by
+  its test command). What red looks like under that runner and how the report
+  names a test; a file that fails to load leaves *no* row; the two reasons a new
+  test may be red; how to write the skeleton in that language; a test that
+  asserts a throw passes against a skeleton that throws, so assert the specific
+  error; mocks at the boundaries, never of the module under test; no snapshots.
+  One fragment per template, and `scripts/check-set.sh` holds the pair together.
+  A runner the set has no fragment for leaves the stations on their general
+  rules — `aif doctor` says so on its `stack` line, and the run says so too.
+- **The project's guide**, `.aif/guide/tests.md`, written by `aif project guide`
+  from what *this* repository declares: the runner's configuration lines, the
+  setup files it loads, the manual mocks, factories and fixtures (a `conftest.py`
+  by the fixtures it defines), where the tests live and how they are named, the
+  modules and packages the tests import most, and the shortest test using each
+  of the top helpers. One section is left for a human — **how this project mocks
+  its boundaries** — because nothing mechanical can know why the tests fake the
+  clock the way they do; `/aif-setup` writes it with you from the tests the
+  guide names. The generated block is regenerated in place and everything
+  outside it is kept. Every path in backticks is checked: a path that no longer
+  exists is a `test-guide` ✗ in `aif doctor` and a refused `aif work` naming it,
+  because a guide pointing at a renamed helper sends a station to a file that is
+  not there. Commit it — the stations run in a worktree cut from HEAD and read
+  that copy, and a guide never committed is refused too.
+
+The project's own `CLAUDE.md` reaches the stations already (`claude -p` runs
+without `--bare`). Nothing aif-specific is needed for a stack aif knows nothing
+about: write what the stations should know there.
 
 ### Gates and exit codes
 

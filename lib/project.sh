@@ -259,3 +259,126 @@ aif_project_validate() {
     ] | .[]
   ' "$file" 2>/dev/null
 }
+
+# --- the knowledge layer -----------------------------------------------------
+# What a station knows about the stack is DATA the pipeline supplies, not
+# knowledge the model is expected to carry from run to run (docs/REBUILD-4.md
+# §6, principle P7). Two files, both appended by the worker to the plan and
+# tests stations' prompts, after the station's own instructions:
+#
+#   .aif/stacks/<kind>.md  — the runner fragment. Ships with the set, one per
+#                            runner template, installed by `aif init`: what red
+#                            looks like under this runner, how the report names
+#                            a test, how a skeleton is written in this
+#                            language, what the gate rejects — in the runner's
+#                            own terms. Chosen by test.kind.
+#   .aif/guide/tests.md    — this project's guide. Written by `aif project
+#                            guide` from what the repository declares (the
+#                            runner's configuration, where the tests and the
+#                            doubles live, what the tests import most), and
+#                            finished by the human: how this project mocks its
+#                            boundaries. Committed, so the worker's checkouts
+#                            carry it.
+#
+# The project's own CLAUDE.md reaches the stations already — `claude -p` runs
+# without --bare — and nothing here replaces it.
+#
+# `doctor` reports both: the fragment as a line (a runner aif has no fragment
+# for is the one honest limit of the stations' self-sufficiency, and they work
+# from their general rules there), the guide as the worker's `test-guide`
+# capability — it exists, it is committed, and every path it cites still
+# exists. A guide naming a helper that was renamed would send the stations to
+# a file that is not there.
+# shellcheck disable=SC2034  # read by the modules that source this file
+AIF_STACKS_DIR=".aif/stacks"
+AIF_GUIDE_FILE=".aif/guide/tests.md"
+# The generated block's markers. Everything outside them is the human's, and
+# `aif project guide` leaves it alone.
+# shellcheck disable=SC2034
+AIF_GUIDE_BEGIN="<!-- aif:guide:begin"
+# shellcheck disable=SC2034
+AIF_GUIDE_END="<!-- aif:guide:end -->"
+# The one sentence the generator leaves where the human's section goes, and
+# that `doctor` looks for to say the section is still unwritten.
+# shellcheck disable=SC2034
+AIF_GUIDE_PLACEHOLDER="_Not written yet."
+
+aif_guide_path() {
+  printf '%s/%s' "$1" "$AIF_GUIDE_FILE"
+}
+
+# aif_project_kind <project.json> — the runner: test.kind as `aif project init`
+# recorded it, or, for a project.json from before the field, inferred from the
+# command it runs (a command that runs jest is a jest project). Empty when
+# neither says.
+aif_project_kind() {
+  local f="$1" k cmd
+  k="$(jq -r '.test.kind // empty' "$f" 2>/dev/null)"
+  if [ -z "$k" ]; then
+    cmd="$(jq -r '.test.command // empty' "$f" 2>/dev/null)"
+    case "$cmd" in
+      *pytest*) k=pytest ;;
+      *jest*) k=jest ;;
+    esac
+  fi
+  printf '%s' "$k"
+}
+
+# aif_project_kind_recorded <project.json> — test.kind alone, or empty.
+aif_project_kind_recorded() {
+  jq -r '.test.kind // empty' "$1" 2>/dev/null
+}
+
+# aif_stack_fragment <root> <kind> — the installed fragment for this runner, or
+# nothing.
+aif_stack_fragment() {
+  local f="$1/$AIF_STACKS_DIR/$2.md"
+  [ -n "$2" ] && [ -f "$f" ] || return 0
+  printf '%s' "$f"
+}
+
+# aif_guide_cited_paths <guide> — every path the guide cites, one per line.
+#
+# A path is a backticked token that looks like one: no spaces or shell/glob
+# characters, not an option, not a URL, not absolute, and either holding a
+# slash or ending in a source or config extension. `jest.mock` has an
+# extension nobody checks, `@scope/pkg` is a package, `<rootDir>/x` a pattern
+# — none is a path. The generator writes packages without backticks for the
+# same reason. .aif/tmp/ is scratch the suite writes and is never asserted.
+# shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+aif_guide_cited_paths() {
+  grep -o '`[^`]*`' "$1" 2>/dev/null | tr -d '`' | awk '
+    {
+      p = $0
+      if (p ~ /[[:space:]*?\[\]{}<>$|;&()=,'"'"'"]/) next
+      if (p ~ /^[-@~\/]/) next
+      if (p ~ /:\/\//) next
+      if (p ~ /^\.aif\/tmp\//) next
+      sub(/\/+$/, "", p)
+      if (p == "" || p == "." || p == "..") next
+      if (p ~ /\// || p ~ /\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|mts|cts|json|toml|ini|cfg|yaml|yml|md|txt|rb|go|rs|sh)$/) print p
+    }' | sort -u || true
+}
+
+# aif_guide_missing_paths <root> — the cited paths that no longer exist, one
+# per line. Empty for a guide that is current.
+aif_guide_missing_paths() {
+  local root="$1" p
+  aif_guide_cited_paths "$(aif_guide_path "$root")" | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -e "$root/$p" ] || printf '%s\n' "$p"
+  done
+}
+
+# aif_guide_committed <root> — rc 0 when the guide is in HEAD, which is where
+# a worker's checkout is cut from. A guide written and never committed exists
+# for the developer and for nobody else.
+aif_guide_committed() {
+  git -C "$1" cat-file -e "HEAD:$AIF_GUIDE_FILE" 2>/dev/null
+}
+
+# aif_guide_unwritten <root> — rc 0 when the human's section still holds the
+# generator's placeholder.
+aif_guide_unwritten() {
+  grep -qF -- "$AIF_GUIDE_PLACEHOLDER" "$(aif_guide_path "$1")" 2>/dev/null
+}

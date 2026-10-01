@@ -64,6 +64,11 @@ git add -A; git commit -qm init >/dev/null
 "$AIF" init anthropic >/dev/null
 "$AIF" project init pytest --no-checks >/dev/null
 note "installed the claude set and detected the pytest runner"
+"$AIF" project guide >/dev/null
+git add -A; git commit -qm "aif init" >/dev/null
+note "and wrote .aif/guide/tests.md from the repository — the project's guide to its"
+note "own tests, which the plan and tests stations are handed; committed, since the"
+note "worker reads the branch's copy and refuses to run without one"
 
 # Upgrading a project is a re-init, and a re-init takes a different path through
 # every file aif shares with the user: the marked block is rewritten in place

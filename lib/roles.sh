@@ -31,8 +31,14 @@
 # session has expired, the analyst is ready and the worker is not.
 
 # aif_roles_builtin — "role<TAB>requires…" for roles that are not skills.
+#
+# test-guide is the worker's because its stations are handed the project's
+# guide as part of their instructions (docs/REBUILD-4.md §6): a worker without
+# one dispatches stations that were told to read a file that is not there,
+# and `aif work` refuses before spending anything, the way it refuses without
+# a project.json.
 aif_roles_builtin() {
-  printf 'worker\tclaude-headless git-worktree test-toolchain board\n'
+  printf 'worker\tclaude-headless git-worktree test-toolchain board test-guide\n'
 }
 
 # aif_role_requires_of_skill <SKILL.md> — the `requires:` list, space-separated.

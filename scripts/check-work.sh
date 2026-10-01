@@ -54,6 +54,16 @@
 #      process group, an INT or a TERM to its pid, an error on the way —
 #      undoes the merge, leaves the card in Review and names an install it
 #      had started; a red land's own exit is a verdict, not a stop
+#  35  aif project guide writes the project's guide to its own tests from
+#      what the repository declares — the runner's configuration, the setup
+#      files, the manual mocks and factories, the fixtures a conftest
+#      defines, what the tests import most, a test to read first — keeps what
+#      the human wrote outside its block when it regenerates, and goes stale
+#      honestly: a cited path gone is a doctor ✗ and a refused run, naming it
+#  36  the worker appends the runner fragment and the guide to the plan and
+#      tests stations' prompts and not to the implementer's; says so when a
+#      project records no runner or one the set has no fragment for, and
+#      refuses a worktree whose branch does not carry the guide
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -192,6 +202,14 @@ SUITE
   jq '.test.command = "bash .aif/suite.sh"
       | .test.roots = ["tests"]
       | .test.report.path = ".aif/tmp/report.xml"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+  # The project's guide to its own tests, which the worker refuses to run
+  # without and appends to the plan and tests stations' prompts. Written from
+  # the repository, offline, and committed with the rest — the stations read
+  # the branch's copy.
+  "$AIF" project guide >/dev/null 2>&1 || {
+    printf 'check-work: aif project guide failed — cannot continue\n'
+    exit 1
+  }
   git add -A && git commit -qm "aif init" >/dev/null
 }
 
@@ -224,6 +242,9 @@ count_file="$wt/.aif/tmp/fake-$station.count"
 mkdir -p "$wt/.aif/tmp"
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); printf '%s' "$n" >"$count_file"
 printf '%s' "$prompt" >"$wt/.aif/tmp/fake-prompt-$station-$n"
+# The system prompt too — the station's instructions, and whatever the worker
+# appended after them (the runner fragment, the project's guide).
+cp "$4" "$wt/.aif/tmp/fake-sys-$station-$n" 2>/dev/null
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
@@ -2070,6 +2091,241 @@ eq "a contract phase validates" "$("$AIF" project check >/dev/null 2>&1; echo $?
 rm -f .aif/project.json
 "$AIF" project init --no-checks >/dev/null 2>&1
 eq "--no-checks writes none, as it says" "$(jq '.checks | length' .aif/project.json)" "0"
+
+# ====== 35. aif project guide: the project's guide to its own tests ===========
+#
+# Scenarios 35 and 36 are one function: the guide is markdown, every
+# assertion greps a backticked path out of it, and one directive covers them
+# all here where a directive per line would bury the assertions.
+# shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+knowledge_layer_scenarios() {
+#
+# Written from what the repository declares, never from what a model remembers
+# (docs/REBUILD-4.md §6): the runner's configuration lines, the setup files it
+# names, the manual mocks and the factories, the fixtures a conftest defines,
+# the modules and packages the tests import most, a test to read first for
+# each. The block between the markers is regenerated in place; the section
+# the human writes is kept. Every path in backticks is checked, and a guide
+# naming a path that is gone is a ✗ in doctor and a refused run.
+printf '\n35. aif project guide writes the guide from the repository, keeps what the human wrote, and goes stale honestly\n'
+mkdir -p "$SANDBOX/p35" && cd "$SANDBOX/p35" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+mkdir -p src/__mocks__ test/helpers test/factories test/api
+printf '{ "name": "p35", "devDependencies": { "jest": "29", "typescript": "5", "supertest": "6", "nock": "13" } }\n' >package.json
+printf '{ "compilerOptions": { "strict": true, "noUnusedParameters": true } }\n' >tsconfig.json
+cat >jest.config.js <<'J'
+module.exports = {
+  testMatch: ['**/*.test.ts', '**/*.spec.ts'],
+  setupFilesAfterEach: ['<rootDir>/test/setup.ts'],
+  moduleNameMapper: { '\\.svg$': '<rootDir>/test/svgMock.js' },
+};
+J
+printf 'export {};\n' >test/setup.ts
+printf 'module.exports = {};\n' >test/svgMock.js
+printf 'export const axios = {};\n' >src/__mocks__/axios.ts
+printf 'export const db = () => ({});\n' >test/helpers/db.ts
+printf 'export const makeUser = () => ({ id: 1 });\n' >test/factories/user.ts
+printf 'export const users = () => [];\n' >src/users.ts
+cat >src/users.test.ts <<'T'
+import { users } from './users';
+import { db } from '../test/helpers/db';
+import request from 'supertest';
+it('lists', () => { expect(users()).toEqual([]); });
+T
+cat >test/api/users.test.ts <<'T'
+import { db } from '../helpers/db';
+import { makeUser } from '../factories/user';
+import request from 'supertest';
+it('x', () => {});
+T
+cat >test/api/orders.spec.ts <<'T'
+import { db } from '../helpers/db';
+import nock from 'nock';
+it('y', () => {});
+T
+git add -A && git commit -qm init >/dev/null
+"$AIF" init anthropic >/dev/null 2>&1
+"$AIF" project init jest --no-checks >/dev/null 2>&1
+tmp="$(mktemp)"
+jq '.test.roots = ["test"]' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+G=.aif/guide/tests.md
+rc=0
+"$AIF" project guide >"$OUT/guide35.out" 2>&1 || rc=$?
+eq "written, and every path it cites exists" "$rc,$(test -f $G && echo yes),$(grep -c 'all exist' "$OUT/guide35.out")" "0,yes,1"
+eq "the configuration lines that select the tests, with their line numbers" "$(grep -c "^2:  testMatch: \['\*\*/\*.test.ts', '\*\*/\*.spec.ts'\]," $G)" "1"
+eq "the setup file the runner loads, read out of the config" "$(grep -c '^- `test/setup.ts` — a setup file the runner loads' $G)" "1"
+eq "the manual mocks, by the module each one mocks" "$(grep -c '^- `src/__mocks__/` — jest manual mocks for: axios$' $G)" "1"
+eq "the factories and the helpers directories" "$(grep -c '^- `test/factories/` — 1 file(s)$' $G),$(grep -c '^- `test/helpers/` — 1 file(s)$' $G)" "1,1"
+eq "the roots, with the tests under them and the files that are not tests" "$(grep -c '^- `test/` (test.roots) — 2 test file(s), 4 other file(s)' $G)" "1"
+eq "a test beside its source is counted outside the roots, by directory" "$(grep -c '^- 1 test file(s) outside test.roots' $G),$(grep -c '^  - `src/` — 1$' $G)" "1,1"
+eq "the helper the tests import most, counted by distinct test file" "$(grep -c '^- `test/helpers/db.ts` — 3$' $G)" "1"
+eq "the packages, counted the same way and never in backticks" "$(grep -c '^- supertest — 2$' $G),$(grep -c '^- nock — 1$' $G),$(grep -c '`supertest`' $G)" "1,1,0"
+eq "a test to read first, the shortest one using the top helper" "$(grep -c '^- `test/api/orders.spec.ts` — uses `test/helpers/db.ts`$' $G)" "1"
+eq "the tsconfig flags a skeleton has to satisfy" "$(grep -c 'on here: strict, noUnusedParameters' $G),$(grep -c 'a skeleton `void`s each parameter' $G)" "1,1"
+eq "the runner fragment the stations get is named, and installed" "$(grep -c '^- the runner fragment the stations get before this guide: `.aif/stacks/jest.md`$' $G),$(test -f .aif/stacks/jest.md && echo yes)" "1,yes"
+eq "the human's section is left as a placeholder, and the output says what to do next" "$(grep -c '^_Not written yet\.' $G),$(grep -c 'How this project mocks its boundaries' "$OUT/guide35.out")" "1,1"
+
+# The human writes the boundaries section; the repository moves; the guide is
+# regenerated — the block follows the repository, the section stays.
+awk '/^_Not written yet\./ {
+  print "- HTTP: never real — nock in the test; see `test/api/orders.spec.ts`"
+  print "- the database: `test/helpers/db.ts` opens an in-memory one per test"
+  next } { print }' $G >"$G.new" && mv "$G.new" $G
+printf 'export const makeOrder = () => ({});\n' >test/factories/order.ts
+rc=0
+"$AIF" project guide >"$OUT/guide35b.out" 2>&1 || rc=$?
+eq "regenerated: the block follows the repository" "$rc,$(grep -c '^- `test/factories/` — 2 file(s)$' $G),$(grep -c '^regenerated' "$OUT/guide35b.out")" "0,1,1"
+eq "…and what the human wrote outside it is kept, the placeholder gone" "$(grep -c 'opens an in-memory one per test' $G),$(grep -c '^_Not written yet\.' $G)" "1,0"
+eq "…with exactly one pair of markers" "$(grep -c 'aif:guide:begin' $G),$(grep -c 'aif:guide:end' $G)" "1,1"
+git add -A && git commit -qm "the guide" >/dev/null
+eq "doctor: test-guide is ready — committed, every path present" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"].ok')" "true"
+eq "…and the worker requires it" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.roles[] | select(.role == "worker") | .requires | index("test-guide") != null')" "true"
+
+# Stale: a path the guide cites is gone from the repository.
+git rm -q test/helpers/db.ts && git commit -qm "the helper moved" >/dev/null
+eq "doctor: a cited path gone is ✗, and named" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*test/helpers/db.ts')" "1"
+rc=0
+"$AIF" work AIF-35 --no-worktree >"$OUT/run35.out" 2>&1 || rc=$?
+eq "aif work refuses a stale guide — exit 3, nothing spent, the path named" \
+  "$rc,$(grep -c 'test/helpers/db.ts' "$OUT/run35.out"),$(test -d tasks/AIF-35 && echo yes || echo no)" "3,1,no"
+rm -f $G
+rc=0
+"$AIF" work AIF-35 --no-worktree >"$OUT/run35b.out" 2>&1 || rc=$?
+eq "…and refuses without one, naming the command" "$rc,$(grep -c 'aif project guide' "$OUT/run35b.out")" "3,1"
+eq "doctor: no guide is ✗ with the command" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false no .aif/guide/tests.md .*aif project guide')" "1"
+if command -v claude >/dev/null 2>&1; then
+  eq "…and doctor's next step is the command" "$("$AIF" doctor 2>/dev/null | grep -c '^next: .*aif project guide')" "1"
+fi
+
+# A pytest-shaped repository: the ini_options section, the fixtures a conftest
+# defines, imports resolved through pythonpath and through a relative import.
+mkdir -p "$SANDBOX/p35py" && cd "$SANDBOX/p35py" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+mkdir -p src/app tests/api tests/factories
+cat >pyproject.toml <<'P'
+[project]
+name = "p35"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]
+P
+: >src/app/__init__.py
+printf 'def users():\n    return []\n' >src/app/users.py
+cat >tests/conftest.py <<'C'
+import pytest
+
+
+@pytest.fixture
+def db():
+    return {}
+
+
+@pytest.fixture(scope="session")
+def client(db):
+    return db
+C
+printf 'def make_user():\n    return {}\n' >tests/factories/__init__.py
+cat >tests/test_users.py <<'T'
+import responses
+from freezegun import freeze_time
+from app.users import users
+from tests.factories import make_user
+
+
+def test_lists(db):
+    assert users() == []
+T
+cat >tests/api/test_orders.py <<'T'
+import pytest
+from ..factories import make_user
+
+
+def test_x():
+    pass
+T
+git add -A && git commit -qm init >/dev/null
+"$AIF" init anthropic >/dev/null 2>&1
+"$AIF" project init pytest --no-checks >/dev/null 2>&1
+"$AIF" project guide >/dev/null 2>&1
+eq "pytest: the runner as recorded, and the ini_options section shown" "$(grep -c '^- \*\*pytest\*\* (test.kind' $G),$(grep -c '^pythonpath = \["src"\]$' $G)" "1,1"
+eq "pytest: the fixtures a conftest defines, by name" "$(grep -c '^- `tests/conftest.py` — fixtures: db, client$' $G)" "1"
+eq "pytest: an absolute import resolved through pythonpath" "$(grep -c '^- `src/app/users.py` — 1$' $G)" "1"
+eq "pytest: a relative and an absolute import of one module count as one" "$(grep -c '^- `tests/factories/__init__.py` — 2$' $G)" "1"
+eq "pytest: the test-side packages" "$(grep -c '^- responses — 1$' $G),$(grep -c '^- freezegun — 1$' $G),$(grep -c '^- pytest — 1$' $G)" "1,1,1"
+eq "pytest: named as the runner collects them" "$(grep -c '^- named: test_\*.py 2, \*_test.py 0$' $G)" "1"
+eq "pytest: the roots" "$(grep -c '^- `tests/` (test.roots) — 2 test file(s), 2 other file(s)' $G)" "1"
+
+# ====== 36. the knowledge layer reaches the stations that need it =============
+#
+# The runner fragment the set ships for the project's kind, then the guide,
+# appended to the plan and tests stations' system prompts after their own
+# instructions — not to the implementer's. A project that records no runner,
+# or one the set has no fragment for, is told so in the prompt and in the run;
+# a guide the branch does not carry refuses the worktree.
+printf '\n36. the worker appends the runner fragment and the guide to the plan and tests stations\n'
+fresh_project "$SANDBOX/p36"
+ticket_for AIF-36
+git add -A && git commit -qm "ticket 36" >/dev/null
+rc=0
+"$AIF" work AIF-36 --no-worktree >"$OUT/run36.out" 2>&1 || rc=$?
+eq "built" "$rc" "0"
+eq "the plan station got the pytest fragment, then the guide" \
+  "$(grep -c '^# pytest — what the gates see' .aif/tmp/fake-sys-plan-1),$(grep -c 'aif:guide:begin' .aif/tmp/fake-sys-plan-1)" "1,1"
+eq "…after its own instructions, in that order" \
+  "$(awk '/^You are the planning station/ { a = NR } /^# pytest — what the gates see/ { b = NR } /aif:guide:begin/ { c = NR } END { print (a > 0 && b > a && c > b) ? "yes" : "no" }' .aif/tmp/fake-sys-plan-1)" "yes"
+eq "the tests station got both too" \
+  "$(grep -c '^# pytest — what the gates see' .aif/tmp/fake-sys-tests-1),$(grep -c 'aif:guide:begin' .aif/tmp/fake-sys-tests-1)" "1,1"
+eq "the implementer got neither" "$(grep -c 'what the gates see\|aif:guide:begin' .aif/tmp/fake-sys-implement-1)" "0"
+eq "the run said which stack each of the two was handed" "$(grep -c '· stack pytest + guide$' "$OUT/run36.out")" "2"
+eq "the guide in the prompt is the branch's: it names this project's roots" "$(grep -c '^- `tests/` (test.roots)' .aif/tmp/fake-sys-tests-1)" "1"
+
+# No test.kind, and a command that names neither runner: no fragment, said.
+fresh_project "$SANDBOX/p36b"
+tmp="$(mktemp)"
+jq 'del(.test.kind)' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+git add -A && git commit -qm "no kind" >/dev/null
+ticket_for AIF-36
+git add -A && git commit -qm "ticket 36b" >/dev/null
+rc=0
+"$AIF" work AIF-36 --no-worktree >"$OUT/run36b.out" 2>&1 || rc=$?
+eq "no test.kind: built all the same" "$rc" "0"
+eq "…the station told there is no fragment, and handed the guide" \
+  "$(grep -c 'records no test.kind' .aif/tmp/fake-sys-plan-1),$(grep -c 'aif:guide:begin' .aif/tmp/fake-sys-plan-1)" "1,1"
+eq "…and the run said so, for the two stations" "$(grep -c 'no runner fragment — project.json records no test.kind' "$OUT/run36b.out")" "2"
+eq "doctor's stack line says the same" "$("$AIF" doctor 2>/dev/null | grep -c 'stack .*no test.kind')" "1"
+
+# A runner the set ships no fragment for.
+fresh_project "$SANDBOX/p36c"
+tmp="$(mktemp)"
+jq '.test.kind = "go"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+git add -A && git commit -qm "go" >/dev/null
+ticket_for AIF-36
+git add -A && git commit -qm "ticket 36c" >/dev/null
+rc=0
+"$AIF" work AIF-36 --no-worktree >"$OUT/run36c.out" 2>&1 || rc=$?
+eq "an unknown runner: built, the station told no fragment ships for it" \
+  "$rc,$(grep -c 'No runner fragment ships for "go"' .aif/tmp/fake-sys-tests-1)" "0,1"
+eq "…and the run said so" "$(grep -c "no runner fragment for 'go'" "$OUT/run36c.out")" "2"
+
+# A guide written and never committed is not on the branch the stations run on.
+fresh_project "$SANDBOX/p36d"
+git rm -q --cached .aif/guide/tests.md && git commit -qm "the guide, uncommitted" >/dev/null
+ticket_for AIF-36
+git add -A tasks && git commit -qm "ticket 36d" >/dev/null
+rc=0
+"$AIF" work AIF-36 >"$OUT/run36d.out" 2>&1 || rc=$?
+eq "a worktree whose branch lacks the guide is refused — exit 3, saying to commit it" \
+  "$rc,$(grep -c 'is not on branch aif/AIF-36' "$OUT/run36d.out"),$(grep -c 'git add .aif/guide/tests.md' "$OUT/run36d.out")" "3,1,1"
+eq "the card never moved" "$(test -f .aif/board/AIF-36.json && jq -r .column .aif/board/AIF-36.json || echo none)" "none"
+eq "doctor said it first" "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*not committed')" "1"
+}
+knowledge_layer_scenarios
 
 # ----------------------------------------------------------------------------
 printf '\n'

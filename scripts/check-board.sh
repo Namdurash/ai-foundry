@@ -95,6 +95,12 @@ SUITE
   tmp="$(mktemp)"
   jq '.test.command = "bash .aif/suite.sh" | .test.roots = ["tests"] | .test.report.path = ".aif/tmp/report.xml"' \
     .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+  # The worker requires the project's guide to its tests (test-guide), and
+  # reads it from the branch: written here, committed with the rest.
+  "$AIF" project guide >/dev/null 2>&1 || {
+    printf 'check-board: aif project guide failed — cannot continue\n'
+    exit 1
+  }
   git add -A && git commit -qm "aif init" >/dev/null
 }
 

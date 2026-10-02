@@ -79,7 +79,17 @@ _aif_doctor_project() {
       printf '  %s %-14s invalid:\n' "$(aif_no)" "project.json"
       printf '%s\n' "$problems" | sed 's/^/       /'
     else
-      printf '  %s %-14s valid\n' "$(aif_ok)" "project.json"
+      # Valid and current are different answers. A project.json from an older
+      # template validates and still tells verify-red that a TypeError is a
+      # legitimate red; the gates read it as it is (docs/DEFECTS-8.md #1).
+      local drift_n
+      drift_n="$(aif_project_drift "$config" | grep -c . || true)"
+      if [ "${drift_n:-0}" -gt 0 ]; then
+        printf '  %s %-14s valid, but %sbehind its template — %s thing(s) the gates now read differently (aif project check lists them; aif project upgrade brings them forward)%s\n' \
+          "$(aif_no)" "project.json" "$AIF_C_YELLOW" "$drift_n" "$AIF_C_RESET"
+      else
+        printf '  %s %-14s valid\n' "$(aif_ok)" "project.json"
+      fi
     fi
 
     # The Definition of Done, reported whichever way it went. An empty checks
@@ -301,6 +311,21 @@ aif_doctor_probe() {
   return 0
 }
 
+# _aif_doctor_guard_matcher <root> — the matcher our PreToolUse registration
+# carries in .claude/settings.json, echoed; rc 1 when the guard hook is not
+# registered there at all. Ours is the entry whose every hook runs from
+# .aif/hooks/, the same reading aif init uses to refresh it.
+_aif_doctor_guard_matcher() {
+  local f="$1/.claude/settings.json" m
+  [ -f "$f" ] || return 1
+  m="$(jq -r '
+    [ (.hooks.PreToolUse // [])[]
+      | select(((.hooks // []) | length > 0) and ((.hooks // []) | all((.command // "") | contains("/.aif/hooks/guard.sh"))))
+      | .matcher // "" ] | .[0] // "none"' "$f" 2>/dev/null)" || return 1
+  [ -n "$m" ] && [ "$m" != "none" ] || return 1
+  printf '%s' "$m"
+}
+
 # _aif_doctor_caps <root|""> <probe-suite 0|1> <probe-runner 0|1> — every
 # capability, probed, as JSON:
 #   { "<name>": { "ok": true|false|null, "detail": "…" } }
@@ -430,13 +455,23 @@ _aif_doctor_caps() {
   # file check: a registered hook that does not fire is the failure this
   # exists to catch. Probed by --probe; remembered per runner version in
   # .aif/state/guard-probed, so a `claude` upgrade asks again.
-  local s_ok s_d s_marker
+  local s_ok s_d s_marker s_matcher
   if [ -z "$root" ]; then
     s_ok=false
     s_d="not in a project"
   elif [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
     s_ok=true
     s_d="substituted by AIF_WORK_STATION_CMD — a scripted runner is in use"
+  elif ! s_matcher="$(_aif_doctor_guard_matcher "$root")"; then
+    # Read before anything is probed: a hook that is not registered, or is
+    # registered for the write tools only, cannot deny a command whatever a
+    # probe says. A project initialised before 0.5.3 kept a matcher without
+    # Bash through every later init (docs/DEFECTS-8.md #2).
+    s_ok=false
+    s_d="the guard hook is not registered in .claude/settings.json — aif init registers it"
+  elif ! printf '%s' "$s_matcher" | tr '|' '\n' | grep -qx Bash; then
+    s_ok=false
+    s_d="the guard is registered for \"$s_matcher\" — without Bash it never sees a command, and the tests station's aif _verify is never granted; aif init refreshes the registration"
   else
     s_marker="$root/.aif/state/guard-probed"
     if [ "$probe_runner" -eq 1 ] && [ "$c_ok" = true ]; then
@@ -603,6 +638,17 @@ aif_doctor() {
     fi
     roles="$(_aif_doctor_roles "$root" "$caps")"
     _aif_doctor_render_roles "$roles"
+
+    # Not a role's requirement — the worker runs without it, slower — and so
+    # not in the table above; and until now rendered only in --json, so a
+    # guard that never saw a command was invisible to anyone reading this
+    # (docs/DEFECTS-8.md #2).
+    printf '\n%sStations%s  %swhat the worker hands its stations%s\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$AIF_C_RESET"
+    printf '%s' "$caps" | jq -r '
+      ."station-guard"
+      | (if .ok == true then "  ✓ " elif .ok == false then "  ✗ " else "  ? " end)
+        + ("station-guard" + "              ")[0:15] + .detail'
   fi
 
   printf '\n'
@@ -629,6 +675,11 @@ aif_doctor() {
   fi
   if [ ! -f "$(aif_project_config "$root")" ]; then
     printf 'next: %saif project init%s\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 1
+  fi
+  if [ "$(aif_project_drift "$(aif_project_config "$root")" | grep -c . || true)" -gt 0 ]; then
+    printf 'next: %saif project upgrade%s — project.json is behind the template it was made from; aif project check says what moved\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET"
     return 1
   fi
   # The guide comes right after project.json in the order of setting up, and

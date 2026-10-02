@@ -192,3 +192,79 @@ aif_gitignore_ensure() {
   aif_block_inject "$file" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
     "$(printf '# %s\n%s' "$why" "$pattern")"
 }
+
+# aif_hooks_merge <target> <fragment-json> — register the set's hooks, event
+# by event: OUR earlier registration for the event is replaced by the
+# fragment's, the user's own entries are kept beside it.
+#
+# "Ours" is read off the entry, not remembered: every command in it runs from
+# .aif/hooks/. The merge used to skip an event the file already had, because
+# a `*` merge replaces arrays and would have dropped the user's hooks — and it
+# could not tell those from aif's own, so a project kept the registration its
+# FIRST init wrote through every later one. 0.5.3 added Bash to the guard's
+# matcher; a project initialised before it never got it, the guard never saw a
+# shell command, and from 0.11.0 the tests station ran without its verify loop
+# (docs/DEFECTS-8.md #2). Appending ours beside theirs needs no array merge at
+# all: hook entries for one event are independent.
+#
+# Validate before mv, so a bad merge leaves the original intact.
+aif_hooks_merge() {
+  local target="$1" fragment="$2" tmp
+
+  mkdir -p "$(dirname "$target")"
+  tmp="$(aif_tmpfile "$target")"
+  if [ -f "$target" ]; then
+    jq -e . "$target" >/dev/null 2>&1 || {
+      rm -f "$tmp"
+      aif_die "$target is not valid JSON — refusing to merge into it"
+    }
+    if ! jq --argjson f "$fragment" '
+        def ours: ((.hooks // []) | length > 0)
+          and ((.hooks // []) | all((.command // "") | contains("/.aif/hooks/")));
+        . as $t
+        | reduce (($f.hooks // {}) | keys_unsorted[]) as $e ($t;
+            .hooks[$e] = ([ ((($t.hooks // {})[$e]) // [])[] | select(ours | not) ] + ($f.hooks[$e] // [])))
+      ' "$target" >"$tmp" 2>/dev/null; then
+      rm -f "$tmp"
+      aif_die "could not merge the hooks into $target"
+    fi
+  else
+    printf '%s' "$fragment" | jq '.' >"$tmp" 2>/dev/null || {
+      rm -f "$tmp"
+      aif_die "internal: set fragment is not valid JSON"
+    }
+  fi
+
+  if ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    aif_die "merge produced invalid JSON — $target left untouched"
+  fi
+  mv "$tmp" "$target"
+}
+
+# aif_hooks_report <target> <fragment-json> — before a merge, per event in the
+# fragment: "event<TAB>verb<TAB>theirs<TAB>was", with verb one of register (no
+# entry of ours yet), refresh (ours differs from the fragment's — `was` holds
+# the old matcher), same; theirs is how many of the user's own entries sit on
+# the event. What init prints, and what a dry run prints instead of merging.
+aif_hooks_report() {
+  local target="$1" fragment="$2"
+  if [ ! -f "$target" ]; then
+    printf '%s' "$fragment" | jq -r '(.hooks // {}) | keys_unsorted[] | . + "\tregister\t0\t"'
+    return 0
+  fi
+  jq -r --argjson f "$fragment" '
+    def ours: ((.hooks // []) | length > 0)
+      and ((.hooks // []) | all((.command // "") | contains("/.aif/hooks/")));
+    . as $t
+    | ($f.hooks // {}) | keys_unsorted[] | . as $e
+    | ((($t.hooks // {})[$e]) // []) as $have
+    | ([ $have[] | select(ours) ]) as $mine
+    | ([ $have[] | select(ours | not) ] | length) as $theirs
+    | (if ($mine | length) == 0 then "register"
+       elif $mine == ($f.hooks[$e] // []) then "same"
+       else "refresh" end) as $verb
+    | $e + "\t" + $verb + "\t" + ($theirs | tostring) + "\t"
+      + ([ $mine[] | .matcher // "" ] | join("|"))
+  ' "$target" 2>/dev/null
+}

@@ -9,14 +9,24 @@
 #
 #   - agent_type in the hook payload, when a station runs as a SUBAGENT. No
 #     path in the foundry takes that route today; it is kept because a second
-#     runner may, and because it is the more precise signal when present.
+#     runner may, and because it is the more precise signal when present. Only
+#     the foundry's own names count — `aif-plan`, `aif-tests`, `aif-implement`
+#     and its tier variants. EVERY subagent carries an agent_type —
+#     general-purpose, Explore, any agent a project defines — and for one
+#     release each of them was read as a station: a plain session's
+#     general-purpose subagent lost `git stash list` to the commit rule, and a
+#     project's own agent named `tests` was held to the tests station in full
+#     (docs/DEFECTS-8.md #3).
 #   - AIF_STATION in the environment, exported by `aif work` around the
 #     station's `claude -p`. This is the LIVE route: the worker runs each
 #     station as its own headless process, so the marker that process inherits
 #     is what says which station it is.
 #
-# The payload wins when both are present: it describes the call actually being
-# made, whereas an inherited environment variable describes an ancestor.
+# The payload wins when it names a foundry agent: it describes the call
+# actually being made, whereas an inherited environment variable describes an
+# ancestor. Another agent's name says nothing about a station, and the
+# environment then decides — a subagent spawned inside a station's process is
+# held to that station.
 #
 # There used to be a third rule — an orchestrator session may not write product
 # code — guarding a `claude` session that dispatched the stations as subagents
@@ -43,8 +53,16 @@ command -v jq >/dev/null 2>&1 || exit 0
 # is named once (in the agent's filename) rather than twice. The tier variants
 # of one station — aif-implement and aif-implement-careful — are the same
 # station and must be guarded identically, so the tier suffix is dropped too.
-station="$(printf '%s' "$payload" |
-  jq -r '.agent_type // "" | sub("^aif-"; "") | sub("-(routine|careful)$"; "")' 2>/dev/null)"
+# A name without the prefix is somebody else's agent, not a station.
+agent="$(printf '%s' "$payload" | jq -r '.agent_type // ""' 2>/dev/null)"
+station=""
+case "$agent" in
+  aif-*)
+    station="${agent#aif-}"
+    station="${station%-routine}"
+    station="${station%-careful}"
+    ;;
+esac
 [ -n "$station" ] || station="${AIF_STATION:-}"
 
 # Not a station: nothing to guard. This is the ordinary case — a project with

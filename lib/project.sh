@@ -154,6 +154,14 @@ aif_project_validate() {
         then "failure_classes.legitimate must be an array" else empty end),
       (if (.failure_classes.broken | type) != "array"
         then "failure_classes.broken must be an array" else empty end),
+      # retired — optional: patterns an earlier template listed as legitimate
+      # and this one no longer does (with the contract, a TypeError is a defect
+      # of the test). No gate reads it; `aif project upgrade` does, to take them
+      # out of a project.json made from the older template, and `aif project
+      # check` to say they are still there.
+      (if ((.failure_classes.retired // []) | type) != "array"
+          or ((.failure_classes.retired // []) | map(type == "string" and length > 0) | all | not)
+        then "failure_classes.retired must be an array of non-empty patterns" else empty end),
       # checks — the rest of the Definition of Done for this project. Optional
       # as a key (a project whose DoD really is "the tests pass" writes []), but
       # every entry in it is checked hard: a check with a typo in its phase
@@ -381,4 +389,64 @@ aif_guide_committed() {
 # generator's placeholder.
 aif_guide_unwritten() {
   grep -qF -- "$AIF_GUIDE_PLACEHOLDER" "$(aif_guide_path "$1")" 2>/dev/null
+}
+
+# --- a project.json behind its template ----------------------------------------
+# `.aif/project.json` is the project's and `aif init` never rewrites it. That
+# is right for what the project decided — its test command, its roots, its
+# checks, its board — and wrong for what aif decided and later changed: which
+# failure classes count as a legitimate red (the contract made `TypeError` the
+# test's own defect), which phases a type-check belongs to, which limits the
+# new stage runs under. An upgraded project kept the old answers in silence
+# and its gates were laxer than its stations were told (docs/DEFECTS-8.md #1,
+# #4). So the drift is reported — by `aif project check`, `aif doctor` and the
+# worker's preflight — and `aif project upgrade` brings exactly those fields
+# forward, leaving the project's own as they are.
+
+# aif_project_template <kind> — the template a project of this runner was
+# made from, or nothing for a runner the set has none for.
+aif_project_template() {
+  local f="$AIF_ROOT/sets/claude/project.templates/$1.json"
+  [ -n "$1" ] && [ -f "$f" ] || return 0
+  printf '%s' "$f"
+}
+
+# aif_project_drift <project.json> — what the gates and the worker read
+# differently from this file than from its template, one line each; empty when
+# the file is current, or when its runner has no template to compare with.
+# Only what changes behaviour: a retired failure class still counted as red,
+# a template class missing, a type-check not bound to contract and red, a
+# limit the template sets and the file does not, a runner not recorded.
+aif_project_drift() {
+  local f="$1" kind t
+  kind="$(aif_project_kind "$f")"
+  t="$(aif_project_template "$kind")"
+  [ -n "$t" ] || return 0
+  jq -r --slurpfile tpl "$t" --arg kind "$kind" '
+    . as $p
+    | $tpl[0] as $t
+    | ($p.failure_classes.legitimate // []) as $legit
+    | ($p.failure_classes.broken // []) as $broken
+    | [
+      (if (($p.test.kind // "") == "") then
+         "test.kind is not recorded — the runner (" + $kind + ") is inferred from test.command on every read; record it as \"kind\": \"" + $kind + "\" under \"test\""
+       else empty end),
+      ( ($t.failure_classes.retired // [])[] | . as $r
+        | select(($legit | index($r)) != null)
+        | "failure_classes.legitimate still counts \"" + $r + "\" as a legitimate red — since the contract, a new test failing that way calls something the contract does not export, and verify-red is built to send it back to the tests station; with this entry it freezes it as red instead" ),
+      ( ($t.failure_classes.legitimate // [])[] | . as $l
+        | select(($legit | index($l)) == null)
+        | "failure_classes.legitimate lacks \"" + $l + "\", which the " + $kind + " template counts as a legitimate red — a test failing that way is rejected here as neither an assertion nor the marker" ),
+      ( ($t.failure_classes.broken // [])[] | . as $b
+        | select(($broken | index($b)) == null)
+        | "failure_classes.broken lacks \"" + $b + "\", which the " + $kind + " template counts as a test that did not run" ),
+      ( ($p.checks // [])[]
+        | select((((.name // "") | test("type"; "i")) or ((.command // "") | test("tsc|mypy|pyright"))))
+        | select((((.phase // []) | index("contract")) == null) or (((.phase // []) | index("red")) == null))
+        | "check \"" + (.name // "?") + "\" is a type-check bound to [" + ((.phase // []) | join(",")) + "] — since the contract, the plan gate compiles the skeleton at contract and verify-red type-checks the tests at red; bound as it is, the skeleton is never compiled and a type error in a frozen test is found one implement dispatch late" ),
+      ( ($t.limits // {}) | to_entries[] | select(.value != null) | . as $e
+        | select((($p.limits // {}) | has($e.key)) | not)
+        | "limits." + $e.key + " is not set — the " + $kind + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" )
+    ] | .[]
+  ' "$f" 2>/dev/null
 }

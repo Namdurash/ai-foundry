@@ -44,6 +44,12 @@ make release V=0.5.1
   offline; `check` drives the whole worker with a fake station.
 - **Gates run without `aif`.** Anything under `sets/*/gates/` must work in CI
   from a fresh checkout — it may not source `lib/`.
+- **`.aif/project.json` is the project's; the templates still move.** `aif init`
+  never rewrites it, so a change of aif's mind recorded in a template — a
+  failure class retired, a check's phase, a cap — reaches an existing project
+  only through `aif project upgrade`. A retired pattern goes in the template's
+  `failure_classes.retired`, so `aif project check` can name it
+  (`docs/DEFECTS-8.md` #1).
 - **A runner is two files.** `sets/claude/project.templates/<r>.json` and
   `sets/claude/stacks/<r>.md` ship together — the fragment is what the worker
   appends to the plan and tests stations for a project of that `test.kind` —

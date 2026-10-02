@@ -43,7 +43,7 @@ flowchart TB
     G_plan -.->|"rejected: retried with the complaint, up to 3 times"| S_plan
     S_tests["station tests · opus"] --> G_tests{{"gate verify-red"}}
     G_plan --> S_tests
-    G_tests -.-> S_tests
+    G_tests -.->|"rejected: up to 4 times"| S_tests
     S_implement["station implement · sonnet · opus if risk is high"] --> G_implement{{"gates green, scope"}}
     G_tests --> S_implement
     G_implement -.-> S_implement
@@ -106,11 +106,11 @@ The stage order is the list in `lib/run.sh`; each station's own file says
 which gate judges it. The `ready` gate runs first, at intake, before the first
 token, and it is the same script the analyst ran at the end of the conversation.
 
-| stage | engine | judged by | requires | leaves behind |
-|---|---|---|---|---|
-| plan | opus (careful) | plan | ready | plan.md |
-| tests | opus (careful) | verify-red | plan | tests.lock.json, frozen |
-| implement | sonnet, or opus when the ticket's risk is high | green, scope | plan, verify-red | the code, bound to plan.md |
+| stage | engine | judged by | attempts | requires | leaves behind |
+|---|---|---|---|---|---|
+| plan | opus (careful) | plan | 3 | ready | plan.md |
+| tests | opus (careful) | verify-red | 4 | plan | tests.lock.json, frozen |
+| implement | sonnet, or opus when the ticket's risk is high | green, scope | 3 | plan, verify-red | the code, bound to plan.md |
 
 ## The caps on one run
 
@@ -119,7 +119,7 @@ may set others. The wall clock and the dispatch cap always apply.
 
 | cap | value | setting |
 |---|---|---|
-| a station rejected in a row | 3 | limits.attempts_max |
+| a station rejected in a row | 3 (tests 4) | limits.attempts_max, or max_attempts in the station's aif:meta |
 | the same complaint twice in a row | stop | the convergence rule, lib/cmd_work.sh |
 | repairs of the oracle, per ticket | 2 | limits.repairs_max |
 | replans, per ticket | 1 | limits.replans_max |

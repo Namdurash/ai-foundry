@@ -30,8 +30,9 @@
 #               `aif _record` stamps the binding (never the model), `aif _gate`
 #               judges and records the verdict, `aif _commit` seals it and the
 #               stage advances. A rejection is a RETRY with the gate's
-#               complaint in the prompt, up to limits.attempts_max — never a
-#               conversation
+#               complaint in the prompt, up to the station's attempts cap
+#               (max_attempts in its aif:meta, else limits.attempts_max) —
+#               never a conversation
 #   report      tasks/<ID>/report.md and the station transcripts, committed to
 #               the branch and posted to the card. The human reviews that next
 #               to the diff, which is the one place they have enough context
@@ -78,7 +79,7 @@ usage: aif work [<ticket>] [options]
                      usually mean the problem is not the cards
   --max-tickets N    with --loop: stop after N tickets
 
-Two caps always apply — the wall clock and limits.run_dispatches_max (12
+Two caps always apply — the wall clock and limits.run_dispatches_max (16
 station runs). The dollar ceiling is the third and is opt-in: under
 subscription auth the runner reports \$0 for every station and
 .aif/prices.json ships empty, so a ceiling nobody configured could not fire.
@@ -157,6 +158,16 @@ _aif_work_preflight() {
     printf '%s\n' "$guide_missing" | sed 's/^/  - /' >&2
     aif_err "aif project guide brings its generated block up to date; what you wrote by hand is yours to fix. Nothing was spent."
     exit 3
+  fi
+
+  # A project.json behind the template it was made from: the gates read the
+  # file as it is, so this is a warning and not a refusal — but said on every
+  # run, because an upgraded project kept failure classes the gate no longer
+  # means and nothing told it (docs/DEFECTS-8.md #1).
+  local drift_n
+  drift_n="$(aif_project_drift "$project" | grep -c . || true)"
+  if [ "${drift_n:-0}" -gt 0 ]; then
+    aif_warn "project.json is behind its template — $drift_n thing(s) moved since it was written; the gates read the file as it is. aif project check lists them; aif project upgrade brings them forward"
   fi
 
   aif_profile_load "$profile"
@@ -431,6 +442,20 @@ _aif_work_intake() {
   return 0
 }
 
+# _aif_work_attempts_max <wt> <station> <project.json> — how many times this
+# station may be rejected in a row before the run stops: its own max_attempts,
+# from its aif:meta, else the project-wide limits.attempts_max. The tests
+# station declares four, the others fall to three (docs/REBUILD-4.md §2.4):
+# it has iterated with the dry verifier already, and a fourth informed retry
+# is cheaper than a human. One cap for every stage was the code for one
+# release while the design said four (docs/DEFECTS-8.md #4).
+_aif_work_attempts_max() {
+  local n
+  n="$(aif_station_meta "$1" "$2" 2>/dev/null | jq -r '.max_attempts // empty' 2>/dev/null)"
+  [ -n "$n" ] || n="$(jq -r '.limits.attempts_max // 3' "$3" 2>/dev/null)"
+  printf '%s' "${n:-3}"
+}
+
 # _aif_work_frontmatter <wt> <agent> <key> — a scalar from the agent's YAML
 # frontmatter. Flat key: value only, which is all the set writes.
 _aif_work_frontmatter() {
@@ -470,7 +495,10 @@ _aif_work_dispatch() {
   # stations explore and read back, and hit the project-wide 30 in three runs
   # of five on one batch, leaving half-written files for the gate to judge.
   max_turns="$(aif_station_meta "$wt" "$station" 2>/dev/null | jq -r '.max_turns // empty' 2>/dev/null)"
-  [ -n "$max_turns" ] || max_turns="$(jq -r '.limits.station_max_turns // 30' "$project" 2>/dev/null)"
+  # 60, like every station's own cap: on a subscription a turn costs nothing
+  # and a station cut off mid-file costs a dispatch (docs/DEFECTS-6.md); the
+  # cap's remaining job is a station that loops without producing.
+  [ -n "$max_turns" ] || max_turns="$(jq -r '.limits.station_max_turns // 60' "$project" 2>/dev/null)"
   [ -n "$model" ] || model="sonnet"
   [ -n "$tools" ] || tools="Read,Grep,Glob,Write,Edit"
 
@@ -744,7 +772,7 @@ _aif_work_repair() {
   work="$(aif_task_dir "$wt" "$ticket")"
   project="$(aif_project_config "$wt")"
   max="$(jq -r '.limits.repairs_max // 2' "$project")"
-  attempts_max="$(jq -r '.limits.attempts_max // 3' "$project")"
+  attempts_max="$(_aif_work_attempts_max "$wt" tests "$project")"
   repairs="$(aif_run_get "$work" '.repairs')"
   repairs="${repairs:-0}"
   if [ "$repairs" -ge "$max" ]; then
@@ -778,7 +806,7 @@ $complaint"
   while :; do
     n=$((n + 1))
     if [ "$n" -gt "$attempts_max" ]; then
-      AIF_WORK_REPAIR_WHY="the tests station was rejected $attempts_max time(s) in a row repairing the oracle (limits.attempts_max). Last complaint:
+      AIF_WORK_REPAIR_WHY="the tests station was rejected $attempts_max time(s) in a row repairing the oracle (its attempts cap). Last complaint:
 $complaint"
       break
     fi
@@ -1301,8 +1329,12 @@ aif_cmd_work() {
   local work project attempts_max run_max dispatches_max started
   work="$(aif_task_dir "$wt" "$ticket")"
   project="$(aif_project_config "$wt")"
-  attempts_max="$(jq -r '.limits.attempts_max // 3' "$project")"
-  dispatches_max="$(jq -r '.limits.run_dispatches_max // 12' "$project")"
+  # 16, as the templates say since the stage gained its two loops (a repair,
+  # a replan) on top of the three stations' retries (docs/REBUILD-4.md §2.4).
+  # A project.json from before the key ran the new stage on the old 12
+  # (docs/DEFECTS-8.md #4); the fallback is now the number the stage was
+  # budgeted for.
+  dispatches_max="$(jq -r '.limits.run_dispatches_max // 16' "$project")"
   [ -n "$max_minutes" ] || max_minutes="$(jq -r '.limits.run_max_minutes // 120' "$project")"
   # No default. A dollar ceiling that nobody chose is worse than none: under
   # subscription auth the runner reports $0 and .aif/prices.json ships empty,
@@ -1361,6 +1393,7 @@ aif_cmd_work() {
       why="no station is installed for the stage '$stage' — run 'aif init'"
       break
     }
+    attempts_max="$(_aif_work_attempts_max "$wt" "$stage" "$project")"
 
     # After a repair the implementation is already in the tree and what moved
     # is the oracle it is judged against: the gates run, nothing is dispatched.
@@ -1376,7 +1409,7 @@ aif_cmd_work() {
     attempts="$(aif_run_attempts "$work" "$stage")"
     if [ "$skip_dispatch" -eq 0 ] && [ "$attempts" -ge "$attempts_max" ]; then
       status="stopped"
-      why="$stage was rejected $attempts time(s) in a row (limits.attempts_max). Last complaint:
+      why="$stage was rejected $attempts time(s) in a row (its attempts cap: max_attempts in its aif:meta, else limits.attempts_max). Last complaint:
 $complaint"
       break
     fi

@@ -31,6 +31,13 @@
       "fixture .* not found",
       "ERROR collecting",
       "INTERNALERROR"
+    ],
+    "retired": [
+      "ModuleNotFoundError",
+      "ImportError",
+      "AttributeError",
+      "NameError",
+      "TypeError"
     ]
   },
   "limits": {
@@ -39,7 +46,7 @@
     "diff_lines_max": 400,
     "attempts_max": 3,
     "plan_amendments_max": 3,
-    "station_max_turns": 30,
+    "station_max_turns": 60,
     "run_dispatches_max": 16,
     "run_max_minutes": 120,
     "run_budget_usd": null,

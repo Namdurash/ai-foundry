@@ -8,12 +8,18 @@ _aif_project_usage() {
 usage: aif project init [runner] [--force] [--no-checks]
        aif project checks
        aif project check
+       aif project upgrade
        aif project guide
 
   init    Scaffold .aif/project.json from a template. Detects the test runner
           when not named. Runners: $(_aif_project_runners | tr '\n' ' ')
   checks  Ask again what the project's Definition of Done is, and record it
-  check   Validate .aif/project.json
+  check   Validate .aif/project.json, and say what has moved since the
+          template it was made from
+  upgrade Bring forward what aif has changed its mind about since — the
+          failure classes, a type-check's phases, the caps, the runner — and
+          leave your own fields (the test command, the roots, the checks'
+          commands, the board) as they are
   guide   Write $AIF_GUIDE_FILE from what the repository declares — the
           runner's configuration, where the tests, fixtures, doubles and
           factories live, what the tests import most — for the plan and tests
@@ -378,6 +384,106 @@ _aif_project_check() {
     jq -r '.checks[] | "  check " + .name + "  [" + (.phase | join(",")) + "]"
            + (if .required then "" else "  (optional)" end) + "  " + .command' "$dest"
   fi
+
+  # What has moved since the template this file was made from. Valid and
+  # current are different answers: a project.json from 0.10.x validates and
+  # still tells verify-red that a TypeError is a legitimate red
+  # (docs/DEFECTS-8.md #1). Reported, never changed here.
+  local drift kind
+  drift="$(aif_project_drift "$dest")"
+  kind="$(aif_project_kind "$dest")"
+  if [ -n "$drift" ]; then
+    printf '\n%s%s thing(s) have moved%s since this file was made from the %s template — the gates read it as it is:\n' \
+      "$AIF_C_YELLOW" "$(printf '%s\n' "$drift" | grep -c .)" "$AIF_C_RESET" "${kind:-?}"
+    printf '%s\n' "$drift" | sed 's/^/  - /'
+    printf '%saif project upgrade%s brings these forward and leaves your own fields alone.\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+  elif [ -n "$kind" ] && [ -n "$(aif_project_template "$kind")" ]; then
+    printf '  %scurrent%s with the %s template\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+  fi
+}
+
+# _aif_project_upgrade <root> — bring .aif/project.json forward to what the
+# gates and the worker read today, touching only what aif decided and later
+# changed; everything the project decided stays.
+#
+#   test.kind                 recorded, where it was only inferred
+#   failure_classes           the template's lists first, then the project's
+#                             own additions — minus what the template retired
+#   checks[].phase            a type-check is bound to contract, red and green,
+#                             keeping any other phase it had
+#   limits                    keys the template sets and the file lacks, at the
+#                             template's value; a value the project set stays
+#
+# Idempotent: a current file is left alone and said to be current. What moved
+# is printed as the drift it closes; the file is the project's to review.
+_aif_project_upgrade() {
+  local root="$1" dest kind t drift tmp before after
+  dest="$(aif_project_config "$root")"
+  [ -f "$dest" ] || aif_die "no .aif/project.json — run 'aif project init'"
+  kind="$(aif_project_kind "$dest")"
+  t="$(aif_project_template "$kind")"
+  [ -n "$t" ] || aif_die "no template for runner '${kind:-?}' — nothing to bring project.json up to. Record test.kind as one of: $(_aif_project_runners | tr '\n' ' ')"
+  drift="$(aif_project_drift "$dest")"
+  if [ -z "$drift" ]; then
+    printf '%s✓%s .aif/project.json is current with the %s template — nothing to bring forward\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+    return 0
+  fi
+
+  before="$(cat "$dest")"
+  tmp="$(aif_tmpfile "$dest")"
+  jq --slurpfile tpl "$t" --arg kind "$kind" '
+    . as $p
+    | $tpl[0] as $t
+    | ($t.failure_classes.retired // []) as $ret
+    | ($t.failure_classes.legitimate // []) as $tl
+    | ($t.failure_classes.broken // []) as $tb
+    | .test.kind = (.test.kind // $kind)
+    | .failure_classes.legitimate = ($tl + [ ($p.failure_classes.legitimate // [])[] | . as $x
+        | select((($tl | index($x)) == null) and (($ret | index($x)) == null)) ])
+    | .failure_classes.broken = ($tb + [ ($p.failure_classes.broken // [])[] | . as $x
+        | select(($tb | index($x)) == null) ])
+    | .limits = (($t.limits // {}) * ($p.limits // {}))
+    | .checks = [ ($p.checks // [])[]
+        | if (((.name // "") | test("type"; "i")) or ((.command // "") | test("tsc|mypy|pyright")))
+          then .phase = (["contract", "red", "green"] + [ (.phase // [])[] | . as $x
+                 | select((["contract", "red", "green"] | index($x)) == null) ])
+          else . end ]
+  ' "$dest" >"$tmp" || {
+    rm -f "$tmp"
+    aif_die "could not rewrite .aif/project.json — left untouched"
+  }
+  local problems
+  problems="$(aif_project_validate "$tmp")"
+  if [ -n "$problems" ]; then
+    rm -f "$tmp"
+    aif_err "the upgraded file would not validate — .aif/project.json left untouched:"
+    printf '%s\n' "$problems" | sed 's/^/  - /' >&2
+    return 1
+  fi
+  mv "$tmp" "$dest"
+  after="$(cat "$dest")"
+
+  printf '%supgraded%s .aif/project.json to the %s template, on these points:\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+  printf '%s\n' "$drift" | sed 's/ — .*$//; s/^/  - /'
+  # The result, field by field, so the diff reads without opening the file.
+  jq -rn --argjson b "$before" --argjson a "$after" '
+    (if ($b.test.kind // "") != ($a.test.kind // "") then "  test.kind → " + $a.test.kind else empty end),
+    (if $b.failure_classes.legitimate != $a.failure_classes.legitimate then
+       "  failure_classes.legitimate → " + ($a.failure_classes.legitimate | tojson)
+       + (([ $b.failure_classes.legitimate[] | select(. as $x | ($a.failure_classes.legitimate | index($x)) == null) ]) as $gone
+          | if ($gone | length) > 0 then "\n    retired: " + ($gone | join(", ")) else "" end)
+     else empty end),
+    (if $b.failure_classes.broken != $a.failure_classes.broken then
+       "  failure_classes.broken → " + ($a.failure_classes.broken | tojson) else empty end),
+    (($a.limits // {}) | to_entries[] | .key as $k | .value as $v
+       | select((($b.limits // {}) | has($k)) | not)
+       | "  limits." + $k + " = " + ($v | tostring)),
+    (($a.checks // []) | to_entries[] | .value as $c | .key as $i
+       | select((($b.checks // [])[$i] // {}).phase != $c.phase)
+       | "  check \"" + ($c.name // "?") + "\" → [" + ($c.phase | join(",")) + "]")
+  ' || printf '  (the field-by-field summary could not be drawn — the file is upgraded; git diff .aif/project.json shows it)\n'
+  printf '%sYour own fields are as they were: the test command, the roots, the checks'"'"' commands, the board. Review the change: git diff .aif/project.json%s\n' \
+    "$AIF_C_DIM" "$AIF_C_RESET"
 }
 
 aif_cmd_project() {
@@ -411,6 +517,10 @@ aif_cmd_project() {
       ;;
     check)
       _aif_project_check "$root"
+      ;;
+    upgrade)
+      [ $# -eq 0 ] || aif_die "aif project upgrade takes no arguments"
+      _aif_project_upgrade "$root"
       ;;
     guide)
       [ $# -eq 0 ] || aif_die "aif project guide takes no arguments — it reads the repository"

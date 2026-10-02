@@ -10,6 +10,7 @@ model: opus
   "requires": ["plan"],
   "tools": "Read Grep Glob Write Edit Bash",
   "max_turns": 60,
+  "max_attempts": 4,
   "expects": "test files under the project's test roots, each test named with the ticket and its criterion (`<TICKET> AC-nnn`) — red against the plan's skeleton, and red because an assertion failed or the skeleton threw its marker. The station runs `aif _verify <TICKET>` over its own files until that holds; verify-red then checks it once more, twice, and freezes the tree into tests.lock.json." }
 -->
 

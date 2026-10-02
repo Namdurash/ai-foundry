@@ -264,8 +264,14 @@ aif_cmd_init() {
       mkdir -p "$(dirname "$dest")"
       cp "$src" "$dest"
       digest="$(aif_sha256 "$dest")"
-      printf '%s\t%s\n' "$rel" "$digest" >>"$files_tsv"
+    else
+      # The row the real run would write, from the source: the retire pass
+      # below reads a manifest path missing from this list as a file the set
+      # no longer ships, and a dry run that wrote no rows for its updates
+      # announced the retirement of every one of them (docs/DEFECTS-8.md #5).
+      digest="$(aif_sha256 "$src")"
     fi
+    printf '%s\t%s\n' "$rel" "$digest" >>"$files_tsv"
 
     if [ "$verdict" = "create" ]; then
       created=$((created + 1))
@@ -341,67 +347,56 @@ EOF
   fi
 
   # The set's settings fragment, if it ships one. Model routing never goes here.
-  local fragment settings_dest pre_existed clobbers
+  #
+  # Event by event: OUR earlier registration is replaced by the fragment's and
+  # the user's own entries stay beside it (lib/merge.sh, aif_hooks_merge).
+  # This used to skip any event the file already had, to keep the user's
+  # hooks — and could not tell those from ours, so a project kept the
+  # registration its first init wrote through every later one. A guard whose
+  # matcher never gained Bash ran for ten days of inits with its commit rule
+  # dead, and from 0.11.0 without the tests station's verify loop
+  # (docs/DEFECTS-8.md #2). What is reported is what moved: register, refresh
+  # (with the matcher it had), or nothing; and the user's hooks kept, by count.
+  local fragment settings_dest pre_existed prev_pre event verb theirs was
   settings_dest="$root/.claude/settings.json"
   if [ -f "$set_dir/settings.fragment.json" ]; then
     fragment="$(cat "$set_dir/settings.fragment.json")"
 
-    # A `*` merge REPLACES arrays rather than appending, so merging into a
-    # settings.json that already has hooks for the same EVENT would drop the
-    # user's. Checked per event and dropped per event, rather than abandoning the
-    # whole fragment: the events are independent, and skipping the metering hook
-    # because someone happens to have a PreToolUse of their own would silently
-    # turn off cost accounting.
-    #
-    # Each skip is reported with its actual consequence. They are not the same:
-    # the guard is defence in depth (green's hash-lock is the real arbiter), so
-    # losing it costs a speed bump. Losing the meter means stations run and
-    # nothing records what they cost — which is the defect this pipeline was
-    # rebuilt to fix, so it is stated as loudly as a warning can state it.
-    local event
-    if [ -f "$settings_dest" ]; then
-      while IFS= read -r event; do
-        [ -n "$event" ] || continue
-        jq -e --arg e "$event" '.hooks[$e]' "$settings_dest" >/dev/null 2>&1 || continue
-        case "$event" in
-          PreToolUse)
-            aif_warn "you already have PreToolUse hooks — skipping the guard hook so yours are not replaced"
-            aif_warn "  register .aif/hooks/guard.sh yourself to keep the test/implementation guard"
-            ;;
-          SubagentStop)
-            aif_warn "you already have SubagentStop hooks — skipping the metering hook so yours are not replaced"
-            aif_warn "  WITHOUT IT NOTHING RECORDS WHAT A STATION COSTS. Register .aif/hooks/meter.sh yourself."
-            ;;
-          *)
-            aif_warn "you already have $event hooks — skipping ours so yours are not replaced"
-            ;;
-        esac
-        fragment="$(printf '%s' "$fragment" | jq --arg e "$event" 'del(.hooks[$e])')"
-      done <<EOF
-$(printf '%s' "$fragment" | jq -r '.hooks | keys[]?')
+    # Whether the file existed decides uninstall's cleanup: a file we created
+    # and then emptied is our litter to remove; a file the user had stays. A
+    # file WE created on an earlier init exists now, so the earlier answer is
+    # kept when the manifest still holds it.
+    pre_existed="no"
+    [ -f "$settings_dest" ] && pre_existed="yes"
+    prev_pre="$(aif_manifest_exists "$root" && jq -r '[.edits[]? | select(.path == ".claude/settings.json") | .pre_existed] | .[0] // empty' "$(aif_manifest_path "$root")" 2>/dev/null)" || prev_pre=""
+    [ "$prev_pre" != "false" ] || pre_existed="no"
+
+    while IFS="$(printf '\t')" read -r event verb theirs was; do
+      [ -n "$event" ] || continue
+      case "$verb" in
+        register) printf '  %sregister%s  .claude/settings.json hooks.%s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$event" ;;
+        refresh)
+          printf '  %srefresh%s   .claude/settings.json hooks.%s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$event"
+          [ -z "$was" ] || printf '            %sours was registered for "%s" — now as the set ships it%s\n' "$AIF_C_DIM" "$was" "$AIF_C_RESET"
+          ;;
+      esac
+      # Said when something of ours moved on that event; an init that changes
+      # nothing has nothing to say about the user's hooks either.
+      [ "${theirs:-0}" -eq 0 ] || [ "$verb" = same ] ||
+        printf '            %skept your own %s hook(s) on %s beside ours%s\n' "$AIF_C_DIM" "$theirs" "$event" "$AIF_C_RESET"
+    done <<EOF
+$(aif_hooks_report "$settings_dest" "$fragment")
 EOF
+    if [ "$AIF_DRY_RUN" -eq 0 ]; then
+      aif_hooks_merge "$settings_dest" "$fragment"
     fi
-
-    clobbers=no
-    printf '%s' "$fragment" | jq -e '(.hooks // {}) | length == 0' >/dev/null 2>&1 && clobbers=yes
-
-    if [ "$clobbers" = "yes" ]; then
-      aif_warn "nothing left to merge into .claude/settings.json"
-    else
-      # Whether the file existed decides uninstall's cleanup: a file we created
-      # and then emptied is our litter to remove; a file the user had stays.
-      pre_existed="no"
-      [ -f "$settings_dest" ] && pre_existed="yes"
-
-      printf '  %smerge%s     .claude/settings.json\n' "$AIF_C_GREEN" "$AIF_C_RESET"
-      if [ "$AIF_DRY_RUN" -eq 0 ]; then
-        aif_json_merge "$settings_dest" "$fragment"
-      fi
-      # Store the fragment itself: uninstall subtracts it structurally, which is
-      # value-guarded and handles the nested hook array a leaf-path list cannot.
-      printf '%s\t%s\t%s\t%s\n' ".claude/settings.json" "json_merge" \
-        "$(printf '%s' "$fragment" | jq -c .)" "$pre_existed" >>"$edits_tsv"
-    fi
+    # Store the fragment itself: uninstall subtracts it structurally, which is
+    # value-guarded and handles the nested hook array a leaf-path list cannot.
+    # Recorded on every init, not only the one that merged: an init that
+    # skipped the merge used to drop the record, and uninstall then left the
+    # hooks behind.
+    printf '%s\t%s\t%s\t%s\n' ".claude/settings.json" "json_merge" \
+      "$(printf '%s' "$fragment" | jq -c .)" "$pre_existed" >>"$edits_tsv"
   fi
 
   # One line into CLAUDE.md, and only if the set actually has always-on content.
@@ -467,6 +462,21 @@ EOF
   if [ -n "$AIF_PROFILE_SECRET_VAR" ] && [ -z "$(aif_profile_secret)" ]; then
     printf '\n'
     aif_warn "$AIF_PROFILE_SECRET_VAR is not set — export it before running aif work"
+  fi
+
+  # project.json is the project's and is never rewritten here. What aif has
+  # changed its mind about since the file was written — which failure classes
+  # are a legitimate red, where a type-check binds, the caps — is reported,
+  # and `aif project upgrade` brings exactly that forward (docs/DEFECTS-8.md #1).
+  local pj drift_n
+  pj="$(aif_project_config "$root")"
+  if [ -f "$pj" ]; then
+    drift_n="$(aif_project_drift "$pj" | grep -c . || true)"
+    if [ "${drift_n:-0}" -gt 0 ]; then
+      printf '\n'
+      aif_warn ".aif/project.json is behind the template it was made from — $drift_n thing(s) the gates now read differently."
+      aif_warn "  aif project check lists them; aif project upgrade brings them forward and leaves your own fields alone."
+    fi
   fi
 
   [ "$conflicts" -eq 0 ]

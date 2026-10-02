@@ -99,7 +99,7 @@ flowchart TB
     G_plan -.-&gt;|"rejected: retried with the complaint, up to 3 times"| S_plan
     S_tests["station tests · opus"] --&gt; G_tests{{"gate verify-red"}}
     G_plan --&gt; S_tests
-    G_tests -.-&gt; S_tests
+    G_tests -.-&gt;|"rejected: up to 4 times"| S_tests
     S_implement["station implement · sonnet · opus if risk is high"] --&gt; G_implement{{"gates green, scope"}}
     G_tests --&gt; S_implement
     G_implement -.-&gt; S_implement
@@ -164,11 +164,11 @@ flowchart TB
       <p>The stage order is the list in <code>lib/run.sh</code>; each station's own file names the gate that judges it. The <code>ready</code> gate runs first, at intake, before the first token: the same script the analyst ran at the end of the conversation.</p>
       <div class="table-wrap">
 <table>
-<thead><tr><th>stage</th><th>engine</th><th>judged by</th><th>requires</th><th>leaves behind</th></tr></thead>
+<thead><tr><th>stage</th><th>engine</th><th>judged by</th><th>attempts</th><th>requires</th><th>leaves behind</th></tr></thead>
 <tbody>
-<tr><td>plan</td><td>opus (careful)</td><td>plan</td><td>ready</td><td>plan.md</td></tr>
-<tr><td>tests</td><td>opus (careful)</td><td>verify-red</td><td>plan</td><td>tests.lock.json, frozen</td></tr>
-<tr><td>implement</td><td>sonnet, or opus when the ticket's risk is high</td><td>green, scope</td><td>plan, verify-red</td><td>the code, bound to plan.md</td></tr>
+<tr><td>plan</td><td>opus (careful)</td><td>plan</td><td>3</td><td>ready</td><td>plan.md</td></tr>
+<tr><td>tests</td><td>opus (careful)</td><td>verify-red</td><td>4</td><td>plan</td><td>tests.lock.json, frozen</td></tr>
+<tr><td>implement</td><td>sonnet, or opus when the ticket's risk is high</td><td>green, scope</td><td>3</td><td>plan, verify-red</td><td>the code, bound to plan.md</td></tr>
 </tbody>
 </table>
       </div>
@@ -180,7 +180,7 @@ flowchart TB
 <table>
 <thead><tr><th>cap</th><th>value</th><th>setting</th></tr></thead>
 <tbody>
-<tr><td>a station rejected in a row</td><td>3</td><td>limits.attempts_max</td></tr>
+<tr><td>a station rejected in a row</td><td>3 (tests 4)</td><td>limits.attempts_max, or max_attempts in the station's aif:meta</td></tr>
 <tr><td>the same complaint twice in a row</td><td>stop</td><td>the convergence rule, lib/cmd_work.sh</td></tr>
 <tr><td>repairs of the oracle, per ticket</td><td>2</td><td>limits.repairs_max</td></tr>
 <tr><td>replans, per ticket</td><td>1</td><td>limits.replans_max</td></tr>

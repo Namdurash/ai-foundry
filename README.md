@@ -65,8 +65,22 @@ kept, named, and still tracked (so `--force` can take it later). Without that
 an upgrade leaves the old files on disk *and* drops them from the manifest, so
 `aif uninstall` could never remove them: measured on a real 0.4.2 → 0.5.0
 upgrade as eleven orphans, three of them slash commands still pointing at a
-pipeline that had been deleted. `.aif/project.json` is yours and is never
-touched.
+pipeline that had been deleted. The hook registration in `.claude/settings.json`
+is refreshed the same way, event by event: an entry whose every command runs
+from `.aif/hooks/` is ours and is replaced by what the set ships now, yours stay
+beside it — a project initialised before the guard matched `Bash` kept that
+matcher through four upgrades, and its guard never saw a shell command
+(`docs/DEFECTS-8.md` #2). `aif init --dry-run` previews all of it.
+
+`.aif/project.json` is yours and is never touched by `aif init`. But some of
+what it holds is aif's opinion, and that opinion moves: which failure classes
+count as a legitimate red (with the contract, a `TypeError` is the test's own
+defect), which phases a type-check binds to, the caps the stage runs under. So
+`aif project check` and `aif doctor` say what has moved since the template the
+file was made from, the worker says so once per run, and `aif project upgrade`
+brings exactly those fields forward — the template's answers first, your own
+additions kept — and leaves the test command, the roots, the checks' commands
+and the board as they are.
 
 **`aif init` never clobbers.** The manifest records the digest of every file it
 writes, so a re-run can tell "we wrote this and nobody touched it" from "you
@@ -99,8 +113,9 @@ on branch `aif/TICK-1`), one budget, and **no question at any boundary**. The
 ticket's bytes are hashed and committed at intake and stay frozen for the run;
 every station runs as `claude -p` with its own prompt and tools; every gate
 verdict is recorded; a rejection is retried with the gate's complaint in the
-prompt, up to `limits.attempts_max`, and a station that will not converge stops
-the run with a report rather than a conversation. What comes back is
+prompt, up to the station's attempts cap (`limits.attempts_max`, three; the
+tests station declares four in its `aif:meta`), and a station that will not
+converge stops the run with a report rather than a conversation. What comes back is
 `tasks/TICK-1/report.md` — what was built, what was decided, what was not
 verified, what it cost — beside the diff, which is the one place a reviewer has
 enough context to judge it. Run several tickets at once: each gets its own
@@ -140,7 +155,7 @@ tests at all.
 
 **A run always has two caps and optionally a third.** The two that always
 apply are the wall clock (`limits.run_max_minutes`, 120) and the dispatch cap
-(`limits.run_dispatches_max`, 12 station runs) — both counted by the worker
+(`limits.run_dispatches_max`, 16 station runs) — both counted by the worker
 itself, so both always hold. The third is a dollar ceiling, and it is **off
 unless you ask for it**: pass `--budget 5`, or set `limits.run_budget_usd` to
 a number (`null` or absent means no ceiling; `--no-budget` turns off one the
@@ -517,7 +532,8 @@ the gates rather than remembered.
 | `aif profiles` | list the (set, runner, model) profiles |
 | `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
 | `aif project checks` | ask again, and record the answer |
-| `aif project check` | validate it |
+| `aif project check` | validate it, and say what has moved since the template it was made from |
+| `aif project upgrade` | bring forward what aif changed its mind about — the failure classes, a type-check's phases, the caps, the runner — and leave your own fields alone |
 | `aif project guide` | write `.aif/guide/tests.md` from what the repository declares, for the plan and tests stations; regenerates its block in place, keeps what you wrote |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
 | `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, or two in a row that did not build |
@@ -541,20 +557,27 @@ station may run, over its own files, freezing nothing.
 
 ### Stations and their model tier
 
-| station | tier | produces | its gate(s) | turns |
-|---|---|---|---|---|
-| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready | — |
-| `plan` | careful (opus) | `plan.md`, a verdict per criterion, and the **contract**: every new module as a skeleton on disk | plan | 60 |
-| `tests` | careful (opus) | test files + `tests.lock.json`, red against the skeleton | verify-red | 60 |
-| `implement` | **by risk** | code — the skeleton filled | green, scope | 45 |
+| station | tier | produces | its gate(s) | turns | attempts |
+|---|---|---|---|---|---|
+| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready | — | — |
+| `plan` | careful (opus) | `plan.md`, a verdict per criterion, and the **contract**: every new module as a skeleton on disk | plan | 60 | 3 |
+| `tests` | careful (opus) | test files + `tests.lock.json`, red against the skeleton | verify-red | 60 | 4 |
+| `implement` | **by risk** | code — the skeleton filled | green, scope | 60 | 3 |
 
 There are two tiers, and the question a tier answers is "do the gates catch this
 model's mistakes": `routine` where they do, `careful` where they do not. The tier
 is a label; the profile maps it to a model (`opus` → glm-5.2 on the `glm`
 profile). The turn cap is the station's own (`max_turns` in its `aif:meta`),
-over the project-wide `limits.station_max_turns`: the plan and tests stations
-explore and read back, and hit a cap of 30 in three runs of five on one batch,
-leaving half-written files for the gate to judge.
+over the project-wide `limits.station_max_turns` (60): the plan and tests
+stations explore and read back, and hit the old cap of 30 in three runs of five
+on one batch, leaving half-written files for the gate to judge. On a
+subscription the cap costs nothing to raise and a cut-off station costs a
+dispatch, so every station gets 60; what the cap still does is stop a station
+that loops without producing before it eats the run's wall clock. The attempts cap — rejections
+in a row before the run stops — is `max_attempts` in the station's `aif:meta`
+over `limits.attempts_max` the same way: the tests station gets four, because
+it has already iterated with the dry verifier and a fourth informed retry is
+cheaper than a human (`docs/REBUILD-4.md` §2.4).
 
 **The contract** is what the tests and the code are both written against. The
 plan station writes every path in `files.create` that is code as a skeleton —

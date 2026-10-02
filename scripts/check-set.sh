@@ -66,6 +66,15 @@ for f in "$AGENTS"/aif-*.md; do
   printf '%s' "$meta" | jq -e '.expects' >/dev/null 2>&1 ||
     bad "$base: aif:meta has no 'expects' — nothing to tell the user before it runs"
 
+  # A station's own caps, where it declares them: max_turns (the dispatch) and
+  # max_attempts (rejections in a row, over limits.attempts_max — the tests
+  # station gets four, docs/REBUILD-4.md §2.4). A string here would be read as
+  # 0 and stop the station before its first retry.
+  for cap in max_turns max_attempts; do
+    printf '%s' "$meta" | jq -e --arg c "$cap" '(.[$c] // 1) | type == "number" and . >= 1' >/dev/null 2>&1 ||
+      bad "$base: aif:meta $cap must be a number of 1 or more"
+  done
+
   tier="$(printf '%s' "$meta" | jq -r '.tier // empty')"
   model="$(frontmatter_get "$f" model)"
 
@@ -183,6 +192,15 @@ g "tests writes a test"                    '{"agent_type":"aif-tests","tool_inpu
 g "an unrelated subagent"                  '{"agent_type":"general-purpose","tool_input":{"file_path":"tests/t.py"}}' allow
 g "a station via AIF_STATION (the live route)" '{"tool_input":{"file_path":"tests/t.py"}}' deny implement
 g "payload beats a stale environment"      '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow implement
+# Every subagent carries an agent_type, and only the foundry's own names are
+# stations: a project's agent that happens to be called `tests` or `plan`, or
+# a general-purpose one, is not policed in a plain session (DEFECTS-8 #3).
+g "a project's own agent named tests writes source" '{"agent_type":"tests","tool_input":{"file_path":"src/a.py"}}' allow
+g "a project's own agent named plan writes a test"  '{"agent_type":"plan","tool_input":{"file_path":"tests/t.py"}}' allow
+g "a code-reviewer subagent runs git checkout"      '{"agent_type":"code-reviewer","tool_name":"Bash","tool_input":{"command":"git checkout -b x"}}' allow
+g "a general-purpose subagent runs git stash list"  '{"agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"git stash list"}}' allow
+g "a project's agent named tests runs the suite"    '{"agent_type":"tests","tool_name":"Bash","tool_input":{"command":"npm test"}}' allow
+g "…but inside a station's process it is the station" '{"agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"npm test"}}' deny tests
 # The contract: the plan station writes the plan and the skeleton, not the
 # tests and not the rest of the ticket's record (docs/REBUILD-4.md §2.1).
 g "plan writes the plan"                   '{"agent_type":"aif-plan","tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow

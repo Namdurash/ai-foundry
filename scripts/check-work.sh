@@ -64,6 +64,17 @@
 #      tests stations' prompts and not to the implementer's; says so when a
 #      project records no runner or one the set has no fragment for, and
 #      refuses a worktree whose branch does not carry the guide
+#  37  a project.json from an older template: aif project check lists what
+#      the gates now read differently (a retired failure class still counted
+#      as red, a type-check bound to green alone, a cap not set, the runner
+#      not recorded), aif project upgrade brings exactly that forward and
+#      leaves the project's own fields alone; the worker warns at preflight
+#      and runs the new stage on 16 dispatches whatever the file omits; the
+#      tests station gets four rejections in a row, the others three
+#  38  aif init refreshes its own hook registration event by event and keeps
+#      the user's hooks beside it, records the edit so uninstall takes only
+#      ours back, and a dry run previews the updates without announcing them
+#      as retirements; doctor reads the guard's registration before any probe
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -319,6 +330,15 @@ PLAN
         if [ "${FAKE_TESTS_BUG:-0}" = 1 ] && [ "$repair" = 0 ]; then suffix="$suffix BUG"; fi
         if [ "${FAKE_TESTS_BROKEN_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix BROKEN"; fi
         if [ "${FAKE_TESTS_BADCALL_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix BADCALL"; fi
+        # FAKE_TESTS_SEQ: one word per tests dispatch, in order — NONAME,
+        # BROKEN, BADCALL or OK — so a station can be wrong three different
+        # ways in a row (the convergence rule stops the SAME complaint twice)
+        # and right on the fourth.
+        seqword="$(printf '%s\n' ${FAKE_TESTS_SEQ:-} | sed -n "${n}p")"
+        case "$seqword" in
+          BROKEN) suffix="$suffix BROKEN" ;;
+          BADCALL) suffix="$suffix BADCALL" ;;
+        esac
         if [ "${FAKE_TESTS_FLAKY_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix FLAKY"; fi
         word="impl$i"
         [ "${FAKE_CREATE:-0}" = 1 ] && [ "$i" = 1 ] && word="feat"
@@ -326,6 +346,7 @@ PLAN
         # asks for the old, unscoped spelling, which the gate refuses.
         marker="$ticket AC-00$i"
         if [ "${FAKE_TESTS_NONAME_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then marker="AC-00$i"; fi
+        [ "$seqword" != NONAME ] || marker="AC-00$i"
         printf '# %s asserts %s — expects %s%s\n' "$marker" "$word" "$exp" "$suffix" >"$wt/tests/t$i.py"
       fi
     done
@@ -472,7 +493,7 @@ eq "the report carries the convergence numbers" \
   "$(grep -c '^- tests: 1 declared file(s), 1 collected; 1 red at the freeze, 0 green at the freeze$' tasks/AIF-1/report.md),$(grep -c '^- loops: 0 repair(s) of the oracle, 0 replan(s)$' tasks/AIF-1/report.md)" "1,1"
 # Each station's own turn cap, from its aif:meta, over the project-wide one.
 eq "the plan and tests stations got their own turn caps, implement its own" \
-  "$(cat .aif/tmp/fake-turns-plan-1),$(cat .aif/tmp/fake-turns-tests-1),$(cat .aif/tmp/fake-turns-implement-1)" "60,60,45"
+  "$(cat .aif/tmp/fake-turns-plan-1),$(cat .aif/tmp/fake-turns-tests-1),$(cat .aif/tmp/fake-turns-implement-1)" "60,60,60"
 # The tests station's Bash is for `aif _verify`, and it is granted only once
 # `aif doctor --probe` has watched the guard deny a command here. It has not.
 eq "the tests station ran without Bash — the guard has not been seen to deny here" \
@@ -2326,6 +2347,154 @@ eq "the card never moved" "$(test -f .aif/board/AIF-36.json && jq -r .column .ai
 eq "doctor said it first" "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*not committed')" "1"
 }
 knowledge_layer_scenarios
+
+# ====== 37. a project.json behind its template =================================
+#
+# .aif/project.json is the project's and aif init never rewrites it — which
+# left an upgraded project telling verify-red that a TypeError is a legitimate
+# red, its type-check bound to green alone, and the new stage running on the
+# old dispatch cap, in silence (docs/DEFECTS-8.md #1, #4). What moved is now
+# said by check, doctor and the worker, and `aif project upgrade` brings
+# exactly that forward.
+printf '\n37. a project.json from an older template is reported, upgraded, and run on the caps the stage was designed for\n'
+mkdir -p "$SANDBOX/p37" && cd "$SANDBOX/p37" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+mkdir -p src tests && printf 'def users():\n    return []\n' >src/app.py && printf '# t0\n' >tests/t0.py
+git add -A && git commit -qm init >/dev/null
+"$AIF" init anthropic >/dev/null 2>&1
+"$AIF" project init pytest --no-checks >/dev/null 2>&1
+tmp="$(mktemp)"
+# As 0.10.x wrote it: no kind, the retired classes as legitimate, no loop
+# caps, the type-check on green only; the project's own answers beside them.
+jq 'del(.test.kind) | del(.failure_classes.retired)
+    | .failure_classes.legitimate = ["AssertionError", "ModuleNotFoundError", "ImportError", "AttributeError", "NameError", "TypeError"]
+    | del(.limits.run_dispatches_max) | del(.limits.repairs_max) | del(.limits.replans_max)
+    | .test.roots = ["tests", "spec"] | .test.command = "python3 -m pytest -q --junitxml=.aif/tmp/report.xml -p no:cacheprovider"
+    | .checks = [ { name: "typecheck", command: "mypy src", phase: ["green"], required: true },
+                  { name: "lint", command: "ruff check .", phase: ["green"], required: true } ]' \
+  .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+rc=0
+"$AIF" project check >"$OUT/check37.out" 2>&1 || rc=$?
+eq "check: valid, and what moved is listed" "$rc,$(grep -c 'thing(s) have moved' "$OUT/check37.out")" "0,1"
+eq "…a retired class still counted as red, by name" "$(grep -c 'still counts "TypeError" as a legitimate red' "$OUT/check37.out"),$(grep -c 'still counts "ImportError"' "$OUT/check37.out")" "1,1"
+eq "…a template class the file lacks" "$(grep -c 'lacks "aif: not implemented"' "$OUT/check37.out")" "1"
+eq "…the type-check bound to green alone" "$(grep -c 'check "typecheck" is a type-check bound to \[green\]' "$OUT/check37.out")" "1"
+eq "…a cap the file does not set, with the template value" "$(grep -c 'limits.run_dispatches_max is not set — the pytest template puts it at 16' "$OUT/check37.out")" "1"
+eq "…the runner not recorded, inferred from the command" "$(grep -c 'test.kind is not recorded' "$OUT/check37.out")" "1"
+eq "…and the remedy" "$(grep -c '^aif project upgrade brings these forward' "$OUT/check37.out")" "1"
+eq "doctor: project.json is valid but behind its template" "$("$AIF" doctor 2>/dev/null | grep -c 'project.json .*behind its template')" "1"
+if command -v claude >/dev/null 2>&1; then
+  eq "…and its next step is the upgrade" "$("$AIF" doctor 2>/dev/null | grep -c '^next: .*aif project upgrade')" "1"
+fi
+rc=0
+"$AIF" project upgrade >"$OUT/upgrade37.out" 2>&1 || rc=$?
+eq "upgrade: brought forward" "$rc,$(grep -c '^upgraded' "$OUT/upgrade37.out")" "0,1"
+eq "the runner is recorded" "$(jq -r '.test.kind' .aif/project.json)" "pytest"
+eq "the failure classes are those of the template, the retired ones gone" \
+  "$(jq -c '.failure_classes.legitimate' .aif/project.json)" '["AssertionError","assert ","NotImplementedError","aif: not implemented"]'
+eq "…said so" "$(grep -c 'retired: ModuleNotFoundError, ImportError, AttributeError, NameError, TypeError' "$OUT/upgrade37.out")" "1"
+eq "the caps the stage was designed for are set" \
+  "$(jq -c '[.limits.run_dispatches_max, .limits.repairs_max, .limits.replans_max, .limits.attempts_max]' .aif/project.json)" "[16,2,1,3]"
+eq "the type-check is bound to contract, red and green; lint as it was" \
+  "$(jq -c '[.checks[] | [.name, (.phase | join(","))]]' .aif/project.json)" '[["typecheck","contract,red,green"],["lint","green"]]'
+eq "its own answers are as they were" \
+  "$(jq -c '[.test.roots, .test.command, .checks[0].command]' .aif/project.json)" '[["tests","spec"],"python3 -m pytest -q --junitxml=.aif/tmp/report.xml -p no:cacheprovider","mypy src"]'
+eq "check is quiet now, and a second upgrade has nothing to do" \
+  "$("$AIF" project check 2>/dev/null | grep -c 'current with the pytest template'),$("$AIF" project upgrade 2>/dev/null | grep -c 'nothing to bring forward')" "1,1"
+eq "a project.json kept by hand with a class of its own keeps it" \
+  "$(tmp="$(mktemp)"; jq '.failure_classes.legitimate += ["MyProjectError"]' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json; "$AIF" project upgrade >/dev/null 2>&1; jq -r '.failure_classes.legitimate | index("MyProjectError") != null' .aif/project.json)" "true"
+
+# The worker: a file that omits the cap runs the new stage on 16, and says the
+# file is behind its template, once, before anything is spent.
+fresh_project "$SANDBOX/p37b"
+tmp="$(mktemp)"
+jq 'del(.limits.run_dispatches_max)' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+git add -A && git commit -qm "no cap" >/dev/null
+ticket_for AIF-37
+git add -A && git commit -qm "ticket 37" >/dev/null
+rc=0
+"$AIF" work AIF-37 --no-worktree >"$OUT/run37.out" 2>&1 || rc=$?
+eq "built, on 16 dispatches" "$rc,$(grep -c '≤16 dispatches' "$OUT/run37.out")" "0,1"
+eq "…and warned that project.json is behind its template" "$(grep -c 'project.json is behind its template — 1 thing(s) moved' "$OUT/run37.out")" "1"
+
+# The tests station gets four rejections in a row (max_attempts in its
+# aif:meta); three different complaints, then a good fourth.
+fresh_project "$SANDBOX/p37c"
+ticket_for AIF-37
+git add -A && git commit -qm "ticket 37c" >/dev/null
+rc=0
+FAKE_TESTS_SEQ="NONAME BROKEN BADCALL OK" "$AIF" work AIF-37 --no-worktree >"$OUT/run37c.out" 2>&1 || rc=$?
+eq "three rejections, then built on the fourth attempt" "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-37/ledger.json)" "0,fail,fail,fail,pass"
+eq "the tests station was dispatched four times" "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-37/ledger.json)" "4"
+eq "…each retry told the attempt it was, of four" "$(grep -c 'tests rejected (attempt 3/4)' "$OUT/run37c.out")" "1"
+eq "the plan station declares no cap of its own, so it is held to three" \
+  "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' .claude/agents/aif-plan.md | sed '1d;$d' | jq -r '.max_attempts // "none"')" "none"
+
+# ====== 38. aif init refreshes its own hooks, keeps the user's, previews honestly
+#
+# A project initialised before 0.5.3 kept a guard matcher without Bash through
+# every later init, because init skipped any event the file already had and
+# could not tell the user's hooks from its own (docs/DEFECTS-8.md #2); and a
+# dry run announced every updated file as retired (#5).
+printf '\n38. aif init refreshes its own hook registration, keeps the user'"'"'s, and a dry run previews honestly\n'
+mkdir -p "$SANDBOX/p38" && cd "$SANDBOX/p38" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+mkdir -p src tests .claude && printf 'def users():\n    return []\n' >src/app.py && printf '# t0\n' >tests/t0.py
+cat >.claude/settings.json <<'J'
+{ "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [ { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.aif/hooks/guard.sh" } ] },
+      { "matcher": "Write", "hooks": [ { "type": "command", "command": "./my-hook.sh" } ] } ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "./bye.sh" } ] } ] } }
+J
+git add -A && git commit -qm init >/dev/null
+rc=0
+"$AIF" init anthropic >"$OUT/init38.out" 2>&1 || rc=$?
+eq "init: the stale registration is refreshed, the matcher it had named" \
+  "$rc,$(grep -c 'refresh .*hooks.PreToolUse' "$OUT/init38.out"),$(grep -c 'ours was registered for "Write|Edit|MultiEdit|NotebookEdit"' "$OUT/init38.out")" "0,1,1"
+eq "…the metering hook registered, the user hook kept and said" \
+  "$(grep -c 'register .*hooks.SubagentStop' "$OUT/init38.out"),$(grep -c 'kept your own 1 hook(s) on PreToolUse' "$OUT/init38.out")" "1,1"
+eq "…and no warning calls the user hooks ours, or ours theirs" "$(grep -c 'you already have' "$OUT/init38.out")" "0"
+eq "the guard now matches Bash" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.hooks[0].command | contains(".aif/hooks/guard.sh")) | .matcher] | .[0]' .claude/settings.json)" "Write|Edit|MultiEdit|NotebookEdit|Bash"
+eq "the user PreToolUse and Stop hooks are untouched" \
+  "$(jq -c '[.hooks.PreToolUse[] | select(.hooks[0].command == "./my-hook.sh") | .matcher], (.hooks.Stop | length)' .claude/settings.json | paste -sd, -)" '["Write"],1'
+eq "the edit is in the manifest, so uninstall can take ours back" \
+  "$(jq -r '[.edits[] | select(.path == ".claude/settings.json") | .kind] | .[0]' .aif/manifest.json)" "json_merge"
+rc=0
+"$AIF" init anthropic >"$OUT/init38b.out" 2>&1 || rc=$?
+eq "a second init has nothing to refresh" "$rc,$(grep -c 'refresh\|register' "$OUT/init38b.out")" "0,0"
+eq "doctor reads the registration: Bash present, so the probe decides" \
+  "$(AIF_WORK_STATION_CMD='' "$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["station-guard"].ok')" "null"
+# Without Bash in the matcher, doctor says so before any probe.
+tmp="$(mktemp)"
+jq '(.hooks.PreToolUse[] | select(.hooks[0].command | contains("guard.sh")) | .matcher) = "Write|Edit"' .claude/settings.json >"$tmp" && mv "$tmp" .claude/settings.json
+eq "…and a matcher without Bash is ✗ with the remedy, probe or not" \
+  "$(AIF_WORK_STATION_CMD='' "$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["station-guard"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*without Bash .*aif init refreshes')" "1"
+eq "…shown in the text output too" "$(AIF_WORK_STATION_CMD='' "$AIF" doctor 2>/dev/null | grep -c '✗ station-guard .*without Bash')" "1"
+"$AIF" init anthropic >/dev/null 2>&1
+eq "init puts Bash back" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.hooks[0].command | contains("guard.sh")) | .matcher] | .[0]' .claude/settings.json)" "Write|Edit|MultiEdit|NotebookEdit|Bash"
+
+# A dry run of an upgrade: an updated file is previewed as an update, once,
+# and never as a retirement. The update is staged by moving one installed
+# file and its recorded hash together, which is what a newer set looks like.
+printf '\n# a newer set\n' >>.claude/agents/aif-plan.md
+tmp="$(mktemp)"
+jq --arg h "$(shasum -a 256 .claude/agents/aif-plan.md | cut -d' ' -f1)" \
+  '(.files[] | select(.path == ".claude/agents/aif-plan.md") | .sha256) = $h' .aif/manifest.json >"$tmp" && mv "$tmp" .aif/manifest.json
+rc=0
+"$AIF" init anthropic --dry-run >"$OUT/dry38.out" 2>&1 || rc=$?
+eq "dry run: the update is previewed, and nothing is retired" \
+  "$rc,$(grep -c '^  update .*aif-plan.md' "$OUT/dry38.out"),$(grep -c 'retire' "$OUT/dry38.out")" "0,1,0"
+eq "…and the summary agrees with the real run" \
+  "$(grep -o '[0-9]* updated' "$OUT/dry38.out"),$("$AIF" init anthropic 2>&1 | grep -o '[0-9]* updated')" "1 updated,1 updated"
+
+# Uninstall takes back ours and only ours.
+"$AIF" uninstall >/dev/null 2>&1
+eq "uninstall: our hooks gone, the user hooks kept" \
+  "$(jq -c '[.hooks.PreToolUse[] | .hooks[0].command], (.hooks.Stop | length), (.hooks | has("SubagentStop"))' .claude/settings.json | paste -sd, -)" '["./my-hook.sh"],1,false'
 
 # ----------------------------------------------------------------------------
 printf '\n'

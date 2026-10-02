@@ -114,10 +114,11 @@ ANCHORS
 # --------------------------------------------------------------------------
 # 3. the stations, from their own files, in the order lib/run.sh runs them
 # --------------------------------------------------------------------------
-station_rows=""    # stage|engine|gates|requires|leaves
+station_rows=""    # stage|engine|gates|attempts|requires|leaves
 mermaid_stations=""
 prev_gate="G_READY"
 first_retry=1
+attempts_exceptions=""
 for stage in $stages; do
   f="$SET/agents/aif-$stage.md"
   [ -f "$f" ] || die "lib/run.sh runs '$stage' but sets/claude/agents/aif-$stage.md does not exist"
@@ -148,8 +149,14 @@ for stage in $stages; do
     [ (.produces // empty),
       ((.freezes // empty) | . + ", frozen"),
       ((.binds // empty) | "the code, bound to " + .) ] | join("; ")')"
-  station_rows="$station_rows$stage|$engine|$gates|$requires|$leaves
+  # How many rejections in a row the station gets: its own max_attempts, else
+  # the project-wide limits.attempts_max (lib/cmd_work.sh,
+  # _aif_work_attempts_max). The tests station declares four.
+  station_attempts="$(printf '%s' "$meta" | jq -r '.max_attempts // empty')"
+  [ -n "$station_attempts" ] || station_attempts="$attempts_max"
+  station_rows="$station_rows$stage|$engine|$gates|$station_attempts|$requires|$leaves
 "
+  [ "$station_attempts" = "$attempts_max" ] || attempts_exceptions="$attempts_exceptions, $stage $station_attempts"
 
   gate_word="gate"
   case "$gates" in *,*) gate_word="gates" ;; esac
@@ -157,6 +164,8 @@ for stage in $stages; do
   if [ "$first_retry" -eq 1 ]; then
     retry="-.->|\"rejected: retried with the complaint, up to $attempts_max times\"|"
     first_retry=0
+  elif [ "$station_attempts" != "$attempts_max" ]; then
+    retry="-.->|\"rejected: up to $station_attempts times\"|"
   fi
   mermaid_stations="$mermaid_stations    S_${stage}[\"station $stage · $short\"] --> G_${stage}{{\"$gate_word $gates\"}}
     $prev_gate --> S_${stage}
@@ -191,7 +200,8 @@ done
 
 repairs_max="$(jq -r '.limits.repairs_max // "?"' "$TEMPLATE")"
 replans_max="$(jq -r '.limits.replans_max // "?"' "$TEMPLATE")"
-cap_rows="a station rejected in a row|$attempts_max|limits.attempts_max
+grep -q '_aif_work_attempts_max' "$ROOT/lib/cmd_work.sh" || die "lib/cmd_work.sh no longer reads a station's own max_attempts — the attempts column below is drawn from it"
+cap_rows="a station rejected in a row|$attempts_max${attempts_exceptions:+ (}${attempts_exceptions#, }${attempts_exceptions:+)}|limits.attempts_max, or max_attempts in the station's aif:meta
 the same complaint twice in a row|stop|the convergence rule, lib/cmd_work.sh
 repairs of the oracle, per ticket|$repairs_max|limits.repairs_max
 replans, per ticket|$replans_max|limits.replans_max
@@ -327,7 +337,7 @@ The stage order is the list in \`lib/run.sh\`; each station's own file says
 which gate judges it. The \`ready\` gate runs first, at intake, before the first
 token, and it is the same script the analyst ran at the end of the conversation.
 
-$(table_md "stage|engine|judged by|requires|leaves behind" "$station_rows")
+$(table_md "stage|engine|judged by|attempts|requires|leaves behind" "$station_rows")
 
 ## The caps on one run
 
@@ -440,7 +450,7 @@ EOH
       <p>The stage order is the list in <code>lib/run.sh</code>; each station's own file names the gate that judges it. The <code>ready</code> gate runs first, at intake, before the first token: the same script the analyst ran at the end of the conversation.</p>
       <div class="table-wrap">
 EOH
-  table_html "stage|engine|judged by|requires|leaves behind" "$station_rows"
+  table_html "stage|engine|judged by|attempts|requires|leaves behind" "$station_rows"
   cat <<'EOH'
       </div>
     </section>

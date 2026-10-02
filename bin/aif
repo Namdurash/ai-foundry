@@ -68,7 +68,7 @@ commands:
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
   explain       Draw how a ticket got here — criteria, decisions, gaps
-  project       Set up or validate .aif/project.json (init | check)
+  project       Set up .aif/project.json, or write the project's guide to its tests (init | check | guide)
   doctor        What is installed, and which roles are ready on this machine
   profiles      List the available (set, runner, model) profiles
   test          Run the evals against a profile and report a pass rate

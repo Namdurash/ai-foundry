@@ -18,12 +18,16 @@
 #   3  trello: init maps the columns it can and creates the rest only when
 #      told; check refuses a missing token loudly; create writes the ticket as
 #      the card's description and pull reads it back byte for byte; a card the
-#      analyst did not write is refused at pull; comment, label, status, show
+#      analyst did not write is refused at pull; comment, label, status, show;
+#      a comment is held to Trello's 16384 characters counted as Trello counts
+#      them — a Ukrainian one that fits by characters is posted whole, a longer
+#      one is cut on a letter, saying where the whole text is (DEFECTS-10 #1)
 #   4  doctor reports per role what is missing, and stops saying "not ready"
 #      the moment the token is set
 #   5  the worker pulls the next Ready card, moves it through In Progress to
 #      Review with the report as a comment, and to Needs Human when the ticket
-#      is not ready
+#      is not ready; when the board refuses the comment, it says the report is
+#      not on the card, and the command it prints posts it once the board answers
 #
 # Run by `make check`. Requires git, jq, curl and python3.
 
@@ -268,6 +272,42 @@ eq "pull initialises the ledger" "$(test -f tasks/AIF-1/ledger.json && echo yes)
 "$AIF" board comment AIF-1 "$OUT/note.md" >/dev/null
 eq "the comment reached the server" "$(mock | jq -r '[.comments[][]] | .[0].data.text')" "the export must be signed"
 eq "show lists it" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].text')" "the export must be signed"
+
+# A comment in Ukrainian, two bytes a letter (docs/DEFECTS-10.md #1). The cut
+# counted bytes: anything over 16000 was cut at byte 15800 — through a letter,
+# though it was far under Trello's 16384 characters — and Trello, as the mock
+# does now, refused the malformed text with a 400. Now: whole when it fits by
+# characters, else cut on a character, counted the way Trello counts them.
+python3 - "$OUT/uk-fits.md" "$OUT/uk-long.md" "$OUT/emoji.md" <<'PY3'
+import sys
+line = "Звіт про збірку: критерій виконано, тести зелені.\n"
+open(sys.argv[1], "w", encoding="utf-8").write(line * 240)
+open(sys.argv[2], "w", encoding="utf-8").write(line * 400)
+open(sys.argv[3], "w", encoding="utf-8").write("\U0001F680" * 9000)
+PY3
+chars() { python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
+posted() { # <ID> — the card's last comment, as the server holds it
+  mock | jq -j --arg n "$1 " '[.cards[] | select(.name | startswith($n)) | .id][0] as $c | .comments[$c] | last | .data.text'
+}
+rc=0
+"$AIF" board comment AIF-1 "$OUT/uk-fits.md" >"$OUT/uk-fits.out" 2>&1 || rc=$?
+posted AIF-1 >"$OUT/uk-fits.posted"
+eq "Ukrainian, $(wc -c <"$OUT/uk-fits.md" | tr -d ' ') bytes in $(chars "$OUT/uk-fits.md") characters: posted whole" \
+  "$rc,$(cmp -s "$OUT/uk-fits.posted" "$OUT/uk-fits.md" && echo whole || echo cut)" "0,whole"
+rc=0
+"$AIF" board comment AIF-1 "$OUT/uk-long.md" >"$OUT/uk-long.out" 2>&1 || rc=$?
+posted AIF-1 >"$OUT/uk-long.posted"
+eq "Ukrainian, $(chars "$OUT/uk-long.md") characters: taken by the board, cut on a letter near the limit, saying so" \
+  "$rc,$(python3 -c '
+import sys
+a = open(sys.argv[1], encoding="utf-8").read()
+b = open(sys.argv[2], encoding="utf-8").read()
+i = b.find("\n\n_(cut to fit a Trello comment — the whole text is ")
+print(int(i > 16000 and a.startswith(b[:i]) and len(b.encode("utf-16-le")) // 2 <= 16384))' "$OUT/uk-long.md" "$OUT/uk-long.posted")" "0,1"
+rc=0
+"$AIF" board comment AIF-1 "$OUT/emoji.md" >"$OUT/emoji.out" 2>&1 || rc=$?
+eq "9000 emoji are 18000 of Trello's characters: cut to fit, two to an emoji" \
+  "$rc,$(posted AIF-1 | python3 -c 'import sys; n = sys.stdin.read().count("\U0001F680"); print(int(8000 < n <= 8192))')" "0,1"
 "$AIF" board label AIF-1 blocked >/dev/null
 eq "label created on the board and attached" "$(mock | jq '(.labels | length), (.cards[] | .idLabels | length)' | tr '\n' ',')" "1,1,"
 eq "status maps lists back to columns" "$("$AIF" board status --json | jq -r '.[0].column')" "ready"
@@ -329,6 +369,46 @@ eq "the report is a comment on the card" "$(mock | jq -r '[.comments[][] | .data
 mock | jq -j '.cards[] | select(.name | startswith("AIF-1")) | .desc' >"$OUT/card-now.md"
 eq "the run built the card's current text, byte for byte" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 "$OUT/card-now.md" | cut -d' ' -f1)"
+
+# A board that refuses the comment (docs/DEFECTS-10.md #1): "report posted" was
+# printed after the move, under the error that said the comment had been
+# refused, with a command that could not post it either. Now the worker says
+# the report is not on the card, and the command it prints works once the
+# board answers — for the report on a card in Review, and for the reason on a
+# card sent to Needs Human. A project of its own: AIF-1 is built in this tree.
+fresh_project "$SANDBOX/p3b"
+"$AIF" board init trello --board b1 >/dev/null 2>&1
+ticket_for AIF-6
+ticket_for AIF-7 '[{ "id": "Q-001", "question": "signed?", "default": "no" }]'
+git add -A && git commit -qm "two tickets" >/dev/null
+"$AIF" board create tasks/AIF-6/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-7/ticket.md --column ready >/dev/null
+column_of() { "$AIF" board status --json | jq -r --arg t "$1" '.[] | select(.ticket == $t) | .column'; }
+later() { # <worker output> — run the command it printed for posting later
+  local cmd
+  cmd="$(sed -n 's/.*post it when the board answers: aif //p' "$1" | sed -n 1p)"
+  [ -n "$cmd" ] || return 9
+  # shellcheck disable=SC2086 # the printed command, word for word
+  "$AIF" $cmd >/dev/null 2>&1
+}
+curl -s "http://127.0.0.1:$PORT/_fail/comments/on" >/dev/null
+rc=0
+"$AIF" work AIF-6 --no-worktree >"$OUT/work-refused.out" 2>&1 || rc=$?
+eq "the board refuses the report: built, in Review, and not said to be posted" \
+  "$rc,$(column_of AIF-6),$(grep -c 'report posted' "$OUT/work-refused.out"),$(grep -c 'report NOT on the card' "$OUT/work-refused.out")" "0,review,0,1"
+rc=0
+"$AIF" work AIF-7 --no-worktree >"$OUT/work-refused2.out" 2>&1 || rc=$?
+eq "…and the reason for Needs Human: not said to be posted either" \
+  "$rc,$(column_of AIF-7),$(grep -c 'why NOT on the card' "$OUT/work-refused2.out")" "1,needs_human,1"
+curl -s "http://127.0.0.1:$PORT/_fail/comments/off" >/dev/null
+rc=0
+later "$OUT/work-refused.out" || rc=$?
+eq "the command it printed posts the report once the board answers" \
+  "$rc,$(posted AIF-6 | sed -n 1p)" "0,# AIF-6 — built"
+rc=0
+later "$OUT/work-refused2.out" || rc=$?
+eq "…and the reason, under its blocked: line" \
+  "$rc,$(posted AIF-7 | sed -n 1p)" "0,blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 
 fresh_project "$SANDBOX/p5"
 unset AIF_TRELLO_API

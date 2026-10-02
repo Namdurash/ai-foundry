@@ -10,7 +10,14 @@ the documented API listens, not that Trello behaves.
 
 One board, "b1", pre-seeded with two lists ("Backlog", "Done") so `aif board
 init --create-lists` has both a name to map and four lists to create.
-GET /_state dumps everything for the check's assertions.
+GET /_state dumps everything for the check's assertions; GET
+/_fail/comments/on and /_fail/comments/off make every comment fail, the way a
+board that stops answering does, and back.
+
+Comments are held to what Trello holds them to: 1 to 16384 characters, counted
+as JavaScript counts them (UTF-16 code units), and text that is not UTF-8 is
+refused with a 400 — what the project saw a comment cut through a Cyrillic
+letter get (docs/DEFECTS-10.md #1).
 """
 import json
 import re
@@ -41,6 +48,7 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode() if length else ""
+        self._raw = body
         if body:
             for k, v in parse_qs(body, keep_blank_values=True).items():
                 q[k] = v
@@ -66,6 +74,9 @@ class Handler(BaseHTTPRequestHandler):
         STATE["log"].append(f"{method} {path}")
         if path == "/_state":
             return self._send(200, STATE)
+        if path in ("/_fail/comments/on", "/_fail/comments/off"):
+            STATE["fail_comments"] = path.endswith("/on")
+            return self._send(200, {"fail_comments": STATE["fail_comments"]})
         if not self._auth():
             return None
         p = self._params()
@@ -108,6 +119,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, STATE["labels"][lid])
         m = re.match(r"^/1/cards/([^/]+)/actions/comments$", path)
         if m and method == "POST":
+            if STATE.get("fail_comments"):
+                return self._send(503, {"error": "the mock was told to refuse comments"})
+            try:
+                text = parse_qs(self._raw, keep_blank_values=True, errors="strict").get("text", [""])[0]
+            except UnicodeDecodeError:
+                return self._send(400, {"error": "invalid value for text"})
+            if not 1 <= len(text.encode("utf-16-le")) // 2 <= 16384:
+                return self._send(400, {"error": "invalid value for text"})
             STATE["comments"].setdefault(m.group(1), []).append(
                 {"id": new_id("a"), "date": "2026-09-17T00:00:00.000Z", "data": {"text": p.get("text", "")},
                  "memberCreator": {"username": "mock", "fullName": "Mock User"}})

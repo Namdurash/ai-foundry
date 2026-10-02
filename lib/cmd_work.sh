@@ -195,9 +195,13 @@ _aif_work_abandon() {
 # the human. The body — the report, the gate's questions, a log's tail —
 # follows the line that says what to do next.
 #
+# <full-at> says where the whole body can be read when a board cuts it to
+# fit — the report, on its branch.
+#
 # rc 0 posted and moved · 1 either failed, with the command to do it by hand.
 _aif_work_block() {
-  local root="$1" ticket="$2" kind="$3" why="$4" body="${5:-}" next f keep="" rc=0
+  local root="$1" ticket="$2" kind="$3" why="$4" body="${5:-}" full_at="${6:-}"
+  local next f keep="" rc=0 said="why posted"
   case "$kind" in
     ticket) next="The ticket's problem, not the build's: the analyst (/aif-ba) reworks it from what is below, and it goes back to Ready." ;;
     run) next="The run stopped short of a build. What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged, and starts over when it changes." ;;
@@ -214,17 +218,18 @@ _aif_work_block() {
       cat "$body"
     fi
   } >"$f"
-  if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
+  if ! (AIF_BOARD_BY="aif work" AIF_BOARD_FULL_AT="$full_at" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
     keep="$(aif_main_root "$root")/.aif/tmp/blocked-$ticket.md"
     { mkdir -p "$(dirname "$keep")" && cp "$f" "$keep"; } 2>/dev/null || keep="$f"
-    aif_warn "could not post why to the board — run: aif board comment $ticket $keep"
+    aif_warn "why did not reach the card — post it when the board answers: aif board comment $ticket $keep"
+    said="why NOT on the card (above)"
     rc=1
   fi
   if ! (aif_board_move "$root" "$ticket" needs_human >/dev/null); then
     aif_warn "could not move $ticket to needs_human on the board — run: aif board move $ticket needs_human"
     rc=1
   else
-    _aif_work_say "board" "$ticket → needs_human — blocked: $kind"
+    _aif_work_say "board" "$ticket → needs_human — blocked: $kind, $said"
   fi
   [ "$keep" = "$f" ] || rm -f "$f"
   return "$rc"
@@ -2048,18 +2053,29 @@ $(head -20 "$gate_out")"
   # not, under the line that says whose problem stopped it. Loud on failure,
   # with the exact command to do it by hand; the work is on the branch either
   # way, and the exit code says what the work is.
-  local col report_path kind headline
+  #
+  # "report posted" is said when it was: it used to follow the MOVE, and was
+  # printed under the very error that said the comment had been refused
+  # (docs/DEFECTS-10.md #1). A report too long for a comment is cut by the
+  # board adapter, naming where the whole of it is — on the branch.
+  local col report_path kind headline full_at branch posted=0
   report_path="$work/report.md"
+  branch="$(aif_run_get "$work" '.branch')" || branch=""
+  full_at="$AIF_TASKS_DIR/$ticket/report.md on branch ${branch:-aif/$ticket}"
   col=review
   [ "$status" = "built" ] || col=needs_human
   if [ "$col" = "review" ]; then
-    if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
-      aif_warn "could not post the report to the board — run: aif board comment $ticket ${report_path#"$root"/}"
+    if (AIF_BOARD_BY="aif work" AIF_BOARD_FULL_AT="$full_at" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
+      posted=1
+    else
+      aif_warn "the report did not reach the card — post it when the board answers: aif board comment $ticket ${report_path#"$root"/}"
     fi
     if ! (aif_board_move "$root" "$ticket" "$col" >/dev/null); then
       aif_warn "could not move $ticket to $col on the board — run: aif board move $ticket $col"
-    else
+    elif [ "$posted" -eq 1 ]; then
       _aif_work_say "board" "$ticket → $col, report posted"
+    else
+      _aif_work_say "board" "$ticket → $col, report NOT on the card (above)"
     fi
   else
     # A spec stop is the ticket's own problem, found by a station — the
@@ -2068,7 +2084,7 @@ $(head -20 "$gate_out")"
     [ "$status" != "spec" ] || kind=ticket
     headline="$(printf '%s\n' "$why" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]]*$' | sed -n 1p)" || headline=""
     [ -n "$headline" ] || headline="the run stopped at $(aif_run_get "$work" '.stage')"
-    _aif_work_block "$root" "$ticket" "$kind" "$headline" "$report_path" || true
+    _aif_work_block "$root" "$ticket" "$kind" "$headline" "$report_path" "$full_at" || true
   fi
   AIF_WORK_SETTLED=1
   [ "$status" = "built" ]

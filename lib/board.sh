@@ -329,24 +329,71 @@ _aif_trello_move() {
   printf 'moved %s → %s\n' "$id" "$col"
 }
 
+# Trello takes a comment of 1 to 16384 characters, counted the way JavaScript
+# counts them — UTF-16 code units: one for a letter of Latin or Cyrillic, two
+# for an emoji. The cut used to count bytes. A Ukrainian report, two bytes a
+# letter, was cut at byte 15800: through a letter, and short of a limit it had
+# never reached — 16198 bytes were 12347 characters. Trello refused the
+# malformed text with a 400, so the card that most needed its report got none
+# (docs/DEFECTS-10.md #1).
+AIF_TRELLO_COMMENT_MAX=16384
+
+# _aif_trello_fit <file> <out> <note> — the file's text as Trello will take it:
+# whole when it fits, else cut on a character boundary with <note> after it,
+# the two together within AIF_TRELLO_COMMENT_MAX. Through jq, which reads the
+# file as UTF-8, slices by character and writes valid UTF-8 back, whatever a
+# station left in the report. Echoes the text's length in the limit's units.
+# rc 0 whole · 1 cut · 2 the file could not be read.
+_aif_trello_fit() {
+  local file="$1" out="$2" note="$3" len
+  len="$(jq -Rs '[explode[] | if . > 65535 then 2 else 1 end] | add // 0' "$file" 2>/dev/null)" || return 2
+  printf '%s' "$len"
+  if [ "$len" -le "$AIF_TRELLO_COMMENT_MAX" ]; then
+    jq -Rsj '.' "$file" >"$out" || return 2
+    return 0
+  fi
+  jq -Rsj --arg note "$note" --argjson max "$AIF_TRELLO_COMMENT_MAX" '
+    def units: if . > 65535 then 2 else 1 end;
+    ($max - ([$note | explode[] | units] | add // 0)) as $room
+    | explode as $cs
+    | (reduce $cs[] as $c ({ n: 0, k: 0, full: false };
+        if .full then .
+        elif .n + ($c | units) > $room then .full = true
+        else .n += ($c | units) | .k += 1 end)) as $r
+    | ($cs[0:$r.k] | implode) + $note' "$file" >"$out" || return 2
+  return 1
+}
+
+# The text of a comment that does not fit is cut, with where the whole of it
+# can be read: AIF_BOARD_FULL_AT when the caller knows (the worker names the
+# report on its branch), else the file, when it is in the project.
 _aif_trello_comment() {
-  local root="$1" id="$2" file="$3" card cid out tmp
+  local root="$1" id="$2" file="$3" card cid out tmp len where note fit=0
   card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
-  # Trello caps a comment at 16384 characters. Cut, and say where the rest is,
-  # rather than fail after the work is done.
-  tmp="$(mktemp "${TMPDIR:-/tmp}/aif-comment-XXXXXX")"
-  if [ "$(wc -c <"$file" | tr -d ' ')" -gt 16000 ]; then
-    head -c 15800 "$file" >"$tmp"
-    printf '\n\n_(truncated — the full report is %s on the branch)_\n' "${file#"$root"/}" >>"$tmp"
-  else
-    cp "$file" "$tmp"
+  where="${AIF_BOARD_FULL_AT:-}"
+  if [ -z "$where" ]; then
+    case "$file" in
+      "$root"/*) where="${file#"$root"/}" ;;
+    esac
   fi
-  out="$(_aif_trello_call "$root" POST "/cards/$cid/actions/comments" --data-urlencode "text@$tmp")"
-  local rc=$?
+  note="$(printf '\n\n_(cut to fit a Trello comment — the whole text is %s)_' "${where:-in the file this was posted from}")"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/aif-comment-XXXXXX")"
+  len="$(_aif_trello_fit "$file" "$tmp" "$note")" || fit=$?
+  if [ "$fit" -eq 2 ]; then
+    rm -f "$tmp"
+    aif_die "could not read $file as text to comment on $id"
+  fi
+  if ! out="$(_aif_trello_call "$root" POST "/cards/$cid/actions/comments" --data-urlencode "text@$tmp")"; then
+    rm -f "$tmp"
+    aif_die "Trello: could not comment on $id — $out"
+  fi
   rm -f "$tmp"
-  [ "$rc" -eq 0 ] || aif_die "Trello: could not comment on $id — $out"
-  printf 'commented on %s (%s bytes)\n' "$id" "$(wc -c <"$file" | tr -d ' ')"
+  if [ "$fit" -eq 1 ]; then
+    printf 'commented on %s (%s characters, cut to fit — the whole text is %s)\n' "$id" "$len" "${where:-in the file}"
+  else
+    printf 'commented on %s (%s characters)\n' "$id" "$len"
+  fi
 }
 
 # _aif_trello_create <root> <ticket.md> <column> — a card, or the existing

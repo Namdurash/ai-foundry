@@ -88,6 +88,18 @@ aif_current_ticket_file() {
   printf '%s/.aif/state/current' "$1"
 }
 
+# aif_run_lock_dir <root> <ticket> — the directory whose existence says a
+# worker on this machine is building <ticket>.
+#
+# In the MAIN checkout, like the local board, so every worktree and every
+# terminal sees the same one; under .aif/state/, gitignored, because it says
+# what this machine is doing and nothing about the project. A directory, not a
+# file: mkdir is atomic on every POSIX filesystem and needs no flock, which
+# stock macOS does not have — the ledger's lock is made the same way.
+aif_run_lock_dir() {
+  printf '%s/.aif/state/runs/%s' "$(aif_main_root "$1")" "$2"
+}
+
 # aif_station_file <root> <station> — the file declaring a pipeline station.
 #
 # A station is a SUBAGENT, so its file lives where the runner looks for agents

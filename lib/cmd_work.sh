@@ -16,7 +16,11 @@
 #   preflight   profile, runner, board, toolchain — before the first token
 #               (the old `aif run` learned the last one at ~$6.61 on a live
 #               ticket, at the LAST gate)
-#   board       the card moves to In Progress before anything is spent
+#   claim       the run lock — one worker per ticket on this machine — and
+#               then the card, In Progress before the checkout is cut: the
+#               board shows the card taken from the moment it is, and every
+#               way out after that ends with it in Review, or in Needs Human
+#               with a comment whose first line says why
 #   worktree    git worktree add .aif/worktrees/<ID> -b aif/<ID>. A disposable
 #               checkout of its own: nothing a station writes reaches the
 #               developer's tree until they merge the branch
@@ -37,8 +41,10 @@
 #               the branch and posted to the card. The human reviews that next
 #               to the diff, which is the one place they have enough context
 #
-# Exit: 0 built · 1 stopped, needs a human (the report says why) · 3 the
-# environment cannot run a ticket at all (nothing was spent).
+# Exit: 0 built · 1 stopped, needs a human (the card's comment and the report
+# say why) · 3 the environment cannot run a ticket (nothing was spent; a card
+# already taken is in Needs Human saying what) · 130 / 143 stopped by Ctrl-C,
+# by `aif work <ID> --stop` or by a TERM (the card says which).
 
 # AIF_WORK_WORKTREES lives in lib/paths.sh: `aif doctor` needs it too, to tell
 # a project whose test runner is collecting these checkouts beside the real tree.
@@ -54,11 +60,14 @@ usage: aif work [<ticket>] [options]
     aif work                    the ticket at the top of the board's Ready column
     aif work OPES-52            this one, in .aif/worktrees/OPES-52 on aif/OPES-52
     aif work OPES-52 --clean    remove that worktree (the branch stays)
+    aif work OPES-52 --stop     stop the worker building it, from any terminal
     aif work --loop             every card in Ready, in the board's order, one run each
 
-  Every transition goes through the board (aif board): the card moves to In
-  Progress when the run starts, and to Review — or Needs Human, with the
-  report as a comment — when it ends.
+  Every transition goes through the board (aif board). The card moves to In
+  Progress first, before the checkout is cut, and ends in Review with the
+  report as a comment — or in Needs Human with a comment whose first line
+  says why: blocked: ticket | run | environment | stopped. One worker builds
+  a ticket at a time on this machine; a second is refused, nothing spent.
 
   --profile P        which (set, runner, model) profile; default: the project's
   --budget USD       stop past this spend. OFF unless asked for: set it here
@@ -73,10 +82,16 @@ usage: aif work [<ticket>] [options]
                      checkout must already be disposable: set CI=1 (a CI job
                      has it) or AIF_DISPOSABLE=1 to say so. Refused otherwise
   --clean            remove the ticket's worktree and stop
+  --stop             stop the run building this ticket on this machine, the
+                     way its own Ctrl-C would: the station is ended, and the
+                     card goes to Needs Human saying who stopped it. Back in
+                     Ready, it resumes where it stopped
   --loop             after each run take the next card in Ready, until Ready is
                      empty. Stops early when a run cannot start, or after two
                      runs in a row that did not build — two cards in Needs Human
-                     usually mean the problem is not the cards
+                     usually mean the problem is not the cards. Ctrl-C stops the
+                     run in flight and takes no new card; --stop on the running
+                     card stops only that run, and the loop goes on
   --max-tickets N    with --loop: stop after N tickets
 
 Two caps always apply — the wall clock and limits.run_dispatches_max (16
@@ -100,27 +115,302 @@ _aif_work_say() {
   printf '%s%-9s%s %s\n' "$AIF_C_DIM" "$1" "$AIF_C_RESET" "$2" >&2
 }
 
-# _aif_work_abandon — the card stops claiming that work is happening.
+# _aif_work_abandon <EXIT|INT|TERM> — the card stops claiming that work is
+# happening, and says why.
 #
-# Armed for EXIT, INT and TERM the moment the card moves to In Progress, and it
-# has to cover all three. Ctrl-C and a supervisor's TERM are the obvious two;
-# the common one is neither — it is any `aif_die` or `set -e` failure between
-# the move and the report, which used to leave the card In Progress with
-# nobody working on it. That is the same defect as a meter that quietly did
-# not fire, and for one release the handler meant to prevent it was disarmed
-# by the first ledger write of every run (docs/DEFECTS-3.md #1-#3).
+# Armed for EXIT, INT and TERM the moment the run lock is taken, and it has to
+# cover all three. Ctrl-C and a supervisor's TERM are the obvious two; the
+# common one is neither — it is any `aif_die` or `set -e` failure between the
+# claim and the report, which used to leave the card In Progress with nobody
+# working on it. That is the same defect as a meter that quietly did not fire,
+# and for one release the handler meant to prevent it was disarmed by the
+# first ledger write of every run (docs/DEFECTS-3.md #1-#3).
 #
-# Idempotent, and silent once the run has settled the card itself. Where it
-# does act it exits 1, because a run nobody finished IS "stopped, needs a
-# human" — which is what 1 means here.
+# It used to move the card and say nothing: whoever opened Needs Human found a
+# card with no reason on it, and the reason was in the scrollback of whoever
+# had started the run. It posts one now (_aif_work_block) — who stopped the
+# run and during which stage, or the last error the worker printed.
+#
+# Idempotent, and silent once the run has settled the card itself; the run
+# lock is released either way. Where it acts it exits 130 for an INT, 143 for
+# a TERM and 1 for an exit — a run nobody finished IS "stopped, needs a
+# human", which is what 1 means here.
 _aif_work_abandon() {
-  [ "${AIF_WORK_SETTLED:-0}" = "0" ] || return 0
+  local rc_in=$? sig="${1:-EXIT}" code=1 kind why stage who
+  # `aif work <ID> --stop` waits for this: once the handler runs, the stop has
+  # landed, and nothing under the worker is signalled again.
+  [ -z "${AIF_WORK_LOCK:-}" ] || : >"$AIF_WORK_LOCK/ack" 2>/dev/null || true
+  case "$sig" in
+    INT) code=130 ;;
+    TERM) code=143 ;;
+  esac
+  if [ "${AIF_WORK_SETTLED:-0}" = "0" ] && [ -n "${AIF_WORK_CARD:-}" ]; then
+    AIF_WORK_SETTLED=1
+    stage="${AIF_WORK_PHASE:-run}"
+    if [ "$stage" = "run" ] && [ -n "${AIF_WORK_WORK:-}" ]; then
+      stage="$(aif_run_get "$AIF_WORK_WORK" '.stage' 2>/dev/null)" || stage=""
+      [ -n "$stage" ] || stage="run"
+    fi
+    if [ -n "${AIF_WORK_LOCK:-}" ] && [ -f "$AIF_WORK_LOCK/stop" ]; then
+      who="$(sed -n 1p "$AIF_WORK_LOCK/stop" 2>/dev/null)"
+      kind=stopped
+      why="by ${who:-someone} (aif work $AIF_WORK_CARD --stop), during $stage"
+    elif [ "$sig" = "INT" ]; then
+      kind=stopped
+      why="by Ctrl-C, during $stage"
+    elif [ "$sig" = "TERM" ]; then
+      kind=stopped
+      why="by a TERM signal, during $stage"
+    else
+      # Before intake no station has run: what stopped it is the machine.
+      case "${AIF_WORK_PHASE:-}" in
+        claim | worktree | intake) kind=environment ;;
+        *) kind=run ;;
+      esac
+      why="the worker exited (code $rc_in) during $stage"
+      [ -z "${AIF_LAST_ERR:-}" ] || why="$why; the last error it printed: $AIF_LAST_ERR"
+    fi
+    _aif_work_block "$AIF_WORK_ROOT" "$AIF_WORK_CARD" "$kind" "$why" "" || true
+    printf '\n%s did not finish — moved to needs_human, blocked: %s %s; the branch keeps what was accepted\n' \
+      "$AIF_WORK_CARD" "$kind" "$why" >&2
+    _aif_work_unlock
+    exit "$code"
+  fi
+  _aif_work_unlock
+  case "$sig" in
+    INT | TERM) exit "$code" ;;
+  esac
+  return 0
+}
+
+# _aif_work_block <root> <ticket> <kind> <why> [<body-file>] — the card goes
+# to Needs Human, and its comment says why on a first line the project manager
+# routes on: `blocked: ticket | run | environment | stopped — <why>`.
+#
+# Every way a taken card leaves the worker short of Review comes through here,
+# so that a card is never in Needs Human without its reason, and never put
+# back in Ready behind anyone's back, where the next run would take it again.
+# The kind is the routing (/aif-pjm): the ticket's problem goes to the analyst
+# as rework; a run that stopped, the machine, or a person stopping it are for
+# the human. The body — the report, the gate's questions, a log's tail —
+# follows the line that says what to do next.
+#
+# rc 0 posted and moved · 1 either failed, with the command to do it by hand.
+_aif_work_block() {
+  local root="$1" ticket="$2" kind="$3" why="$4" body="${5:-}" next f keep="" rc=0
+  case "$kind" in
+    ticket) next="The ticket's problem, not the build's: the analyst (/aif-ba) reworks it from what is below, and it goes back to Ready." ;;
+    run) next="The run stopped short of a build. What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged, and starts over when it changes." ;;
+    environment) next="This machine, not the ticket: no station ran on it, nothing was spent. Fix what is named below, then move the card back to Ready." ;;
+    stopped) next="What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged." ;;
+    *) next="" ;;
+  esac
+  f="$(mktemp "${TMPDIR:-/tmp}/aif-blocked-XXXXXX")"
+  {
+    printf 'blocked: %s — %s\n' "$kind" "$why"
+    [ -z "$next" ] || printf '\n%s\n' "$next"
+    if [ -n "$body" ] && [ -s "$body" ]; then
+      printf '\n'
+      cat "$body"
+    fi
+  } >"$f"
+  if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
+    keep="$(aif_main_root "$root")/.aif/tmp/blocked-$ticket.md"
+    { mkdir -p "$(dirname "$keep")" && cp "$f" "$keep"; } 2>/dev/null || keep="$f"
+    aif_warn "could not post why to the board — run: aif board comment $ticket $keep"
+    rc=1
+  fi
+  if ! (aif_board_move "$root" "$ticket" needs_human >/dev/null); then
+    aif_warn "could not move $ticket to needs_human on the board — run: aif board move $ticket needs_human"
+    rc=1
+  else
+    _aif_work_say "board" "$ticket → needs_human — blocked: $kind"
+  fi
+  [ "$keep" = "$f" ] || rm -f "$f"
+  return "$rc"
+}
+
+# _aif_work_refuse <root> <ticket> <why> [<details-file>] — the machine cannot
+# run this ticket, and its card was already taken: blocked: environment, then
+# exit 3. No station has run, so nothing was spent; the details file, when
+# there is one, is the comment's body, and is removed.
+_aif_work_refuse() {
+  _aif_work_block "$1" "$2" environment "$3" "${4:-}" || true
   AIF_WORK_SETTLED=1
-  [ -n "${AIF_WORK_CARD:-}" ] || return 0
-  aif_board_move "$AIF_WORK_ROOT" "$AIF_WORK_CARD" needs_human >/dev/null 2>&1 || true
-  printf '\n%s did not finish — moved to needs_human; the branch keeps what was accepted\n' \
-    "$AIF_WORK_CARD" >&2
-  exit 1
+  [ -z "${4:-}" ] || rm -f "$4"
+  exit 3
+}
+
+# _aif_work_lock_pid <lock-dir> — the pid that holds the run lock, or empty.
+_aif_work_lock_pid() {
+  jq -r '.pid // empty' "$1/owner.json" 2>/dev/null
+}
+
+# _aif_work_lock_live <lock-dir> — rc 0 when a worker is behind the lock.
+#
+# A pid that is gone is a worker killed outright — kill -9, a closed laptop, a
+# reboot — that never ran its handler; one the system has since handed to some
+# other program is not a worker either. A lock with no owner written yet was
+# taken a moment ago, or by a run that died between the mkdir and the write,
+# and its age tells the two apart.
+_aif_work_lock_live() {
+  local pid cmd
+  pid="$(_aif_work_lock_pid "$1")"
+  if [ -z "$pid" ]; then
+    [ -n "$(find "$1" -maxdepth 0 -mmin -1 2>/dev/null)" ]
+    return
+  fi
+  kill -0 "$pid" 2>/dev/null || return 1
+  # Held, then matched: `ps | grep -q` under pipefail is FINDINGS #19.
+  cmd="$(ps -o command= -p "$pid" 2>/dev/null)" || return 1
+  case "$cmd" in
+    *aif*) return 0 ;;
+  esac
+  return 1
+}
+
+# _aif_work_lock <root> <ticket> — take the run lock for <ticket>, or say who
+# holds it. rc 0 taken, AIF_WORK_LOCK names it · 1 held, AIF_WORK_LOCK_HELD
+# says by what.
+#
+# Nothing else stops a second `aif work` on the same ticket: it reuses the
+# worktree, resumes the same run record, and dispatches into the tree the
+# first one is dispatching into. The board cannot say it either — the card
+# moves a moment AFTER this, and on a shared board it says nothing about which
+# machine took it.
+#
+# A lock whose worker is gone is taken over. Two runs that find the same dead
+# lock in the same instant can both take it over: the remove and the mkdir are
+# two steps, and no POSIX primitive makes them one without flock. The window
+# is that instant after a crash, and it is written down rather than pretended
+# away.
+_aif_work_lock() {
+  local root="$1" ticket="$2" lock pid
+  AIF_WORK_LOCK_HELD=""
+  lock="$(aif_run_lock_dir "$root" "$ticket")"
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+  if ! mkdir "$lock" 2>/dev/null; then
+    if _aif_work_lock_live "$lock"; then
+      AIF_WORK_LOCK_HELD="$(jq -r '"pid " + (.pid | tostring) + ", since " + .started_at' "$lock/owner.json" 2>/dev/null)"
+      [ -n "$AIF_WORK_LOCK_HELD" ] || AIF_WORK_LOCK_HELD="its lock was taken a moment ago"
+      return 1
+    fi
+    pid="$(_aif_work_lock_pid "$lock")"
+    rm -rf "${lock:?}"
+    if ! mkdir "$lock" 2>/dev/null; then
+      AIF_WORK_LOCK_HELD="another run took it just now"
+      return 1
+    fi
+    _aif_work_say "lock" "$ticket — the worker that held it (pid ${pid:-?}) is gone; taken over"
+  fi
+  jq -n --argjson pid "$$" --arg t "$ticket" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{ ticket: $t, pid: $pid, started_at: $at }' >"$lock/owner.json.tmp" &&
+    mv "$lock/owner.json.tmp" "$lock/owner.json"
+  AIF_WORK_LOCK="$lock"
+  return 0
+}
+
+# _aif_work_unlock — release the run lock, if this process is the one holding it.
+_aif_work_unlock() {
+  local lock="${AIF_WORK_LOCK:-}"
+  [ -n "$lock" ] || return 0
+  AIF_WORK_LOCK=""
+  [ "$(_aif_work_lock_pid "$lock")" = "$$" ] || return 0
+  rm -rf "${lock:?}"
+}
+
+# _aif_work_descendants <pid> — every process below <pid>, one per line.
+#
+# What a terminal's Ctrl-C reaches by signalling a process group, found by
+# walking the tree instead: a worker that `--loop` or a script started shares
+# its group with whoever started it, and a signal to the group would stop the
+# loop with it.
+_aif_work_descendants() {
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    { parent[$1] = $2 }
+    END {
+      want[root] = 1
+      do {
+        grew = 0
+        for (p in parent) if (!(p in want) && (parent[p] in want)) { want[p] = 1; grew = 1 }
+      } while (grew)
+      for (p in want) if (p != root) print p
+    }'
+}
+
+# _aif_work_stop <root> <ticket> — `aif work <ID> --stop`: end the run that is
+# building <ticket> on this machine, from any terminal, the way its own Ctrl-C
+# would — the station ended, the card in Needs Human saying who stopped it.
+#
+# TERM, not INT. A job a script puts in the background starts with SIGINT
+# ignored, and bash can neither trap nor reset a signal it started ignoring
+# (docs/FINDINGS.md #23): an INT would reach nothing in exactly the workers a
+# loop or a CI script starts. And not to the worker alone: bash runs a trap
+# only once the foreground command returns, so a TERM to the worker by itself
+# waits out the station — the better part of an hour, at worst. Everything
+# under the worker gets it too, and the handler runs at once.
+#
+# rc 0 stopped, or found gone and settled · 1 nothing to stop, or it did not
+# stop within a minute.
+_aif_work_stop() {
+  local root="$1" ticket="$2" lock pid who col p t0 now last
+  lock="$(aif_run_lock_dir "$root" "$ticket")"
+  if [ ! -d "$lock" ]; then
+    aif_err "no worker on this machine is building $ticket — nothing to stop (a run on another machine holds its lock there)"
+    return 1
+  fi
+  who="$(git -C "$root" config user.name 2>/dev/null || true)"
+  [ -n "$who" ] || who="${USER:-someone}"
+  pid="$(_aif_work_lock_pid "$lock")"
+  if ! _aif_work_lock_live "$lock"; then
+    # The worker is gone without running its handler, and nothing but this
+    # will tell its card so.
+    col="$(aif_board_show_json "$root" "$ticket" 2>/dev/null | jq -r '.column // empty' 2>/dev/null)"
+    rm -rf "${lock:?}"
+    if [ "$col" = "in_progress" ]; then
+      _aif_work_block "$root" "$ticket" stopped \
+        "by $who (aif work $ticket --stop): the worker that took it (pid ${pid:-?}) was already gone, and had left the card In Progress" "" || true
+      printf '%sstopped%s %s — its worker was already gone; the card is in needs_human\n' \
+        "$AIF_C_GREEN" "$AIF_C_RESET" "$ticket"
+    else
+      printf 'no live worker on %s — removed the run lock it left (pid %s); the card is in %s, untouched\n' \
+        "$ticket" "${pid:-?}" "${col:-an unknown column}"
+    fi
+    return 0
+  fi
+  if [ -z "$pid" ]; then
+    aif_err "the run on $ticket took its lock a moment ago and has not signed it yet — run this again"
+    return 1
+  fi
+  printf '%s\n' "$who" >"$lock/stop"
+  _aif_work_say "stop" "$ticket — TERM to its worker (pid $pid) and to what it is running"
+  kill -TERM "$pid" 2>/dev/null || true
+  for p in $(_aif_work_descendants "$pid"); do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  # A process the worker started after the tree was read escaped that round,
+  # and if it is the station, the handler waits it out. So until the handler
+  # says it is running, what is under the worker is signalled again — and
+  # after that never: the handler's own board calls are under the worker too.
+  t0="$(date +%s)"
+  last="$t0"
+  while kill -0 "$pid" 2>/dev/null; do
+    now="$(date +%s)"
+    if [ $((now - t0)) -gt 60 ]; then
+      aif_err "the worker on $ticket (pid $pid) has not exited a minute after the TERM — it may still be writing the card's comment. Run this again to see where it got to"
+      return 1
+    fi
+    if [ ! -f "$lock/ack" ] && [ $((now - last)) -ge 3 ]; then
+      for p in $(_aif_work_descendants "$pid"); do
+        kill -TERM "$p" 2>/dev/null || true
+      done
+      last="$now"
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+  done
+  col="$(aif_board_show_json "$root" "$ticket" 2>/dev/null | jq -r '.column // empty' 2>/dev/null)"
+  printf '%sstopped%s %s — the card is in %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$ticket" "${col:-an unknown column}"
+  return 0
 }
 
 # _aif_work_preflight <root> <profile> — everything that can refuse a run
@@ -263,10 +553,14 @@ _aif_work_worktree() {
 #   probe   — the same probe `aif doctor --probe` runs, but HERE. Its whole
 #             value is running where the stations run.
 # rc 0 usable · 3 the checkout cannot run the suite, and the run must not
-# start — nothing was spent, the card has not moved.
+# start — nothing was spent. AIF_WORK_ENV_WHY then says what failed in one
+# line and AIF_WORK_ENV_MORE names a file with the rest: the card was already
+# taken, and its comment carries both.
 _aif_work_ready_worktree() {
   local root="$1" wt="$2" ticket="$3"
-  local prepare marker log rc=0
+  local prepare marker log rc=0 probe_out
+  AIF_WORK_ENV_WHY=""
+  AIF_WORK_ENV_MORE=""
 
   # From the DEVELOPER'S config, not the worktree's. The branch was cut from
   # whatever HEAD was on the first run, and the run that gets refused here is
@@ -284,21 +578,37 @@ _aif_work_ready_worktree() {
       aif_err "prepare failed (exit $rc) in ${wt#"$root"/} — the run cannot start, nothing was spent:"
       tail -8 "$log" | sed 's/^/    /' >&2
       aif_err "the command is \"prepare\" in .aif/project.json; the full log is ${log#"$root"/}"
+      AIF_WORK_ENV_WHY="prepare failed (exit $rc) in the worktree: $prepare"
+      AIF_WORK_ENV_MORE="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+      {
+        printf 'The command is "prepare" in .aif/project.json; it runs once in a fresh worktree. The end of its log, %s:\n\n' "${log#"$root"/}"
+        grep -v '^[[:space:]]*$' "$log" | sed 's/\x1b\[[0-9;]*m//g' | tail -15 | cut -c1-240 | sed 's/^/    /'
+      } >"$AIF_WORK_ENV_MORE" 2>/dev/null || true
       return 3
     fi
     : >"$marker"
   fi
 
+  # Once, held: the suite is the slow part of the probe, and the run that
+  # fails it used to run it a second time just to print what the first said.
   # shellcheck source=lib/doctor.sh
   . "$AIF_ROOT/lib/doctor.sh"
-  if ! aif_doctor_probe "$wt" >/dev/null 2>&1; then
-    aif_doctor_probe "$wt" >&2 || true
+  if ! probe_out="$(aif_doctor_probe "$wt" 2>&1)"; then
+    printf '%s\n' "$probe_out" >&2
     aif_err "the suite cannot run in ${wt#"$root"/}, where the stations run — nothing was spent."
     if [ -z "$prepare" ]; then
       aif_err "A fresh worktree holds tracked files only. If the runner needs installed"
       aif_err "dependencies, set \"prepare\" in .aif/project.json (e.g. \"npm ci\") and the"
       aif_err "worker runs it once after cutting the worktree."
     fi
+    AIF_WORK_ENV_WHY="the suite cannot run in the worktree, where the stations run"
+    AIF_WORK_ENV_MORE="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+    {
+      printf '%s\n' "$probe_out" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^/    /'
+      if [ -z "$prepare" ]; then
+        printf '\nA fresh worktree holds tracked files only. If the runner needs installed dependencies, set "prepare" in .aif/project.json (e.g. "npm ci"): the worker runs it once after cutting the worktree.\n'
+      fi
+    } >"$AIF_WORK_ENV_MORE" 2>/dev/null || true
     return 3
   fi
   return 0
@@ -356,10 +666,11 @@ A dependency manifest and its lockfile change together: change dependencies thro
 # while the worker runs changes the NEXT run, not this one.
 #
 # rc 0 ready · 1 there is no ticket to build · 2 the ticket is not ready, and
-# AIF_WORK_NOT_READY holds the gate's own lines.
+# AIF_WORK_NOT_READY holds the gate's own lines · 3 the board could not hand
+# the ticket over — the machine's problem, not the ticket's.
 _aif_work_intake() {
   local root="$1" wt="$2" ticket="$3"
-  local work src base rc=0 out
+  local work src base rc=0 out pull_err
 
   work="$(aif_task_dir "$wt" "$ticket")"
   src="$(aif_task_dir "$root" "$ticket")"
@@ -368,11 +679,20 @@ _aif_work_intake() {
   # trello board the card's description is pulled into THIS checkout and
   # becomes the bytes the run freezes. The local board holds no text — the
   # ticket is already in tasks/, and the copy below carries it in.
+  #
+  # A card the analyst did not write — no aif:meta in its description — is the
+  # ticket's problem; anything else that stops the pull (the network, the
+  # token) is the machine's, and the card's comment has to say which.
   if [ "$(aif_board_kind "$wt")" = "trello" ]; then
-    (aif_board_pull "$wt" "$ticket" >/dev/null) || {
+    if ! pull_err="$( (aif_board_pull "$wt" "$ticket" >/dev/null) 2>&1)"; then
+      [ -z "$pull_err" ] || printf '%s\n' "$pull_err" >&2
       aif_err "could not pull $ticket from the board — nothing was built."
-      return 1
-    }
+      AIF_WORK_NOT_READY="$(printf '%s' "$pull_err" | sed 's/\x1b\[[0-9;]*m//g')"
+      case "$pull_err" in
+        *aif:meta*) return 1 ;;
+      esac
+      return 3
+    fi
   elif [ ! -f "$work/ticket.md" ] && [ -f "$src/ticket.md" ] && [ "$src" != "$work" ]; then
     mkdir -p "$work"
     cp -R "$src/." "$work/"
@@ -1090,8 +1410,18 @@ _aif_work_report() {
 # every run moves its card, so that last one means the run never got to the
 # board, and taking it again would loop forever.
 #
+# And on Ctrl-C, which it has to catch itself. The terminal sends the INT to
+# the loop and to the run in flight alike; the run settles its card and exits,
+# and bash, seeing that its child handled the signal, carries on with the
+# next line — probed on 3.2: the loop took the next card in Ready, and a
+# second Ctrl-C sent that one to Needs Human as well (docs/FINDINGS.md #23).
+# So the handler only records the stop, and the loop takes no new card. A run
+# stopped on its own — `aif work <ID> --stop` from another terminal — is not a
+# verdict on the cards: it does not count toward two in a row, and the loop
+# goes on.
+#
 # Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
-# environment.
+# environment · 130 / 143 stopped by Ctrl-C or a TERM.
 _aif_work_loop() {
   local root="$1" max="$2" profile="$3" budget="$4" budget_off="$5"
   local max_minutes="$6" use_worktree="$7"
@@ -1107,12 +1437,22 @@ _aif_work_loop() {
   [ -z "$max_minutes" ] || set -- "$@" --max-minutes "$max_minutes"
   [ "$use_worktree" -eq 1 ] || set -- "$@" --no-worktree
 
+  AIF_WORK_LOOP_STOP=""
+  aif_trap_arm "_aif_work_loop_signal"
   while :; do
+    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
+      why="$AIF_WORK_LOOP_STOP"
+      break
+    fi
     if [ "$max" -gt 0 ] && [ "$taken" -ge "$max" ]; then
       why="--max-tickets $max reached"
       break
     fi
     next="$(aif_board_next_ready "$root")"
+    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
+      why="$AIF_WORK_LOOP_STOP"
+      break
+    fi
     if [ -z "$next" ]; then
       why="Ready is empty"
       break
@@ -1136,6 +1476,10 @@ _aif_work_loop() {
         env=1
         break
         ;;
+      130 | 143)
+        [ -n "$AIF_WORK_LOOP_STOP" ] ||
+          _aif_work_say "loop" "$next was stopped (exit $rc) — not counted against the cards; the loop goes on"
+        ;;
       *)
         in_a_row=$((in_a_row + 1))
         if [ "$in_a_row" -ge 2 ]; then
@@ -1145,16 +1489,34 @@ _aif_work_loop() {
         ;;
     esac
   done
+  aif_trap_disarm
 
   printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken" "$built" "$why" >&2
+  case "$AIF_WORK_LOOP_STOP" in
+    *Ctrl-C*) exit 130 ;;
+    ?*) exit 143 ;;
+  esac
   [ "$env" -eq 0 ] || exit 3
   [ "$taken" -eq "$built" ] || exit 1
   exit 0
 }
 
+# _aif_work_loop_signal <EXIT|INT|TERM> — the loop's handler. An INT or a TERM
+# is recorded and nothing else: the run in flight settles its own card, and
+# the loop, once it returns, takes no new one. Returning — not exiting — is
+# the point: bash then goes on from where the signal found it, to the check at
+# the top of the loop and the summary after it.
+_aif_work_loop_signal() {
+  case "${1:-}" in
+    INT) AIF_WORK_LOOP_STOP="stopped by Ctrl-C — no new card taken" ;;
+    TERM) AIF_WORK_LOOP_STOP="stopped by a TERM — no new card taken" ;;
+  esac
+  return 0
+}
+
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
-  local loop=0 max_tickets=0
+  local loop=0 max_tickets=0 stop=0
   # An empty budget means NO ceiling, here and everywhere below. budget_off
   # separates "the caller said no ceiling" from "the caller said nothing",
   # which is what lets --no-budget override a project that sets one.
@@ -1189,6 +1551,7 @@ aif_cmd_work() {
         ;;
       --no-worktree) use_worktree=0 ;;
       --clean) clean=1 ;;
+      --stop) stop=1 ;;
       --loop) loop=1 ;;
       --max-tickets)
         shift
@@ -1212,7 +1575,7 @@ aif_cmd_work() {
   # checkout that is already disposable" and nothing enforced it
   # (docs/DEFECTS-3.md #11). Now the caller has to say so: CI jobs already
   # carry CI=1, and a harness sets AIF_DISPOSABLE=1 for its sandboxes.
-  if [ "$use_worktree" -eq 0 ] && [ "$clean" -eq 0 ] &&
+  if [ "$use_worktree" -eq 0 ] && [ "$clean" -eq 0 ] && [ "$stop" -eq 0 ] &&
     [ -z "${CI:-}" ] && [ "${AIF_DISPOSABLE:-}" != "1" ]; then
     aif_die "--no-worktree runs every station with bypassPermissions in THIS checkout, and nothing here says it is disposable. In CI, CI=1 already does; anywhere else: AIF_DISPOSABLE=1 aif work ${ticket:-<ticket>} --no-worktree"
   fi
@@ -1220,8 +1583,22 @@ aif_cmd_work() {
   local root
   root="$(aif_require_project)"
 
+  if [ "$stop" -eq 1 ]; then
+    [ -n "$ticket" ] || aif_die "usage: aif work <ticket> --stop"
+    [ "$loop" -eq 0 ] && [ "$clean" -eq 0 ] ||
+      aif_die "--stop stops one run and does nothing else — not with --loop or --clean"
+    if _aif_work_stop "$root" "$ticket"; then
+      return 0
+    fi
+    exit 1
+  fi
+
   if [ "$clean" -eq 1 ]; then
     [ -n "$ticket" ] || aif_die "usage: aif work <ticket> --clean"
+    # Not from under a run: the worktree is where its stations are writing.
+    if _aif_work_lock_live "$(aif_run_lock_dir "$root" "$ticket")"; then
+      aif_die "a worker is building $ticket in that worktree right now — stop it first: aif work $ticket --stop"
+    fi
     local wt_c="$root/$AIF_WORK_WORKTREES/$ticket"
     [ -e "$wt_c" ] || aif_die "no worktree for $ticket at ${wt_c#"$root"/}"
     git -C "$root" worktree remove --force "$wt_c" >/dev/null 2>&1 || rm -rf "$wt_c"
@@ -1255,36 +1632,36 @@ aif_cmd_work() {
     _aif_work_say "board" "next in Ready: $ticket"
   fi
 
-  # The checkout first, then the card. Cutting a worktree spends nothing, and
-  # what has to be established in it — that the suite can run there at all —
-  # is a preflight question: answered no, the run must not start, and a card
-  # that never moved needs nothing put back.
-  local wt fresh=0
-  if [ "$use_worktree" -eq 1 ]; then
-    # Decided here, not inside the helper: it runs in a $(…) and a flag it set
-    # would die with the subshell.
-    [ -e "$root/$AIF_WORK_WORKTREES/$ticket/.git" ] || fresh=1
-    wt="$(_aif_work_worktree "$root" "$ticket")"
-    [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
-    _aif_work_ready_worktree "$root" "$wt" "$ticket" || exit 3
-    # The stations read the WORKTREE's copy of the guide, and a worktree is cut
-    # from HEAD: a guide written in the developer's checkout and never
-    # committed is not here. Preflight saw the developer's copy; this is the
-    # one the stations would be told to read.
-    if [ ! -f "$(aif_guide_path "$wt")" ]; then
-      aif_err "$AIF_GUIDE_FILE is not on branch aif/$ticket — it is uncommitted in your checkout, and the stations run in ${wt#"$root"/}, cut from HEAD. Nothing was spent."
-      aif_err "Commit it (git add $AIF_GUIDE_FILE && git commit) and run again; a worktree cut before it existed is remade with: aif work $ticket --clean, then git branch -D aif/$ticket if the branch holds nothing yet"
-      exit 3
-    fi
-  else
-    wt="$root"
+  # The lock, then the card, then the checkout.
+  #
+  # The card used to move only once the worktree was proven usable, on the
+  # reasoning that a card that never moved needs nothing put back. But a card
+  # that never moved is a card still at the top of Ready: the next run — the
+  # loop's next pass, or a second worker beside this one — takes it again, and
+  # nobody looking at the board can see why it never moved, because the reason
+  # was in this terminal. So the card is taken first, and from here every way
+  # out ends with it in Review, or in Needs Human with a comment saying why —
+  # a machine that cannot run the suite included (blocked: environment).
+  if ! _aif_work_lock "$root" "$ticket"; then
+    aif_err "$ticket is being built by another worker on this machine ($AIF_WORK_LOCK_HELD). Nothing was spent, and its card was not touched. To stop that run: aif work $ticket --stop"
+    exit 3
   fi
-  _aif_work_say "worktree" "${wt#"$root"/}"
+  # The handler is armed rather than written inline so that a library taking
+  # a trap of its own puts it back instead of clearing it (lib/common.sh). Its
+  # subject travels in globals: on EXIT the locals may already be gone. Armed
+  # with the lock, so that every way out releases it; the card becomes its
+  # business once AIF_WORK_CARD names it.
+  AIF_WORK_ROOT="$root"
+  AIF_WORK_CARD=""
+  AIF_WORK_WORK=""
+  AIF_WORK_SETTLED=0
+  AIF_WORK_PHASE="claim"
+  aif_trap_arm "_aif_work_abandon"
 
-  # The card moves before anything is spent. A ticket handed over by id that
-  # has no card yet gets one on the local board — the worker is the consumer,
-  # and a ticket named by hand is implicitly ready; on a trello board the card
-  # IS the ticket, so it has to be there already.
+  # A ticket handed over by id that has no card yet gets one on the local
+  # board — the worker is the consumer, and a ticket named by hand is
+  # implicitly ready; on a trello board the card IS the ticket, so it has to
+  # be there already.
   if [ "$(aif_board_kind "$root")" = "local" ] && [ ! -f "$(aif_board_local_dir "$root")/$ticket.json" ] &&
     [ -f "$(aif_task_dir "$root" "$ticket")/ticket.md" ]; then
     (aif_board_create "$root" "$(aif_task_dir "$root" "$ticket")/ticket.md" ready >/dev/null) || true
@@ -1293,41 +1670,78 @@ aif_cmd_work() {
     aif_err "could not move $ticket to In Progress on the board — nothing was spent."
     exit 3
   fi
-
-  # From here the card says work is happening, and every way out of this
-  # function has to end that claim. The handler is armed rather than written
-  # inline so that a library taking a trap of its own puts it back instead of
-  # clearing it (lib/common.sh). Its subject travels in globals: a trap fires
-  # with no argument, and on EXIT the locals may already be gone.
-  AIF_WORK_ROOT="$root"
   AIF_WORK_CARD="$ticket"
-  AIF_WORK_SETTLED=0
-  aif_trap_arm "_aif_work_abandon"
 
-  local intake_rc=0
+  AIF_WORK_PHASE="worktree"
+  local wt fresh=0 cut_err cut_why guide_err
+  if [ "$use_worktree" -eq 1 ]; then
+    # Decided here, not inside the helper: it runs in a $(…) and a flag it set
+    # would die with the subshell — and so would its error, which is why that
+    # is held, shown, and carried to the card.
+    [ -e "$root/$AIF_WORK_WORKTREES/$ticket/.git" ] || fresh=1
+    cut_err="$(mktemp "${TMPDIR:-/tmp}/aif-cut-XXXXXX")"
+    if ! wt="$(_aif_work_worktree "$root" "$ticket" 2>"$cut_err")"; then
+      cat "$cut_err" >&2
+      cut_why="$(sed 's/\x1b\[[0-9;]*m//g; s/^error: //' "$cut_err" | sed -n 1p)" || cut_why=""
+      rm -f "$cut_err"
+      _aif_work_refuse "$root" "$ticket" "could not check out a worktree for $ticket${cut_why:+: $cut_why}"
+    fi
+    rm -f "$cut_err"
+    [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
+    _aif_work_ready_worktree "$root" "$wt" "$ticket" ||
+      _aif_work_refuse "$root" "$ticket" "$AIF_WORK_ENV_WHY" "$AIF_WORK_ENV_MORE"
+    # The stations read the WORKTREE's copy of the guide, and a worktree is cut
+    # from HEAD: a guide written in the developer's checkout and never
+    # committed is not here. Preflight saw the developer's copy; this is the
+    # one the stations would be told to read.
+    if [ ! -f "$(aif_guide_path "$wt")" ]; then
+      aif_err "$AIF_GUIDE_FILE is not on branch aif/$ticket — it is uncommitted in your checkout, and the stations run in ${wt#"$root"/}, cut from HEAD. Nothing was spent."
+      aif_err "Commit it (git add $AIF_GUIDE_FILE && git commit) and run again; a worktree cut before it existed is remade with: aif work $ticket --clean, then git branch -D aif/$ticket if the branch holds nothing yet"
+      guide_err="$(mktemp "${TMPDIR:-/tmp}/aif-guide-XXXXXX")"
+      printf 'The stations read the guide from the worktree, %s, which is cut from HEAD. Commit it (git add %s && git commit); a worktree cut before it existed is remade with aif work %s --clean, then git branch -D aif/%s if the branch holds nothing yet.\n' \
+        "${wt#"$root"/}" "$AIF_GUIDE_FILE" "$ticket" "$ticket" >"$guide_err"
+      _aif_work_refuse "$root" "$ticket" "$AIF_GUIDE_FILE is not on branch aif/$ticket, where the stations run" "$guide_err"
+    fi
+  else
+    wt="$root"
+  fi
+  _aif_work_say "worktree" "${wt#"$root"/}"
+
+  AIF_WORK_PHASE="intake"
+  local intake_rc=0 nr nr_why
   AIF_WORK_NOT_READY=""
   _aif_work_intake "$root" "$wt" "$ticket" || intake_rc=$?
+  if [ "$intake_rc" -eq 3 ]; then
+    nr="$(mktemp "${TMPDIR:-/tmp}/aif-pull-XXXXXX")"
+    printf '%s\n' "${AIF_WORK_NOT_READY:-the board did not answer}" | sed 's/^/    /' >"$nr"
+    _aif_work_refuse "$root" "$ticket" "could not pull $ticket from the board, so there were no bytes to build" "$nr"
+  fi
   if [ "$intake_rc" -ne 0 ]; then
     # Not ready, or no ticket at all. Either way nothing has been spent, and
     # the card goes where a human will see it with the reason attached.
-    local nr="$wt/.aif/tmp/not-ready-$ticket.md"
-    mkdir -p "$(dirname "$nr")" 2>/dev/null || true
+    if [ "$intake_rc" -eq 2 ]; then
+      nr_why="not ready — the ready gate's questions are below, for the analyst"
+    elif [ -n "$AIF_WORK_NOT_READY" ]; then
+      nr_why="$(printf '%s\n' "$AIF_WORK_NOT_READY" | sed 's/^error: //' | sed -n 1p)"
+    else
+      nr_why="no ticket to build: $AIF_TASKS_DIR/$ticket/ticket.md does not exist in this checkout"
+    fi
+    nr="$(mktemp "${TMPDIR:-/tmp}/aif-not-ready-XXXXXX")"
     {
       printf '# %s — not ready\n\n' "$ticket"
       printf 'The worker refused the ticket at intake and spent nothing. Each line below\n'
       printf 'is a question for the analyst (/aif-ba), not a defect in the build:\n\n'
       printf '%s\n' "${AIF_WORK_NOT_READY:-the ticket does not exist in this checkout}" | sed 's/^/    /'
     } >"$nr"
-    (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$nr" >/dev/null) || true
+    _aif_work_block "$root" "$ticket" ticket "$nr_why" "$nr" || true
     AIF_WORK_SETTLED=1
-    (aif_board_move "$root" "$ticket" needs_human >/dev/null) || true
     rm -f "$nr"
-    _aif_work_say "board" "$ticket → needs_human, the gate's questions posted"
     exit 1
   fi
 
   local work project attempts_max run_max dispatches_max started
   work="$(aif_task_dir "$wt" "$ticket")"
+  AIF_WORK_WORK="$work"
   project="$(aif_project_config "$wt")"
   # 16, as the templates say since the stage gained its two loops (a repair,
   # a replan) on top of the three stations' retries (docs/REBUILD-4.md §2.4).
@@ -1365,6 +1779,7 @@ aif_cmd_work() {
   local stage agent expects complaint="" status="" why="" gate_out
   local dispatches=0 spent=0 attempts out rc station_err tool_out budget_left
   local regate skip_dispatch prev_sha="" prev_stage="" this_sha replan_why
+  AIF_WORK_PHASE="run"
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -1625,23 +2040,35 @@ $(head -20 "$gate_out")"
   # Still armed: the report reads the ledger, the run record and the plan, and
   # a failure in any of that is exactly the case where the card must not be
   # left saying the work is under way.
+  AIF_WORK_PHASE="report"
   _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started"
 
   # The report goes where the human looks — the card — and the card moves to
   # where the human decides: Review when it is built, Needs Human when it is
-  # not. Loud on failure, with the exact command to do it by hand; the work is
-  # on the branch either way, and the exit code says what the work is.
-  local col report_path
+  # not, under the line that says whose problem stopped it. Loud on failure,
+  # with the exact command to do it by hand; the work is on the branch either
+  # way, and the exit code says what the work is.
+  local col report_path kind headline
   report_path="$work/report.md"
   col=review
   [ "$status" = "built" ] || col=needs_human
-  if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
-    aif_warn "could not post the report to the board — run: aif board comment $ticket ${report_path#"$root"/}"
-  fi
-  if ! (aif_board_move "$root" "$ticket" "$col" >/dev/null); then
-    aif_warn "could not move $ticket to $col on the board — run: aif board move $ticket $col"
+  if [ "$col" = "review" ]; then
+    if ! (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
+      aif_warn "could not post the report to the board — run: aif board comment $ticket ${report_path#"$root"/}"
+    fi
+    if ! (aif_board_move "$root" "$ticket" "$col" >/dev/null); then
+      aif_warn "could not move $ticket to $col on the board — run: aif board move $ticket $col"
+    else
+      _aif_work_say "board" "$ticket → $col, report posted"
+    fi
   else
-    _aif_work_say "board" "$ticket → $col, report posted"
+    # A spec stop is the ticket's own problem, found by a station — the
+    # analyst's. Whatever else stopped the run is the run's.
+    kind=run
+    [ "$status" != "spec" ] || kind=ticket
+    headline="$(printf '%s\n' "$why" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]]*$' | sed -n 1p)" || headline=""
+    [ -n "$headline" ] || headline="the run stopped at $(aif_run_get "$work" '.stage')"
+    _aif_work_block "$root" "$ticket" "$kind" "$headline" "$report_path" || true
   fi
   AIF_WORK_SETTLED=1
   [ "$status" = "built" ]

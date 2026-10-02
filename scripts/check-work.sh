@@ -75,6 +75,12 @@
 #      the user's hooks beside it, records the edit so uninstall takes only
 #      ours back, and a dry run previews the updates without announcing them
 #      as retirements; doctor reads the guard's registration before any probe
+#  39  one worker per ticket on this machine: a second is refused and touches
+#      nothing, --clean is refused from under a run, `aif work <ID> --stop`
+#      from another terminal ends the run as its Ctrl-C would and settles the
+#      card saying who, a lock whose worker is gone is taken over or settled;
+#      and the loop's Ctrl-C takes no new card, while a --stop on its run in
+#      flight is not counted against the cards
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -259,6 +265,14 @@ cp "$4" "$wt/.aif/tmp/fake-sys-$station-$n" 2>/dev/null
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
+# FAKE_SLEEP_IN=<ticket>:<station> holds that one dispatch open — a station
+# still running, for a stop to land in. It says when it has started.
+case "${FAKE_SLEEP_IN:-}" in
+  "$ticket:$station")
+    : >"$wt/.aif/tmp/fake-running-$ticket-$station"
+    sleep 37
+    ;;
+esac
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 repair=0; printf '%s' "$prompt" | grep -q "^REPAIR" && repair=1
 # What the worker handed this dispatch: the turn cap and the tools.
@@ -548,6 +562,9 @@ eq "an open question: exit 1 — back to the analyst" "$rc" "1"
 # gate's own questions instead, which is where the analyst reads them.
 eq "the card carries the question and its default" \
   "$("$AIF" board show AIF-6 --json | jq -r '.comments[0].text' | grep -c 'open question Q-001.*default: no')" "1"
+eq "under the line the project manager routes on: the ticket's problem" \
+  "$("$AIF" board show AIF-6 --json | jq -r '.comments[0].text' | sed -n 1p)" \
+  "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 eq "and no report was written for a run that never started" \
   "$(test -f tasks/AIF-6/report.md && echo yes || echo no)" "no"
 eq "no station ran on it" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-6/ledger.json)" "0"
@@ -591,6 +608,8 @@ eq "implement was dispatched twice, not attempts_max times — the same complain
 eq "the accepted stations are committed, the failed one is not" \
   "$(git log --format=%s | grep -c '^aif: implement AIF-5')" "0"
 eq "run.json status" "$(jq -r '.status' tasks/AIF-5/run.json)" "stopped"
+eq "the card says whose problem stopped it — the run's — with the report under it" \
+  "$("$AIF" board show AIF-5 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^blocked: run — implement was rejected with the same complaint twice'),$("$AIF" board show AIF-5 --json | jq -r '.comments[-1].text' | grep -c '^# AIF-5 — stopped')" "1,1"
 
 # =============================== 6. the second round =========================
 # What the retired check-cycle.sh guarded, on the only driver there now is: a
@@ -657,6 +676,8 @@ eq "exit 1 — the run stopped" "$rc" "1"
 eq "the card was put back where a human will look" \
   "$(jq -r '.column' .aif/board/AIF-7.json 2>/dev/null)" "needs_human"
 eq "and the worker said so" "$(grep -c 'did not finish' "$OUT/run7.out")" "1"
+eq "…and so does the card: the machine, with the error the worker printed" \
+  "$("$AIF" board show AIF-7 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^blocked: environment — the worker exited (code 1) during intake; the last error it printed: the ready gate is not installed')" "1"
 
 # The handler above is armed once and then has to survive every library that
 # takes a trap of its own. aif_ledger_append takes one for its lock, and its
@@ -889,7 +910,13 @@ rc=0
 eq "refused, exit 3 — the environment, and nothing was spent" "$rc" "3"
 eq "it says the suite wrote no report there" "$(grep -c 'wrote no report' "$OUT/run14.out")" "1"
 eq "and points at prepare" "$(grep -c '"prepare"' "$OUT/run14.out")" "1"
-eq "the card never moved" "$(test -f .aif/board/AIF-14.json && jq -r .column .aif/board/AIF-14.json || echo none)" "none"
+# The card is taken before the checkout is cut, so a refusal there is on the
+# board, not only in the terminal of whoever ran it — and it is not left in
+# Ready for the next run to take again.
+eq "the card was taken, and is back with why: Needs Human, blocked: environment" \
+  "$(jq -r .column .aif/board/AIF-14.json 2>/dev/null),$("$AIF" board show AIF-14 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^blocked: environment — the suite cannot run in the worktree')" "needs_human,1"
+eq "…with the probe's own words under it" \
+  "$("$AIF" board show AIF-14 --json | jq -r '.comments[-1].text' | grep -c 'wrote no report')" "1"
 eq "no run started in the worktree" \
   "$(test -f .aif/worktrees/AIF-14/tasks/AIF-14/run.json && echo yes || echo no)" "no"
 # The project now says how a checkout becomes able to run its suite. Read from
@@ -2343,7 +2370,8 @@ rc=0
 "$AIF" work AIF-36 >"$OUT/run36d.out" 2>&1 || rc=$?
 eq "a worktree whose branch lacks the guide is refused — exit 3, saying to commit it" \
   "$rc,$(grep -c 'is not on branch aif/AIF-36' "$OUT/run36d.out"),$(grep -c 'git add .aif/guide/tests.md' "$OUT/run36d.out")" "3,1,1"
-eq "the card never moved" "$(test -f .aif/board/AIF-36.json && jq -r .column .aif/board/AIF-36.json || echo none)" "none"
+eq "the card was taken, and is back with why: blocked: environment" \
+  "$(jq -r .column .aif/board/AIF-36.json 2>/dev/null),$("$AIF" board show AIF-36 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^blocked: environment — .aif/guide/tests.md is not on branch aif/AIF-36')" "needs_human,1"
 eq "doctor said it first" "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*not committed')" "1"
 }
 knowledge_layer_scenarios
@@ -2495,6 +2523,132 @@ eq "…and the summary agrees with the real run" \
 "$AIF" uninstall >/dev/null 2>&1
 eq "uninstall: our hooks gone, the user hooks kept" \
   "$(jq -c '[.hooks.PreToolUse[] | .hooks[0].command], (.hooks.Stop | length), (.hooks | has("SubagentStop"))' .claude/settings.json | paste -sd, -)" '["./my-hook.sh"],1,false'
+
+# ====== 39. one worker per ticket, a stop from anywhere, a card that says why ==
+# The lock: nothing used to stop a second `aif work` on a ticket already being
+# built — it reused the worktree and resumed the same run record. The stop:
+# `aif work <ID> --stop` from another terminal ends the run the way its own
+# Ctrl-C would, by TERM — a worker a script or a loop started in the
+# background cannot be reached by an INT (docs/FINDINGS.md #23). And the
+# loop's Ctrl-C: the run in flight settled its card and exited, bash saw its
+# child handle the signal and went on, and the loop took the next card.
+printf '\n39. one worker per ticket, a stop from anywhere, and a card that always says why\n'
+fresh_project "$SANDBOX/p39"
+wait_for() { # <file> — up to ten seconds
+  local i=0
+  while [ ! -f "$1" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+ticket_for AIF-39
+git add -A && git commit -qm "ticket 39" >/dev/null
+"$AIF" board create tasks/AIF-39/ticket.md --column ready >/dev/null
+
+# A worker on AIF-39, its plan station still running.
+FAKE_SLEEP_IN="AIF-39:plan" "$AIF" work AIF-39 --no-worktree >"$OUT/run39a.out" 2>&1 &
+w1=$!
+wait_for .aif/tmp/fake-running-AIF-39-plan
+eq "the card is taken first, and the run lock names the worker" \
+  "$(col AIF-39),$(jq -r .pid .aif/state/runs/AIF-39/owner.json 2>/dev/null)" "in_progress,$w1"
+
+rc=0
+"$AIF" work AIF-39 --no-worktree >"$OUT/run39b.out" 2>&1 || rc=$?
+eq "a second worker on the same ticket: refused, exit 3, naming the first" \
+  "$rc,$(grep -c "AIF-39 is being built by another worker on this machine (pid $w1" "$OUT/run39b.out")" "3,1"
+eq "…and the first is still at it, its card untouched" \
+  "$(kill -0 "$w1" 2>/dev/null && echo alive),$(col AIF-39)" "alive,in_progress"
+rc=0
+"$AIF" work AIF-39 --clean >"$OUT/run39c.out" 2>&1 || rc=$?
+eq "--clean from under a live run is refused" \
+  "$rc,$(grep -c 'stop it first: aif work AIF-39 --stop' "$OUT/run39c.out")" "1,1"
+
+# The stop, from another terminal — in seconds, not after the station: a TERM
+# to the worker alone would wait out the 37 seconds its station sleeps.
+t0="$(date +%s)"
+rc=0
+"$AIF" work AIF-39 --stop >"$OUT/run39d.out" 2>&1 || rc=$?
+secs=$(($(date +%s) - t0))
+rc1=0
+wait "$w1" || rc1=$?
+eq "--stop: the worker exits 143 at once, and the stop says where the card went" \
+  "$rc,$rc1,$(grep -c 'stopped AIF-39 — the card is in needs_human' "$OUT/run39d.out"),$([ "$secs" -lt 15 ] && echo prompt || echo "${secs}s")" "0,143,1,prompt"
+eq "…the card says who stopped it, and during which stage" \
+  "$(col AIF-39),$(last_comment AIF-39 | sed -n 1p)" "needs_human,blocked: stopped — by Work (aif work AIF-39 --stop), during plan"
+eq "…the station it was running is gone, not orphaned" \
+  "$(pgrep -f 'fake-station.sh plan AIF-39' | wc -l | tr -d ' ')" "0"
+eq "…and the run lock is released" "$(test -d .aif/state/runs/AIF-39 && echo held || echo released)" "released"
+"$AIF" board move AIF-39 ready >/dev/null
+rc=0
+"$AIF" work AIF-39 --no-worktree >"$OUT/run39e.out" 2>&1 || rc=$?
+eq "back in Ready, it resumes where it was stopped and builds" \
+  "$rc,$(grep -c 'resume ' "$OUT/run39e.out"),$(col AIF-39)" "0,1,review"
+
+# A worker killed outright — kill -9, a closed laptop — leaves its lock and its
+# card. --stop settles the card; a new run takes the lock over. A project of
+# its own: these runs build in place, and AIF-39's build is in that tree now.
+fresh_project "$SANDBOX/p39b"
+ticket_for AIF-40
+git add -A && git commit -qm "ticket 40" >/dev/null
+"$AIF" board create tasks/AIF-40/ticket.md --column ready >/dev/null
+sleep 0 &
+dead=$!
+wait "$dead" 2>/dev/null || true
+mkdir -p .aif/state/runs/AIF-40
+printf '{ "ticket": "AIF-40", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead" >.aif/state/runs/AIF-40/owner.json
+"$AIF" board move AIF-40 in_progress >/dev/null
+rc=0
+"$AIF" work AIF-40 --stop >"$OUT/run39f.out" 2>&1 || rc=$?
+eq "--stop on a worker that is gone settles its card from here, and removes the lock" \
+  "$rc,$(col AIF-40),$(last_comment AIF-40 | sed -n 1p | grep -c "^blocked: stopped — by Work (aif work AIF-40 --stop): the worker that took it (pid $dead) was already gone"),$(test -d .aif/state/runs/AIF-40 && echo held || echo released)" \
+  "0,needs_human,1,released"
+mkdir -p .aif/state/runs/AIF-40
+printf '{ "ticket": "AIF-40", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead" >.aif/state/runs/AIF-40/owner.json
+"$AIF" board move AIF-40 ready >/dev/null
+rc=0
+"$AIF" work AIF-40 --no-worktree >"$OUT/run39g.out" 2>&1 || rc=$?
+eq "a lock whose worker is gone is taken over, and the run builds" \
+  "$rc,$(grep -c "the worker that held it (pid $dead) is gone; taken over" "$OUT/run39g.out"),$(col AIF-40)" "0,1,review"
+rc=0
+"$AIF" work AIF-40 --stop >"$OUT/run39k.out" 2>&1 || rc=$?
+eq "--stop with nothing running is refused, touching nothing" \
+  "$rc,$(grep -c 'no worker on this machine is building AIF-40' "$OUT/run39k.out"),$(col AIF-40)" "1,1,review"
+
+# The loop and Ctrl-C, as a terminal sends it: to the whole group.
+fresh_project "$SANDBOX/p39c"
+ticket_for AIF-41
+ticket_for AIF-42
+ticket_for AIF-43
+git add -A && git commit -qm "three more" >/dev/null
+"$AIF" board create tasks/AIF-41/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-42/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-43/ticket.md --column ready >/dev/null
+FAKE_SLEEP_IN="AIF-41:plan" python3 -c '
+import os, signal, sys
+os.setpgrp()
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" work --loop --no-worktree >"$OUT/run39h.out" 2>&1 &
+loop=$!
+wait_for .aif/tmp/fake-running-AIF-41-plan
+kill -INT -- "-$loop" 2>/dev/null
+rc=0
+wait "$loop" || rc=$?
+eq "Ctrl-C in the loop: exit 130, the run in flight settled, no new card taken" \
+  "$rc,$(col AIF-41),$(col AIF-42)" "130,needs_human,ready"
+eq "…the card says Ctrl-C stopped it" "$(last_comment AIF-41 | sed -n 1p)" "blocked: stopped — by Ctrl-C, during plan"
+eq "…and the loop says why it stopped" "$(grep -c 'stopped by Ctrl-C — no new card taken' "$OUT/run39h.out")" "1"
+
+# --stop on the loop's run in flight stops that run only; the loop goes on.
+FAKE_SLEEP_IN="AIF-42:plan" "$AIF" work --loop --no-worktree >"$OUT/run39i.out" 2>&1 &
+loop=$!
+wait_for .aif/tmp/fake-running-AIF-42-plan
+"$AIF" work AIF-42 --stop >"$OUT/run39j.out" 2>&1 || true
+rc=0
+wait "$loop" || rc=$?
+eq "--stop on the loop's run in flight: that card to Needs Human, the next one built" \
+  "$rc,$(col AIF-42),$(col AIF-43)" "1,needs_human,review"
+eq "…and not counted against the cards" \
+  "$(grep -c 'AIF-42 was stopped (exit 143) — not counted against the cards; the loop goes on' "$OUT/run39i.out")" "1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

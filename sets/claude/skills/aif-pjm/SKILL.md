@@ -85,11 +85,27 @@ gets the label `depends-on-<ID>` and goes below it.
 
 ### A ticket the worker sent to Needs Human
 
-The report is on the card as a comment and says why: the ticket was not ready (open
-questions, each with a default), or the run stopped (a station that would not converge,
-a broken toolchain). Route it: a ticket problem goes to `backlog` with the comment
-`rework: <the gate's lines>` for the analyst; a toolchain problem is for the human, and
-you say so — it is not a card problem.
+Every card the worker takes ends in Review, or in Needs Human with a comment whose
+**first line** says whose problem stopped it — `blocked: <kind> — <why>` — followed by
+what to do next and the detail (the gate's questions, the report, a log's tail). Route
+on the kind:
+
+- **`blocked: ticket`** — not ready (open questions, each with a default), no ticket
+  to build, or a station found the ticket's own problem. Move it to `backlog` with the
+  comment `rework: <the lines under it>` for the analyst.
+- **`blocked: run`** — the run stopped short of a build: a station that would not
+  converge, a cap, an error in the worker. The report under the line says where. It is
+  for the human; say so, and do not move it. When they say to try again, `ready` puts it
+  back, and the run resumes from where it stopped while the ticket is unchanged.
+- **`blocked: environment`** — this machine could not run the ticket: the install, the
+  suite in the worktree, the guide, the board. No station ran and nothing was spent. It
+  is not a card problem: tell the human what the comment names, and move the card back
+  to `ready` only when they say it is fixed.
+- **`blocked: stopped`** — a person stopped the run (Ctrl-C, `aif work <ID> --stop`) or
+  a TERM did; the line says who and during which stage. Their decision — leave it.
+
+A comment with no `blocked:` line is from before the worker wrote one: read it, and
+route a ticket problem as rework and anything else to the human, as above.
 
 ### Stuck cards
 

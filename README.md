@@ -119,13 +119,17 @@ converge stops the run with a report rather than a conversation. What comes back
 `tasks/TICK-1/report.md` — what was built, what was decided, what was not
 verified, what it cost — beside the diff, which is the one place a reviewer has
 enough context to judge it. Run several tickets at once: each gets its own
-worktree. The offline walk of the whole thing is `scripts/check-work.sh`.
+worktree, and one ticket gets one worker — a second `aif work` on a ticket already
+being built is refused before it touches anything. `aif work TICK-1 --stop`, from any
+terminal, ends that run the way its own Ctrl-C would. The offline walk of the whole
+thing is `scripts/check-work.sh`.
 
 **The queue drains, and the yes is one command.** `aif work --loop` takes the next
 card in Ready after each run until the column is empty (`--max-tickets N` to stop
 sooner); it stops early when a run cannot start, or after two runs in a row that did
 not build, because two cards in Needs Human usually mean the problem is not the
-cards. `/aif-review` prepares the human's three-minute review of a card in Review —
+cards. Ctrl-C stops the run in flight and takes no new card; a `--stop` on that run
+from another terminal is not held against the cards, and the loop goes on. `/aif-review` prepares the human's three-minute review of a card in Review —
 per criterion the test that proves it, what the run did not establish, what to look
 at first — and takes the verdict. `aif land <ID>` is the yes: it merges the branch
 into the checkout's branch, runs the suite on the *result*, moves the card to Done,
@@ -381,9 +385,13 @@ Backlog → Ready → In Progress → Review → Done
 ```
 
 The analyst puts a ready ticket in **Ready**. `aif work` — with no argument —
-takes the card at the top, moves it to **In Progress**, builds, and moves it to
-**Review** with the report as a comment, or to **Needs Human** with the gate's
-questions. You review beside the diff; the project manager routes what you say.
+takes the card at the top and moves it to **In Progress** before anything else,
+builds, and moves it to **Review** with the report as a comment. Every other way out
+ends in **Needs Human** with a comment whose first line says whose problem it is —
+`blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
+machine, nothing spent) or `blocked: stopped` (and by whom) — so a taken card is never
+left in Ready for the next run to take again, nor anywhere without its reason. You
+review beside the diff; the project manager routes what you say.
 Every transition goes through one adapter, `aif board`, in bash — a model
 "remembering" to move a card is fail-open bookkeeping, and a card that quietly
 did not move is the same defect as a meter that quietly did not fire.
@@ -535,8 +543,8 @@ the gates rather than remembered.
 | `aif project check` | validate it, and say what has moved since the template it was made from |
 | `aif project upgrade` | bring forward what aif changed its mind about — the failure classes, a type-check's phases, the caps, the runner — and leave your own fields alone |
 | `aif project guide` | write `.aif/guide/tests.md` from what the repository declares, for the plan and tests stations; regenerates its block in place, keeps what you wrote |
-| `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; `--clean` removes the worktree |
-| `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, or two in a row that did not build |
+| `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; one worker per ticket on this machine; `--clean` removes the worktree, `--stop` ends the run building it, from any terminal |
+| `aif work --loop [--max-tickets N]` | drain Ready in the board's order, one run per card; stops on an empty column, a run that cannot start, two in a row that did not build, or Ctrl-C |
 | `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |

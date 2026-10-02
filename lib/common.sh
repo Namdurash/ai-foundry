@@ -65,7 +65,14 @@ aif_trap_disarm() {
   aif_trap_restore
 }
 
+# The last error said, kept for a handler that has to say why a command
+# stopped after the fact: the worker's exit handler puts it on the card, where
+# the human looks, instead of leaving it in the scrollback of whoever ran it.
+# shellcheck disable=SC2034  # read by lib/cmd_work.sh
+AIF_LAST_ERR=""
+
 aif_err() {
+  AIF_LAST_ERR="$*"
   printf '%serror:%s %s\n' "$AIF_C_RED" "$AIF_C_RESET" "$*" >&2
 }
 

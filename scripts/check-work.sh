@@ -88,6 +88,11 @@
 #      takes no new card, a second stops them — a Ctrl-C typed at a terminal
 #      too; a worker that cannot start stops the loop taking cards before a
 #      second one starts
+#  41  on a terminal the loop draws its dashboard: a frame from a fixture
+#      keeps every line inside the terminal and every border where it belongs
+#      around Cyrillic titles, in colour or not, wide, compact or ASCII; live,
+#      on a pty, the keys select a worker and stop it, the card saying who,
+#      and the terminal is left as it was found, the summary on it
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -2851,6 +2856,160 @@ eq "--parallel 2 with --no-worktree is refused: one checkout cannot hold two run
 rc=0
 "$AIF" work AIF-60 --parallel 2 >"$OUT/run40f.out" 2>&1 || rc=$?
 eq "--parallel without --loop is refused" "$rc,$(grep -c 'only means something with --loop' "$OUT/run40f.out")" "1,1"
+
+# ====== 41. the loop's dashboard ===============================================
+# A frame is a function of what the loop knows (lib/tui.sh): drawn here from a
+# fixture with no terminal at all and read back character by character —
+# bash pads by bytes, and a Cyrillic title used to push every border after it
+# out of line. Then live, on a pty: the dashboard drawn, a worker selected and
+# stopped from the keyboard, and the terminal left as it was found.
+printf '\n41. the loop draws its dashboard on a terminal, and its keys work\n'
+utf8="$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.UTF-?8$' | sed -n 1p)"
+cat >"$SANDBOX/tui-fixture.sh" <<'FIX'
+AIF_TUI_COLS="${COLS:-100}" AIF_TUI_ROWS="${ROWS:-40}" AIF_TUI_COLOR="${COLOR:-0}" AIF_TUI_256=1
+AIF_TUI_UNICODE="${UNI:-1}" AIF_TUI_UTF8="$UTF8" AIF_TUI_NOW=1000 AIF_TUI_PARALLEL="${PAR:-4}" AIF_TUI_STARTED=0
+AIF_TUI_READY="OPES-56 OPES-57 OPES-58" AIF_TUI_BUILT=3 AIF_TUI_BLOCKED=1 AIF_TUI_STOPPED=0
+AIF_TUI_LOAD="6.2/14" AIF_TUI_DISK="41 GB free" AIF_TUI_SEL=1 AIF_TUI_BOTTOM=events
+AIF_TUI_EVENTS="yellow|12:41|OPES-53 tests rejected (1/4): verify-red: 2 problems
+green|12:39|OPES-51 built → Review · 38 min"
+AIF_TUI_TYP_plan=600 AIF_TUI_TYP_tests=600 AIF_TUI_TYP_implement=900
+for i in 1 2 3 4; do AIF_LS_KIND[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0; done
+AIF_LS_ID[1]=OPES-52 AIF_LS_RESULT[1]=running AIF_LS_START[1]=-860
+AIF_LS_LIVE[1]='{"title":"Імпорт фото","phase":"run","stage":"implement","attempt":2,"attempts_max":3,"model":"sonnet","model_id":"claude-sonnet-5","dispatches":6,"dispatches_max":16,"tokens":412000,"stage_started":400,"last":"green rejected (1/3): 1 test still red","last_tone":"retry"}'
+AIF_LS_ID[2]=OPES-53 AIF_LS_RESULT[2]=running AIF_LS_START[2]=280
+AIF_LS_LIVE[2]='{"title":"Експорт у CSV","phase":"run","stage":"tests","attempt":1,"attempts_max":4,"model":"opus","model_id":"claude-opus-5-5","dispatches":3,"dispatches_max":16,"tokens":188000,"stage_started":700,"last":"plan admitted","last_tone":"ok"}'
+AIF_LS_ID[3]=OPES-54 AIF_LS_RESULT[3]=running AIF_LS_START[3]=940
+AIF_LS_LIVE[3]='{"title":"Push-сповіщення","phase":"worktree"}'
+AIF_LS_ID[4]=OPES-51 AIF_LS_RESULT[4]=built AIF_LS_START[4]=-1280 AIF_LS_END[4]=1000 AIF_LS_PCT[4]=97 AIF_LS_PSTAGE[4]=3
+AIF_LS_LIVE[4]='{"title":"Тема інтерфейсу","phase":"report","stage":"implement","attempt":1,"attempts_max":3,"model":"sonnet","model_id":"claude-sonnet-5","dispatches":7,"dispatches_max":16,"tokens":530000,"last":"implement admitted","last_tone":"ok"}'
+FIX
+frame() { # [VAR=value …] — one frame of the fixture, as lib/tui.sh draws it
+  # shellcheck disable=SC2016 # the inner bash expands them, not this one
+  env UTF8="$utf8" "$@" /bin/bash -c '. "$1/lib/tui.sh"; . "$2"; aif_tui_init; aif_tui_frame; printf "%s\n" "$AIF_TUI_FRAME"' \
+    _ "$ROOT" "$SANDBOX/tui-fixture.sh"
+}
+frame >"$OUT/frame41.txt"
+eq "a frame from a fixture: every line inside the terminal, and the borders where they belong around Cyrillic titles" \
+  "$(python3 - "$OUT/frame41.txt" <<'PY3'
+import sys
+rows = open(sys.argv[1], encoding="utf-8").read().split("\n")
+inside = max(len(r) for r in rows) <= 99
+left = all(len(rows[r]) > 33 and rows[r][33] in "│╮╯┬" for r in range(9))
+right = all(len(rows[r]) == 99 and rows[r][65] in "│╭╰┴" and rows[r][98] in "│╮╯" for r in range(9))
+print(int(inside and left and right))
+PY3
+)" "1"
+eq "…each worker with its title, station and attempt, model, progress and last verdict" \
+  "$(grep -c '▸1 · OPES-52' "$OUT/frame41.txt"),$(grep -c 'Імпорт фото' "$OUT/frame41.txt"),$(grep -c 'implement        attempt 2/3' "$OUT/frame41.txt"),$(grep -c 'sonnet → claude-sonnet-5' "$OUT/frame41.txt"),$(grep -c '~81%' "$OUT/frame41.txt"),$(grep -c 'green rejected (1/3)' "$OUT/frame41.txt")" \
+  "1,1,1,2,1,1"
+eq "…a worker still getting ready, one built, and the loop with what is left in Ready" \
+  "$(grep -c '◌ preparing its worktree' "$OUT/frame41.txt"),$(grep -c '✓ built → Review' "$OUT/frame41.txt"),$(grep -c 'Ready 3 → OPES-56, OPES-57 …' "$OUT/frame41.txt")" "1,1,1"
+frame COLOR=1 | sed 's/\x1b\[[0-9;]*m//g' >"$OUT/frame41c.txt"
+eq "…colour moves nothing: the coloured frame, its colour taken out, is the same frame" \
+  "$(cmp -s "$OUT/frame41.txt" "$OUT/frame41c.txt" && echo same || echo different),$(frame COLOR=1 | grep -c "$(printf '\033')\[38;5;208m")" "same,$(frame COLOR=1 | grep -c "$(printf '\033')\[38;5;208m")"
+eq "…a narrow terminal gets the list, an ASCII one no box drawing" \
+  "$(frame COLS=80 | sed -n 1p | grep -c '^aif work --loop · '),$(frame COLS=80 | grep -c '▸1 OPES-52 Імпорт фото'),$(frame UNI=0 | grep -c '╭'),$(frame UNI=0 | grep -c '^+- >1 . OPES-52')" \
+  "1,1,0,1"
+
+# Live, on a pty of 110 by 40: two held in their plan station, the second
+# selected and stopped from the keyboard, the third taking its slot.
+fresh_project "$SANDBOX/p41"
+for t in AIF-80 AIF-81 AIF-82 AIF-83; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "four" >/dev/null
+for t in AIF-80 AIF-81 AIF-82; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+mkdir -p "$SANDBOX/p41-marks"
+rc="$(FAKE_SLEEP_IN="AIF-80:plan AIF-81:plan" FAKE_MARKS="$SANDBOX/p41-marks" FAKE_RELEASE="$SANDBOX/p41-marks/go" \
+  python3 - "$AIF" "$SANDBOX/p41-marks" "$OUT/screen41" "$utf8" <<'PY3'
+import fcntl, os, pty, select, struct, sys, termios, time
+aif, marks, raw, utf8 = sys.argv[1:5]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.environ["LANG"] = utf8 or "en_US.UTF-8"
+    os.execv(aif, [aif, "work", "--loop"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 110, 0, 0))
+buf = b""
+def pump(secs):
+    global buf
+    end = time.time() + secs
+    while time.time() < end:
+        if select.select([fd], [], [], 0.05)[0]:
+            try:
+                c = os.read(fd, 65536)
+            except OSError:
+                return False
+            if not c:
+                return False
+            buf += c
+    return True
+deadline = time.time() + 40
+while not (os.path.exists(marks + "/AIF-80-plan") and os.path.exists(marks + "/AIF-81-plan")) and time.time() < deadline:
+    pump(0.2)
+pump(2.5)
+open(raw + ".both", "wb").write(buf)
+os.write(fd, b"2")
+pump(1.5)
+os.write(fd, b"s")
+pump(1.5)
+open(raw + ".ask", "wb").write(buf)
+os.write(fd, b"y")
+pump(5)
+open(marks + "/go", "w").close()
+while pump(1):
+    pass
+_, status = os.waitpid(pid, 0)
+open(raw, "wb").write(buf)
+print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY3
+)"
+lastframe() { # <raw> — the last frame drawn, its colour taken out
+  python3 - "$1" <<'PY3'
+import re, sys
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+print(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw.split("\x1b[H")[-1]).replace("\r", ""))
+PY3
+}
+eq "a stop from the dashboard: that card in Needs Human saying who, the others built, the third in its slot — exit 1" \
+  "$rc,$(col AIF-80),$(col AIF-81),$(col AIF-82),$(last_comment AIF-81 | sed -n 1p)" \
+  "1,review,needs_human,review,blocked: stopped — by Work (aif work AIF-81 --stop), during plan"
+eq "…the dashboard drew both workers around the loop, then asked before stopping the selected one" \
+  "$(lastframe "$OUT/screen41.both" | grep -c '▸1 · AIF-80'),$(lastframe "$OUT/screen41.both" | grep -c '2 · AIF-81'),$(lastframe "$OUT/screen41.both" | grep -c 'aif work --loop'),$(lastframe "$OUT/screen41.ask" | grep -c 'stop AIF-81? y: yes')" \
+  "1,1,1,1"
+eq "…on the terminal's alternate screen, left again, with the summary on the screen it came from" \
+  "$(python3 - "$OUT/screen41" <<'PY3'
+import sys
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+enter, leave = raw.find("\x1b[?1049h"), raw.rfind("\x1b[?1049l")
+print(int(0 <= enter < leave and "3 taken, 2 built" in raw[leave:] and "\x1b[?25h" in raw[leave - 8:]))
+PY3
+)" "1"
+"$AIF" board create tasks/AIF-83/ticket.md --column ready >/dev/null
+python3 - "$AIF" "$OUT/screen41b" <<'PY3'
+import os, pty, select, sys, time
+aif, raw = sys.argv[1:3]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.execv(aif, [aif, "work", "--loop", "--no-tui"])
+buf = b""
+while True:
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            c = os.read(fd, 65536)
+        except OSError:
+            break
+        if not c:
+            break
+        buf += c
+os.waitpid(pid, 0)
+open(raw, "wb").write(buf)
+PY3
+eq "--no-tui on a terminal: lines, not the dashboard" \
+  "$(grep -c "$(printf '\033')\[?1049h" "$OUT/screen41b"),$(sed 's/\x1b\[[0-9;]*m//g' "$OUT/screen41b" | grep -c 'loop 1 — AIF-83')" "0,1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

@@ -97,6 +97,11 @@ usage: aif work [<ticket>] [options]
                      Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
   --parallel N       with --loop: N tickets at once (default 2; 1 with
                      --no-worktree, which builds in this checkout)
+  --no-tui           with --loop: lines, not the dashboard. On a terminal the
+                     loop draws one — the loop in the middle, each worker
+                     around it with its station, model, progress and last
+                     verdict; keys: 1-9 select a worker, s stop it, l its log,
+                     q no new cards. Anywhere else it prints lines anyway
   --max-tickets N    with --loop: stop after N tickets
 
 Two caps always apply — the wall clock and limits.run_dispatches_max (16
@@ -194,6 +199,27 @@ _aif_work_abandon() {
 _aif_work_phase() {
   AIF_WORK_PHASE="$1"
   [ -z "${AIF_WORK_LOCK:-}" ] || printf '%s\n' "$1" >"$AIF_WORK_LOCK/phase" 2>/dev/null || true
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live '.phase = $p' --arg p "$1"
+}
+
+# _aif_work_live <jq-filter> [jq args…] — this run's live state, for the loop's
+# dashboard (lib/tui.sh): the stage and attempt, the model, the dispatches and
+# tokens so far, the last verdict — kept in the run lock beside the phase and
+# rewritten as the run moves. A view, never the record: nothing else reads it,
+# and failing to write it is nobody's problem.
+_aif_work_live() {
+  local f filter="$1"
+  shift
+  [ -n "${AIF_WORK_LOCK:-}" ] && [ -d "$AIF_WORK_LOCK" ] || return 0
+  f="$AIF_WORK_LOCK/live.json"
+  [ -f "$f" ] || printf '{}\n' >"$f" 2>/dev/null || return 0
+  if jq "$@" "$filter" "$f" >"$f.tmp" 2>/dev/null; then
+    mv "$f.tmp" "$f" 2>/dev/null || true
+  else
+    rm -f "$f.tmp"
+  fi
+  return 0
 }
 
 # _aif_work_block <root> <ticket> <kind> <why> [<body-file>] — the card goes
@@ -847,6 +873,17 @@ _aif_work_dispatch() {
   [ -n "$max_turns" ] || max_turns="$(jq -r '.limits.station_max_turns // 60' "$project" 2>/dev/null)"
   [ -n "$model" ] || model="sonnet"
   [ -n "$tools" ] || tools="Read,Grep,Glob,Write,Edit"
+  # The alias the station asks for, and what the profile maps it to — what
+  # actually answered replaces that once the envelope says (below).
+  local resolved=""
+  case "$model" in
+    opus) resolved="${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ;;
+    sonnet) resolved="${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ;;
+    haiku) resolved="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ;;
+  esac
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live '.model = $m | .model_id = ((.models // {})[$s] // (if $r == "" then null else $r end))' \
+    --arg m "$model" --arg s "$station" --arg r "$resolved"
 
   # The tests station's Bash is for one command, `aif _verify`, and the guard
   # hook is what holds it to that. The tool is granted only once
@@ -966,6 +1003,9 @@ $complaint"
   summary="$(jq -r '(.result // "") | split("\n")[0] | .[0:200]' "$out")"
   model_ran="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
   [ -n "$model_ran" ] || model_ran="$model"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live '.tokens = ((.tokens // 0) + $o) | .models[$s] = $id | .model_id = $id' \
+    --argjson o "$(printf '%s' "$usage" | jq -r '.output_tokens // 0')" --arg s "$station" --arg id "$model_ran"
   cost="$(_aif_meter_cost "$wt/.aif/prices.json" "$model_ran" "$usage")"
   result=error
   "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out" && result=ran
@@ -1422,8 +1462,8 @@ _aif_work_report() {
 }
 
 # _aif_work_loop <root> <max> <profile> <budget> <budget_off> <max_minutes>
-#                <use_worktree> <parallel> — drain Ready, <parallel> runs at a
-#                time.
+#                <use_worktree> <parallel> <tui> — drain Ready, <parallel> runs at
+#                a time; <tui> is auto or off.
 #
 # The supervisor of `aif work --loop`. Each card is one `aif work <card>`, a
 # child process with its own traps, caps, run lock and exit code — the
@@ -1449,8 +1489,10 @@ _aif_work_report() {
 #             checkout, removing the report and waiting for it to appear; N at
 #             once would delete each other's. Each worker gets AIF_WORK_LOOP=1
 #             and skips only that.
-#   output    each worker writes its own log under .aif/tmp/loop-<when>/; the
-#             loop says one line per start and per end, and a summary.
+#   output    each worker writes its own log under .aif/tmp/loop-<when>/. On a
+#             terminal the loop draws its dashboard (lib/tui.sh) from what each
+#             worker writes into its run lock as it moves; anywhere else it
+#             says one line per start and per end. A summary either way.
 #   Ctrl-C    each worker starts in a process group of its own, so the
 #             terminal's Ctrl-C reaches the loop alone. The first takes no new
 #             card and lets the runs in flight finish; the second stops them,
@@ -1463,16 +1505,19 @@ _aif_work_report() {
 # when a worker could not start (exit 3: the environment, not the card),
 # after two that did not build with none built between them, or on Ctrl-C;
 # then waits for the runs in flight and says how each ended. A run stopped on
-# its own — `aif work <ID> --stop` — is not a verdict on the cards: it does
-# not count toward two in a row, and its slot takes the next card.
+# its own — `aif work <ID> --stop`, or [s] on the dashboard — is not a
+# verdict on the cards: it does not count toward two in a row, and its slot
+# takes the next card.
 #
 # Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
 # environment · 130 / 143 stopped by Ctrl-C or a TERM.
+# The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
+# shellcheck disable=SC2034
 _aif_work_loop() {
   local root="$1" max="$2" profile="$3" budget="$4" budget_off="$5"
-  local max_minutes="$6" use_worktree="$7" parallel="${8:-1}"
-  local main logdir why="" env=0 taken=" " taken_n=0 built=0 in_a_row=0
-  local next_poll=0 kill_by=0 now n list pick id pid rc entry left what kind mins results=""
+  local max_minutes="$6" use_worktree="$7" parallel="${8:-1}" tui="${9:-auto}"
+  local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0
+  local now n list pick id pid rc entry left what kind mins results="" slot st i
 
   set --
   [ -z "$profile" ] || set -- "$@" --profile "$profile"
@@ -1488,61 +1533,86 @@ _aif_work_loop() {
   logdir="$main/.aif/tmp/loop-$(date '+%Y%m%d-%H%M%S')"
   mkdir -p "$logdir"
 
-  # The handler's state, in globals: a trap fires with the signal's name only.
-  AIF_WORK_LOOP_STOP=""    # why no new card is taken — the first reason wins
-  AIF_WORK_LOOP_CTRL_C=0   # how many Ctrl-Cs have arrived
-  AIF_WORK_LOOP_KILLED=""  # INT or TERM, once every run in flight was told to stop
-  AIF_WORK_LOOP_RUNNING="" # "<pid>:<ticket>:<started>" per run in flight
+  # What the loop, its handler and its dashboard share, in globals: a trap
+  # fires with the signal's name only, and lib/tui.sh draws from these.
+  AIF_WORK_LOOP_ROOT="$root"
+  AIF_WORK_LOOP_MAIN="$main"
+  AIF_WORK_LOOP_LOGDIR="$logdir"
+  AIF_WORK_LOOP_TAKEN=" "   # every card taken, space-delimited
+  AIF_WORK_LOOP_STOP=""     # why no new card is taken — the first reason wins
+  AIF_WORK_LOOP_CTRL_C=0    # how many Ctrl-Cs (or q) have arrived
+  AIF_WORK_LOOP_KILLED=""   # INT or TERM, once every run in flight was told to stop
+  AIF_WORK_LOOP_RUNNING=""  # "<pid>:<ticket>:<started>:<slot>" per run in flight
+  AIF_TUI_PARALLEL="$parallel" AIF_TUI_STARTED="$(date +%s)" AIF_TUI_NOW="$AIF_TUI_STARTED"
+  AIF_TUI_BUILT=0 AIF_TUI_BLOCKED=0 AIF_TUI_STOPPED=0 AIF_TUI_READY="" AIF_TUI_LOAD="" AIF_TUI_DISK=""
+  AIF_TUI_EVENTS="" AIF_TUI_SEL=1 AIF_TUI_BOTTOM=events AIF_TUI_LOG="" AIF_TUI_ASK=""
+  for i in $(seq 1 "$parallel"); do
+    AIF_LS_PID[i]="" AIF_LS_ID[i]="" AIF_LS_RESULT[i]="" AIF_LS_KIND[i]="" AIF_LS_LIVE[i]=""
+    AIF_LS_START[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0
+  done
+  _aif_work_loop_tui_start "$tui"
   aif_trap_arm "_aif_work_loop_signal"
 
-  printf '\n%sloop%s %s at a time · logs in %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$parallel" "${logdir#"$main"/}" >&2
+  [ "$AIF_WORK_LOOP_TUI" = 1 ] ||
+    printf '\n%sloop%s %s at a time · logs in %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$parallel" "${logdir#"$main"/}" >&2
 
   while :; do
     # Every run that has ended: how, and what it means for the loop.
     left=""
     for entry in $AIF_WORK_LOOP_RUNNING; do
-      pid="${entry%%:*}"
-      id="${entry#*:}"
-      id="${id%%:*}"
+      IFS=: read -r pid id st slot <<EOF
+$entry
+EOF
       if kill -0 "$pid" 2>/dev/null; then
         left="$left $entry"
         continue
       fi
       rc=0
       wait "$pid" 2>/dev/null || rc=$?
-      mins=$((($(date +%s) - ${entry##*:}) / 60))
+      now="$(date +%s)"
+      mins=$(((now - st) / 60))
+      AIF_LS_PID[slot]=""
+      AIF_LS_END[slot]="$now"
+      kind=""
       case "$rc" in
         0)
-          built=$((built + 1))
+          AIF_TUI_BUILT=$((AIF_TUI_BUILT + 1))
           in_a_row=0
           what="built → Review"
-          _aif_work_say "loop" "$id built → Review · $mins min"
+          AIF_LS_RESULT[slot]=built
+          _aif_work_loop_event green "$id built → Review · $mins min"
           ;;
         3)
           env=1
           what="could not start (exit 3)"
+          AIF_LS_RESULT[slot]="env"
           [ -n "$AIF_WORK_LOOP_STOP" ] ||
             AIF_WORK_LOOP_STOP="$id could not start (exit 3) — the environment, not the card; the loop takes no new card"
-          _aif_work_say "loop" "$id could not start (exit 3) — the environment, not the card; its log says what"
+          _aif_work_loop_event red "$id could not start (exit 3) — the environment, not the card; its log says what"
           ;;
         130 | 143)
           what="stopped (exit $rc)"
+          AIF_TUI_STOPPED=$((AIF_TUI_STOPPED + 1))
+          AIF_LS_RESULT[slot]=stopped
           if [ -z "$AIF_WORK_LOOP_KILLED" ] && [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ]; then
-            _aif_work_say "loop" "$id was stopped (exit $rc) — not counted against the cards; the loop goes on"
+            _aif_work_loop_event dim "$id was stopped (exit $rc) — not counted against the cards; the loop goes on"
           else
-            _aif_work_say "loop" "$id stopped (exit $rc)"
+            _aif_work_loop_event dim "$id stopped (exit $rc)"
           fi
           ;;
         *)
           kind="$(sed -n 's/.*→ needs_human — blocked: \([a-z]*\).*/\1/p' "$logdir/$id.log" 2>/dev/null | tail -1)" || kind=""
           what="not built → Needs Human${kind:+, blocked: $kind}"
-          _aif_work_say "loop" "$id not built → Needs Human${kind:+ (blocked: $kind)} · $mins min"
+          AIF_TUI_BLOCKED=$((AIF_TUI_BLOCKED + 1))
+          AIF_LS_RESULT[slot]=blocked
+          _aif_work_loop_event red "$id not built → Needs Human${kind:+ (blocked: $kind)} · $mins min"
           in_a_row=$((in_a_row + 1))
           if [ "$in_a_row" -ge 2 ] && [ -z "$AIF_WORK_LOOP_STOP" ]; then
             AIF_WORK_LOOP_STOP="two runs in a row did not build ($id the last) — read the cards in Needs Human before spending on a third"
           fi
           ;;
       esac
+      AIF_LS_KIND[slot]="$kind"
       results="$results$id|$what|$mins
 "
       next_poll=0
@@ -1553,20 +1623,16 @@ _aif_work_loop() {
       n=$((n + 1))
     done
 
-    # Every run in flight was told to stop: wait for them — each settles its
-    # card first — a minute at most.
     if [ -n "$AIF_WORK_LOOP_KILLED" ]; then
+      # Every run in flight was told to stop: wait for them — each settles its
+      # card first — a minute at most.
       [ "$n" -gt 0 ] || break
       [ "$kill_by" -ne 0 ] || kill_by=$(($(date +%s) + 60))
       if [ "$(date +%s)" -gt "$kill_by" ]; then
         aif_warn "still running a minute after the stop: $AIF_WORK_LOOP_RUNNING — each settles its own card when it ends"
         break
       fi
-      sleep 1 || true
-      continue
-    fi
-
-    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
+    elif [ -n "$AIF_WORK_LOOP_STOP" ]; then
       [ "$n" -gt 0 ] || break
     elif [ "$max" -gt 0 ] && [ "$taken_n" -ge "$max" ]; then
       if [ "$n" -eq 0 ]; then
@@ -1579,12 +1645,12 @@ _aif_work_loop() {
         pick=""
         if list="$(aif_board_ready_list "$root" 2>/dev/null)"; then
           for id in $list; do
-            case "$taken" in
+            case "$AIF_WORK_LOOP_TAKEN" in
               *" $id "*) continue ;;
             esac
             # A worker in another terminal holds it: never this loop's.
             if _aif_work_lock_live "$(aif_run_lock_dir "$root" "$id")"; then
-              taken="$taken$id "
+              AIF_WORK_LOOP_TAKEN="$AIF_WORK_LOOP_TAKEN$id "
               continue
             fi
             pick="$id"
@@ -1596,10 +1662,18 @@ _aif_work_loop() {
           break
         fi
         if [ -n "$pick" ]; then
-          taken="$taken$pick "
+          AIF_WORK_LOOP_TAKEN="$AIF_WORK_LOOP_TAKEN$pick "
           taken_n=$((taken_n + 1))
-          printf '\n%sloop%s %s — %s · %s of %s running · %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" \
-            "$taken_n" "$pick" "$((n + 1))" "$parallel" "${logdir#"$main"/}/$pick.log" >&2
+          slot=1
+          while [ -n "${AIF_LS_PID[slot]}" ]; do
+            slot=$((slot + 1))
+          done
+          if [ "$AIF_WORK_LOOP_TUI" = 1 ]; then
+            _aif_work_loop_event orange "$pick taken · worker $slot"
+          else
+            printf '\n%sloop%s %s — %s · %s of %s running · %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" \
+              "$taken_n" "$pick" "$((n + 1))" "$parallel" "${logdir#"$main"/}/$pick.log" >&2
+          fi
           # A process group of its own, so the terminal's Ctrl-C passes it by
           # — and job control off again at once, or the next foreground
           # command takes the terminal and the next Ctrl-C with it.
@@ -1607,7 +1681,9 @@ _aif_work_loop() {
           AIF_WORK_LOOP=1 "$AIF_ROOT/bin/aif" work "$pick" ${1+"$@"} </dev/null >"$logdir/$pick.log" 2>&1 &
           pid=$!
           set +m
-          AIF_WORK_LOOP_RUNNING="${AIF_WORK_LOOP_RUNNING:+$AIF_WORK_LOOP_RUNNING }$pid:$pick:$(date +%s)"
+          AIF_WORK_LOOP_RUNNING="${AIF_WORK_LOOP_RUNNING:+$AIF_WORK_LOOP_RUNNING }$pid:$pick:$(date +%s):$slot"
+          AIF_LS_PID[slot]="$pid" AIF_LS_ID[slot]="$pick" AIF_LS_RESULT[slot]=running AIF_LS_KIND[slot]=""
+          AIF_LS_LIVE[slot]="" AIF_LS_START[slot]="$(date +%s)" AIF_LS_END[slot]="" AIF_LS_PCT[slot]=0 AIF_LS_PSTAGE[slot]=0
           continue
         fi
         if [ "$n" -eq 0 ]; then
@@ -1619,14 +1695,13 @@ _aif_work_loop() {
         next_poll=$((now + 30))
       fi
     fi
-    # `|| true`: the terminal's Ctrl-C reaches the tick's sleep as well as the
-    # loop, and under set -e a sleep that ends on it would end the loop with it.
-    sleep 1 || true
+    _aif_work_loop_tick
   done
   aif_trap_disarm
+  _aif_work_loop_tui_stop
 
   [ -z "$AIF_WORK_LOOP_STOP" ] || why="$AIF_WORK_LOOP_STOP"
-  printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken_n" "$built" "$why" >&2
+  printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken_n" "$AIF_TUI_BUILT" "$why" >&2
   while IFS='|' read -r id what mins; do
     [ -n "$id" ] || continue
     case "$what" in
@@ -1641,7 +1716,7 @@ EOF
   [ "$AIF_WORK_LOOP_KILLED" != "TERM" ] || exit 143
   [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ] || exit 130
   [ "$env" -eq 0 ] || exit 3
-  [ "$taken_n" -eq "$built" ] || exit 1
+  [ "$taken_n" -eq "$AIF_TUI_BUILT" ] || exit 1
   exit 0
 }
 
@@ -1664,6 +1739,202 @@ _aif_work_loop_starting() {
   return 1
 }
 
+# _aif_work_loop_event <tone> <text> — one thing that happened: into the loop's
+# own log, and onto the dashboard, newest first — or, with no dashboard, said.
+_aif_work_loop_event() {
+  local at
+  at="$(date '+%H:%M')"
+  printf '%s %s\n' "$at" "$2" >>"$AIF_WORK_LOOP_LOGDIR/loop.log" 2>/dev/null || true
+  if [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ]; then
+    AIF_TUI_EVENTS="$(printf '%s|%s|%s\n%s\n' "$1" "$at" "$2" "$AIF_TUI_EVENTS" | sed -n '1,3p')"
+  else
+    _aif_work_say "loop" "$2"
+  fi
+}
+
+# _aif_work_loop_tui_start <auto|off> — the dashboard, when this is a terminal
+# a person is looking at: stderr a tty, a controlling terminal to read keys
+# from, a TERM that can draw. Colour unless NO_COLOR; orange from 256 colours,
+# else yellow; box drawing where the locale is UTF-8, ASCII where it is not —
+# and a UTF-8 locale to measure text in either way (lib/tui.sh). The screen is
+# the terminal's alternate one, so the summary lands where the loop started.
+# The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
+# shellcheck disable=SC2034
+_aif_work_loop_tui_start() {
+  local cl
+  AIF_WORK_LOOP_TUI=0
+  [ "${1:-auto}" != off ] && [ "${AIF_NO_TUI:-}" != 1 ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] || return 0
+  { : </dev/tty; } 2>/dev/null || return 0
+  AIF_WORK_LOOP_TUI=1
+  AIF_TUI_COLOR=1
+  [ -z "${NO_COLOR:-}" ] || AIF_TUI_COLOR=0
+  AIF_TUI_256=0
+  [ "$(tput colors 2>/dev/null || printf 8)" -lt 256 ] 2>/dev/null || AIF_TUI_256=1
+  cl="${LC_CTYPE:-${LANG:-}}"
+  case "$cl" in
+    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
+      AIF_TUI_UNICODE=1
+      AIF_TUI_UTF8="$cl"
+      ;;
+    *)
+      AIF_TUI_UNICODE=0
+      AIF_TUI_UTF8="$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.UTF-?8$' | sed -n 1p)" || AIF_TUI_UTF8=""
+      ;;
+  esac
+  aif_tui_init
+  _aif_work_loop_typical
+  printf '\033[?1049h\033[?25l' >&2
+}
+
+# _aif_work_loop_tui_stop — the terminal as it was: the cursor back, the
+# alternate screen left. Safe to call twice.
+_aif_work_loop_tui_stop() {
+  [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ] || return 0
+  AIF_WORK_LOOP_TUI=0
+  printf '\033[?25h\033[?1049l' >&2
+}
+
+# _aif_work_loop_typical — how long each station usually takes here, in
+# seconds: the median of what the stations' kept envelopes say
+# (tasks/<ID>/stations/*.json, duration_ms). What a worker's bar measures a
+# stage against; 10, 10 and 15 minutes where this project has no history yet.
+# The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
+# shellcheck disable=SC2034
+_aif_work_loop_typical() {
+  local typ kv
+  AIF_TUI_TYP_plan=600 AIF_TUI_TYP_tests=600 AIF_TUI_TYP_implement=900
+  typ="$(find "$AIF_WORK_LOOP_MAIN/tasks" -path '*/stations/*.json' -type f -print0 2>/dev/null |
+    xargs -0 jq -c '{ f: input_filename, d: (.duration_ms // null) }' 2>/dev/null |
+    jq -rs '[ .[] | select(.d != null) | { s: (.f | capture("/[0-9]+-(?<s>[a-z]+)\\.json$").s), d } ]
+      | group_by(.s) | .[] | "\(.[0].s)=\(map(.d) | sort | .[length / 2 | floor] / 1000 | floor)"' 2>/dev/null)" || typ=""
+  for kv in $typ; do
+    case "$kv" in
+      plan=[1-9]*) AIF_TUI_TYP_plan="${kv#plan=}" ;;
+      tests=[1-9]*) AIF_TUI_TYP_tests="${kv#tests=}" ;;
+      implement=[1-9]*) AIF_TUI_TYP_implement="${kv#implement=}" ;;
+    esac
+  done
+}
+
+# _aif_work_loop_tick — a second of the loop: with the dashboard, a frame and a
+# key (the key's read is the second); without, a sleep. `|| true` on both: a
+# Ctrl-C reaches what the loop runs in the foreground as well as the loop,
+# and under set -e a command it ended would end the loop with it.
+_aif_work_loop_tick() {
+  local key=""
+  if [ "${AIF_WORK_LOOP_TUI:-0}" != 1 ]; then
+    sleep 1 || true
+    return 0
+  fi
+  _aif_work_loop_refresh
+  _aif_work_loop_draw
+  IFS= read -r -t 1 -n 1 -s key </dev/tty 2>/dev/null || true
+  [ -z "$key" ] || _aif_work_loop_key "$key"
+}
+
+# _aif_work_loop_refresh — what the frame shows: each worker's live state from
+# its run lock, the cards in Ready it has not taken (every 30 seconds — on a
+# Trello board a look is a request), the machine's load and free disk (every
+# 10), and the selected worker's log when that is on screen.
+# The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
+# shellcheck disable=SC2034
+_aif_work_loop_refresh() {
+  local i now lock id out="" l c
+  now="$(date +%s)"
+  AIF_TUI_NOW="$now"
+  for i in $(seq 1 "$AIF_TUI_PARALLEL"); do
+    [ "${AIF_LS_RESULT[i]}" = running ] || continue
+    lock="$(aif_run_lock_dir "$AIF_WORK_LOOP_ROOT" "${AIF_LS_ID[i]}")"
+    [ ! -f "$lock/live.json" ] || AIF_LS_LIVE[i]="$(cat "$lock/live.json" 2>/dev/null)" || true
+  done
+  if [ "$now" -ge "${AIF_WORK_LOOP_SHOW_POLL:-0}" ]; then
+    AIF_WORK_LOOP_SHOW_POLL=$((now + 30))
+    AIF_WORK_LOOP_READY="$(aif_board_ready_list "$AIF_WORK_LOOP_ROOT" 2>/dev/null)" || AIF_WORK_LOOP_READY=""
+  fi
+  # What it read, less what it has taken since: the card a worker took a
+  # second ago is not still waiting.
+  for id in ${AIF_WORK_LOOP_READY:-}; do
+    case "$AIF_WORK_LOOP_TAKEN" in
+      *" $id "*) ;;
+      *) out="$out $id" ;;
+    esac
+  done
+  AIF_TUI_READY="${out# }"
+  if [ "$now" -ge "${AIF_WORK_LOOP_SYS_POLL:-0}" ]; then
+    AIF_WORK_LOOP_SYS_POLL=$((now + 10))
+    l="$(sysctl -n vm.loadavg 2>/dev/null | awk '{ print $2 }')" || l=""
+    [ -n "$l" ] || l="$(awk '{ print $1 }' /proc/loadavg 2>/dev/null)" || l=""
+    c="$(sysctl -n hw.ncpu 2>/dev/null)" || c=""
+    [ -n "$c" ] || c="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || c=""
+    AIF_TUI_LOAD="${l:-?}/${c:-?}"
+    AIF_TUI_DISK="$(df -Pk "$AIF_WORK_LOOP_MAIN" 2>/dev/null | awk 'NR == 2 { printf "%.0f GB free", $4 / 1048576 }')" || AIF_TUI_DISK=""
+  fi
+  if [ "$AIF_TUI_BOTTOM" = log ]; then
+    AIF_TUI_LOG="$(tail -n 6 "$AIF_WORK_LOOP_LOGDIR/${AIF_LS_ID[AIF_TUI_SEL]}.log" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')" || AIF_TUI_LOG=""
+  fi
+}
+
+# _aif_work_loop_draw — one frame, written at once: home, each line with its
+# rest cleared, the rest of the screen cleared. Sized to the terminal as it is
+# now, so a resize is drawn on the next second.
+# The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
+# shellcheck disable=SC2034
+_aif_work_loop_draw() {
+  local size rows cols
+  size="$(stty size </dev/tty 2>/dev/null)" || size=""
+  rows="${size% *}"
+  cols="${size#* }"
+  # A terminal that has never been told its size says 0 0; tput, which asks
+  # through a pipe here, would answer with its database's 24 by 80.
+  case "$rows" in
+    '' | *[!0-9]* | 0) rows=40 ;;
+  esac
+  case "$cols" in
+    '' | *[!0-9]* | 0) cols=100 ;;
+  esac
+  AIF_TUI_ROWS="$rows" AIF_TUI_COLS="$cols"
+  if [ -n "${AIF_TUI_ASK:-}" ]; then
+    AIF_TUI_STATUS="stop ${AIF_LS_ID[AIF_TUI_ASK]}? y: yes, any key: no" AIF_TUI_STATUS_TONE=yellow
+  elif [ -n "$AIF_WORK_LOOP_KILLED" ]; then
+    AIF_TUI_STATUS="stopping every run in flight" AIF_TUI_STATUS_TONE=red
+  elif [ -n "$AIF_WORK_LOOP_STOP" ]; then
+    AIF_TUI_STATUS="no new cards — ^C again: stop all" AIF_TUI_STATUS_TONE=yellow
+  else
+    AIF_TUI_STATUS="^C or q: no new cards" AIF_TUI_STATUS_TONE=dim
+  fi
+  aif_tui_frame
+  printf '\033[H%s\033[K\033[J' "${AIF_TUI_FRAME//$'\n'/$'\033[K\n'}" >&2
+}
+
+# _aif_work_loop_key <key> — what a key does: 1–9 selects a worker, s stops the
+# selected one (after a y — it is a run, and its card goes to Needs Human),
+# l shows its log or the events again, q is the first Ctrl-C.
+_aif_work_loop_key() {
+  local k="$1" id
+  if [ -n "${AIF_TUI_ASK:-}" ]; then
+    id="${AIF_LS_ID[AIF_TUI_ASK]}"
+    if [ "$k" = y ] && [ -n "$id" ] && [ "${AIF_LS_RESULT[AIF_TUI_ASK]}" = running ]; then
+      _aif_work_loop_event yellow "$id: stopping it, as asked"
+      ("$AIF_ROOT/bin/aif" work "$id" --stop </dev/null >>"$AIF_WORK_LOOP_LOGDIR/loop.log" 2>&1) &
+    fi
+    AIF_TUI_ASK=""
+    return 0
+  fi
+  case "$k" in
+    [1-9]) [ "$k" -gt "$AIF_TUI_PARALLEL" ] || AIF_TUI_SEL="$k" ;;
+    s) [ "${AIF_LS_RESULT[AIF_TUI_SEL]}" != running ] || AIF_TUI_ASK="$AIF_TUI_SEL" ;;
+    l)
+      if [ "$AIF_TUI_BOTTOM" = log ]; then
+        AIF_TUI_BOTTOM=events
+      else
+        AIF_TUI_BOTTOM=log
+      fi
+      ;;
+    q) _aif_work_loop_signal INT ;;
+  esac
+  return 0
+}
+
 # _aif_work_loop_signal <EXIT|INT|TERM> — the loop's handler, and what Ctrl-C
 # means to a loop: the first takes no new card and lets the runs in flight
 # finish; the second stops them, each settling its card as stopped by Ctrl-C.
@@ -1677,8 +1948,7 @@ _aif_work_loop_signal() {
       if [ "$AIF_WORK_LOOP_CTRL_C" -eq 1 ]; then
         [ -n "$AIF_WORK_LOOP_STOP" ] || AIF_WORK_LOOP_STOP="stopped by Ctrl-C — no new card taken"
         [ -z "$AIF_WORK_LOOP_RUNNING" ] ||
-          printf '\n%sloop%s Ctrl-C — no new card; the runs in flight finish on their own. Ctrl-C again stops them.\n' \
-            "$AIF_C_BOLD" "$AIF_C_RESET" >&2
+          _aif_work_loop_event yellow "Ctrl-C — no new card; the runs in flight finish on their own. Ctrl-C again stops them."
       else
         AIF_WORK_LOOP_STOP="stopped by Ctrl-C twice — the runs in flight were stopped too"
         _aif_work_loop_forward INT
@@ -1689,8 +1959,9 @@ _aif_work_loop_signal() {
       _aif_work_loop_forward TERM
       ;;
     EXIT)
-      # The loop itself failing: its workers are processes of their own and
-      # go on, each settling its own card.
+      # The loop itself failing: the terminal back first, then its workers —
+      # processes of their own, which go on, each settling its own card.
+      _aif_work_loop_tui_stop
       [ -z "${AIF_WORK_LOOP_RUNNING:-}" ] ||
         aif_warn "the loop ended with runs still in flight ($AIF_WORK_LOOP_RUNNING) — each settles its own card; aif work <ID> --stop ends one"
       ;;
@@ -1706,13 +1977,12 @@ _aif_work_loop_forward() {
   for entry in $AIF_WORK_LOOP_RUNNING; do
     kill -"$1" -- "-${entry%%:*}" 2>/dev/null || kill -"$1" "${entry%%:*}" 2>/dev/null || true
   done
-  [ -z "$AIF_WORK_LOOP_RUNNING" ] ||
-    printf '\n%sloop%s stopping every run in flight (%s)\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$1" >&2
+  [ -z "$AIF_WORK_LOOP_RUNNING" ] || _aif_work_loop_event red "stopping every run in flight ($1)"
 }
 
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
-  local loop=0 max_tickets=0 stop=0 parallel="" profile_arg
+  local loop=0 max_tickets=0 stop=0 parallel="" profile_arg tui=auto
   # An empty budget means NO ceiling, here and everywhere below. budget_off
   # separates "the caller said no ceiling" from "the caller said nothing",
   # which is what lets --no-budget override a project that sets one.
@@ -1748,6 +2018,7 @@ aif_cmd_work() {
       --no-worktree) use_worktree=0 ;;
       --clean) clean=1 ;;
       --stop) stop=1 ;;
+      --no-tui) tui=off ;;
       --loop) loop=1 ;;
       --max-tickets)
         shift
@@ -1831,7 +2102,7 @@ aif_cmd_work() {
     fi
     # Once, for every worker the loop starts (_aif_work_loop says why).
     _aif_work_preflight "$root" "$profile"
-    _aif_work_loop "$root" "$max_tickets" "$profile_arg" "$budget" "$budget_off" "$max_minutes" "$use_worktree" "$parallel"
+    _aif_work_loop "$root" "$max_tickets" "$profile_arg" "$budget" "$budget_off" "$max_minutes" "$use_worktree" "$parallel" "$tui"
   fi
   [ "$max_tickets" -eq 0 ] || aif_die "--max-tickets only means something with --loop"
   [ -z "$parallel" ] || aif_die "--parallel only means something with --loop"
@@ -1870,6 +2141,8 @@ aif_cmd_work() {
   AIF_WORK_CARD=""
   AIF_WORK_WORK=""
   AIF_WORK_SETTLED=0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live '.ticket = $t | .started = $s' --arg t "$ticket" --argjson s "$(date +%s)"
   _aif_work_phase claim
   aif_trap_arm "_aif_work_abandon"
 
@@ -1964,6 +2237,9 @@ aif_cmd_work() {
   # (docs/DEFECTS-8.md #4); the fallback is now the number the stage was
   # budgeted for.
   dispatches_max="$(jq -r '.limits.run_dispatches_max // 16' "$project")"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live '.title = $t | .dispatches_max = $d | .dispatches = 0' \
+    --arg t "$(_aif_board_title "$work/ticket.md")" --argjson d "$dispatches_max"
   [ -n "$max_minutes" ] || max_minutes="$(jq -r '.limits.run_max_minutes // 120' "$project")"
   # No default. A dollar ceiling that nobody chose is worse than none: under
   # subscription auth the runner reports $0 and .aif/prices.json ships empty,
@@ -2076,6 +2352,10 @@ $complaint"
       if [ -n "$budget" ]; then
         budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
       fi
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+      _aif_work_live '.stage = $s | .attempt = $a | .attempts_max = $m | .dispatches = $d | .stage_started = $t' \
+        --arg s "$stage" --argjson a "$((attempts + 1))" --argjson m "$attempts_max" \
+        --argjson d "$dispatches" --argjson t "$(date +%s)"
       _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
         "$budget_left" "$out" || rc=$?
       if [ "$rc" -eq 3 ]; then
@@ -2120,6 +2400,8 @@ $complaint"
         _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
         aif_ledger_gate "$work" prepare fail "" "" "" \
           "$(printf '%s' "$AIF_WORK_REPREPARE" | sed -n 1p)"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "retry"' --arg l "$stage: the dependencies it left do not install"
         _aif_work_say "prepare" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — the dependencies it left do not install; retrying with prepare's output"
         continue
       fi
@@ -2146,6 +2428,8 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
           _aif_gate_record_meter "$wt" "$work" 2>/dev/null || true
           if _aif_work_replan "$wt" "$ticket" "$replan_why"; then
             aif_ledger_gate "$work" replan pass "" "" "" "the implementer declares the contract cannot hold the behaviour — replanning"
+            # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+            _aif_work_live '.last = $l | .last_tone = "retry"' --arg l "implement: the contract cannot hold it — replanning"
             complaint="$AIF_WORK_REPLAN_COMPLAINT"
             prev_sha=""
             continue
@@ -2175,6 +2459,8 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
         fi
         complaint=""
         prev_sha=""
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "ok"' --arg l "$stage admitted"
         # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
         aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"
         ;;
@@ -2197,6 +2483,9 @@ $complaint"
         fi
         prev_stage="$stage"
         prev_sha="$this_sha"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "retry"' \
+          --arg l "$stage rejected ($((attempts + 1))/$attempts_max): $(printf '%s\n' "$complaint" | sed -n 1p)"
         _aif_work_say "gate" "$stage rejected (attempt $((attempts + 1))/$attempts_max) — retrying with the complaint"
         ;;
       2)
@@ -2204,6 +2493,8 @@ $complaint"
         # undecided. Nothing is retried; the analyst gets the gate's lines.
         status="spec"
         why="$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | grep -v '^[[:space:]]*$' | sed -n '1,30p')"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "stop"' --arg l "$stage: the ticket's problem — back to the analyst"
         break
         ;;
       4)
@@ -2213,6 +2504,8 @@ $complaint"
         if [ -n "$budget" ]; then
           budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
         fi
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "retry"' --arg l "green: a frozen test is wrong — the tests station repairs it"
         AIF_WORK_REPAIR_DISPATCHES=0
         AIF_WORK_REPAIR_SPENT=0
         rc=0
@@ -2236,6 +2529,8 @@ $complaint"
         # stops and the gate's own words are the explanation; this line no
         # longer overrides them with a guess.
         status="stopped"
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        _aif_work_live '.last = $l | .last_tone = "stop"' --arg l "$stage: no verdict — the run stops"
         why="a gate could not render a verdict on $stage, so the run stopped rather than
 retrying a station that cannot fix what it is being rejected for. The gate says
 which it is:

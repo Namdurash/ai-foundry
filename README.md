@@ -133,9 +133,13 @@ two. It takes no new card when a run cannot start, or after two that did not bui
 because two cards in Needs Human usually mean the problem is not the cards. Ctrl-C
 takes no new card and lets the runs in flight finish; Ctrl-C again stops them, each
 card saying so. A `--stop` on one run is not held against the cards, and its slot
-takes the next. Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log`; the loop
-prints a line per start and per end, and a summary with the `aif land` for each
-built card. `/aif-review` prepares the human's three-minute review of a card in Review —
+takes the next. Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log`. On a
+terminal the loop draws a dashboard — itself in the middle, each worker around it with
+its ticket, station and attempt, model, progress and last verdict, joined by a line
+whose colour is that worker's state — and takes keys: `1`–`9` select a worker, `s`
+stops it (after a `y`), `l` shows its log, `q` takes no new card. Anywhere else, or
+with `--no-tui`, it prints a line per start and per end. Either way it ends with a
+summary and the `aif land` for each built card. `/aif-review` prepares the human's three-minute review of a card in Review —
 per criterion the test that proves it, what the run did not establish, what to look
 at first — and takes the verdict. `aif land <ID>` is the yes: it merges the branch
 into the checkout's branch, runs the suite on the *result*, moves the card to Done,
@@ -550,7 +554,7 @@ the gates rather than remembered.
 | `aif project upgrade` | bring forward what aif changed its mind about — the failure classes, a type-check's phases, the caps, the runner — and leave your own fields alone |
 | `aif project guide` | write `.aif/guide/tests.md` from what the repository declares, for the plan and tests stations; regenerates its block in place, keeps what you wrote |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; one worker per ticket on this machine; `--clean` removes the worktree, `--stop` ends the run building it, from any terminal |
-| `aif work --loop [--parallel N] [--max-tickets N]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree; takes no new card on an empty column, a run that cannot start, two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight |
+| `aif work --loop [--parallel N] [--max-tickets N] [--no-tui]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree, on a dashboard where there is a terminal; takes no new card on an empty column, a run that cannot start, two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight |
 | `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |

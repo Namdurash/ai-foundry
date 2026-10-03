@@ -104,6 +104,14 @@ _aif_board_local_next_ready() {
     "$dir"/*.json 2>/dev/null
 }
 
+_aif_board_local_ready_list() {
+  local dir
+  dir="$(aif_board_local_dir "$1")"
+  [ -d "$dir" ] || return 0
+  ls "$dir"/*.json >/dev/null 2>&1 || return 0
+  jq -rs '[ .[] | select(.column == "ready") ] | sort_by(.pos) | .[].ticket' "$dir"/*.json 2>/dev/null
+}
+
 _aif_board_local_pull() {
   # The ticket already lives in tasks/; the local board holds no text. Nothing
   # to copy — but say so, so the two backends are called the same way.
@@ -291,6 +299,22 @@ _aif_trello_next_ready() {
     grep -oE "^$re" | sed -n 1p
 }
 
+# The whole Ready column, in the board's order — what a loop running several
+# workers chooses from, skipping the cards it has already taken. `|| true` at
+# the end: grep with nothing to print exits 1, and under pipefail an empty
+# column would read as a failed call.
+_aif_trello_ready_list() {
+  local root="$1" list out re
+  list="$(_aif_trello_list_id "$root" ready)"
+  [ -n "$list" ] || aif_die "project.json board.lists.ready is empty — run: aif board init trello"
+  re="$(aif_board_ticket_re "$root" | sed 's/^\^//; s/\$$//')"
+  out="$(_aif_trello_call "$root" GET "/lists/$list/cards" -G --data-urlencode "fields=name,pos")" ||
+    aif_die "Trello: could not read the Ready list — $out"
+  printf '%s' "$out" | jq -r --arg re "$re" \
+    '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[].name' |
+    grep -oE "^$re" || true
+}
+
 # _aif_trello_pull <root> <ID> — the card's description becomes ticket.md.
 #
 # The board is canonical for the text until intake: what the analyst wrote (or
@@ -475,6 +499,7 @@ _aif_trello_label() {
 # ---------------------------------------------------------------------------
 
 aif_board_next_ready() { "_aif_board_$(aif_board_kind "$1")_next_ready" "$1"; }
+aif_board_ready_list() { "_aif_board_$(aif_board_kind "$1")_ready_list" "$1"; }
 aif_board_pull() { "_aif_board_$(aif_board_kind "$1")_pull" "$1" "$2"; }
 aif_board_move() { "_aif_board_$(aif_board_kind "$1")_move" "$1" "$2" "$3" "${4:-}"; }
 aif_board_comment() { "_aif_board_$(aif_board_kind "$1")_comment" "$1" "$2" "$3"; }
@@ -486,6 +511,7 @@ aif_board_label() { "_aif_board_$(aif_board_kind "$1")_label" "$1" "$2" "$3"; }
 # The trello functions are named _aif_trello_*; alias them under the interface's
 # naming so the dispatch above is one line per operation.
 _aif_board_trello_next_ready() { _aif_trello_next_ready "$@"; }
+_aif_board_trello_ready_list() { _aif_trello_ready_list "$@"; }
 _aif_board_trello_pull() { _aif_trello_pull "$@"; }
 _aif_board_trello_move() { _aif_trello_move "$@"; }
 _aif_board_trello_comment() { _aif_trello_comment "$@"; }

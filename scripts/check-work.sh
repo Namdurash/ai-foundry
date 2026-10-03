@@ -81,6 +81,13 @@
 #      card saying who, a lock whose worker is gone is taken over or settled;
 #      and the loop's Ctrl-C takes no new card, while a --stop on its run in
 #      flight is not counted against the cards
+#  40  the loop builds several tickets at once: two by default, each in its
+#      own worktree, inside a station together; the third card is taken when
+#      a slot frees, none twice; the suite probe in the developer's checkout
+#      runs once for the loop; one Ctrl-C lets the runs in flight finish and
+#      takes no new card, a second stops them — a Ctrl-C typed at a terminal
+#      too; a worker that cannot start stops the loop taking cards before a
+#      second one starts
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -265,14 +272,28 @@ cp "$4" "$wt/.aif/tmp/fake-sys-$station-$n" 2>/dev/null
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
-# FAKE_SLEEP_IN=<ticket>:<station> holds that one dispatch open — a station
-# still running, for a stop to land in. It says when it has started.
-case "${FAKE_SLEEP_IN:-}" in
-  "$ticket:$station")
+# FAKE_SLEEP_IN="<ticket>:<station> …" holds those dispatches open — for
+# FAKE_SLEEP_SECS (37), or until the file FAKE_RELEASE appears — a station
+# still running, for a stop or a second worker to land in. Each says when it
+# has started, in its worktree and, with FAKE_MARKS, in that directory too,
+# where a scenario sees every worker's. FAKE_TIMELINE names a file every
+# dispatch appends its start and its end to: what ran at once.
+[ -z "${FAKE_TIMELINE:-}" ] || printf 'start %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
+for hold in ${FAKE_SLEEP_IN:-}; do
+  if [ "$hold" = "$ticket:$station" ]; then
     : >"$wt/.aif/tmp/fake-running-$ticket-$station"
-    sleep 37
-    ;;
-esac
+    [ -z "${FAKE_MARKS:-}" ] || : >"$FAKE_MARKS/$ticket-$station"
+    if [ -n "${FAKE_RELEASE:-}" ]; then
+      i=0
+      while [ ! -f "$FAKE_RELEASE" ] && [ "$i" -lt 300 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    else
+      sleep "${FAKE_SLEEP_SECS:-37}"
+    fi
+  fi
+done
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 repair=0; printf '%s' "$prompt" | grep -q "^REPAIR" && repair=1
 # What the worker handed this dispatch: the turn cap and the tools.
@@ -418,6 +439,7 @@ PLAN
     ;;
 esac
 
+[ -z "${FAKE_TIMELINE:-}" ] || printf 'end %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
 cost=0.01
 [ "${FAKE_ZERO_COST:-0}" = 1 ] && cost=0
 jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "$prompt" \
@@ -2614,41 +2636,221 @@ rc=0
 eq "--stop with nothing running is refused, touching nothing" \
   "$rc,$(grep -c 'no worker on this machine is building AIF-40' "$OUT/run39k.out"),$(col AIF-40)" "1,1,review"
 
-# The loop and Ctrl-C, as a terminal sends it: to the whole group.
+# The loop and Ctrl-C, as a terminal sends it: to the loop's process group.
+# Each worker runs in a group of its own, so the first Ctrl-C reaches the
+# loop alone — no new card, the run in flight finishes — and the second is
+# the loop's to forward. Worktrees and one at a time here: the in-place runs
+# above would leave each other's code in the tree.
 fresh_project "$SANDBOX/p39c"
-ticket_for AIF-41
-ticket_for AIF-42
-ticket_for AIF-43
-git add -A && git commit -qm "three more" >/dev/null
-"$AIF" board create tasks/AIF-41/ticket.md --column ready >/dev/null
-"$AIF" board create tasks/AIF-42/ticket.md --column ready >/dev/null
-"$AIF" board create tasks/AIF-43/ticket.md --column ready >/dev/null
-FAKE_SLEEP_IN="AIF-41:plan" python3 -c '
+for t in AIF-41 AIF-42 AIF-43 AIF-44; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "four more" >/dev/null
+for t in AIF-41 AIF-42 AIF-43 AIF-44; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+launch() { # <out> [loop options…] — a loop as a terminal starts one
+  local out="$1"
+  shift
+  python3 -c '
 import os, signal, sys
 os.setpgrp()
 signal.signal(signal.SIGINT, signal.SIG_DFL)
-os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" work --loop --no-worktree >"$OUT/run39h.out" 2>&1 &
-loop=$!
-wait_for .aif/tmp/fake-running-AIF-41-plan
+os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" work --loop ${1+"$@"} >"$out" 2>&1 &
+  loop=$!
+}
+
+FAKE_SLEEP_IN="AIF-41:plan" FAKE_SLEEP_SECS=3 launch "$OUT/run39h.out" --parallel 1
+wait_for .aif/worktrees/AIF-41/.aif/tmp/fake-running-AIF-41-plan
 kill -INT -- "-$loop" 2>/dev/null
 rc=0
 wait "$loop" || rc=$?
-eq "Ctrl-C in the loop: exit 130, the run in flight settled, no new card taken" \
-  "$rc,$(col AIF-41),$(col AIF-42)" "130,needs_human,ready"
-eq "…the card says Ctrl-C stopped it" "$(last_comment AIF-41 | sed -n 1p)" "blocked: stopped — by Ctrl-C, during plan"
-eq "…and the loop says why it stopped" "$(grep -c 'stopped by Ctrl-C — no new card taken' "$OUT/run39h.out")" "1"
+eq "one Ctrl-C: no new card, and the run in flight finishes and builds — exit 130" \
+  "$rc,$(col AIF-41),$(col AIF-42)" "130,review,ready"
+eq "…the loop said what it does with a Ctrl-C, and why it stopped" \
+  "$(grep -c 'Ctrl-C — no new card; the runs in flight finish on their own. Ctrl-C again stops them.' "$OUT/run39h.out"),$(grep -c 'stopped by Ctrl-C — no new card taken' "$OUT/run39h.out")" "1,1"
+
+FAKE_SLEEP_IN="AIF-42:plan" launch "$OUT/run39i.out" --parallel 1
+wait_for .aif/worktrees/AIF-42/.aif/tmp/fake-running-AIF-42-plan
+t0="$(date +%s)"
+kill -INT -- "-$loop" 2>/dev/null
+sleep 1
+kill -INT -- "-$loop" 2>/dev/null
+rc=0
+wait "$loop" || rc=$?
+secs=$(($(date +%s) - t0))
+eq "Ctrl-C twice: the run in flight is stopped at once, and no new card taken — exit 130" \
+  "$rc,$(col AIF-42),$(col AIF-43),$([ "$secs" -lt 15 ] && echo prompt || echo "${secs}s")" "130,needs_human,ready,prompt"
+eq "…the card says Ctrl-C stopped it" "$(last_comment AIF-42 | sed -n 1p)" "blocked: stopped — by Ctrl-C, during plan"
 
 # --stop on the loop's run in flight stops that run only; the loop goes on.
-FAKE_SLEEP_IN="AIF-42:plan" "$AIF" work --loop --no-worktree >"$OUT/run39i.out" 2>&1 &
+FAKE_SLEEP_IN="AIF-43:plan" "$AIF" work --loop --parallel 1 >"$OUT/run39j.out" 2>&1 &
 loop=$!
-wait_for .aif/tmp/fake-running-AIF-42-plan
-"$AIF" work AIF-42 --stop >"$OUT/run39j.out" 2>&1 || true
+wait_for .aif/worktrees/AIF-43/.aif/tmp/fake-running-AIF-43-plan
+"$AIF" work AIF-43 --stop >/dev/null 2>&1 || true
 rc=0
 wait "$loop" || rc=$?
 eq "--stop on the loop's run in flight: that card to Needs Human, the next one built" \
-  "$rc,$(col AIF-42),$(col AIF-43)" "1,needs_human,review"
+  "$rc,$(col AIF-43),$(col AIF-44)" "1,needs_human,review"
 eq "…and not counted against the cards" \
-  "$(grep -c 'AIF-42 was stopped (exit 143) — not counted against the cards; the loop goes on' "$OUT/run39i.out")" "1"
+  "$(grep -c 'AIF-43 was stopped (exit 143) — not counted against the cards; the loop goes on' "$OUT/run39j.out")" "1"
+
+# ====== 40. the loop builds several tickets at once ============================
+# N workers = N worktrees (docs/REBUILD-3.md §3). Two at a time unless told,
+# started one after another — each once the last one's worktree is ready — so
+# that installs and probes do not run side by side and a machine that cannot
+# run the suite costs one card, not two. The suite probe in the developer's
+# checkout is the loop's, once. The runs are proven concurrent rather than
+# timed: each holds its plan station open until the scenario has seen both
+# inside, and only then lets them go.
+printf '\n40. the loop builds several tickets at once\n'
+fresh_project "$SANDBOX/p40"
+p40="$(pwd -P)"
+# Every run of the suite says where it ran, and keeps the suite's own exit.
+tmp="$(mktemp)"
+jq --arg log "$SANDBOX/p40-suite-runs" \
+  '.test.command = "bash .aif/suite.sh; s=$?; pwd -P >>" + ($log | @sh) + "; (exit $s)"' \
+  .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+for t in AIF-50 AIF-51 AIF-52 AIF-53 AIF-54 AIF-55 AIF-56 AIF-57 AIF-58 AIF-59 AIF-60 AIF-61 AIF-62 AIF-63; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "the suite says where it ran; fourteen tickets" >/dev/null
+for t in AIF-50 AIF-51 AIF-52; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+marks="$SANDBOX/p40-marks"
+mkdir -p "$marks"
+: >"$SANDBOX/p40-suite-runs"
+
+FAKE_SLEEP_IN="AIF-50:plan AIF-51:plan" FAKE_MARKS="$marks" FAKE_RELEASE="$marks/go-a" \
+  FAKE_TIMELINE="$SANDBOX/p40-timeline" "$AIF" work --loop >"$OUT/run40a.out" 2>&1 &
+loop=$!
+wait_for "$marks/AIF-50-plan"
+wait_for "$marks/AIF-51-plan"
+eq "two at once by default: both inside their plan station together, the third not taken" \
+  "$([ -f "$marks/AIF-50-plan" ] && [ -f "$marks/AIF-51-plan" ] && echo both),$(col AIF-52)" "both,ready"
+: >"$marks/go-a"
+rc=0
+wait "$loop" || rc=$?
+eq "…then all three built, and the loop ended on an empty Ready — exit 0" \
+  "$rc,$(col AIF-50),$(col AIF-51),$(col AIF-52),$(grep -c '^loop 3 taken, 3 built — Ready is empty' "$OUT/run40a.out")" \
+  "0,review,review,review,1"
+eq "…the third taken only when a run had ended and freed its slot" \
+  "$(awk '/^end AIF-5[01] implement/ && !e { e = NR } /^start AIF-52 plan/ && !s { s = NR } END { print (e > 0 && s > e) }' "$SANDBOX/p40-timeline")" "1"
+eq "…each card taken once, each on its own branch" \
+  "$(grep -c '^loop [0-9] — AIF-5[012] ' "$OUT/run40a.out"),$(git branch --list 'aif/AIF-5[012]' | wc -l | tr -d ' ')" "3,3"
+eq "…the suite probed in this checkout once, for the loop — not once per worker" \
+  "$(grep -cx "$p40" "$SANDBOX/p40-suite-runs")" "1"
+eq "…each worker's output in its own log, and the summary says how to land each" \
+  "$(grep -c '^# AIF-51 — built' .aif/tmp/loop-*/AIF-51.log),$(grep -c 'AIF-52 · [0-9]* min · built → Review · aif land AIF-52' "$OUT/run40a.out")" "1,1"
+
+# Ctrl-C with two in flight: both finish, nothing new is taken.
+for t in AIF-53 AIF-54 AIF-55; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+FAKE_SLEEP_IN="AIF-53:plan AIF-54:plan" FAKE_MARKS="$marks" FAKE_RELEASE="$marks/go-b" launch "$OUT/run40b.out"
+wait_for "$marks/AIF-53-plan"
+wait_for "$marks/AIF-54-plan"
+kill -INT -- "-$loop" 2>/dev/null
+sleep 1
+: >"$marks/go-b"
+rc=0
+wait "$loop" || rc=$?
+eq "one Ctrl-C with two in flight: both finish and build, the third is not taken — exit 130" \
+  "$rc,$(col AIF-53),$(col AIF-54),$(col AIF-55)" "130,review,review,ready"
+
+# The same Ctrl-C typed at a terminal, which sends it to the process group it
+# has in the foreground. Were job control left on after the spawn, bash would
+# hand the terminal to every command the loop runs in the foreground — the
+# tick's sleep, a jq — and the Ctrl-C would end that command and never reach
+# the loop, which would go on taking cards (docs/FINDINGS.md #24).
+"$AIF" board move AIF-55 backlog >/dev/null
+for t in AIF-61 AIF-62 AIF-63; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+rc="$(FAKE_SLEEP_IN="AIF-61:plan AIF-62:plan" FAKE_MARKS="$marks" FAKE_RELEASE="$marks/go-g" \
+  python3 - "$OUT/run40g.out" "$marks/AIF-61-plan" "$marks/AIF-62-plan" "$marks/go-g" "$AIF" <<'PY3'
+import os, pty, re, select, sys, time
+out, m1, m2, release, aif = sys.argv[1:6]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(aif, [aif, "work", "--loop"])
+buf = b""
+def pump(secs):
+    global buf
+    end = time.time() + secs
+    while time.time() < end:
+        if select.select([fd], [], [], 0.1)[0]:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                return False
+            if not chunk:
+                return False
+            buf += chunk
+    return True
+deadline = time.time() + 30
+while not (os.path.exists(m1) and os.path.exists(m2)) and time.time() < deadline:
+    pump(0.1)
+os.write(fd, b"\x03")
+pump(1.5)
+open(release, "w").close()
+while pump(1):
+    pass
+_, status = os.waitpid(pid, 0)
+open(out, "w").write(re.sub(r"\x1b\[[0-9;]*m", "", buf.decode(errors="replace")).replace("\r", ""))
+print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY3
+)"
+eq "a Ctrl-C typed at a terminal reaches the loop: both runs finish, the third is not taken — exit 130" \
+  "$rc,$(col AIF-61),$(col AIF-62),$(col AIF-63)" "130,review,review,ready"
+
+# Ctrl-C twice with two in flight: both stopped, each card saying so.
+"$AIF" board move AIF-63 backlog >/dev/null
+for t in AIF-56 AIF-57; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+FAKE_SLEEP_IN="AIF-56:plan AIF-57:plan" FAKE_MARKS="$marks" FAKE_RELEASE="$marks/never" launch "$OUT/run40c.out"
+wait_for "$marks/AIF-56-plan"
+wait_for "$marks/AIF-57-plan"
+"$AIF" board create tasks/AIF-58/ticket.md --column ready >/dev/null
+t0="$(date +%s)"
+kill -INT -- "-$loop" 2>/dev/null
+sleep 1
+kill -INT -- "-$loop" 2>/dev/null
+rc=0
+wait "$loop" || rc=$?
+secs=$(($(date +%s) - t0))
+eq "Ctrl-C twice with two in flight: both stopped at once, the next card not taken — exit 130" \
+  "$rc,$(col AIF-56),$(col AIF-57),$(col AIF-58),$([ "$secs" -lt 15 ] && echo prompt || echo "${secs}s")" \
+  "130,needs_human,needs_human,ready,prompt"
+eq "…each card saying Ctrl-C stopped it" \
+  "$(last_comment AIF-56 | sed -n 1p)|$(last_comment AIF-57 | sed -n 1p)" \
+  "blocked: stopped — by Ctrl-C, during plan|blocked: stopped — by Ctrl-C, during plan"
+
+# A machine that cannot run a ticket: the first worker finds it, the second
+# never starts.
+"$AIF" board move AIF-58 backlog >/dev/null
+for t in AIF-59 AIF-60; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+tmp="$(mktemp)"
+jq '.prepare = "exit 7"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+rc=0
+"$AIF" work --loop >"$OUT/run40d.out" 2>&1 || rc=$?
+eq "a worker that cannot start: its card to Needs Human, the next never started — exit 3" \
+  "$rc,$(col AIF-59),$(col AIF-60)" "3,needs_human,ready"
+eq "…and the loop said why it took no new card" \
+  "$(grep -c 'AIF-59 could not start (exit 3) — the environment, not the card; the loop takes no new card' "$OUT/run40d.out")" "1"
+git checkout -- .aif/project.json
+
+rc=0
+"$AIF" work --loop --parallel 2 --no-worktree >"$OUT/run40e.out" 2>&1 || rc=$?
+eq "--parallel 2 with --no-worktree is refused: one checkout cannot hold two runs" \
+  "$rc,$(grep -c 'needs a worktree per ticket' "$OUT/run40e.out")" "1,1"
+rc=0
+"$AIF" work AIF-60 --parallel 2 >"$OUT/run40f.out" 2>&1 || rc=$?
+eq "--parallel without --loop is refused" "$rc,$(grep -c 'only means something with --loop' "$OUT/run40f.out")" "1,1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

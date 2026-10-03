@@ -61,7 +61,7 @@ usage: aif work [<ticket>] [options]
     aif work OPES-52            this one, in .aif/worktrees/OPES-52 on aif/OPES-52
     aif work OPES-52 --clean    remove that worktree (the branch stays)
     aif work OPES-52 --stop     stop the worker building it, from any terminal
-    aif work --loop             every card in Ready, in the board's order, one run each
+    aif work --loop             every card in Ready, in the board's order, two at a time
 
   Every transition goes through the board (aif board). The card moves to In
   Progress first, before the checkout is cut, and ends in Review with the
@@ -86,12 +86,17 @@ usage: aif work [<ticket>] [options]
                      way its own Ctrl-C would: the station is ended, and the
                      card goes to Needs Human saying who stopped it. Back in
                      Ready, it resumes where it stopped
-  --loop             after each run take the next card in Ready, until Ready is
-                     empty. Stops early when a run cannot start, or after two
-                     runs in a row that did not build — two cards in Needs Human
-                     usually mean the problem is not the cards. Ctrl-C stops the
-                     run in flight and takes no new card; --stop on the running
-                     card stops only that run, and the loop goes on
+  --loop             build every card in Ready, in the board's order, each in a
+                     worktree of its own, until Ready is empty. Workers start
+                     one after another, each once the last one's worktree is
+                     ready. Takes no new card when a run cannot start, or after
+                     two that did not build — two cards in Needs Human usually
+                     mean the problem is not the cards. Ctrl-C takes no new card
+                     and lets the runs in flight finish; Ctrl-C again stops them.
+                     --stop on one run stops that one, and its slot goes on.
+                     Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
+  --parallel N       with --loop: N tickets at once (default 2; 1 with
+                     --no-worktree, which builds in this checkout)
   --max-tickets N    with --loop: stop after N tickets
 
 Two caps always apply — the wall clock and limits.run_dispatches_max (16
@@ -181,6 +186,14 @@ _aif_work_abandon() {
     INT | TERM) exit "$code" ;;
   esac
   return 0
+}
+
+# _aif_work_phase <claim|worktree|intake|run|report> — where this run has got
+# to: for the exit handler, which says it on the card, and — through the run
+# lock — for a loop deciding when to start its next worker.
+_aif_work_phase() {
+  AIF_WORK_PHASE="$1"
+  [ -z "${AIF_WORK_LOCK:-}" ] || printf '%s\n' "$1" >"$AIF_WORK_LOCK/phase" 2>/dev/null || true
 }
 
 # _aif_work_block <root> <ticket> <kind> <why> [<body-file>] — the card goes
@@ -490,12 +503,20 @@ _aif_work_preflight() {
   # one is only visible from here. Whether the suite can run where the
   # STATIONS run is a different question, asked of the worktree once it is
   # cut (_aif_work_ready_worktree).
-  # shellcheck source=lib/doctor.sh
-  . "$AIF_ROOT/lib/doctor.sh"
-  if ! aif_doctor_probe "$root" >/dev/null 2>&1; then
-    aif_doctor_probe "$root" >&2 || true
-    aif_err "the test toolchain cannot produce a verdict — every gate reads that report."
-    exit 3
+  #
+  # Once per loop, not once per worker. The probe runs the whole suite HERE,
+  # removing the report first and then waiting for it to appear, and N workers
+  # starting together would run N suites in this checkout, each deleting the
+  # report another is waiting on. The loop asks it before its first worker
+  # and hands each one AIF_WORK_LOOP=1.
+  if [ "${AIF_WORK_LOOP:-}" != "1" ]; then
+    # shellcheck source=lib/doctor.sh
+    . "$AIF_ROOT/lib/doctor.sh"
+    if ! aif_doctor_probe "$root" >/dev/null 2>&1; then
+      aif_doctor_probe "$root" >&2 || true
+      aif_err "the test toolchain cannot produce a verdict — every gate reads that report."
+      exit 3
+    fi
   fi
 
   aif_profile_export_env
@@ -1401,36 +1422,57 @@ _aif_work_report() {
 }
 
 # _aif_work_loop <root> <max> <profile> <budget> <budget_off> <max_minutes>
-#                <use_worktree> — drain Ready.
+#                <use_worktree> <parallel> — drain Ready, <parallel> runs at a
+#                time.
 #
-# One `aif work <card>` per card, as a child process: each run keeps its own
-# traps, caps and exit code, and the single-ticket path above is not
-# re-entered with half its globals set. The board is read again before every
-# run, so a card the project manager moves while the loop runs is taken (or
-# not) in the order the board has at that moment — queue policy stays theirs.
+# The supervisor of `aif work --loop`. Each card is one `aif work <card>`, a
+# child process with its own traps, caps, run lock and exit code — the
+# single-ticket path above is never re-entered with half its globals set —
+# and up to <parallel> of them run at once, each in its own worktree on its
+# own branch (docs/REBUILD-3.md §3: N workers = N worktrees). The board is
+# read again whenever a worker can start, so a card the project manager moves
+# while the loop runs is taken (or not) in the order the board has then —
+# queue policy stays theirs.
 #
-# Stops when Ready is empty, at --max-tickets, when a run cannot start at all
-# (exit 3: the environment, not the card), after two runs in a row that did
-# not build, or when a card is still at the top of Ready after its run —
-# every run moves its card, so that last one means the run never got to the
-# board, and taking it again would loop forever.
+# What running several at once takes (docs/FINDINGS.md #23, #24):
 #
-# And on Ctrl-C, which it has to catch itself. The terminal sends the INT to
-# the loop and to the run in flight alike; the run settles its card and exits,
-# and bash, seeing that its child handled the signal, carries on with the
-# next line — probed on 3.2: the loop took the next card in Ready, and a
-# second Ctrl-C sent that one to Needs Human as well (docs/FINDINGS.md #23).
-# So the handler only records the stop, and the loop takes no new card. A run
-# stopped on its own — `aif work <ID> --stop` from another terminal — is not a
-# verdict on the cards: it does not count toward two in a row, and the loop
-# goes on.
+#   taking    the loop remembers what it has taken, and skips a card whose run
+#             lock is live — a worker in another terminal. A worker claims its
+#             card a moment after it starts; until then the card is still at
+#             the top of Ready.
+#   starting  one worker at a time: the next starts once the last one's
+#             worktree is ready (its run lock says intake or later) or it has
+#             ended. Installs and suite probes do not run side by side, and a
+#             machine that cannot run the suite costs one card in Needs Human,
+#             not N.
+#   preflight once, before the first worker. Its suite probe runs in this
+#             checkout, removing the report and waiting for it to appear; N at
+#             once would delete each other's. Each worker gets AIF_WORK_LOOP=1
+#             and skips only that.
+#   output    each worker writes its own log under .aif/tmp/loop-<when>/; the
+#             loop says one line per start and per end, and a summary.
+#   Ctrl-C    each worker starts in a process group of its own, so the
+#             terminal's Ctrl-C reaches the loop alone. The first takes no new
+#             card and lets the runs in flight finish; the second stops them,
+#             each settling its card as stopped by Ctrl-C. `set -m` is on only
+#             around the spawn: left on, bash hands the terminal to every
+#             foreground command it runs — a jq, a curl, the tick's sleep — and
+#             a Ctrl-C then reaches that command and not the loop.
+#
+# Takes no new card when Ready has none it has not taken, at --max-tickets,
+# when a worker could not start (exit 3: the environment, not the card),
+# after two that did not build with none built between them, or on Ctrl-C;
+# then waits for the runs in flight and says how each ended. A run stopped on
+# its own — `aif work <ID> --stop` — is not a verdict on the cards: it does
+# not count toward two in a row, and its slot takes the next card.
 #
 # Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
 # environment · 130 / 143 stopped by Ctrl-C or a TERM.
 _aif_work_loop() {
   local root="$1" max="$2" profile="$3" budget="$4" budget_off="$5"
-  local max_minutes="$6" use_worktree="$7"
-  local next last="" rc taken=0 built=0 in_a_row=0 why="" env=0
+  local max_minutes="$6" use_worktree="$7" parallel="${8:-1}"
+  local main logdir why="" env=0 taken=" " taken_n=0 built=0 in_a_row=0
+  local next_poll=0 kill_by=0 now n list pick id pid rc entry left what kind mins results=""
 
   set --
   [ -z "$profile" ] || set -- "$@" --profile "$profile"
@@ -1442,86 +1484,235 @@ _aif_work_loop() {
   [ -z "$max_minutes" ] || set -- "$@" --max-minutes "$max_minutes"
   [ "$use_worktree" -eq 1 ] || set -- "$@" --no-worktree
 
-  AIF_WORK_LOOP_STOP=""
+  main="$(aif_main_root "$root")"
+  logdir="$main/.aif/tmp/loop-$(date '+%Y%m%d-%H%M%S')"
+  mkdir -p "$logdir"
+
+  # The handler's state, in globals: a trap fires with the signal's name only.
+  AIF_WORK_LOOP_STOP=""    # why no new card is taken — the first reason wins
+  AIF_WORK_LOOP_CTRL_C=0   # how many Ctrl-Cs have arrived
+  AIF_WORK_LOOP_KILLED=""  # INT or TERM, once every run in flight was told to stop
+  AIF_WORK_LOOP_RUNNING="" # "<pid>:<ticket>:<started>" per run in flight
   aif_trap_arm "_aif_work_loop_signal"
+
+  printf '\n%sloop%s %s at a time · logs in %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$parallel" "${logdir#"$main"/}" >&2
+
   while :; do
-    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
-      why="$AIF_WORK_LOOP_STOP"
-      break
-    fi
-    if [ "$max" -gt 0 ] && [ "$taken" -ge "$max" ]; then
-      why="--max-tickets $max reached"
-      break
-    fi
-    next="$(aif_board_next_ready "$root")"
-    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
-      why="$AIF_WORK_LOOP_STOP"
-      break
-    fi
-    if [ -z "$next" ]; then
-      why="Ready is empty"
-      break
-    fi
-    if [ "$next" = "$last" ]; then
-      why="$next is still at the top of Ready after its run — the run never reached the board; not taking it again"
-      break
-    fi
-    last="$next"
-    taken=$((taken + 1))
-    printf '\n%sloop%s %s — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken" "$next" >&2
-    rc=0
-    "$AIF_ROOT/bin/aif" work "$next" ${1+"$@"} || rc=$?
-    case "$rc" in
-      0)
-        built=$((built + 1))
-        in_a_row=0
-        ;;
-      3)
-        why="$next could not start (exit 3) — the environment, not the card; the loop stops"
-        env=1
+    # Every run that has ended: how, and what it means for the loop.
+    left=""
+    for entry in $AIF_WORK_LOOP_RUNNING; do
+      pid="${entry%%:*}"
+      id="${entry#*:}"
+      id="${id%%:*}"
+      if kill -0 "$pid" 2>/dev/null; then
+        left="$left $entry"
+        continue
+      fi
+      rc=0
+      wait "$pid" 2>/dev/null || rc=$?
+      mins=$((($(date +%s) - ${entry##*:}) / 60))
+      case "$rc" in
+        0)
+          built=$((built + 1))
+          in_a_row=0
+          what="built → Review"
+          _aif_work_say "loop" "$id built → Review · $mins min"
+          ;;
+        3)
+          env=1
+          what="could not start (exit 3)"
+          [ -n "$AIF_WORK_LOOP_STOP" ] ||
+            AIF_WORK_LOOP_STOP="$id could not start (exit 3) — the environment, not the card; the loop takes no new card"
+          _aif_work_say "loop" "$id could not start (exit 3) — the environment, not the card; its log says what"
+          ;;
+        130 | 143)
+          what="stopped (exit $rc)"
+          if [ -z "$AIF_WORK_LOOP_KILLED" ] && [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ]; then
+            _aif_work_say "loop" "$id was stopped (exit $rc) — not counted against the cards; the loop goes on"
+          else
+            _aif_work_say "loop" "$id stopped (exit $rc)"
+          fi
+          ;;
+        *)
+          kind="$(sed -n 's/.*→ needs_human — blocked: \([a-z]*\).*/\1/p' "$logdir/$id.log" 2>/dev/null | tail -1)" || kind=""
+          what="not built → Needs Human${kind:+, blocked: $kind}"
+          _aif_work_say "loop" "$id not built → Needs Human${kind:+ (blocked: $kind)} · $mins min"
+          in_a_row=$((in_a_row + 1))
+          if [ "$in_a_row" -ge 2 ] && [ -z "$AIF_WORK_LOOP_STOP" ]; then
+            AIF_WORK_LOOP_STOP="two runs in a row did not build ($id the last) — read the cards in Needs Human before spending on a third"
+          fi
+          ;;
+      esac
+      results="$results$id|$what|$mins
+"
+      next_poll=0
+    done
+    AIF_WORK_LOOP_RUNNING="${left# }"
+    n=0
+    for entry in $AIF_WORK_LOOP_RUNNING; do
+      n=$((n + 1))
+    done
+
+    # Every run in flight was told to stop: wait for them — each settles its
+    # card first — a minute at most.
+    if [ -n "$AIF_WORK_LOOP_KILLED" ]; then
+      [ "$n" -gt 0 ] || break
+      [ "$kill_by" -ne 0 ] || kill_by=$(($(date +%s) + 60))
+      if [ "$(date +%s)" -gt "$kill_by" ]; then
+        aif_warn "still running a minute after the stop: $AIF_WORK_LOOP_RUNNING — each settles its own card when it ends"
         break
-        ;;
-      130 | 143)
-        [ -n "$AIF_WORK_LOOP_STOP" ] ||
-          _aif_work_say "loop" "$next was stopped (exit $rc) — not counted against the cards; the loop goes on"
-        ;;
-      *)
-        in_a_row=$((in_a_row + 1))
-        if [ "$in_a_row" -ge 2 ]; then
-          why="two runs in a row did not build ($next the last) — read the cards in Needs Human before spending on a third"
+      fi
+      sleep 1 || true
+      continue
+    fi
+
+    if [ -n "$AIF_WORK_LOOP_STOP" ]; then
+      [ "$n" -gt 0 ] || break
+    elif [ "$max" -gt 0 ] && [ "$taken_n" -ge "$max" ]; then
+      if [ "$n" -eq 0 ]; then
+        why="--max-tickets $max reached"
+        break
+      fi
+    elif [ "$n" -lt "$parallel" ] && ! _aif_work_loop_starting "$root"; then
+      now="$(date +%s)"
+      if [ "$now" -ge "$next_poll" ]; then
+        pick=""
+        if list="$(aif_board_ready_list "$root" 2>/dev/null)"; then
+          for id in $list; do
+            case "$taken" in
+              *" $id "*) continue ;;
+            esac
+            # A worker in another terminal holds it: never this loop's.
+            if _aif_work_lock_live "$(aif_run_lock_dir "$root" "$id")"; then
+              taken="$taken$id "
+              continue
+            fi
+            pick="$id"
+            break
+          done
+        elif [ "$n" -eq 0 ]; then
+          why="the board's Ready column could not be read — aif board check says why"
+          env=1
           break
         fi
-        ;;
-    esac
+        if [ -n "$pick" ]; then
+          taken="$taken$pick "
+          taken_n=$((taken_n + 1))
+          printf '\n%sloop%s %s — %s · %s of %s running · %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" \
+            "$taken_n" "$pick" "$((n + 1))" "$parallel" "${logdir#"$main"/}/$pick.log" >&2
+          # A process group of its own, so the terminal's Ctrl-C passes it by
+          # — and job control off again at once, or the next foreground
+          # command takes the terminal and the next Ctrl-C with it.
+          set -m
+          AIF_WORK_LOOP=1 "$AIF_ROOT/bin/aif" work "$pick" ${1+"$@"} </dev/null >"$logdir/$pick.log" 2>&1 &
+          pid=$!
+          set +m
+          AIF_WORK_LOOP_RUNNING="${AIF_WORK_LOOP_RUNNING:+$AIF_WORK_LOOP_RUNNING }$pid:$pick:$(date +%s)"
+          continue
+        fi
+        if [ "$n" -eq 0 ]; then
+          why="Ready is empty"
+          break
+        fi
+        # Nothing to take while others run: look again in a while, not every
+        # second — on a Trello board every look is a request.
+        next_poll=$((now + 30))
+      fi
+    fi
+    # `|| true`: the terminal's Ctrl-C reaches the tick's sleep as well as the
+    # loop, and under set -e a sleep that ends on it would end the loop with it.
+    sleep 1 || true
   done
   aif_trap_disarm
 
-  printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken" "$built" "$why" >&2
-  case "$AIF_WORK_LOOP_STOP" in
-    *Ctrl-C*) exit 130 ;;
-    ?*) exit 143 ;;
-  esac
+  [ -z "$AIF_WORK_LOOP_STOP" ] || why="$AIF_WORK_LOOP_STOP"
+  printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken_n" "$built" "$why" >&2
+  while IFS='|' read -r id what mins; do
+    [ -n "$id" ] || continue
+    case "$what" in
+      built*) printf '  %s · %s min · %s · aif land %s\n' "$id" "$mins" "$what" "$id" >&2 ;;
+      *) printf '  %s · %s min · %s\n' "$id" "$mins" "$what" >&2 ;;
+    esac
+  done <<EOF
+$results
+EOF
+  [ "$taken_n" -eq 0 ] || printf '  %slogs: %s/%s\n' "$AIF_C_DIM" "${logdir#"$main"/}" "$AIF_C_RESET" >&2
+
+  [ "$AIF_WORK_LOOP_KILLED" != "TERM" ] || exit 143
+  [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ] || exit 130
   [ "$env" -eq 0 ] || exit 3
-  [ "$taken" -eq "$built" ] || exit 1
+  [ "$taken_n" -eq "$built" ] || exit 1
   exit 0
 }
 
-# _aif_work_loop_signal <EXIT|INT|TERM> — the loop's handler. An INT or a TERM
-# is recorded and nothing else: the run in flight settles its own card, and
-# the loop, once it returns, takes no new one. Returning — not exiting — is
-# the point: bash then goes on from where the signal found it, to the check at
-# the top of the loop and the summary after it.
+# _aif_work_loop_starting <root> — rc 0 while a run the loop started has not
+# got its worktree ready yet: until its run lock, signed by that very worker,
+# says intake or later. The next worker waits for it.
+_aif_work_loop_starting() {
+  local root="$1" entry pid id lock
+  for entry in $AIF_WORK_LOOP_RUNNING; do
+    pid="${entry%%:*}"
+    id="${entry#*:}"
+    id="${id%%:*}"
+    lock="$(aif_run_lock_dir "$root" "$id")"
+    [ "$(_aif_work_lock_pid "$lock")" = "$pid" ] || return 0
+    case "$(cat "$lock/phase" 2>/dev/null)" in
+      intake | run | report) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# _aif_work_loop_signal <EXIT|INT|TERM> — the loop's handler, and what Ctrl-C
+# means to a loop: the first takes no new card and lets the runs in flight
+# finish; the second stops them, each settling its card as stopped by Ctrl-C.
+# A TERM stops them at once. It records and forwards, and returns — the loop
+# goes on from where the signal found it, waits for the runs, and says how
+# each ended.
 _aif_work_loop_signal() {
   case "${1:-}" in
-    INT) AIF_WORK_LOOP_STOP="stopped by Ctrl-C — no new card taken" ;;
-    TERM) AIF_WORK_LOOP_STOP="stopped by a TERM — no new card taken" ;;
+    INT)
+      AIF_WORK_LOOP_CTRL_C=$((AIF_WORK_LOOP_CTRL_C + 1))
+      if [ "$AIF_WORK_LOOP_CTRL_C" -eq 1 ]; then
+        [ -n "$AIF_WORK_LOOP_STOP" ] || AIF_WORK_LOOP_STOP="stopped by Ctrl-C — no new card taken"
+        [ -z "$AIF_WORK_LOOP_RUNNING" ] ||
+          printf '\n%sloop%s Ctrl-C — no new card; the runs in flight finish on their own. Ctrl-C again stops them.\n' \
+            "$AIF_C_BOLD" "$AIF_C_RESET" >&2
+      else
+        AIF_WORK_LOOP_STOP="stopped by Ctrl-C twice — the runs in flight were stopped too"
+        _aif_work_loop_forward INT
+      fi
+      ;;
+    TERM)
+      AIF_WORK_LOOP_STOP="stopped by a TERM — the runs in flight were stopped too"
+      _aif_work_loop_forward TERM
+      ;;
+    EXIT)
+      # The loop itself failing: its workers are processes of their own and
+      # go on, each settling its own card.
+      [ -z "${AIF_WORK_LOOP_RUNNING:-}" ] ||
+        aif_warn "the loop ended with runs still in flight ($AIF_WORK_LOOP_RUNNING) — each settles its own card; aif work <ID> --stop ends one"
+      ;;
   esac
   return 0
 }
 
+# _aif_work_loop_forward <INT|TERM> — the signal to every run in flight, to its
+# whole process group: the worker, its station, its suite.
+_aif_work_loop_forward() {
+  local entry
+  AIF_WORK_LOOP_KILLED="$1"
+  for entry in $AIF_WORK_LOOP_RUNNING; do
+    kill -"$1" -- "-${entry%%:*}" 2>/dev/null || kill -"$1" "${entry%%:*}" 2>/dev/null || true
+  done
+  [ -z "$AIF_WORK_LOOP_RUNNING" ] ||
+    printf '\n%sloop%s stopping every run in flight (%s)\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$1" >&2
+}
+
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
-  local loop=0 max_tickets=0 stop=0
+  local loop=0 max_tickets=0 stop=0 parallel="" profile_arg
   # An empty budget means NO ceiling, here and everywhere below. budget_off
   # separates "the caller said no ceiling" from "the caller said nothing",
   # which is what lets --no-budget override a project that sets one.
@@ -1563,6 +1754,13 @@ aif_cmd_work() {
         max_tickets="${1:-}"
         case "$max_tickets" in
           '' | *[!0-9]* | 0) aif_die "--max-tickets takes a positive whole number" ;;
+        esac
+        ;;
+      --parallel)
+        shift
+        parallel="${1:-}"
+        case "$parallel" in
+          '' | *[!0-9]* | 0) aif_die "--parallel takes a positive whole number — how many tickets the loop builds at once" ;;
         esac
         ;;
       -h | --help)
@@ -1612,12 +1810,7 @@ aif_cmd_work() {
     return 0
   fi
 
-  if [ "$loop" -eq 1 ]; then
-    [ -z "$ticket" ] || aif_die "--loop takes no ticket: it drains the board's Ready column in the board's order"
-    _aif_work_loop "$root" "$max_tickets" "$profile" "$budget" "$budget_off" "$max_minutes" "$use_worktree"
-  fi
-  [ "$max_tickets" -eq 0 ] || aif_die "--max-tickets only means something with --loop"
-
+  profile_arg="$profile"
   if [ -z "$profile" ]; then
     if [ -f "$root/$AIF_PROFILE_STATE" ]; then
       profile="$(cat "$root/$AIF_PROFILE_STATE")"
@@ -1625,6 +1818,23 @@ aif_cmd_work() {
       aif_die "no profile — run 'aif init' or pass --profile"
     fi
   fi
+
+  if [ "$loop" -eq 1 ]; then
+    [ -z "$ticket" ] || aif_die "--loop takes no ticket: it drains the board's Ready column in the board's order"
+    # Two at a time unless told, each in a worktree of its own. --no-worktree
+    # runs in THIS checkout, and two runs cannot share one.
+    if [ -z "$parallel" ]; then
+      parallel=2
+      [ "$use_worktree" -eq 1 ] || parallel=1
+    elif [ "$parallel" -gt 1 ] && [ "$use_worktree" -eq 0 ]; then
+      aif_die "--parallel $parallel needs a worktree per ticket, and --no-worktree runs every ticket in this checkout — drop one of the two"
+    fi
+    # Once, for every worker the loop starts (_aif_work_loop says why).
+    _aif_work_preflight "$root" "$profile"
+    _aif_work_loop "$root" "$max_tickets" "$profile_arg" "$budget" "$budget_off" "$max_minutes" "$use_worktree" "$parallel"
+  fi
+  [ "$max_tickets" -eq 0 ] || aif_die "--max-tickets only means something with --loop"
+  [ -z "$parallel" ] || aif_die "--parallel only means something with --loop"
 
   _aif_work_preflight "$root" "$profile"
 
@@ -1660,7 +1870,7 @@ aif_cmd_work() {
   AIF_WORK_CARD=""
   AIF_WORK_WORK=""
   AIF_WORK_SETTLED=0
-  AIF_WORK_PHASE="claim"
+  _aif_work_phase claim
   aif_trap_arm "_aif_work_abandon"
 
   # A ticket handed over by id that has no card yet gets one on the local
@@ -1677,7 +1887,7 @@ aif_cmd_work() {
   fi
   AIF_WORK_CARD="$ticket"
 
-  AIF_WORK_PHASE="worktree"
+  _aif_work_phase worktree
   local wt fresh=0 cut_err cut_why guide_err
   if [ "$use_worktree" -eq 1 ]; then
     # Decided here, not inside the helper: it runs in a $(…) and a flag it set
@@ -1712,7 +1922,7 @@ aif_cmd_work() {
   fi
   _aif_work_say "worktree" "${wt#"$root"/}"
 
-  AIF_WORK_PHASE="intake"
+  _aif_work_phase intake
   local intake_rc=0 nr nr_why
   AIF_WORK_NOT_READY=""
   _aif_work_intake "$root" "$wt" "$ticket" || intake_rc=$?
@@ -1784,7 +1994,7 @@ aif_cmd_work() {
   local stage agent expects complaint="" status="" why="" gate_out
   local dispatches=0 spent=0 attempts out rc station_err tool_out budget_left
   local regate skip_dispatch prev_sha="" prev_stage="" this_sha replan_why
-  AIF_WORK_PHASE="run"
+  _aif_work_phase run
   cd "$wt" || aif_die "cannot enter $wt"
   mkdir -p "$wt/.aif/tmp"
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
@@ -2045,7 +2255,7 @@ $(head -20 "$gate_out")"
   # Still armed: the report reads the ledger, the run record and the plan, and
   # a failure in any of that is exactly the case where the card must not be
   # left saying the work is under way.
-  AIF_WORK_PHASE="report"
+  _aif_work_phase report
   _aif_work_report "$root" "$wt" "$ticket" "$status" "$why" "$started"
 
   # The report goes where the human looks — the card — and the card moves to

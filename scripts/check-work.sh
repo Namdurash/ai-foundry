@@ -75,6 +75,11 @@
 #      the user's hooks beside it, records the edit so uninstall takes only
 #      ours back, and a dry run previews the updates without announcing them
 #      as retirements; doctor reads the guard's registration before any probe
+#  42  a branch cut under an older set is brought up to the checkout's set
+#      before anything reads it, in a commit of its own; a run that stopped
+#      restarts on the tree it started from when the ticket or the set moved,
+#      the stopped plan's leftovers put back and never committed; a resumed
+#      plan station reads the repository as the branch has it
 #  39  one worker per ticket on this machine: a second is refused and touches
 #      nothing, --clean is refused from under a run, `aif work <ID> --stop`
 #      from another terminal ends the run as its Ctrl-C would and settles the
@@ -252,12 +257,12 @@ SUITE
 # FAKE_STALL makes every implement attempt identical and wrong, FAKE_COMMIT
 # has the implement station commit its own work (a station with Bash can),
 # FAKE_ZERO_COST reports total_cost_usd 0 the way subscription auth does.
-# The misbehaviours of docs/DEFECTS-6.md: FAKE_TYPEBUG (every attempt) and
+# The misbehaviours of docs/DEFECTS.md (log 6): FAKE_TYPEBUG (every attempt) and
 # FAKE_TESTS_TYPEBUG_FIRST put a mistyped mock in each test, FAKE_IMPL_BADTYPE_FIRST
 # a type error in the first implementation, FAKE_DRIFT has the implement
 # station change an installed dependency nobody tracks, and FAKE_DEPS has the
 # plan name package.json and its lockfile, the first implement attempt add a
-# dependency around the lock and the retry through it. For docs/DEFECTS-7.md,
+# dependency around the lock and the retry through it. For docs/DEFECTS.md (log 7),
 # FAKE_TESTS_REHOME has a retried tests station move every test into
 # tests/t1.py and leave the other declared files in place as helpers. Each
 # dispatch's prompt is kept as .aif/tmp/fake-prompt-<station>-<n>, so a
@@ -265,6 +270,13 @@ SUITE
 cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 #!/bin/bash
 set -u
+# A stop reaches a station as a signal to the worker's whole process group,
+# and a real station — `claude -p` — dies of it at once. This stub holds a
+# dispatch open with a loop of short sleeps, and bash 3.2 lets a signal that
+# lands as one of those sleeps ends slip past an untrapped shell: measured, 10
+# of 200 group SIGINTs left the loop running (docs/DEFECTS.md 11.1), which made
+# a stop that should be prompt wait out the hold. Trapped, 0 of 200.
+trap 'exit 130' INT TERM
 station="$1" ticket="$2" wt="$3" prompt="$5" out="${10}"
 work="$wt/tasks/$ticket"
 count_file="$wt/.aif/tmp/fake-$station.count"
@@ -987,7 +999,7 @@ eq "implement was never dispatched" \
 # `find | head -1 | grep -q .` as an elif condition: head leaves after one
 # line, a find still walking 5000 files takes SIGPIPE, pipefail makes that
 # the condition's status, and the project is reported as having no test kind
-# (docs/DEFECTS-5.md #2). Only a project with none of pyproject/pytest.ini/
+# (docs/DEFECTS.md 5.2). Only a project with none of pyproject/pytest.ini/
 # setup.cfg/conftest.py gets this far — this one has none.
 printf '\n16. runner detection survives a large tests/ tree\n'
 fresh_project "$SANDBOX/p16"
@@ -1000,7 +1012,7 @@ eq "5000 test files: still detected as pytest" \
 # `printf '%s' "$out" | grep -q pattern` with the suite's whole output in
 # $out: grep leaves at the first match, printf takes SIGPIPE on the rest, and
 # under pipefail the `if` reads "not found" — for exactly the suites large
-# enough to matter (docs/DEFECTS-5.md #3). The path is on the FIRST line here
+# enough to matter (docs/DEFECTS.md 5.3). The path is on the FIRST line here
 # and 280 KB follow it.
 printf '\n17. the worktree-collision check reads all of a large suite output\n'
 fresh_project "$SANDBOX/p17"
@@ -1140,7 +1152,7 @@ eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].t
 # that runs tsc over the whole tree, and what turned it red was a new test
 # importing a module the plan had not created yet — as a red-first test in a
 # typed project must. Two tickets in a row stopped there on false advice
-# (docs/DEFECTS-6.md #1). The stub below makes the pre-existing t0 fail under a
+# (docs/DEFECTS.md 6.1). The stub below makes the pre-existing t0 fail under a
 # condition each case sets.
 #
 # t0_red_when <shell condition> — the pre-existing t0 fails whenever it holds.
@@ -1229,7 +1241,7 @@ eq "and its first line no longer blames the environment" \
 # The project's typecheck is a check, and a check's complaint used to be its
 # LAST line: for tsc, "Source has 0 element(s) but target requires 1." — no
 # file, no line. And a type error inside a frozen test file sent the implement
-# station round three times at something it may not edit (docs/DEFECTS-6.md
+# station round three times at something it may not edit (docs/DEFECTS.md (log 6)
 # #2). The stand-in for tsc below prints one located line per problem: a
 # missing module for every new test whose implementation is absent, a mistyped
 # mock in a test marked TYPEBUG, a bad argument in code marked BADTYPE.
@@ -1356,7 +1368,7 @@ eq "the retry was told the file and the line" \
 #
 # A station installed a package around the lockfile and node_modules drifted:
 # twelve pre-existing tests red, and green blamed the implementation for them
-# three times (docs/DEFECTS-6.md #3). Here the drift is a file in a gitignored
+# three times (docs/DEFECTS.md 6.3). Here the drift is a file in a gitignored
 # directory the implement station writes and the suite reads. Without the
 # implementation the tree is the tree that passed at the freeze — and it still
 # fails, so what moved is outside it.
@@ -1508,7 +1520,7 @@ eq "and scope let the lockfile the plan names move" \
 # land runs the suite on the merge in the developer's checkout, against what is
 # installed THERE — and a merge that moved package.json and its lockfile was
 # judged against the install from before it: "the suite is red", the merge
-# undone, a ticket with nothing wrong in it in Needs Human (docs/DEFECTS-6.md
+# undone, a ticket with nothing wrong in it in Needs Human (docs/DEFECTS.md (log 6)
 # #3). Installing in someone's own checkout is theirs to allow. Without
 # --prepare a red says what it was measured against and gives the command that
 # lands it installed, and a green lands and says the install is not the
@@ -1663,7 +1675,7 @@ eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-file
 # suite that fails to load, which jest-junit leaves out of the report — then
 # counted in full: "all criteria covered", the file frozen, none of its tests
 # in `covering`, and none of them run at green either. A criterion whose only
-# test lived there was checked by nothing (docs/DEFECTS-7.md #1). The stub
+# test lived there was checked by nothing (docs/DEFECTS.md 7.1). The stub
 # runner below never collects tests/t2.py, and the tests station's first
 # attempt puts AC-002's only test in it.
 #
@@ -2388,17 +2400,21 @@ eq "an unknown runner: built, the station told no fragment ships for it" \
   "$rc,$(grep -c 'No runner fragment ships for "go"' .aif/tmp/fake-sys-tests-1)" "0,1"
 eq "…and the run said so" "$(grep -c "no runner fragment for 'go'" "$OUT/run36c.out")" "2"
 
-# A guide written and never committed is not on the branch the stations run on.
+# A guide written and never committed: the branch is brought up to the
+# checkout's set before a run and lands back into it afterwards, so a file git
+# does not track here is refused at preflight — before the card is taken — with
+# the one remedy that fits (docs/DEFECTS.md 9.1 moved the misreading of a
+# branch older than the guide out of this check).
 fresh_project "$SANDBOX/p36d"
 git rm -q --cached .aif/guide/tests.md && git commit -qm "the guide, uncommitted" >/dev/null
 ticket_for AIF-36
 git add -A tasks && git commit -qm "ticket 36d" >/dev/null
 rc=0
 "$AIF" work AIF-36 >"$OUT/run36d.out" 2>&1 || rc=$?
-eq "a worktree whose branch lacks the guide is refused — exit 3, saying to commit it" \
-  "$rc,$(grep -c 'is not on branch aif/AIF-36' "$OUT/run36d.out"),$(grep -c 'git add .aif/guide/tests.md' "$OUT/run36d.out")" "3,1,1"
-eq "the card was taken, and is back with why: blocked: environment" \
-  "$(jq -r .column .aif/board/AIF-36.json 2>/dev/null),$("$AIF" board show AIF-36 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^blocked: environment — .aif/guide/tests.md is not on branch aif/AIF-36')" "needs_human,1"
+eq "an uncommitted guide is refused at preflight — exit 3, saying to commit it" \
+  "$rc,$(grep -c 'is not committed in your checkout' "$OUT/run36d.out"),$(grep -c 'git add .aif/guide/tests.md' "$OUT/run36d.out")" "3,1,1"
+eq "nothing was spent, and the card was never taken" \
+  "$(test -f .aif/board/AIF-36.json && jq -r .column .aif/board/AIF-36.json || echo none),$(test -d .aif/worktrees/AIF-36 && echo cut || echo none)" "none,none"
 eq "doctor said it first" "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"] | (.ok | tostring) + " " + .detail' | grep -c '^false .*not committed')" "1"
 }
 knowledge_layer_scenarios
@@ -2408,7 +2424,7 @@ knowledge_layer_scenarios
 # .aif/project.json is the project's and aif init never rewrites it — which
 # left an upgraded project telling verify-red that a TypeError is a legitimate
 # red, its type-check bound to green alone, and the new stage running on the
-# old dispatch cap, in silence (docs/DEFECTS-8.md #1, #4). What moved is now
+# old dispatch cap, in silence (docs/DEFECTS.md 8.1, #4). What moved is now
 # said by check, doctor and the worker, and `aif project upgrade` brings
 # exactly that forward.
 printf '\n37. a project.json from an older template is reported, upgraded, and run on the caps the stage was designed for\n'
@@ -2489,7 +2505,7 @@ eq "the plan station declares no cap of its own, so it is held to three" \
 #
 # A project initialised before 0.5.3 kept a guard matcher without Bash through
 # every later init, because init skipped any event the file already had and
-# could not tell the user's hooks from its own (docs/DEFECTS-8.md #2); and a
+# could not tell the user's hooks from its own (docs/DEFECTS.md 8.2); and a
 # dry run announced every updated file as retired (#5).
 printf '\n38. aif init refreshes its own hook registration, keeps the user'"'"'s, and a dry run previews honestly\n'
 mkdir -p "$SANDBOX/p38" && cd "$SANDBOX/p38" || exit 1
@@ -2567,6 +2583,25 @@ wait_for() { # <file> — up to ten seconds
     sleep 0.1
     i=$((i + 1))
   done
+}
+wait_said() { # <file> <text> — until the text is in the file, up to ten seconds
+  local i=0
+  while ! grep -q -- "$2" "$1" 2>/dev/null && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+# ctrl_c_twice <loop-pid> <out> — as a person does it: the second once the loop
+# has said what the first meant, and off the loop's one-second tick. Sent
+# exactly a second after the first, the second landed where the tick's sleep
+# ends and the shell is between commands, and bash 3.2 lost it about one time
+# in three (docs/DEFECTS.md 11.1) — a race in the loop's shell this harness
+# must not be the thing that hits.
+ctrl_c_twice() {
+  kill -INT -- "-$1" 2>/dev/null
+  wait_said "$2" "Ctrl-C — no new card"
+  sleep 0.4
+  kill -INT -- "-$1" 2>/dev/null
 }
 ticket_for AIF-39
 git add -A && git commit -qm "ticket 39" >/dev/null
@@ -2678,9 +2713,7 @@ eq "…the loop said what it does with a Ctrl-C, and why it stopped" \
 FAKE_SLEEP_IN="AIF-42:plan" launch "$OUT/run39i.out" --parallel 1
 wait_for .aif/worktrees/AIF-42/.aif/tmp/fake-running-AIF-42-plan
 t0="$(date +%s)"
-kill -INT -- "-$loop" 2>/dev/null
-sleep 1
-kill -INT -- "-$loop" 2>/dev/null
+ctrl_c_twice "$loop" "$OUT/run39i.out"
 rc=0
 wait "$loop" || rc=$?
 secs=$(($(date +%s) - t0))
@@ -2820,9 +2853,7 @@ wait_for "$marks/AIF-56-plan"
 wait_for "$marks/AIF-57-plan"
 "$AIF" board create tasks/AIF-58/ticket.md --column ready >/dev/null
 t0="$(date +%s)"
-kill -INT -- "-$loop" 2>/dev/null
-sleep 1
-kill -INT -- "-$loop" 2>/dev/null
+ctrl_c_twice "$loop" "$OUT/run40c.out"
 rc=0
 wait "$loop" || rc=$?
 secs=$(($(date +%s) - t0))
@@ -3010,6 +3041,92 @@ open(raw, "wb").write(buf)
 PY3
 eq "--no-tui on a terminal: lines, not the dashboard" \
   "$(grep -c "$(printf '\033')\[?1049h" "$OUT/screen41b"),$(sed 's/\x1b\[[0-9;]*m//g' "$OUT/screen41b" | grep -c 'loop 1 — AIF-83')" "0,1"
+
+# ====== 42. an older branch, and a stopped run restarted =======================
+#
+# Everything a run reads about aif, it reads from the worktree, and `aif init`
+# upgrades only the checkout it runs in — so every branch cut before an upgrade
+# kept the old set, and the 0.11.0 driver would have dispatched 0.9.0's plan
+# station to be judged by 0.9.0's gate (docs/DEFECTS.md 9.1). And a plan that
+# stopped left its skeleton on the floor for the next plan to read as the
+# repository (10.3). Now: the set is brought forward and committed before any
+# of it is read; a stopped run restarts on the tree it started from when the
+# ticket or the set moved; a resumed plan station sees the branch as it is.
+printf '\n42. an older branch is brought up to the set, and a stopped run restarts on the tree it started from\n'
+fresh_project "$SANDBOX/p42"
+ticket_for AIF-42
+git add -A && git commit -qm "ticket 42" >/dev/null
+rc=0
+FAKE_CREATE=1 FAKE_VERDICT=already_true "$AIF" work AIF-42 >"$OUT/run42a.out" 2>&1 || rc=$?
+WT=.aif/worktrees/AIF-42
+eq "a spec stop, in a worktree, leaves the stopped plan's skeleton uncommitted" \
+  "$rc,$(jq -r '.status' "$WT/tasks/AIF-42/run.json"),$(git -C "$WT" status --porcelain | grep -c 'src/feat.py')" "1,spec,1"
+eq "the run record names the set it ran under" "$(jq -r '.set_version' "$WT/tasks/AIF-42/run.json")" "$(jq -r '.set_version' .aif/manifest.json)"
+# The branch as an older set would have left it: an older gate and station, a
+# gate this set no longer ships, no guide and no fragments, a manifest naming
+# the old version, a run record from before records named their set — and one
+# more file the stopped plan left on the floor.
+printf '\n# an older gate\n' >>"$WT/.aif/gates/plan.sh"
+printf '\nAn older instruction.\n' >>"$WT/.claude/agents/aif-plan.md"
+rm -rf "$WT/.aif/guide" "$WT/.aif/stacks"
+printf '#!/bin/bash\nexit 0\n' >"$WT/.aif/gates/plan-form.sh"
+tmp="$(mktemp)"
+jq '.set_version = "0.9.0" | .files += [{ path: ".aif/gates/plan-form.sh", sha256: "0" }]' "$WT/.aif/manifest.json" >"$tmp" && mv "$tmp" "$WT/.aif/manifest.json"
+tmp="$(mktemp)"
+jq 'del(.set_version)' "$WT/tasks/AIF-42/run.json" >"$tmp" && mv "$tmp" "$WT/tasks/AIF-42/run.json"
+printf 'def leftover():\n    pass\n' >"$WT/src/leftover.py"
+git -C "$WT" add -A -- .aif .claude tasks >/dev/null 2>&1
+git -C "$WT" -c user.email=o@x -c user.name=old commit -qm "as the old set left it" >/dev/null
+eq "doctor names the worktree still on the older set, and what happens to it" \
+  "$("$AIF" doctor 2>/dev/null | grep -c 'worktrees .*on an older set: AIF-42 (0.9.0) — brought up to')" "1"
+rc=0
+FAKE_CREATE=1 "$AIF" work AIF-42 >"$OUT/run42b.out" 2>&1 || rc=$?
+eq "built, the ticket unchanged, the set moved" "$rc" "0"
+eq "the branch was brought up to the checkout's set first, and said so" \
+  "$(grep -c "aif/AIF-42 brought up to the checkout's set (0.9.0 → " "$OUT/run42b.out")" "1"
+eq "…in a commit of its own, before the stations" "$(git -C "$WT" log --format=%s | grep -c '^aif: set .* for AIF-42')" "1"
+eq "the gate and the station are the checkout's again; the retired gate is gone; the guide and the fragments are there" \
+  "$(cmp -s .aif/gates/plan.sh "$WT/.aif/gates/plan.sh" && echo same),$(cmp -s .claude/agents/aif-plan.md "$WT/.claude/agents/aif-plan.md" && echo same),$(test -f "$WT/.aif/gates/plan-form.sh" && echo kept || echo gone),$(test -f "$WT/.aif/guide/tests.md" && echo yes),$(test -f "$WT/.aif/stacks/pytest.md" && echo yes)" "same,same,gone,yes,yes"
+eq "the run restarted because the set moved, and said so" \
+  "$(grep -c 'restart .*the set moved since the last run (an older set → ' "$OUT/run42b.out")" "1"
+eq "…with the stopped plan's leftovers put back first, never committed" \
+  "$(grep -c 'file(s) put back to' "$OUT/run42b.out"),$(git -C "$WT" log --all --format=%s -- src/leftover.py | grep -c .),$(test -e "$WT/src/leftover.py" && echo there || echo gone)" "1,0,gone"
+eq "the restart is a commit that says so, and the new record names the set" \
+  "$(git -C "$WT" log --format=%s | grep -c '^aif: restart AIF-42 — the tree put back to'),$(jq -r '.set_version' "$WT/tasks/AIF-42/run.json")" "1,$(jq -r '.set_version' .aif/manifest.json)"
+eq "doctor's worktrees line is quiet now — the branch is on the checkout's set" "$("$AIF" doctor 2>/dev/null | grep -c 'on an older set')" "0"
+
+# The ticket changes after a spec stop (what a spec stop asks for): the restart
+# puts the stopped plan's leftovers back before the new plan reads the tree.
+fresh_project "$SANDBOX/p42b"
+ticket_for AIF-42
+git add -A && git commit -qm "ticket 42b" >/dev/null
+rc=0
+FAKE_CREATE=1 FAKE_VERDICT=already_true "$AIF" work AIF-42 --no-worktree >"$OUT/run42c.out" 2>&1 || rc=$?
+eq "a spec stop in place" "$rc,$(jq -r '.status' tasks/AIF-42/run.json),$(test -f src/feat.py && echo left)" "1,spec,left"
+printf 'def leftover():\n    pass\n' >src/leftover.py
+ticket_for AIF-42 '[]' ',
+    { "id": "AC-002", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl2" }'
+rc=0
+FAKE_CREATE=1 "$AIF" work AIF-42 --no-worktree >"$OUT/run42d.out" 2>&1 || rc=$?
+eq "the reworked ticket: restarted and built" "$rc,$(jq -r '.status' tasks/AIF-42/run.json)" "0,built"
+eq "…the restart line says the ticket changed and what was put back" \
+  "$(grep -c 'restart .*the ticket changed since the last run .* file(s) put back to' "$OUT/run42d.out")" "1"
+eq "…and the stopped plan's leftover is gone, in no commit" \
+  "$(test -e src/leftover.py && echo there || echo gone),$(git log --all --format=%s -- src/leftover.py | grep -c .)" "gone,0"
+eq "the record kept its ledger across the restart" "$(jq '[.entries[] | select(.gate == "plan")] | length' tasks/AIF-42/ledger.json)" "2"
+# A spec stop re-run with the ticket unchanged resumes the plan station on a
+# clean tree: the leftovers are put back, said so.
+fresh_project "$SANDBOX/p42c"
+ticket_for AIF-42
+git add -A && git commit -qm "ticket 42c" >/dev/null
+FAKE_CREATE=1 FAKE_VERDICT=already_true "$AIF" work AIF-42 --no-worktree >/dev/null 2>&1 || true
+printf 'def leftover():\n    pass\n' >src/leftover.py
+rc=0
+FAKE_CREATE=1 "$AIF" work AIF-42 --no-worktree >"$OUT/run42e.out" 2>&1 || rc=$?
+eq "resumed at plan: the stopped plan's files put back, said so, built" \
+  "$rc,$(grep -c 'resume .*plan — .*file(s) the stopped plan left are put back' "$OUT/run42e.out"),$(git log --all --format=%s -- src/leftover.py | grep -c .)" "0,1,0"
 
 # ----------------------------------------------------------------------------
 printf '\n'

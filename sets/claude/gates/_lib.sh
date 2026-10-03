@@ -61,7 +61,7 @@ AIF_G_DENYLIST='^\.aif/|^tasks/|^\.claude/|^\.github/|^\.gitlab-ci|^project\.jso
 # plan named package.json, the lockfile could not be named, and a station
 # installed the package without it. npm then re-resolved packages nobody had
 # asked to move, into an incompatible pair, and twelve pre-existing tests went
-# red where no diff to the manifest could reach them (docs/DEFECTS-6.md #3).
+# red where no diff to the manifest could reach them (docs/DEFECTS.md 6.3).
 #
 # The route is now this: a manifest and its lockfile change TOGETHER or not at
 # all. The plan gate requires the lockfile whenever the plan names the
@@ -273,7 +273,7 @@ aif_g_meta() {
   # The CR is stripped before anything is matched. A card edited in a browser
   # can come back with \r\n, and a line that is `<!-- aif:meta\r` matches
   # nothing — the ticket then reads as "not written by the analyst", which
-  # sends the human to the wrong place (docs/DEFECTS-3.md #10).
+  # sends the human to the wrong place (docs/DEFECTS.md 3.10).
   awk '
     { sub(/\r$/, "") }
     /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
@@ -349,7 +349,7 @@ aif_g_project() {
 # the implement station has Bash. One `git commit -am` from the station and
 # `git diff HEAD` is empty: scope passed everything with "0 lines", and green
 # reverted from an index that already held the implementation and blamed the
-# tests for not depending on it (docs/DEFECTS-3.md #8). So the worker writes
+# tests for not depending on it (docs/DEFECTS.md 3.8). So the worker writes
 # HEAD into the run record before every dispatch, and the gates read that. HEAD
 # is the fallback for a gate run by hand, where there is no record and no
 # station in between to have committed.
@@ -378,7 +378,7 @@ aif_g_dispatch_base() {
 # FILE, which points at the real worktree's gitdir: `git checkout <base> -- f`
 # run in the copy restores the copy's file and stages <base>'s blob in the REAL
 # worktree's index. green's revert-recheck did exactly that for as long as it
-# existed (docs/DEFECTS-6.md #4).
+# existed (docs/DEFECTS.md 6.4).
 aif_g_scratch_at() {
   local root="$1" base="$2" scratch p q
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/aif-scratch-XXXXXX")" || return 1
@@ -491,7 +491,7 @@ aif_g_excerpt() {
 # the first lines of its output. It used to carry `tail -1`, and for tsc the
 # last line of a failure is "Source has 0 element(s) but target requires 1." —
 # no file, no line. The station it was sent back to could not tell where the
-# error was, and spent three attempts not finding it (docs/DEFECTS-6.md #2).
+# error was, and spent three attempts not finding it (docs/DEFECTS.md 6.2).
 #
 # <tests> — at "red", the ticket's declared test files, one per line. A check
 # the project bound to red that carries `legitimate_at_red` (a list of EREs) is

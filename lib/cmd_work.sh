@@ -134,7 +134,7 @@ _aif_work_say() {
 # claim and the report, which used to leave the card In Progress with nobody
 # working on it. That is the same defect as a meter that quietly did not fire,
 # and for one release the handler meant to prevent it was disarmed by the
-# first ledger write of every run (docs/DEFECTS-3.md #1-#3).
+# first ledger write of every run (docs/DEFECTS.md 3.1–3.3).
 #
 # It used to move the card and say nothing: whoever opened Needs Human found a
 # card with no reason on it, and the reason was in the scrollback of whoever
@@ -493,11 +493,20 @@ _aif_work_preflight() {
     aif_err "aif project guide brings its generated block up to date; what you wrote by hand is yours to fix. Nothing was spent."
     exit 3
   fi
+  # Committed, because the branch is brought up to this checkout's set before
+  # a run and lands back into it afterwards: a guide git does not track here
+  # would be committed on the branch and then stand in the way of its own
+  # merge. Said as what it is — for one release the worktree check read a
+  # branch older than the guide as an uncommitted file (docs/DEFECTS.md 9.1).
+  if ! aif_guide_committed "$root"; then
+    aif_err "$AIF_GUIDE_FILE is not committed in your checkout — the stations run on a branch that is brought up to this checkout's set and lands back into it, and a file git does not track here would stand in the way of that merge. Commit it: git add $AIF_GUIDE_FILE && git commit"
+    exit 3
+  fi
 
   # A project.json behind the template it was made from: the gates read the
   # file as it is, so this is a warning and not a refusal — but said on every
   # run, because an upgraded project kept failure classes the gate no longer
-  # means and nothing told it (docs/DEFECTS-8.md #1).
+  # means and nothing told it (docs/DEFECTS.md 8.1).
   local drift_n
   drift_n="$(aif_project_drift "$project" | grep -c . || true)"
   if [ "${drift_n:-0}" -gt 0 ]; then
@@ -585,6 +594,77 @@ _aif_work_worktree() {
   printf '%s' "$wt"
 }
 
+# _aif_work_set_forward <root> <wt> <ticket> — the branch's copy of the set is
+# brought up to the developer's checkout before anything reads it.
+#
+# Everything a run reads about aif, it reads from the WORKTREE: the stations'
+# instructions and caps (.claude/agents), every gate (.aif/gates), the hooks
+# and their registration, the runner fragments, the guide, project.json. That
+# is right for a branch cut from the set in use, and `aif init` upgrades only
+# the checkout it runs in — so every branch cut before an upgrade kept the old
+# set: at 0.9.0 → 0.11.0 that was every ticket in Needs Human and Review, and
+# the 0.11.0 driver would have dispatched 0.9.0's plan station, with 0.9.0's
+# instructions and 0.9.0's cap, to be judged by 0.9.0's gate (docs/DEFECTS.md
+# 9.1). `prepare` was already read from the developer's checkout for exactly
+# this reason; this applies the same reasoning to the rest, the way aif init
+# applies it to a project: the manifest's files are copied over, the files an
+# older manifest listed and this set no longer ships are removed, and the
+# result is committed on the branch, so the branch stays what CI and a
+# reviewer can check against — a set, named by version, not a mixture.
+#
+# Said when anything moved; silent for a branch that is already current (a
+# fresh worktree always is). rc 0 always.
+_aif_work_set_forward() {
+  local root="$1" wt="$2" ticket="$3" p from to n=0 r=0 paths old_paths manifest
+  [ "$wt" != "$root" ] || return 0
+  manifest="$root/.aif/manifest.json"
+  [ -f "$manifest" ] || return 0
+  to="$(jq -r '.set_version // "?"' "$manifest" 2>/dev/null)"
+  from="$(jq -r '.set_version // "?"' "$wt/.aif/manifest.json" 2>/dev/null)" || from="?"
+  [ -n "$from" ] || from="?"
+  # What the set installed, and what aif writes beside it that the gates and
+  # the stations read from the branch.
+  paths="$(
+    jq -r '.files[]?.path' "$manifest" 2>/dev/null
+    printf '%s\n' .aif/manifest.json .aif/project.json .claude/settings.json "$AIF_GUIDE_FILE"
+  )"
+  old_paths="$(jq -r '.files[]?.path' "$wt/.aif/manifest.json" 2>/dev/null || true)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    # Per-developer state is the developer's, not the branch's.
+    ! git -C "$root" check-ignore -q "$p" 2>/dev/null || continue
+    if [ -f "$root/$p" ]; then
+      if ! cmp -s "$root/$p" "$wt/$p" 2>/dev/null; then
+        mkdir -p "$wt/$(dirname "$p")"
+        cp "$root/$p" "$wt/$p"
+        [ ! -x "$root/$p" ] || chmod +x "$wt/$p"
+        git -C "$wt" add -A -- "$p" >/dev/null 2>&1 || true
+        n=$((n + 1))
+      fi
+    fi
+  done <<EOF
+$(printf '%s\n' "$paths" | awk '!seen[$0]++')
+EOF
+  # Files the branch's manifest listed as the set's and this set no longer
+  # ships — an old gate, a retired command — go, as aif init retires them.
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf '%s\n' "$paths" | grep -qxF -- "$p" && continue
+    [ -f "$wt/$p" ] || continue
+    rm -f "${wt:?}/${p:?}"
+    git -C "$wt" add -A -- "$p" >/dev/null 2>&1 || true
+    r=$((r + 1))
+  done <<EOF
+$old_paths
+EOF
+  [ $((n + r)) -gt 0 ] || return 0
+  if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+      commit -q -m "aif: set $to for $ticket — the branch brought up to the checkout's set (from $from)" >/dev/null 2>&1 || true
+  fi
+  _aif_work_say "set" "aif/$ticket brought up to the checkout's set ($from → $to): $n file(s) refreshed, $r retired, committed on the branch"
+}
+
 # _aif_work_ready_worktree <root> <wt> <ticket> — make the checkout the
 # stations will run in able to run the suite, and prove it, before anything
 # is spent or any card moves.
@@ -594,7 +674,7 @@ _aif_work_worktree() {
 # config before it runs a single test — no report, exit 1. For three runs of
 # one ticket that was admitted as coarse RED, the freeze recorded an empty
 # `covering`, and green passed a build whose tests nobody had seen fail
-# (docs/DEFECTS-4.md #11). The preflight probe could not have seen it: it
+# (docs/DEFECTS.md 4.11). The preflight probe could not have seen it: it
 # runs in the developer's checkout, where node_modules exists.
 #
 # Two things, in order:
@@ -674,7 +754,7 @@ _aif_work_ready_worktree() {
 # around its lockfile: npm re-resolved packages nobody had asked to move, into
 # an incompatible pair, and green then blamed the implementation three times
 # for twelve pre-existing tests that no edit to its files could reach
-# (docs/DEFECTS-6.md #3). A lockfile is the promise of what an install builds;
+# (docs/DEFECTS.md 6.3). A lockfile is the promise of what an install builds;
 # the gates should judge THAT, so the install is made again from it, the way
 # CI and the next developer will make it. `npm ci` refuses a manifest the lock
 # does not match — which turns "installed around the lock" from a silent drift
@@ -773,29 +853,77 @@ _aif_work_intake() {
     return 2
   fi
 
+  local set_version old_base old_status set_was put_back
+  set_version="$(jq -r '.set_version // empty' "$wt/.aif/manifest.json" 2>/dev/null)"
   base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
-  if [ -f "$(aif_run_path "$work")" ] && aif_run_resumable "$work"; then
+  if [ -f "$(aif_run_path "$work")" ] && aif_run_resumable "$work" "$set_version"; then
     # The ticket has not moved since the last run stopped. Keep the stage; give
     # it a fresh attempt count and a fresh budget, because this is a new
     # invocation and the caps are per-invocation. NOT a fresh base: the report
     # diffs base..HEAD to say what the ticket built, and resetting it here made
     # a resumed run — one that resumes at `done` most of all — report "no code
-    # changed" about a branch holding all of it (docs/DEFECTS-3.md #13). A
+    # changed" about a branch holding all of it (docs/DEFECTS.md 3.13). A
     # record from before the field existed gets one now, and only then.
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
     aif_run_update "$work" \
       '.attempts = {} | .dispatches = 0 | .spent_usd = 0 | .status = "running"
        | .why = null | .finished_at = null | .started_at = $at
-       | .base = (.base // $base)' \
-      --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base"
-    _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run"
+       | .base = (.base // $base) | .set_version = (.set_version // $sv)' \
+      --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base" --arg sv "$set_version"
+    # A plan station resumed is a plan station about to read the repository,
+    # and a plan that stopped — on a spec stop, mostly — left its contract on
+    # the floor: skeletons and edits nothing committed. Read as the repository,
+    # they would become the next plan's premises (docs/DEFECTS.md 10.3). The
+    # stations after it keep their uncommitted work: a retried station fixes
+    # its own.
+    if [ "$(aif_run_get "$work" '.stage')" = "plan" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      put_back="$(git -C "$wt" status --porcelain 2>/dev/null | grep -vcE " (\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)" || true)"
+      _aif_work_restore_since "$wt" HEAD "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)"
+      _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run; ${put_back:-0} file(s) the stopped plan left are put back, the plan station reads the repository as the branch has it"
+    else
+      _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run"
+    fi
   else
     if [ -f "$(aif_run_path "$work")" ]; then
-      _aif_work_say "restart" "the ticket changed since the last run — the plan below it no longer answers it"
+      old_base="$(aif_run_get "$work" '.base')"
+      old_status="$(aif_run_get "$work" '.status')"
+      set_was="$(aif_run_set_changed "$work" "$set_version")"
+      # A run that did not build starts over on the tree it started from: the
+      # stopped plan's skeleton, the edits it made, its committed plan and
+      # tests all answer the old ticket or come from the old set, and left in
+      # place they are what the new plan station would read as the
+      # repository — and what the first accepted station's `git add -A` would
+      # commit under the new plan's name (docs/DEFECTS.md 10.3, 9.1). The
+      # ticket's record stays; the history stays; the tree goes back, in a
+      # commit that says so. A run that BUILT is a rework: the new round
+      # builds on the code the last one delivered, as it always did.
+      if [ "$old_status" != "built" ] && [ -n "$old_base" ] && [ "$old_base" != "none" ] &&
+        git -C "$wt" rev-parse -q --verify "$old_base^{commit}" >/dev/null 2>&1; then
+        put_back="$({
+          git -C "$wt" -c core.quotePath=false diff --name-only "$old_base" 2>/dev/null
+          git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+        } | sort -u | grep -vcE "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)" || true)"
+        # Not the set, which was just brought up to the checkout's; not the
+        # ticket's record; everything else the old run and its stations did.
+        _aif_work_restore_since "$wt" "$old_base" "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/(ledger\.json|run\.json|stations/|ticket\.md)$)"
+        git -C "$wt" add -A >/dev/null 2>&1 || true
+        if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+          git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+            commit -q -m "aif: restart $ticket — the tree put back to ${old_base:0:7} before a new plan" >/dev/null 2>&1 || true
+        fi
+        base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
+      else
+        put_back=""
+      fi
+      if [ -n "$set_was" ]; then
+        _aif_work_say "restart" "the set moved since the last run ($set_was → ${set_version:-?}) — the plan below it was written by the old set's stations${put_back:+; ${put_back} file(s) put back to ${old_base:0:7}}"
+      else
+        _aif_work_say "restart" "the ticket changed since the last run — the plan below it no longer answers it${put_back:+; ${put_back} file(s) put back to ${old_base:0:7}}"
+      fi
     fi
     aif_run_init "$work" "$ticket" \
       "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')" \
-      "$base" "${wt#"$root"/}"
+      "$base" "${wt#"$root"/}" "$set_version"
   fi
 
   # Which ticket a metering hook's row belongs to. The worker meters from the
@@ -820,7 +948,7 @@ _aif_work_intake() {
 # station declares four, the others fall to three (docs/REBUILD-4.md §2.4):
 # it has iterated with the dry verifier already, and a fourth informed retry
 # is cheaper than a human. One cap for every stage was the code for one
-# release while the design said four (docs/DEFECTS-8.md #4).
+# release while the design said four (docs/DEFECTS.md 8.4).
 _aif_work_attempts_max() {
   local n
   n="$(aif_station_meta "$1" "$2" 2>/dev/null | jq -r '.max_attempts // empty' 2>/dev/null)"
@@ -868,7 +996,7 @@ _aif_work_dispatch() {
   # of five on one batch, leaving half-written files for the gate to judge.
   max_turns="$(aif_station_meta "$wt" "$station" 2>/dev/null | jq -r '.max_turns // empty' 2>/dev/null)"
   # 60, like every station's own cap: on a subscription a turn costs nothing
-  # and a station cut off mid-file costs a dispatch (docs/DEFECTS-6.md); the
+  # and a station cut off mid-file costs a dispatch (docs/DEFECTS.md (log 6)); the
   # cap's remaining job is a station that loops without producing.
   [ -n "$max_turns" ] || max_turns="$(jq -r '.limits.station_max_turns // 60' "$project" 2>/dev/null)"
   [ -n "$model" ] || model="sonnet"
@@ -1028,7 +1156,7 @@ $complaint"
 # most users have. The ledger prices the same tokens from .aif/prices.json and
 # that is what the report prints. The cap used to read the first, so on the
 # common auth it could not fire, while the report beside it showed dollars
-# (docs/DEFECTS-3.md #4). A guard against a runaway run takes the larger; a
+# (docs/DEFECTS.md 3.4). A guard against a runaway run takes the larger; a
 # model prices.json does not know contributes the runner's figure alone, and
 # the ledger row says "tokens-only" for it.
 _aif_work_envelope_cost() {
@@ -2047,7 +2175,7 @@ aif_cmd_work() {
   # --no-worktree keeps bypassPermissions and drops the disposable copy that
   # justified it (lib/runner_claude.sh). The usage text always said "only for a
   # checkout that is already disposable" and nothing enforced it
-  # (docs/DEFECTS-3.md #11). Now the caller has to say so: CI jobs already
+  # (docs/DEFECTS.md 3.11). Now the caller has to say so: CI jobs already
   # carry CI=1, and a harness sets AIF_DISPOSABLE=1 for its sandboxes.
   if [ "$use_worktree" -eq 0 ] && [ "$clean" -eq 0 ] && [ "$stop" -eq 0 ] &&
     [ -z "${CI:-}" ] && [ "${AIF_DISPOSABLE:-}" != "1" ]; then
@@ -2176,19 +2304,24 @@ aif_cmd_work() {
     fi
     rm -f "$cut_err"
     [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
+    # Before the probe and before anything reads the branch's copy of the set:
+    # a branch cut under an older set is brought up to this checkout's, and
+    # the guide with it (docs/DEFECTS.md 9.1).
+    _aif_work_set_forward "$root" "$wt" "$ticket"
     _aif_work_ready_worktree "$root" "$wt" "$ticket" ||
       _aif_work_refuse "$root" "$ticket" "$AIF_WORK_ENV_WHY" "$AIF_WORK_ENV_MORE"
-    # The stations read the WORKTREE's copy of the guide, and a worktree is cut
-    # from HEAD: a guide written in the developer's checkout and never
-    # committed is not here. Preflight saw the developer's copy; this is the
-    # one the stations would be told to read.
+    # Preflight saw the developer's guide, and the set was just brought
+    # forward, so the worktree has it too. What is left is a checkout whose
+    # guide could not be copied — a file in the way, a permission — and that
+    # is said as what it is, not as "commit it": for one release this line
+    # told a developer whose guide WAS committed to commit it, because the
+    # branch predated the file (docs/DEFECTS.md 9.1).
     if [ ! -f "$(aif_guide_path "$wt")" ]; then
-      aif_err "$AIF_GUIDE_FILE is not on branch aif/$ticket — it is uncommitted in your checkout, and the stations run in ${wt#"$root"/}, cut from HEAD. Nothing was spent."
-      aif_err "Commit it (git add $AIF_GUIDE_FILE && git commit) and run again; a worktree cut before it existed is remade with: aif work $ticket --clean, then git branch -D aif/$ticket if the branch holds nothing yet"
       guide_err="$(mktemp "${TMPDIR:-/tmp}/aif-guide-XXXXXX")"
-      printf 'The stations read the guide from the worktree, %s, which is cut from HEAD. Commit it (git add %s && git commit); a worktree cut before it existed is remade with aif work %s --clean, then git branch -D aif/%s if the branch holds nothing yet.\n' \
-        "${wt#"$root"/}" "$AIF_GUIDE_FILE" "$ticket" "$ticket" >"$guide_err"
-      _aif_work_refuse "$root" "$ticket" "$AIF_GUIDE_FILE is not on branch aif/$ticket, where the stations run" "$guide_err"
+      printf 'The stations read the guide from the worktree, %s. The checkout has it at %s and it could not be brought onto branch aif/%s — look at what is in the way there.\n' \
+        "${wt#"$root"/}" "$AIF_GUIDE_FILE" "$ticket" >"$guide_err"
+      aif_err "$AIF_GUIDE_FILE could not be brought onto branch aif/$ticket, where the stations run. Nothing was spent."
+      _aif_work_refuse "$root" "$ticket" "$AIF_GUIDE_FILE could not be brought onto branch aif/$ticket" "$guide_err"
     fi
   else
     wt="$root"
@@ -2234,7 +2367,7 @@ aif_cmd_work() {
   # 16, as the templates say since the stage gained its two loops (a repair,
   # a replan) on top of the three stations' retries (docs/REBUILD-4.md §2.4).
   # A project.json from before the key ran the new stage on the old 12
-  # (docs/DEFECTS-8.md #4); the fallback is now the number the stage was
+  # (docs/DEFECTS.md 8.4); the fallback is now the number the stage was
   # budgeted for.
   dispatches_max="$(jq -r '.limits.run_dispatches_max // 16' "$project")"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
@@ -2328,7 +2461,7 @@ $complaint"
       # dispatch_base: HEAD as it stands now, for scope and green to judge
       # against. A station with Bash can commit; after it does, "the last commit"
       # is its own, and a gate diffing against that sees nothing
-      # (docs/DEFECTS-3.md #8, aif_g_dispatch_base in the gates' _lib.sh).
+      # (docs/DEFECTS.md 3.8, aif_g_dispatch_base in the gates' _lib.sh).
       # plan_base and tests_base: the tree each of those stations FIRST saw,
       # which is where a replan puts the tree back, and where a repair's copy
       # measures the pre-existing suite from.
@@ -2411,7 +2544,7 @@ $complaint"
       # silent: an unstamped plan is rejected by verify-red as "bound to a
       # different ticket", the station rewrites the same plan, and the loop
       # repeats to the cap, billing a tool defect to the human as opus retries
-      # (docs/DEFECTS-3.md #7). So it stops, and says whose fault it was.
+      # (docs/DEFECTS.md 3.7). So it stops, and says whose fault it was.
       if ! tool_out="$("$AIF_ROOT/bin/aif" _record "$stage" "$ticket" 2>&1)"; then
         status="stopped"
         why="aif _record failed after the $stage station — the tool, not the station, and no gate was run:
@@ -2450,7 +2583,7 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
         # The commit seals the verdict and is the next station's baseline. One
         # that did not happen used to be invisible until scope rejected the
         # implementation for "touching" the tests the previous commit should
-        # have carried (docs/DEFECTS-3.md #7).
+        # have carried (docs/DEFECTS.md 3.7).
         if ! tool_out="$("$AIF_ROOT/bin/aif" _commit "$stage" "$ticket" 2>&1)"; then
           status="stopped"
           why="aif _commit failed after $stage was admitted — the tool, not the station. The verdict is recorded; the commit that seals it is not, and the next station's baseline would be wrong:
@@ -2467,7 +2600,7 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
       1)
         # sed -n, not head: a gate's output is not bounded, and a head that
         # leaves early under set -e would end the run at the moment of the
-        # rejection it was quoting (docs/DEFECTS-5.md #3).
+        # rejection it was quoting (docs/DEFECTS.md 5.3).
         complaint="$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
         # The convergence rule: the same complaint twice in a row is a station
         # that cannot act on what it is told, and a third attempt is the same
@@ -2561,7 +2694,7 @@ $(head -20 "$gate_out")"
   #
   # "report posted" is said when it was: it used to follow the MOVE, and was
   # printed under the very error that said the comment had been refused
-  # (docs/DEFECTS-10.md #1). A report too long for a comment is cut by the
+  # (docs/DEFECTS.md 10.1). A report too long for a comment is cut by the
   # board adapter, naming where the whole of it is — on the branch.
   local col report_path kind headline full_at branch posted=0
   report_path="$work/report.md"

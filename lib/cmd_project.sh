@@ -62,7 +62,7 @@ _aif_detect_runner() {
     # Inside a substitution, on purpose: `head -1` leaves after one line, a
     # find still walking a large tree takes SIGPIPE, and as the condition's
     # own pipeline that 141 read as "no .py files" — at 5000 of them
-    # (docs/DEFECTS-5.md #2). `[ -n … ]` reads the text, not the status.
+    # (docs/DEFECTS.md 5.2). `[ -n … ]` reads the text, not the status.
     printf 'pytest'
   else
     printf ''
@@ -244,7 +244,7 @@ EOF
 # writes without asking, because its command is the project's own and the
 # place it is needed is not negotiable: a type error inside a frozen test
 # file cost 49 minutes on a live ticket before the gate that reads this field
-# existed (docs/DEFECTS-6.md #2), and a skeleton that does not compile is a
+# existed (docs/DEFECTS.md 6.2), and a skeleton that does not compile is a
 # contract nobody can test against (docs/REBUILD-4.md §2.1).
 #
 # Only what the project declares: a tsconfig.json with typescript installed,
@@ -388,7 +388,7 @@ _aif_project_check() {
   # What has moved since the template this file was made from. Valid and
   # current are different answers: a project.json from 0.10.x validates and
   # still tells verify-red that a TypeError is a legitimate red
-  # (docs/DEFECTS-8.md #1). Reported, never changed here.
+  # (docs/DEFECTS.md 8.1). Reported, never changed here.
   local drift kind
   drift="$(aif_project_drift "$dest")"
   kind="$(aif_project_kind "$dest")"

@@ -16,7 +16,7 @@
 #     release each of them was read as a station: a plain session's
 #     general-purpose subagent lost `git stash list` to the commit rule, and a
 #     project's own agent named `tests` was held to the tests station in full
-#     (docs/DEFECTS-8.md #3).
+#     (docs/DEFECTS.md 8.3).
 #   - AIF_STATION in the environment, exported by `aif work` around the
 #     station's `claude -p`. This is the LIVE route: the worker runs each
 #     station as its own headless process, so the marker that process inherits
@@ -82,7 +82,7 @@ deny() {
 #
 # One: a station does not commit. The worker seals each admitted station
 # itself, and a station that commits moves HEAD under the gates — which used
-# to empty scope's diff outright (docs/DEFECTS-3.md #8). The gates now judge
+# to empty scope's diff outright (docs/DEFECTS.md 3.8). The gates now judge
 # against the baseline the worker recorded, so this is the speed bump in front
 # of that fix, not the fix: it matches the obvious spellings and fails OPEN on
 # anything cleverer, and says so here rather than pretending to parse shell.

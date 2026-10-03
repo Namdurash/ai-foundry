@@ -70,7 +70,7 @@ aif_cmd_amend_plan() {
       ;;
     # A lockfile moves only with its manifest, and only when the PLAN named
     # both: a dependency is a planning decision, and the plan gate is where the
-    # pair is checked (docs/DEFECTS-6.md #3). scope permits no amended lockfile
+    # pair is checked (docs/DEFECTS.md 6.3). scope permits no amended lockfile
     # either; this says so before anything is written.
     package-lock.json | */package-lock.json | npm-shrinkwrap.json | */npm-shrinkwrap.json | \
       yarn.lock | */yarn.lock | pnpm-lock.yaml | */pnpm-lock.yaml | poetry.lock | */poetry.lock | \

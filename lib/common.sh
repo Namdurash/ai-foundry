@@ -28,7 +28,7 @@ fi
 # Traps are per-process, not per-function: a bare `trap -` anywhere in a
 # library takes the CALLER's handler with it. That is not hypothetical — the
 # worker's interrupt handler was dead from the first ledger write onwards, and
-# had been since the day it was written (docs/DEFECTS-3.md #1).
+# had been since the day it was written (docs/DEFECTS.md 3.1).
 #
 # So a command that needs a handler to outlive the libraries it calls arms it
 # here, and a library that needs a trap of its own restores it here afterwards
@@ -101,7 +101,7 @@ aif_have() {
 # programs identical.
 aif_meta_json() {
   # The CR is stripped first: a ticket edited in a browser can come back with
-  # \r\n, and `<!-- aif:meta\r` matches nothing (docs/DEFECTS-3.md #10).
+  # \r\n, and `<!-- aif:meta\r` matches nothing (docs/DEFECTS.md 3.10).
   awk '
     { sub(/\r$/, "") }
     /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }

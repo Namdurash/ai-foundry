@@ -159,7 +159,7 @@ mkdir -p "$root/$(dirname "$report_path")"
 # that read this path without first clearing it.
 rm -f "$root/$report_path"
 # The suite's raw output is scratch, and it lives inside tasks/<ID>/ — which the
-# worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
+# worker commits. Every early exit below used to leak it there (docs/DEFECTS.md (log 3)
 # #14): the removals were written on the pass paths only, and a rejection is the
 # common case. A gate is its own process, so a plain EXIT trap is the whole fix.
 # The reverted copy of the tree and this gate's own scratch go the same way.
@@ -194,7 +194,7 @@ lock_mode="$(jq -r '.mode // "per-test"' "$lock")"
 # was then retried against things no edit to its files could reach: twelve
 # pre-existing tests broken by a dependency re-resolved in node_modules, a type
 # error inside a frozen test file. Three attempts each, 49 minutes for one of
-# them (docs/DEFECTS-6.md #2, #3). A failure the implementation can clear is
+# them (docs/DEFECTS.md 6.2, #3). A failure the implementation can clear is
 # one that CHANGES when the implementation is taken away; one that does not
 # change is out of its reach, and the run stops instead of retrying.
 #
@@ -212,7 +212,7 @@ reverted_why=""
 # implement station has Bash, and after one `git commit` from it the index
 # already held the implementation: the revert was a no-op, every covering test
 # stayed green, and this gate told the station its tests were worthless when
-# what had happened was that it committed (docs/DEFECTS-3.md #8).
+# what had happened was that it committed (docs/DEFECTS.md 3.8).
 revert_tree() {
   local rel want not_restored=""
   [ -z "$scratch" ] || return 0
@@ -280,7 +280,7 @@ allowed_skips=0
 freeze_known=yes
 [ "$lock_mode" = "per-test" ] || freeze_known=no
 # No report is not a coarse verdict; it is no run. The same rule verify-red
-# applies, for the same reason (docs/DEFECTS-4.md #11): a suite that never
+# applies, for the same reason (docs/DEFECTS.md 4.11): a suite that never
 # reached its reporter has an exit code that says nothing about the tests.
 if [ ! -f "$root/$report_path" ]; then
   printf 'ERROR  the suite did not run — it exited %s and wrote no report at %s:\n' \
@@ -543,7 +543,7 @@ else
   # The exit code alone. The grep this used to OR in — `fail|error` anywhere in
   # the output — rejected a green suite for a test NAMED test_error_handling,
   # for a captured log line, for tsc's "0 errors", with a complaint no station
-  # could act on (docs/DEFECTS-3.md #5).
+  # could act on (docs/DEFECTS.md 3.5).
   if [ "$suite_rc" -ne 0 ]; then
     aif_g_reject "the suite is not green (exit $suite_rc; coarse mode: $coarse_why)"
   fi
@@ -620,7 +620,7 @@ rm -f "$work/.suite.out"
 # a mock typed `Mock<Category, []>` against a field declared
 # `Mock<Category | null, [string]>` failed the project's typecheck inside a
 # frozen test, and three attempts at the implementation could not touch it
-# (docs/DEFECTS-6.md #2). A line that appears only with the implementation is
+# (docs/DEFECTS.md 6.2). A line that appears only with the implementation is
 # the implementation's to fix — a signature a test calls in a way the new code
 # does not accept — and that stays a rejection, with the check's own words.
 mkdir -p "$root/.aif/tmp" "$gtmp/checks"

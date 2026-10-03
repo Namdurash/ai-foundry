@@ -111,7 +111,7 @@ aif_cmd_meter() {
   agent_id="$(printf '%s' "$payload" | jq -r '.agent_id // empty')"
   # One jq, no head: the last message can be long, and a head that leaves
   # after one line hands jq SIGPIPE inside an assignment under set -e — the
-  # hook dies and the cost row is never written (docs/DEFECTS-5.md #3).
+  # hook dies and the cost row is never written (docs/DEFECTS.md 5.3).
   summary="$(printf '%s' "$payload" | jq -r '(.last_assistant_message // "") | split("\n")[0]')"
 
   local root ticket work

@@ -47,19 +47,23 @@ aif_run_next() {
   printf 'done'
 }
 
-# aif_run_init <work> <ticket> <branch> <base> <worktree-rel>
+# aif_run_init <work> <ticket> <branch> <base> <worktree-rel> [set-version]
 #
-# A fresh record at the first stage, bound to the ticket AS IT IS NOW. Called
-# once per `aif work`, after the ticket has been carried into the worktree.
+# A fresh record at the first stage, bound to the ticket AS IT IS NOW — and to
+# the SET as it is now: the plan a run writes is shaped by the stations and
+# gates of the set that ran it, so a record carries the set version the way it
+# carries the ticket's hash. Called once per `aif work`, after the ticket has
+# been carried into the worktree.
 aif_run_init() {
-  local work="$1" ticket="$2" branch="$3" base="$4" wt="$5" f
+  local work="$1" ticket="$2" branch="$3" base="$4" wt="$5" set_version="${6:-}" f
   f="$(aif_run_path "$work")"
   jq -n --argjson schema "$AIF_RUN_SCHEMA" --arg t "$ticket" \
     --arg sha "$(aif_sha256 "$work/ticket.md")" \
-    --arg br "$branch" --arg base "$base" --arg wt "$wt" \
+    --arg br "$branch" --arg base "$base" --arg wt "$wt" --arg sv "$set_version" \
     --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg stage "${AIF_RUN_STAGES%% *}" \
-    '{ schema: $schema, ticket: $t, ticket_sha256: $sha, branch: $br, base: $base,
+    '{ schema: $schema, ticket: $t, ticket_sha256: $sha, set_version: (if $sv == "" then null else $sv end),
+       branch: $br, base: $base,
        worktree: $wt, stage: $stage, attempts: {}, dispatches: 0, spent_usd: 0,
        repairs: 0, replans: 0, regate: null,
        started_at: $at, finished_at: null, status: "running", why: null }' \
@@ -103,18 +107,39 @@ aif_run_update() {
   jq "$@" "$filter" "$f" >"$tmp" && mv "$tmp" "$f"
 }
 
-# aif_run_resumable <work> — rc 0 iff a record is there AND it was made against
-# the ticket as it now stands.
+# aif_run_resumable <work> [set-version] — rc 0 iff a record is there AND it
+# was made against the ticket as it now stands AND, for a run that did not
+# build, by the set that is installed now.
 #
 # The one check that replaces the hash cascade. A ticket reworked between runs
 # makes the plan, the frozen tests and the code below it answers to a question
 # nobody is asking any more; the honest response is to start the run over, not
-# to reconcile it artifact by artifact.
+# to reconcile it artifact by artifact. A set upgraded between runs is the same
+# thing from the other side: a stopped run's plan was written by stations the
+# new gates were not built around, and resuming it replays the old plan under
+# the new judges (docs/DEFECTS.md 9.1). A run that BUILT resumes whatever the
+# set: there is nothing left to dispatch, and the branch is the reviewer's.
+# A record from before the field — every run older than this check — says
+# nothing about its set, and is read as a different one.
 aif_run_resumable() {
-  local work="$1" recorded
+  local work="$1" set_version="${2:-}" recorded status recorded_set
   recorded="$(aif_run_get "$work" '.ticket_sha256')" || return 1
   [ -n "$recorded" ] || return 1
-  [ "$recorded" = "$(aif_sha256 "$work/ticket.md")" ]
+  [ "$recorded" = "$(aif_sha256 "$work/ticket.md")" ] || return 1
+  [ -n "$set_version" ] || return 0
+  status="$(aif_run_get "$work" '.status')"
+  [ "$status" != "built" ] || return 0
+  recorded_set="$(aif_run_get "$work" '.set_version')"
+  [ "$recorded_set" = "$set_version" ]
+}
+
+# aif_run_set_changed <work> <set-version> — the set version the record names,
+# when it is not the one given; empty otherwise. What the restart line says.
+aif_run_set_changed() {
+  local recorded
+  recorded="$(aif_run_get "$1" '.set_version')"
+  [ "${recorded:-}" != "$2" ] || return 0
+  printf '%s' "${recorded:-an older set}"
 }
 
 # aif_run_attempts <work> <stage> — how many times this stage has been

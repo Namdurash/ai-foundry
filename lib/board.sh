@@ -123,7 +123,7 @@ _aif_board_local_pull() {
 # or strictly above. It was `date +%s` for a plain move: two moves in one
 # second tied, `sort_by(.pos)` broke the tie by whatever order the glob
 # returned, and `next-ready` stopped being deterministic exactly when the
-# project manager was reordering the queue quickly (docs/DEFECTS-3.md #12).
+# project manager was reordering the queue quickly (docs/DEFECTS.md 3.12).
 #
 # The glob is tested first, on purpose. Handed a pattern that matched nothing,
 # `jq -s` still runs the filter over an empty slurp AND exits non-zero — so a
@@ -262,7 +262,7 @@ _aif_trello_column_of_list() {
 # ticket file — took SIGPIPE, `pipefail` made 141 the pipeline's status, and
 # `|| return 1` said the card was absent. Only for a card long enough to be
 # worth building; `status` never asks for desc, so it went on listing a card
-# the worker then could not find (docs/DEFECTS-5.md #1, FINDINGS #19).
+# the worker then could not find (docs/DEFECTS.md 5.1, FINDINGS #19).
 _aif_trello_find_card() {
   local root="$1" id="$2" board out card
   board="$(_aif_trello_board "$root")"
@@ -281,7 +281,7 @@ _aif_trello_find_card() {
 # guard the caller kept going with an empty card whenever set -e was off —
 # and it is off inside any `if`, including the worker's `if ! (aif_board_move
 # …)`, which is how "no card named OPES-68" was followed by "could not move
-# OPES-68 — 404" from a PUT to /cards/null (docs/DEFECTS-5.md #1).
+# OPES-68 — 404" from a PUT to /cards/null (docs/DEFECTS.md 5.1).
 _aif_trello_require_card() {
   _aif_trello_find_card "$1" "$2" ||
     aif_die "no card named $2 on the Trello board — create it: aif board create $AIF_TASKS_DIR/$2/ticket.md"
@@ -329,7 +329,7 @@ _aif_trello_pull() {
   # what gets hashed; a newline jq adds on output is a hash that does not match.
   # tr -d '\r': Trello's editor can hand back \r\n, and the file written here is
   # the bytes the run hashes and the bytes `board create` pushes back — LF, so a
-  # round trip does not change them (docs/DEFECTS-3.md #10).
+  # round trip does not change them (docs/DEFECTS.md 3.10).
   printf '%s' "$card" | jq -j '.desc' | tr -d '\r' >"$work/ticket.md.tmp"
   if ! grep -q '^<!-- aif:meta$' "$work/ticket.md.tmp"; then
     rm -f "$work/ticket.md.tmp"
@@ -359,7 +359,7 @@ _aif_trello_move() {
 # letter, was cut at byte 15800: through a letter, and short of a limit it had
 # never reached — 16198 bytes were 12347 characters. Trello refused the
 # malformed text with a 400, so the card that most needed its report got none
-# (docs/DEFECTS-10.md #1).
+# (docs/DEFECTS.md 10.1).
 AIF_TRELLO_COMMENT_MAX=16384
 
 # _aif_trello_fit <file> <out> <note> — the file's text as Trello will take it:
@@ -420,13 +420,31 @@ _aif_trello_comment() {
   fi
 }
 
+# A card's description holds the same 16384 characters a comment does, counted
+# the same way, and a ticket IS its card's description on a Trello board. One
+# over the limit was refused with a bare 400 after it had passed the ready
+# gate, and finding out why meant counting characters by hand — `wc -c`
+# counts bytes, which for Ukrainian is nearly double (docs/DEFECTS.md 10.2).
+# So the count is made here before anything is sent, and in the ready gate
+# before the analyst hands the ticket over.
+AIF_TRELLO_DESC_MAX=16384
+
+# _aif_trello_units <file> — the file's length as Trello counts it.
+_aif_trello_units() {
+  jq -Rs '[explode[] | if . > 65535 then 2 else 1 end] | add // 0' "$1" 2>/dev/null
+}
+
 # _aif_trello_create <root> <ticket.md> <column> — a card, or the existing
 # card's description brought up to date. The description IS the ticket file,
 # aif:meta block and all: that is what `pull` reads back at intake.
 _aif_trello_create() {
-  local root="$1" ticket="$2" col="$3" id title list card cid out
+  local root="$1" ticket="$2" col="$3" id title list card cid out len
   id="$(_aif_board_ticket_id "$ticket")"
   [ -n "$id" ] || aif_die "$ticket has no aif:meta ticket id"
+  len="$(_aif_trello_units "$ticket")"
+  if [ "${len:-0}" -gt "$AIF_TRELLO_DESC_MAX" ]; then
+    aif_die "$ticket is $len characters, and a Trello card's description holds $AIF_TRELLO_DESC_MAX (counted as Trello counts them: one for a letter, two for an emoji) — cut it before it goes on the board: the narrative first, then the longest decided answers. aif _ready says the same on a Trello project."
+  fi
   title="$(_aif_board_title "$ticket")"
   list="$(_aif_trello_list_id "$root" "$col")"
   [ -n "$list" ] || aif_die "project.json board.lists.$col is empty — run: aif board init trello"

@@ -194,7 +194,7 @@ g "a station via AIF_STATION (the live route)" '{"tool_input":{"file_path":"test
 g "payload beats a stale environment"      '{"agent_type":"aif-tests","tool_input":{"file_path":"tests/t.py"}}' allow implement
 # Every subagent carries an agent_type, and only the foundry's own names are
 # stations: a project's agent that happens to be called `tests` or `plan`, or
-# a general-purpose one, is not policed in a plain session (DEFECTS-8 #3).
+# a general-purpose one, is not policed in a plain session (DEFECTS.md 8.3).
 g "a project's own agent named tests writes source" '{"agent_type":"tests","tool_input":{"file_path":"src/a.py"}}' allow
 g "a project's own agent named plan writes a test"  '{"agent_type":"plan","tool_input":{"file_path":"tests/t.py"}}' allow
 g "a code-reviewer subagent runs git checkout"      '{"agent_type":"code-reviewer","tool_name":"Bash","tool_input":{"command":"git checkout -b x"}}' allow

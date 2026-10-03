@@ -32,7 +32,7 @@ AIF_TASKS_DIR="tasks"
 # scans the repository from the root has to be told about it. `aif doctor`
 # reads it to answer the one question git cannot — whether the project's own
 # test runner is collecting the worker's copy of every suite alongside the real
-# one (docs/DEFECTS-4.md #8).
+# one (docs/DEFECTS.md 4.8).
 # shellcheck disable=SC2034
 AIF_WORK_WORKTREES=".aif/worktrees"
 
@@ -201,7 +201,7 @@ aif_prune_empty_dirs() {
 # compared "" to "" and said yes — the one comparison that replaced the whole
 # hash cascade, `aif_run_resumable`, silently answered "the ticket has not
 # changed" about any ticket at all, and the report said it built against sha ''
-# (docs/DEFECTS-3.md #9). Its gate twin in _lib.sh has always stopped instead.
+# (docs/DEFECTS.md 3.9). Its gate twin in _lib.sh has always stopped instead.
 # Called once from bin/aif, before any command that touches a project.
 aif_require_sha256() {
   aif_have shasum || aif_have sha256sum ||

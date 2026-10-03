@@ -70,7 +70,7 @@ is refreshed the same way, event by event: an entry whose every command runs
 from `.aif/hooks/` is ours and is replaced by what the set ships now, yours stay
 beside it — a project initialised before the guard matched `Bash` kept that
 matcher through four upgrades, and its guard never saw a shell command
-(`docs/DEFECTS-8.md` #2). `aif init --dry-run` previews all of it.
+(`docs/DEFECTS.md` 8.2). `aif init --dry-run` previews all of it.
 
 `.aif/project.json` is yours and is never touched by `aif init`. But some of
 what it holds is aif's opinion, and that opinion moves: which failure classes
@@ -155,6 +155,17 @@ the lockfile the undo put back. It is never run there unasked. A land stopped be
 its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, an error
 on the way — undoes its own merge and leaves the card in Review, since a stop decides
 nothing; an install `--prepare` had started is named, with its command, not run again.
+
+A worktree reads everything about aif — the stations, the gates, the hooks, the
+fragments, the guide, `project.json` — from its own branch, and `aif init`
+upgrades only the checkout it runs in. So before a run the worker brings the
+branch up to the checkout's set, in a commit of its own that names both
+versions, and a run that had stopped under the old set restarts rather than
+resuming the plan the old set wrote (`docs/DEFECTS.md` 9.1). A restart of any
+stopped run — the ticket reworked after a spec stop, say — puts the tree back
+to where that run started, so a stopped plan's half-written skeleton is not
+read as the repository by the next one (10.3); a run that built is left as it
+is, and the next round builds on it.
 
 One thing to know about those worktrees: they are complete checkouts *inside*
 the repository, and git hiding them does not mean your test runner will. A

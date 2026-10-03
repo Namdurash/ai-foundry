@@ -109,7 +109,7 @@ verify() {
   # cutting. A run that stopped after tagging leaves exactly this state, and the
   # run that finishes it passes through its own `make check` first — which,
   # told nothing, failed it, so the one command that could finish a release
-  # could not (DEFECTS-6 #7). That version only, and only inside that run.
+  # could not (DEFECTS.md 6.7). That version only, and only inside that run.
   if [ "${AIF_RELEASING:-}" = "$v" ]; then
     printf 'release: v%s is tagged and being released — the tap is the last step of this run\n' "$v"
     return 0
@@ -235,7 +235,7 @@ cut_release() {
   # Pushed whether this run made the commit or an earlier one did. A run that
   # stopped between the two left a tap that serves the release on this machine
   # and nowhere else, and --verify, which reads this copy, calls that green
-  # (DEFECTS-6 #8). The remote's answer says which of the two it was.
+  # (DEFECTS.md 6.8). The remote's answer says which of the two it was.
   pushed="$(git -C "$tap" push --porcelain origin HEAD)" || {
     [ -z "$pushed" ] || printf '%s\n' "$pushed" >&2
     die "the formula is committed but NOT pushed — re-run: make release V=$version"

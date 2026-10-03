@@ -134,6 +134,25 @@ Write `tasks/<ID>/ticket.md` in the format below. The criteria are the contract:
 - **Every criterion names its surface**, and every surface is in `surfaces`.
 - **Prefer fewer, sharper criteria.** A criterion that is short and falsifiable beats
   a thorough one nobody can test.
+- **Would today's tree already pass it?** Ask that of every criterion before you write
+  it down, with the code in front of you. The plan station asks the same question
+  first thing, and a criterion the tree already satisfies is a spec stop: one opus
+  run spent, the ticket back to you, and on a loop two such tickets in a row stop
+  the loop having built nothing. The shape that slips through is the **guard written
+  as its own criterion** — an invariant about what must *not* happen: "still",
+  "only", "absent", "no block while idle", a count that expects `0` or `1`, a value
+  the code already returns. The tree passes it today because the new behaviour does
+  not exist yet, and a test of it can never be red. The way out is the **fold**: pair
+  the guard with the change in one criterion, so one literal carries both sides —
+  not "no block while `idle`" but "present before and after `idle` → `connected`",
+  `expect: "false → true"`; not "one request at 59 s" but "calls at 59 s and at
+  90 s", `expect: "1 → 2"`. A guard folded that way is red now and stays a guard.
+- **On a Trello board the ticket is the card's description, and Trello holds that to
+  16 384 characters** (one per letter, two per emoji — `aif _ready` counts it and
+  refuses a longer ticket on a Trello project). The rich tickets are the ones that
+  reach it: fourteen criteria with their decided answers in Ukrainian sit near the
+  cap, and a rework then has to cut before it can add. Keep the narrative short and
+  the decided answers one clause each.
 - **Every product question you could not answer goes in `open`, with a proposed
   default.** Not in the narrative, not in your head — in the list, where the next step
   will show it.
@@ -166,8 +185,11 @@ questions**, each with its default:
 - They answer some, or say "defaults", or answer none. Every question moves to
   `decided` — `"by": "human"` with their answer, or `"by": "default"` with yours.
   Nothing stays in `open`, and nothing is dropped.
-- Fix anything else it complains about (a missing literal, a surface not listed) —
-  those are yours, not the user's.
+- Fix anything else it complains about (a missing literal, a surface not listed, a
+  ticket too long for its Trello card) — those are yours, not the user's.
+- It cannot ask the one question the plan station will: does the tree already pass
+  a criterion? Read your criteria once more against the code before you run it, for
+  the guard shapes named in step 3.
 - Run it again, on each ticket. When it passes, it prints what was **decided by
   default**; read that line out, per ticket, because it is the list of things the user
   did not decide.

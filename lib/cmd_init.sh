@@ -268,7 +268,7 @@ aif_cmd_init() {
       # The row the real run would write, from the source: the retire pass
       # below reads a manifest path missing from this list as a file the set
       # no longer ships, and a dry run that wrote no rows for its updates
-      # announced the retirement of every one of them (docs/DEFECTS-8.md #5).
+      # announced the retirement of every one of them (docs/DEFECTS.md 8.5).
       digest="$(aif_sha256 "$src")"
     fi
     printf '%s\t%s\n' "$rel" "$digest" >>"$files_tsv"
@@ -305,7 +305,7 @@ EOF
     [ "$prev_path" = "$AIF_PROFILE_STATE" ] && continue
     # Still shipped by this set? Then the install loop above dealt with it.
     # No -q: a grep that leaves at the first match hands cut SIGPIPE, and
-    # under pipefail that reads as "not listed" (docs/DEFECTS-5.md #3).
+    # under pipefail that reads as "not listed" (docs/DEFECTS.md 5.3).
     cut -f1 "$files_tsv" 2>/dev/null | grep -xF "$prev_path" >/dev/null && continue
     [ -f "$root/$prev_path" ] || continue
 
@@ -355,7 +355,7 @@ EOF
   # registration its first init wrote through every later one. A guard whose
   # matcher never gained Bash ran for ten days of inits with its commit rule
   # dead, and from 0.11.0 without the tests station's verify loop
-  # (docs/DEFECTS-8.md #2). What is reported is what moved: register, refresh
+  # (docs/DEFECTS.md 8.2). What is reported is what moved: register, refresh
   # (with the matcher it had), or nothing; and the user's hooks kept, by count.
   local fragment settings_dest pre_existed prev_pre event verb theirs was
   settings_dest="$root/.claude/settings.json"
@@ -467,7 +467,7 @@ EOF
   # project.json is the project's and is never rewritten here. What aif has
   # changed its mind about since the file was written — which failure classes
   # are a legitimate red, where a type-check binds, the caps — is reported,
-  # and `aif project upgrade` brings exactly that forward (docs/DEFECTS-8.md #1).
+  # and `aif project upgrade` brings exactly that forward (docs/DEFECTS.md 8.1).
   local pj drift_n
   pj="$(aif_project_config "$root")"
   if [ -f "$pj" ]; then

@@ -14,11 +14,11 @@
 *.log
 
 # docs/ is working material — thoughts in progress, processed in-session, not
-# a public commitment — except what is named below: the defect logs, which are
+# a public commitment — except what is named below: the defect log, one file,
 # tracked deliberately, and the cycle drawing, which scripts/cycle.sh generates
 # from the code and make check verifies. (`docs/*`, not `docs/`: git cannot
 # re-include a file whose directory is excluded.)
 docs/*
-!docs/DEFECTS-*.md
+!docs/DEFECTS.md
 !docs/CYCLE.md
 !docs/CYCLE.html

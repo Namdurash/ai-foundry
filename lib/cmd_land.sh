@@ -33,7 +33,7 @@
 # A merge that moves a manifest or a lockfile changes what the suite needs
 # installed, and what is installed here is not in the merge: the suite judged
 # it against node_modules from before it, went red over a package it lacked,
-# and undid a ticket with nothing wrong in it (docs/DEFECTS-6.md #3).
+# and undid a ticket with nothing wrong in it (docs/DEFECTS.md 6.3).
 # Installing is not done unasked. "prepare" was written to provision a fresh
 # worktree; here it runs in the developer's own checkout, where `npm ci`
 # deletes node_modules before it installs, a `cp .env.example .env` beside it

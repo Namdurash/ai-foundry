@@ -398,7 +398,7 @@ aif_guide_unwritten() {
 # failure classes count as a legitimate red (the contract made `TypeError` the
 # test's own defect), which phases a type-check belongs to, which limits the
 # new stage runs under. An upgraded project kept the old answers in silence
-# and its gates were laxer than its stations were told (docs/DEFECTS-8.md #1,
+# and its gates were laxer than its stations were told (docs/DEFECTS.md 8.1,
 # #4). So the drift is reported — by `aif project check`, `aif doctor` and the
 # worker's preflight — and `aif project upgrade` brings exactly those fields
 # forward, leaving the project's own as they are.

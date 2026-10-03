@@ -204,7 +204,7 @@ aif_gitignore_ensure() {
 # FIRST init wrote through every later one. 0.5.3 added Bash to the guard's
 # matcher; a project initialised before it never got it, the guard never saw a
 # shell command, and from 0.11.0 the tests station ran without its verify loop
-# (docs/DEFECTS-8.md #2). Appending ours beside theirs needs no array merge at
+# (docs/DEFECTS.md 8.2). Appending ours beside theirs needs no array merge at
 # all: hook entries for one event are independent.
 #
 # Validate before mv, so a bad merge leaves the original intact.

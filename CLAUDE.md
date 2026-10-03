@@ -27,7 +27,7 @@ make release V=0.5.1
 - `make check` ends with `scripts/release.sh --verify`: silent while a version
   is unreleased, failing as soon as a tag exists that the tap does not serve —
   except the version `make release` is cutting, named in `AIF_RELEASING`, or
-  the re-run could never get past its own check (`docs/DEFECTS-6.md` #7).
+  the re-run could never get past its own check (`docs/DEFECTS.md` 6.7).
 - Both version markers move together: `AIF_VERSION` in `bin/aif` and
   `SET_VERSION` in `sets/claude/set.meta`. The formula's own test asserts they
   agree, because a release that bumps only the CLI ships last release's stations
@@ -49,16 +49,18 @@ make release V=0.5.1
   failure class retired, a check's phase, a cap — reaches an existing project
   only through `aif project upgrade`. A retired pattern goes in the template's
   `failure_classes.retired`, so `aif project check` can name it
-  (`docs/DEFECTS-8.md` #1).
+  (`docs/DEFECTS.md` 8.1).
 - **A runner is two files.** `sets/claude/project.templates/<r>.json` and
   `sets/claude/stacks/<r>.md` ship together — the fragment is what the worker
   appends to the plan and tests stations for a project of that `test.kind` —
   and `scripts/check-set.sh` fails on one without the other.
-- **`docs/` is gitignored** except the defect logs, tracked deliberately, and
-  `docs/CYCLE.md` + `docs/CYCLE.html`, which `make cycle` generates from the code
-  — never edit them by hand; `make check` fails while they are stale.
+- **`docs/` is gitignored** except `docs/DEFECTS.md` — the one defect log,
+  tracked deliberately: an open defect in full, a closed one in a line, ids
+  `N.M` that never move because code comments cite them — and `docs/CYCLE.md`
+  + `docs/CYCLE.html`, which `make cycle` generates from the code — never edit
+  them by hand; `make check` fails while they are stale.
   `docs/FINDINGS.md` is where a probed, non-obvious fact goes so nobody
   re-derives it.
 - **Traps are per-process.** Arm one with `aif_trap_arm` and restore it with
   `aif_trap_restore`; a bare `trap -` in a helper takes the caller's handler
-  with it (`docs/DEFECTS-3.md` #1).
+  with it (`docs/DEFECTS.md` 3.1).

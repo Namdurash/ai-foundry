@@ -125,7 +125,7 @@ aif_cmd_gate() {
       # environment, or a defect no loop in the stage reaches. This line used
       # to name the first of those for all of them, and it headed a report
       # that blamed a green repository for a red its new tests had caused
-      # (docs/DEFECTS-6.md #1). The gate's own words below say which it is.
+      # (docs/DEFECTS.md 6.1). The gate's own words below say which it is.
       aif_err "$gate could not render a verdict on the $station station's work — not a rejection; the gate says why:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
       return 3
@@ -159,7 +159,7 @@ aif_cmd_gate() {
 
     # sed -n 1p, not head -1: the first line of a gate's output goes into an
     # assignment, whose status under set -e is the pipeline's — and a head that
-    # leaves early hands the producer SIGPIPE (docs/DEFECTS-5.md #3).
+    # leaves early hands the producer SIGPIPE (docs/DEFECTS.md 5.3).
     records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
 
@@ -357,7 +357,7 @@ aif_cmd_commit() {
   # Loud, both steps. This used to swallow both and print "committed" either
   # way; scope's baseline and green's revert both lean on the commit having
   # happened, and a tool failure here was billed to the human as the next
-  # station's fault (docs/DEFECTS-3.md #7).
+  # station's fault (docs/DEFECTS.md 3.7).
   local out
   out="$(git -C "$root" add -A 2>&1)" ||
     aif_die "git add failed in ${root} — $(printf '%s' "$out" | tail -1)"

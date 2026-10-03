@@ -245,7 +245,7 @@ EOF
 # the station installed a package, the lock stayed as it was, and what landed
 # in node_modules was whatever npm resolved that afternoon — an incompatible
 # pair, twelve pre-existing tests red, three implement attempts at something
-# none of them could reach (docs/DEFECTS-6.md #3). A lockfile without its
+# none of them could reach (docs/DEFECTS.md 6.3). A lockfile without its
 # manifest is a dependency moved by hand, with nothing saying why.
 impl_paths="$(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []))[]? // empty')"
 while IFS= read -r p; do
@@ -345,7 +345,7 @@ aif_g_report "$(printf '%s\n%s' "$violations" "${fs# }" | grep -v '^$' || true)"
 # calls a third-party API the way the station remembered it rather than the
 # way it is does not compile, and the rejection carries the compiler's lines.
 # This is the gate that would have caught the two decisions that asserted a
-# library's shape from memory (docs/DEFECTS-4.md).
+# library's shape from memory (docs/DEFECTS.md (log 4)).
 mkdir -p "$root/.aif/tmp"
 check_viol="$(aif_g_checks_run "$project" "$root" "contract" "$root/.aif/tmp/checks-contract.json")"
 aif_g_report "$check_viol" "contract"

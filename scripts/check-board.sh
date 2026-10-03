@@ -21,7 +21,7 @@
 #      analyst did not write is refused at pull; comment, label, status, show;
 #      a comment is held to Trello's 16384 characters counted as Trello counts
 #      them — a Ukrainian one that fits by characters is posted whole, a longer
-#      one is cut on a letter, saying where the whole text is (DEFECTS-10 #1)
+#      one is cut on a letter, saying where the whole text is (DEFECTS.md 10.1)
 #   4  doctor reports per role what is missing, and stops saying "not ready"
 #      the moment the token is set
 #   5  the worker pulls the next Ready card, moves it through In Progress to
@@ -273,7 +273,7 @@ eq "pull initialises the ledger" "$(test -f tasks/AIF-1/ledger.json && echo yes)
 eq "the comment reached the server" "$(mock | jq -r '[.comments[][]] | .[0].data.text')" "the export must be signed"
 eq "show lists it" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].text')" "the export must be signed"
 
-# A comment in Ukrainian, two bytes a letter (docs/DEFECTS-10.md #1). The cut
+# A comment in Ukrainian, two bytes a letter (docs/DEFECTS.md 10.1). The cut
 # counted bytes: anything over 16000 was cut at byte 15800 — through a letter,
 # though it was far under Trello's 16384 characters — and Trello, as the mock
 # does now, refused the malformed text with a 400. Now: whole when it fits by
@@ -323,18 +323,49 @@ curl -s -X POST "$AIF_TRELLO_API/cards" -H 'Authorization: OAuth oauth_consumer_
   --data-urlencode "idList=$(jq -r '.board.lists.ready' .aif/project.json)" \
   --data-urlencode "name=AIF-9 — written by hand" --data-urlencode "desc=just a sentence" >/dev/null
 eq "a card the analyst did not write is refused at pull" "$("$AIF" board pull AIF-9 2>&1 | grep -c 'no aif:meta')" "1"
+# A ticket over Trello's description limit (docs/DEFECTS.md 10.2). On a Trello
+# board the ticket IS the card's description, and Trello holds that to 16384
+# characters counted as JavaScript counts them; one over it passed the ready
+# gate and was refused by the board with a bare 400. Now the ready gate says so
+# on a Trello project, with the count, and create refuses before sending.
+ticket_for AIF-8
+python3 - tasks/AIF-8/ticket.md <<'PY3'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+open(p, "w", encoding="utf-8").write(s + "Довгий опис потреби, рядок за рядком, щоб картка не вмістила тікет цілком.\n" * 300)
+PY3
+rc=0
+"$AIF" _ready AIF-8 >"$OUT/ready8.out" 2>&1 || rc=$?
+eq "a ticket over 16384 characters fails the ready gate on a Trello project, with the count and what to cut" \
+  "$rc,$(grep -c 'characters, and a Trello card.s description holds 16384' "$OUT/ready8.out"),$(grep -c 'to go, counted as Trello counts' "$OUT/ready8.out")" "1,1,1"
+rc=0
+"$AIF" board create tasks/AIF-8/ticket.md --column ready >"$OUT/create8.out" 2>&1 || rc=$?
+eq "create refuses it before sending, with the count and the limit; no card was made" \
+  "$rc,$(grep -c 'description holds 16384' "$OUT/create8.out"),$(mock | jq '[.cards[] | select(.name | startswith("AIF-8 "))] | length')" "1,1,0"
+eq "a ticket under the limit still passes the gate here" "$("$AIF" _ready AIF-1 >/dev/null 2>&1; echo $?)" "0"
+
 # A card whose description outgrows a pipe buffer. The finder used to pipe a
 # pretty-printed jq into `grep -q .`: grep left at the opening brace, jq took
 # SIGPIPE on the rest of the description, pipefail made that 141, and the card
 # read as absent — only for tickets long enough to be worth building, and only
 # for show/move/comment/pull, so status went on listing a card the worker could
-# not find (docs/DEFECTS-5.md #1). 76 KiB of ticket here, past any buffer.
+# not find (docs/DEFECTS.md 5.1). 76 KiB of ticket here, past any buffer — a
+# description no real board would hold since the limit above, so the mock's
+# limit is lifted for this one card, and aif's own refusal stepped around:
+# the card is made the way a hand-written one is, and what is checked is the
+# finder reading it back.
 ticket_for AIF-5
 { i=0; while [ "$i" -lt 900 ]; do
     printf 'Line %04d of a long ticket body, padding the description well past the pipe buffer.\n' "$i"
     i=$((i + 1))
   done; } >>tasks/AIF-5/ticket.md
-eq "a 76 KiB ticket makes a card" "$("$AIF" board create tasks/AIF-5/ticket.md --column ready 2>&1 | grep -c '^created AIF-5')" "1"
+curl -s "http://127.0.0.1:$PORT/_desc/limit/off" >/dev/null
+curl -s -X POST "$AIF_TRELLO_API/cards" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+  --data-urlencode "idList=$(jq -r '.board.lists.ready' .aif/project.json)" \
+  --data-urlencode "name=AIF-5 — one-command user export" --data-urlencode "desc@tasks/AIF-5/ticket.md" >/dev/null
+curl -s "http://127.0.0.1:$PORT/_desc/limit/on" >/dev/null
+eq "a 76 KiB card exists on the mock" "$(mock | jq '[.cards[] | select(.name | startswith("AIF-5 "))] | length')" "1"
 eq "with the whole description on it" \
   "$(mock | jq -r '[.cards[] | select(.name | startswith("AIF-5")) | .desc | length] | .[0] > 65536')" "true"
 eq "show finds it" "$("$AIF" board show AIF-5 --json | jq -r .ticket)" "AIF-5"
@@ -370,7 +401,7 @@ mock | jq -j '.cards[] | select(.name | startswith("AIF-1")) | .desc' >"$OUT/car
 eq "the run built the card's current text, byte for byte" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 "$OUT/card-now.md" | cut -d' ' -f1)"
 
-# A board that refuses the comment (docs/DEFECTS-10.md #1): "report posted" was
+# A board that refuses the comment (docs/DEFECTS.md 10.1): "report posted" was
 # printed after the move, under the error that said the comment had been
 # refused, with a command that could not post it either. Now the worker says
 # the report is not on the card, and the command it prints works once the

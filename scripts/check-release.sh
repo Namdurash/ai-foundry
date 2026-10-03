@@ -6,7 +6,7 @@
 # A release is two halves that cannot happen at once — the tag, then the tap
 # pointed at the tarball GitHub builds from it — and scripts/release.sh
 # promises that a run which stops in between is finished by running it again
-# with the same version. Cutting 0.10.0 it was not (docs/DEFECTS-6.md #7), and
+# with the same version. Cutting 0.10.0 it was not (docs/DEFECTS.md 6.7), and
 # nothing short of GitHub failing a push had ever exercised the promise. Here
 # it is exercised against stand-ins:
 #

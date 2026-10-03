@@ -197,7 +197,7 @@ mkdir -p "$root/$(dirname "$report_path")"
 rm -f "$root/$report_path"
 
 # The suite's raw output is scratch, and it lives inside tasks/<ID>/ — which the
-# worker commits. Every early exit below used to leak it there (docs/DEFECTS-3.md
+# worker commits. Every early exit below used to leak it there (docs/DEFECTS.md (log 3)
 # #14): the removals were written on the pass paths only, and a rejection is the
 # common case. A gate is its own process, so a plain EXIT trap is the whole fix.
 # The copy the baseline runs in (below) goes the same way.
@@ -219,7 +219,7 @@ suite_rc=0
 # a fresh worktree, an uninstalled reporter. Its exit code says nothing about
 # the tests, because no test ran — and coarse red admitted it, froze an empty
 # `covering`, and green then passed on a run that had established nothing
-# (docs/DEFECTS-4.md #11). That case is a 3. Coarse mode is for a report that
+# (docs/DEFECTS.md 4.11). That case is a 3. Coarse mode is for a report that
 # exists and cannot be read per test.
 mode="per-test"
 mode_why=""
@@ -274,7 +274,7 @@ if [ "$mode" = "per-test" ]; then
   # runs `tsc --noEmit` over the whole tree, turned red by a new test importing
   # `./utils` — which the plan's files.create had not produced yet, exactly as a
   # red-first test in TypeScript must. Two tickets in a row stopped here with
-  # advice that was false for them (docs/DEFECTS-6.md #1).
+  # advice that was false for them (docs/DEFECTS.md 6.1).
   #
   # So a failure outside the declared files is measured against a BASELINE:
   # the suite once more, in a copy of the tree as it stood when the tests
@@ -445,7 +445,7 @@ else
   # "passed" and the absence of "fail|error": a red pytest run prints "failed"
   # so it mostly held, but a suite whose output said "ok" and nothing else read
   # as green, and one whose log mentioned "error" anywhere read as red
-  # (docs/DEFECTS-3.md #5). The exit code is the one signal every runner agrees
+  # (docs/DEFECTS.md 3.5). The exit code is the one signal every runner agrees
   # on, and suite_rc has held it since the report cross-check arrived.
   if [ "$suite_rc" -eq 0 ]; then
     aif_g_reject "the suite exited 0 — no observable red (coarse mode: $mode_why)"
@@ -615,7 +615,7 @@ fi
 # clean here — every symbol a test touches exists, typed — so a type error at
 # red IS the test's, and it comes back to the station that wrote it. A project
 # without a contract keeps `legitimate_at_red` for what the missing
-# implementation causes (docs/DEFECTS-6.md #2).
+# implementation causes (docs/DEFECTS.md 6.2).
 mkdir -p "$root/.aif/tmp"
 check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json" "$test_files")"
 # A check that failed without naming one of the test files is not the tests

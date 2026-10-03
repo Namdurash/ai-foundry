@@ -67,7 +67,7 @@ aif_ledger_append() {
   # by then the local is out of scope. The caller's handler is appended rather
   # than displaced: a signal arriving mid-write must still do whatever the
   # command had arranged for it, and `trap -` on the way out used to take that
-  # handler with it (docs/DEFECTS-3.md #1). One trap per signal, because the
+  # handler with it (docs/DEFECTS.md 3.1). One trap per signal, because the
   # handler is told which one fired (aif_trap_arm).
   for sig in EXIT INT TERM; do
     # shellcheck disable=SC2064 # expanding now is the point, see above

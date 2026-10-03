@@ -12,12 +12,15 @@ One board, "b1", pre-seeded with two lists ("Backlog", "Done") so `aif board
 init --create-lists` has both a name to map and four lists to create.
 GET /_state dumps everything for the check's assertions; GET
 /_fail/comments/on and /_fail/comments/off make every comment fail, the way a
-board that stops answering does, and back.
+board that stops answering does, and back; GET /_desc/limit/off and /on lift
+and restore Trello's 16384-character limit on a card's description, for the
+one check that needs a card no real board would hold (a 76 KiB description,
+past a pipe buffer, docs/DEFECTS.md 5.1).
 
 Comments are held to what Trello holds them to: 1 to 16384 characters, counted
 as JavaScript counts them (UTF-16 code units), and text that is not UTF-8 is
 refused with a 400 — what the project saw a comment cut through a Cyrillic
-letter get (docs/DEFECTS-10.md #1).
+letter get (docs/DEFECTS.md 10.1).
 """
 import json
 import re
@@ -77,6 +80,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/_fail/comments/on", "/_fail/comments/off"):
             STATE["fail_comments"] = path.endswith("/on")
             return self._send(200, {"fail_comments": STATE["fail_comments"]})
+        if path in ("/_desc/limit/on", "/_desc/limit/off"):
+            STATE["desc_limit"] = path.endswith("/on")
+            return self._send(200, {"desc_limit": STATE["desc_limit"]})
         if not self._auth():
             return None
         p = self._params()
@@ -107,6 +113,11 @@ class Handler(BaseHTTPRequestHandler):
             l = STATE["lists"].get(m.group(1))
             return self._send(200, l) if l else self._send(404, {"error": "no list"})
         if path == "/1/cards" and method == "POST":
+            # A description over Trello's 16384 characters is refused with a
+            # 400, as the board refused a reworked ticket (docs/DEFECTS.md
+            # 10.2). aif counts before sending; this is what it is counting for.
+            if STATE.get("desc_limit", True) and len(p.get("desc", "").encode("utf-16-le")) // 2 > 16384:
+                return self._send(400, {"error": "invalid value for desc"})
             cid = new_id("c")
             STATE["cards"][cid] = {"id": cid, "name": p.get("name", ""), "desc": p.get("desc", ""),
                                    "idList": p.get("idList", ""), "pos": self._pos(p.get("pos", "bottom"), p.get("idList", "")),
@@ -150,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self._send(200, self._card(c))
             if method == "PUT":
+                if STATE.get("desc_limit", True) and len(p.get("desc", "").encode("utf-16-le")) // 2 > 16384:
+                    return self._send(400, {"error": "invalid value for desc"})
                 for k in ("name", "desc", "idList"):
                     if k in p:
                         c[k] = p[k]

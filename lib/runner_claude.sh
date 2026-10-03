@@ -94,7 +94,7 @@ aif_runner_claude_result_ok() {
 aif_runner_claude_result_error() {
   # In jq, not `| head -1`: .result is the station's whole final message, the
   # caller assigns this under set -e, and a head that leaves early would end
-  # the worker right after "ended with an error" (docs/DEFECTS-5.md #3).
+  # the worker right after "ended with an error" (docs/DEFECTS.md 5.3).
   jq -r '(.result // "no result field") | split("\n")[0]' "$1" 2>/dev/null
 }
 

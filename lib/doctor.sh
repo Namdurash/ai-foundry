@@ -81,7 +81,7 @@ _aif_doctor_project() {
     else
       # Valid and current are different answers. A project.json from an older
       # template validates and still tells verify-red that a TypeError is a
-      # legitimate red; the gates read it as it is (docs/DEFECTS-8.md #1).
+      # legitimate red; the gates read it as it is (docs/DEFECTS.md 8.1).
       local drift_n
       drift_n="$(aif_project_drift "$config" | grep -c . || true)"
       if [ "${drift_n:-0}" -gt 0 ]; then
@@ -124,6 +124,26 @@ _aif_doctor_project() {
     else
       printf '  %s %-14s %sno fragment for %s at %s/%s.md — the stations work from their general rules (aif init installs the ones the set ships)%s\n' \
         "$(aif_no)" "stack" "$AIF_C_DIM" "$kind" "$AIF_STACKS_DIR" "$kind" "$AIF_C_RESET"
+    fi
+  fi
+
+  # Worktrees cut under an older set. Nothing to fix by hand — the worker
+  # brings a branch up to the checkout's set before a run (docs/DEFECTS.md
+  # 9.1) — but a reader of this table should see which branches still carry
+  # the old one, because that is what a reviewer looking at those branches
+  # sees too.
+  local wt_dir wtm root_set behind=""
+  root_set="$(jq -r '.set_version // ""' "$root/.aif/manifest.json" 2>/dev/null)"
+  if [ -n "$root_set" ] && [ -d "$root/$AIF_WORK_WORKTREES" ]; then
+    for wt_dir in "$root/$AIF_WORK_WORKTREES"/*/; do
+      [ -d "$wt_dir" ] || continue
+      wtm="$(jq -r '.set_version // "none"' "$wt_dir/.aif/manifest.json" 2>/dev/null || printf 'none')"
+      [ "$wtm" != "$root_set" ] || continue
+      behind="$behind, $(basename "$wt_dir") ($wtm)"
+    done
+    if [ -n "$behind" ]; then
+      printf '  %s %-14s %son an older set: %s — brought up to %s at their next aif work%s\n' \
+        "$(aif_no)" "worktrees" "$AIF_C_DIM" "${behind#, }" "$root_set" "$AIF_C_RESET"
     fi
   fi
 
@@ -252,13 +272,13 @@ aif_doctor_probe() {
   # No -q on the piped grep: the suite's output can be far larger than a pipe
   # buffer, and a grep that leaves at the first match hands printf SIGPIPE —
   # which `pipefail` turns into "not found" for exactly the suites large enough
-  # to matter (docs/DEFECTS-5.md #3). Without -q grep reads to the end.
+  # to matter (docs/DEFECTS.md 5.3). Without -q grep reads to the end.
   #
   # The probed root's own path is taken out first. The worker probes INSIDE a
   # worktree, whose every absolute path runs through .aif/worktrees/ — so a
   # red test whose stack trace names its own file read as "this runner
   # collects the worker's checkouts", and the run was refused for a collision
-  # that was not there (docs/DEFECTS-6.md #5).
+  # that was not there (docs/DEFECTS.md 6.5).
   if printf '%s' "$out" | _aif_doctor_unroot "$root" | grep "$AIF_WORK_WORKTREES/" >/dev/null ||
     { [ -f "$root/$report_path" ] &&
       _aif_doctor_unroot "$root" <"$root/$report_path" | grep "$AIF_WORK_WORKTREES/" >/dev/null; }; then
@@ -466,7 +486,7 @@ _aif_doctor_caps() {
     # Read before anything is probed: a hook that is not registered, or is
     # registered for the write tools only, cannot deny a command whatever a
     # probe says. A project initialised before 0.5.3 kept a matcher without
-    # Bash through every later init (docs/DEFECTS-8.md #2).
+    # Bash through every later init (docs/DEFECTS.md 8.2).
     s_ok=false
     s_d="the guard hook is not registered in .claude/settings.json — aif init registers it"
   elif ! printf '%s' "$s_matcher" | tr '|' '\n' | grep -qx Bash; then
@@ -642,7 +662,7 @@ aif_doctor() {
     # Not a role's requirement — the worker runs without it, slower — and so
     # not in the table above; and until now rendered only in --json, so a
     # guard that never saw a command was invisible to anyone reading this
-    # (docs/DEFECTS-8.md #2).
+    # (docs/DEFECTS.md 8.2).
     printf '\n%sStations%s  %swhat the worker hands its stations%s\n' \
       "$AIF_C_BOLD" "$AIF_C_RESET" "$AIF_C_DIM" "$AIF_C_RESET"
     printf '%s' "$caps" | jq -r '

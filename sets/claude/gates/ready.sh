@@ -203,6 +203,20 @@ if [ "${body_lines:-0}" -eq 0 ]; then
   violations="$(printf '%s\n%s' "$violations" "the narrative is empty — say the need in the human's words, not only in criteria")"
 fi
 
+# On a Trello board the ticket IS the card's description, and Trello holds a
+# description to 16384 characters, counted as JavaScript counts them (one for
+# a letter of Latin or Cyrillic, two for an emoji). A ticket over that passed
+# this gate and was refused by the board with a bare 400, after the analyst
+# had finished with it (docs/DEFECTS.md 10.2). Said here, while the text can
+# still be cut: `wc -c` would say bytes, nearly twice the count for Ukrainian.
+if [ "$(jq -r '.board.kind // "local"' "$project" 2>/dev/null)" = "trello" ]; then
+  desc_max=16384
+  desc_len="$(jq -Rs '[explode[] | if . > 65535 then 2 else 1 end] | add // 0' "$ticket" 2>/dev/null || printf 0)"
+  if [ "${desc_len:-0}" -gt "$desc_max" ]; then
+    violations="$(printf '%s\n%s' "$violations" "the ticket is $desc_len characters, and a Trello card's description holds $desc_max — the board would refuse it; cut the narrative first, then the longest decided answers ($((desc_len - desc_max)) to go, counted as Trello counts: one per letter, two per emoji)")"
+  fi
+fi
+
 all="$(printf '%s' "$violations" | grep -v '^$' || true)"
 aif_g_report "$all" "ticket.md"
 

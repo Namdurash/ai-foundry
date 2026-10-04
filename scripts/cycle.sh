@@ -204,6 +204,8 @@ done
 rules_max="$(jq -r '.limits.ticket_rules_max // "?"' "$TEMPLATE")"
 grep -q 'ticket_rules_max' "$SET/gates/ready.sh" || die "ready.sh no longer caps a ticket by its rules — the Definition of Ready below draws that cap"
 grep -q '"size"' "$SET/gates/ready.sh" || die "ready.sh no longer lets the human keep a ticket whole — the Definition of Ready below says it does"
+grep -q 'aif rules <words>' "$SET/skills/aif-ba/SKILL.md" || die "the analyst no longer reads the map before writing — the analyst below is drawn against it"
+grep -q '_aif_rules_usage' "$ROOT/lib/cmd_rules.sh" || die "aif rules is gone — the analyst below is drawn against it"
 repairs_max="$(jq -r '.limits.repairs_max // "?"' "$TEMPLATE")"
 replans_max="$(jq -r '.limits.replans_max // "?"' "$TEMPLATE")"
 grep -q '_aif_work_attempts_max' "$ROOT/lib/cmd_work.sh" || die "lib/cmd_work.sh no longer reads a station's own max_attempts — the attempts column below is drawn from it"
@@ -231,7 +233,7 @@ flowchart TB
   subgraph HUMAN["Human time · no gates"]
     PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
-    BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
+    BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most $rules_max rules — over that, only the human keeps it whole"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]

@@ -104,67 +104,39 @@ and the stop reached the worker by a route not understood). Left as it was.
 - Whatever is chosen is measured the way this was: the handler and the tick
   traced, the two interrupts sent at the harness's old alignment, many trials.
 
-### 12.2 The analyst sees `main` and nothing in flight, so a ticket can restate a rule another ticket owns — read; the case probed
+### 12.3 A ticket that changes another's rule: the older tests left in a declared file read as green at freeze — read; the worker's path not yet observed
 
-Found 2026-10-04 with the user, reading what `/aif-ba` consults. Step 2 of the
-skill reads the repository — Grep and Glob over the checkout of `main` — and
-`tasks/` only for the next id and a request's Status. A ticket written and not
-built, or built and waiting in Review, is invisible to it: its rules are in
-`tasks/<ID>/ticket.md`, its code on `aif/<ID>` or nowhere yet.
+Found 2026-10-04 closing 12.2, reading verify-red. A rule with `changes`
+makes the plan declare the older ticket's test file in `files.tests`, so the
+tests station can remove or rewrite the tests of the rule it replaces
+(`aif-plan.md`, `aif-tests.md`). verify-red counts every test in a declared
+file as new: the ones this ticket rewrote are red, as they should be — and
+every other test in that file, untouched and green, is recorded green at
+freeze, kept out of covering, and re-emitted on the closing checklist as a
+criterion this run never proved red. A reviewer would read the older ticket's
+settled tests as this run's doubts.
 
-The case is the next one in `opes`. OPES-69 (the daily allowance on Home) is in
-Review; `home-daily-allowance`, the testID its criteria name, is on
-`aif/OPES-69` (`DailyAllowanceSection.tsx`) and nowhere under `src/` on `main`.
-`requests/daily-allowance-from-a-goal.md`, slice 1, gives the allowance as what
-is left for the month over the days to its end, today included — OPES-69's
-AC-004 and AC-005 — and changes the remainder OPES-69 builds (income typed by
-the user, minus the goal). Cut today, the analyst would write those rules again,
-perhaps differently, and would not say that it changes OPES-69's.
+And nothing has run the path yet. The harness's stub stations do not read
+`changes`; no live ticket has carried it. OPES-75 (Ready in `opes`) does the
+same thing through prose — `decided` says OPES-52's English-text tests are
+updated in it — and its run is the first observation of a ticket moving
+another ticket's tests.
 
-The same blind spot inside one cut: ticket 2 of a request is written against
-`main`, not against ticket 1, so it either restates what ticket 1 brings or
-names code ticket 1 has not decided yet. And a ticket that changes a rule a
-built ticket owns says so only when someone notices: OPES-75 updates OPES-52's
-English-text tests because the analyst saw them and wrote it into `decided`.
+What a fix has to decide: whether verify-red tells a test that sat in the
+declared file at the dispatch base, unchanged and green, from one this ticket
+wrote — it already runs a baseline copy for failures outside the declared
+files (6.1), and the same copy answers this — and keeps such a test off the
+checklist; and whether the stub stations learn `changes`, so the harness holds
+the path offline instead of a live run.
 
-What a fix has to decide: what the analyst's model of "what exists and what is
-coming" is made of — the code, the tickets' rules, or both, and which wins
-where they disagree — and how a ticket says that it changes a rule another
-ticket owns.
+#### Directions
 
-#### Directions — agreed with the user, 2026-10-04; after 12.1, which they need
-
-- **Each source for what only it knows.** The code, read live the way a
-  developer in the room would read it, for what exists, the conventions and
-  the size of a change; the rules of built tickets for what was meant, which
-  the code does not say; the rules of tickets in flight for what is coming.
-  An analyst without the code — the shape before AI — fails here on its own:
-  the worker asks nobody, so the developer's answers have to come from
-  somewhere. BMAD retired its generated codebase documents in v6.11.0
-  (2026-08-09) for the same reason: behaviour is recovered from the code, and
-  only intent is worth storing.
-- **A ticket is a delta.** Each rule is new; or changes or removes a named rule
-  of another ticket (`"changes": "OPES-69 R-1"`, a ticket from before rules
-  naming its criteria), restated whole; or is left out because another ticket
-  owns it, which then goes in `depends_on`. The ready gate checks that a named
-  ticket and rule exist under `tasks/`. A change carries its impact to the
-  worker: the plan knows which older tests must move, where today only an
-  analyst who happens to notice says so (OPES-75, OPES-52's English-text
-  tests).
-- **A cut allocates rules.** The request's rules are written first and checked
-  against the map, then given out to tickets — each rule in exactly one — and
-  the cut is shown as rules per ticket. Ticket 2 is written against ticket 1's
-  rules, not its code, which does not exist yet.
-- **The map is computed, not kept:** `aif rules <word>` lists every ticket's
-  rules with the ticket's state (built, in flight), less the rules a later
-  ticket changed — read from `tasks/`, so it cannot drift from the tickets.
-  Collisions are caught when a ticket is written; OpenSpec, the nearest prior
-  art (specs by domain, deltas ADDED / MODIFIED / REMOVED, the requirement as
-  the unit of conflict), catches two changes to one requirement only when they
-  are merged.
-- **Unknown until observed:** the worker has never built a ticket that changes
-  another ticket's tests. OPES-75 (Ready) is the first; its run says whether
-  the plan or verify-red needs a fix for it.
+- Watch OPES-75's run: what its plan declares, what the tests station does to
+  OPES-52's tests, and what verify-red and the report say about the ones it
+  left alone.
+- Then the baseline in verify-red for declared files, and a scenario: a ticket
+  whose rule changes an older one's, built through the stubs with the older
+  test removed, the older ticket's other tests off the checklist.
 
 ---
 
@@ -263,7 +235,8 @@ hold them.
 ### Log 12 — 0.12.1, the analyst on `opes` (2026-10-04)
 
 - **12.1** The analyst cut a feature into fragments: the size cap counted examples, not rules — observed. A ticket carries `rules` (`R-1`…, a sentence each) and every criterion names the rule it is an example of; the ready gate caps the rules (`ticket_rules_max`, 6), keeps a backstop on the examples (`ticket_examples_max`, 30) and a warning past five on one rule (`rule_examples_warn`), names the order over the cap — restate, an axis of variation, the user — instead of "split the ticket", and lets only a size decision by the human keep a ticket whole. A ticket without rules is held to `ticket_ac_max` as before — the backstop is a key of its own because `aif project upgrade` leaves a project's values alone, and `opes` holds 15. `/aif-ba` works rules first, then the key examples of each; that half is prose, measured first on a live cut. On `main` after 0.12.1; scenario 43.
-- *(12.2 is open, above.)*
+- **12.2** The analyst saw `main` and nothing in flight, so a ticket could restate a rule another ticket owned — read; the case probed (OPES-69 in Review, its code only on `aif/OPES-69`, and the next request restating its days-left and allowance rules). `aif rules [<word>…]` is the map — every ticket's rules in force with its column on the board, computed from `tasks/` and the board, a rule a later ticket changed left out unless `--all`, a ticket from before rules showing its criteria. A rule names what it replaces in `changes` (`<ID> R-n`, or `<ID> AC-nnn`); the ready gate holds every name to a ticket and a rule under `tasks/` and prints them on the pass path; the plan station puts the older tests in `files.tests`, the tests station removes or rewrites the ones the rule ends. `/aif-ba` reads the map before the code, sorts each rule — its own, a change, another ticket's (not written again, `depends_on`), a conflict (asked) — and cuts a request by giving each rule to exactly one ticket. On `main` after 0.12.1; scenario 44. The worker's half is 12.3.
+- *(12.3 is open, above.)*
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

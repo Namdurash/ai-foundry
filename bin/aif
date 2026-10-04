@@ -68,6 +68,7 @@ commands:
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
   explain       Draw how a ticket got here — criteria, decisions, gaps
+  rules         Every ticket's rules, built or in flight — the map the analyst writes against
   project       Set up .aif/project.json, or write the project's guide to its tests (init | check | guide)
   doctor        What is installed, and which roles are ready on this machine
   profiles      List the available (set, runner, model) profiles
@@ -195,6 +196,17 @@ main() {
       # shellcheck source=lib/cmd_explain.sh
       . "$AIF_ROOT/lib/cmd_explain.sh"
       aif_cmd_explain ${1+"$@"}
+      ;;
+    rules)
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/cmd_rules.sh
+      . "$AIF_ROOT/lib/cmd_rules.sh"
+      aif_cmd_rules ${1+"$@"}
       ;;
     _record)
       # shellcheck source=lib/gates.sh

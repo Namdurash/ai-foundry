@@ -173,7 +173,27 @@ violations="$(
             (if ([ $acs[]? | select(.rule? == $r.id) ] | length) == 0
               then (($r.id // $want) | tostring) + " has no criterion — a rule no example illustrates is"
                    + " not tested; give it its key example, or drop it"
-              else empty end)
+              else empty end),
+            # A rule that replaces a rule of another ticket names it, so the
+            # worker knows which older tests move (docs/DEFECTS.md 12.2). The
+            # form is checked here; that the name resolves is checked below,
+            # from the files.
+            (if ($r | has("changes") | not) then empty
+             elif ($r.changes | type) != "array"
+               then (($r.id // $want) | tostring) + ".changes must be a list of \"<ID> R-n\" — or \"<ID> AC-nnn\""
+                    + " for a ticket written before rules"
+             else ( $r.changes[]
+               | if (type != "string") or (test("^[^ ]+ (R-[0-9]+|AC-[0-9]{3})$") | not)
+                   then (($r.id // $want) | tostring) + ".changes names " + (tojson) + " — write \"<ID> R-n\","
+                        + " or \"<ID> AC-nnn\" for a ticket written before rules"
+                 elif (split(" ")[0] | test($ticket_re) | not)
+                   then (($r.id // $want) | tostring) + ".changes names " + . + ", and " + split(" ")[0]
+                        + " is not a ticket id (" + $ticket_re + ")"
+                 elif split(" ")[0] == $want_id
+                   then (($r.id // $want) | tostring) + ".changes names this ticket — a rule here replaces"
+                        + " a rule of another ticket, never one of its own"
+                 else empty end )
+             end)
           ) end
       ),
 
@@ -278,6 +298,35 @@ violations="$(
   ' 2>&1
 )" || aif_g_error "ready: jq failed — $violations"
 
+# What a rule says it replaces has to exist: the ticket beside this one under
+# tasks/, and the rule in it — or the criterion, for a ticket written before
+# rules. Read from the files, as the worker's checkout holds them; a name that
+# resolves to nothing would send the plan looking for tests that are not there
+# (docs/DEFECTS.md 12.2). Names the jq above refused are not looked up again.
+tasks_dir="$(dirname "$work")"
+refs="$(printf '%s' "$meta" | jq -r --arg ticket_re "$ticket_re" --arg want_id "$want_id" '
+  .rules? | arrays | .[] | objects | (.id // "?") as $r
+  | (.changes? | arrays | .[]) | strings
+  | select(test("^[^ ]+ (R-[0-9]+|AC-[0-9]{3})$"))
+  | select((split(" ")[0] | test($ticket_re)) and split(" ")[0] != $want_id)
+  | $r + "\t" + .' 2>/dev/null)"
+while IFS="$(printf '\t')" read -r rid ref; do
+  [ -n "$ref" ] || continue
+  other="${ref%% *}"
+  item="${ref#* }"
+  if [ ! -f "$tasks_dir/$other/ticket.md" ]; then
+    violations="$(printf '%s\n%s' "$violations" "$rid.changes names $ref, and there is no $other under tasks/ — the ticket a rule replaces is read from its own file, committed beside this one")"
+    continue
+  fi
+  found="$(aif_g_meta "$tasks_dir/$other/ticket.md" | jq -r --arg i "$item" \
+    '[ (.rules? | arrays | .[] | objects | .id), (.acceptance? | arrays | .[] | objects | .id) ] | index($i) != null' 2>/dev/null)"
+  if [ "$found" != "true" ]; then
+    violations="$(printf '%s\n%s' "$violations" "$rid.changes names $ref, and $other has no $item — name a rule of it, or one of its criteria if it was written before rules")"
+  fi
+done <<EOF
+$refs
+EOF
+
 # The narrative is the human's own account of the need, and a ticket that is
 # criteria alone has lost it. One real line will do.
 body_lines="$(awk 'f && !/^#/ && !/^[[:space:]]*$/ && !/^<!--/ { n++ } /^-->$/ { f = 1 } END { print n + 0 }' "$ticket")"
@@ -330,6 +379,15 @@ crowded="$(printf '%s' "$meta" | jq -r --argjson warn "$rule_warn" '
 if [ -n "$crowded" ]; then
   printf '  MANY EXAMPLES ON ONE RULE — over %s; often two rules, or a concept not yet named:\n' "$rule_warn"
   printf '%s\n' "$crowded"
+fi
+# And what this ticket replaces in the tickets before it: the tests of those
+# rules assert what this ticket ends, and they move with it (docs/DEFECTS.md
+# 12.2). Said on the pass path, for the analyst, the worker's log and the
+# reviewer alike.
+changes="$(printf '%s' "$meta" | jq -r '.rules[]? | objects | select((.changes // []) | length > 0) | "    - " + .id + " replaces " + (.changes | join(", ")) + " — " + (.text // "")')"
+if [ -n "$changes" ]; then
+  printf '  CHANGES RULES OF OTHER TICKETS — their tests assert what this ticket ends, and move with it:\n'
+  printf '%s\n' "$changes"
 fi
 
 # On the PASS path, always: what was decided by default rather than by the

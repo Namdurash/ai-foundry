@@ -13,7 +13,7 @@ flowchart TB
   subgraph HUMAN["Human time · no gates"]
     PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
-    BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
+    BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most 6 rules — over that, only the human keeps it whole"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]

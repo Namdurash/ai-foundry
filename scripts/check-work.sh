@@ -3221,6 +3221,69 @@ eq "a ticket with rules is built" "$rc,$(jq -r '.status' tasks/AIF-53/run.json)"
 eq "…its intake read the rules" \
   "$(jq -r '[.entries[] | select(.gate == "ready")] | first | .reason' tasks/AIF-53/ledger.json)" "ready: 3 rule(s) · 3 criteria · 0 decided · 0 gap(s)"
 
+# ====== 44. a ticket is a delta on the tickets before it ======================
+# The analyst read main and nothing in flight, so a new ticket could restate a
+# rule another ticket owned, or change it without a word (docs/DEFECTS.md
+# 12.2). Now a rule names what it replaces, the ready gate holds the name to a
+# ticket and a rule under tasks/, and `aif rules` is the map: every ticket's
+# rules in force with its column, computed from the tickets and the board.
+printf '\n44. a rule names the rule it replaces, the gate holds the name, and aif rules is the map\n'
+fresh_project "$SANDBOX/p44"
+delta_ticket() { # <id> <title> <rules-json or "-"> <acceptance-json>
+  "$AIF" _ticket-init "$1" >/dev/null
+  {
+    printf '%s\n' '<!-- aif:meta'
+    jq -n --arg id "$1" --argjson acs "$4" --arg rules "$3" '
+      { schema: 2, ticket: $id, lang: "uk", risk: "low", surfaces: ["home"],
+        acceptance: $acs, open: [], decided: [], verification_gaps: [], non_goals: [] }
+      + (if $rules == "-" then {} else { rules: ($rules | fromjson) } end)'
+    printf '%s\n' '-->' "# $1 — $2" '' 'Людина бачить, скільки можна витратити сьогодні.'
+  } >"tasks/$1/ticket.md"
+}
+ex() { # <AC-nnn> <rule or -> <then> <expect> — one criterion, as JSON
+  jq -cn --arg id "$1" --arg r "$2" --arg t "$3" --arg e "$4" \
+    '{ id: $id, surface: "home", given: "місяць іде", when: "Home відкрито", then: $t, expect: $e }
+     + (if $r == "-" then {} else { rule: $r } end)'
+}
+delta_ticket AIF-60 "денна норма на Home" \
+  '[{ "id": "R-1", "text": "Залишок місяця — сума всіх транзакцій місяця" },
+    { "id": "R-2", "text": "Норма — залишок, поділений на дні до кінця місяця" }]' \
+  "[$(ex AC-001 R-1 'залишок дорівнює' 15000), $(ex AC-002 R-2 'норма дорівнює' 200)]"
+delta_ticket AIF-61 "валюта на ручних картках" - "[$(ex AC-001 - 'валюта картки дорівнює' 980)]"
+delta_ticket AIF-62 "норма від цілі" \
+  '[{ "id": "R-1", "text": "Залишок місяця — дохід мінус ціль мінус витрачене", "changes": ["AIF-60 R-1"] },
+    { "id": "R-2", "text": "Ціль задається одним числом у гривнях", "changes": ["AIF-61 AC-001"] }]' \
+  "[$(ex AC-001 R-1 'залишок дорівнює' 9000), $(ex AC-002 R-2 'ціль дорівнює' 5000)]"
+ready_says AIF-62
+eq "a rule naming the rule it replaces — and a criterion of a ticket from before rules — is ready, and the pass says what moves" \
+  "$rc,$(grep -c 'CHANGES RULES OF OTHER TICKETS' "$OUT/ready-AIF-62.out"),$(grep -c 'R-1 replaces AIF-60 R-1' "$OUT/ready-AIF-62.out"),$(grep -c 'R-2 replaces AIF-61 AC-001' "$OUT/ready-AIF-62.out")" "0,1,1,1"
+delta_ticket AIF-63 "зламані посилання" \
+  '[{ "id": "R-1", "text": "a", "changes": ["AIF-99 R-1"] },
+    { "id": "R-2", "text": "b", "changes": ["AIF-60 R-7"] },
+    { "id": "R-3", "text": "c", "changes": ["AIF-63 R-1"] },
+    { "id": "R-4", "text": "d", "changes": "AIF-60 R-1" }]' \
+  "[$(ex AC-001 R-1 x 1), $(ex AC-002 R-2 x 2), $(ex AC-003 R-3 x 3), $(ex AC-004 R-4 x 4)]"
+ready_says AIF-63
+eq "a name that resolves to nothing, or to itself, or is not a list: each refused, once" \
+  "$rc,$(grep -c 'there is no AIF-99 under tasks/' "$OUT/ready-AIF-63.out"),$(grep -c 'AIF-60 has no R-7' "$OUT/ready-AIF-63.out"),$(grep -c 'R-3.changes names this ticket' "$OUT/ready-AIF-63.out"),$(grep -c 'R-4.changes must be a list' "$OUT/ready-AIF-63.out"),$(grep -c '^ *- ' "$OUT/ready-AIF-63.out")" "1,1,1,1,1,4"
+rm -rf tasks/AIF-63
+"$AIF" board create tasks/AIF-60/ticket.md --column "done" >/dev/null
+"$AIF" board create tasks/AIF-61/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-62/ticket.md --column backlog >/dev/null
+"$AIF" rules >"$OUT/rules44.out" 2>&1
+eq "the map: each ticket with its column; the rule a later ticket changed is left out, the one in force is in" \
+  "$(grep -c '^AIF-60 · done · денна норма на Home$' "$OUT/rules44.out"),$(grep -c 'R-1 — Залишок місяця — сума' "$OUT/rules44.out"),$(grep -c '^  R-2 — Норма — залишок' "$OUT/rules44.out"),$(grep -c '^  R-1 — Залишок місяця — дохід мінус ціль мінус витрачене  (AC-001)  — changes AIF-60 R-1$' "$OUT/rules44.out")" "1,0,1,1"
+eq "…a ticket written before rules shows its criteria — or nothing, once a later rule changed them all" \
+  "$(grep -c '^AIF-61 ·' "$OUT/rules44.out")" "0"
+"$AIF" rules --all >"$OUT/rules44all.out" 2>&1
+eq "--all keeps the history, each changed rule marked with the rule that changed it" \
+  "$(grep -c 'R-1 — Залишок місяця — сума всіх транзакцій місяця  (AC-001)  ✗ changed by AIF-62 R-1' "$OUT/rules44all.out"),$(grep -c '^AIF-61 · ready · валюта на ручних картках$' "$OUT/rules44all.out"),$(grep -c 'AC-001 — given місяць іде, when Home відкрито, then валюта картки дорівнює → 980  ✗ changed by AIF-62 R-2' "$OUT/rules44all.out")" "1,1,1"
+eq "a word narrows the map, whatever its case — Cyrillic too" \
+  "$("$AIF" rules НОРМА 2>/dev/null | grep -c '^AIF-6[0-9] ·'),$("$AIF" rules ЦІЛЬ 2>/dev/null | grep -c '^AIF-62 ·'),$("$AIF" rules nothing-like-this 2>/dev/null)" "2,1,no ticket mentions: nothing-like-this"
+eq "--json is the same map, for a script" \
+  "$("$AIF" rules --json 2>/dev/null | jq -c '[.[] | {ticket, column, n: (.entries | length)}]')" \
+  '[{"ticket":"AIF-60","column":"done","n":1},{"ticket":"AIF-62","column":"backlog","n":2}]'
+
 # ----------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

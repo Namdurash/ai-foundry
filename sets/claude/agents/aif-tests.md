@@ -106,6 +106,14 @@ the guide is stale — say so in your closing message.
 - **Test through the contract's seams, with as few mocks as the boundary
   allows.** Mock what the plan names as injected or external; call what it
   creates. A test that mocks the module under test is green against anything.
+- **A test of a replaced rule goes.** When a rule of this ticket `changes`
+  another ticket's, the tests carrying that ticket's criteria for it (`<ID>
+  AC-nnn` in their names) assert what this ticket ends; the plan names them,
+  and their files are yours this time. Remove them, or rewrite one under this
+  ticket's own marker when it now proves one of this ticket's criteria — never
+  keep the old name on a new assertion, and never leave one asserting the old
+  behaviour: it would fail once the implementation lands, and green holds the
+  whole suite. Every other test in those files stays exactly as it is.
 
 ## What you may run, and what the gate decides
 

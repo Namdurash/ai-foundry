@@ -200,6 +200,14 @@ Checked mechanically. Satisfy them the first time.
   least one file in create or change. This is how the plan proves the reasoning
   reached the implementer: an uncovered criterion is a gap the implementer would
   have to fill by guessing.
+- **A rule that replaces another ticket's moves that ticket's tests.** A rule
+  with `changes` names what it replaces — `<ID> R-n`, meaning every criterion of
+  `<ID>` that names `R-n`, or `<ID> AC-nnn`. The tests carrying those criteria
+  (`<ID> AC-nnn` in their names) assert the behaviour this ticket ends, and
+  green holds the whole suite: a plan that leaves them out cannot go green.
+  Find them, put their files in `files.tests`, and say in a decision which of
+  them the tests station removes or rewrites, `serves` naming the rule that
+  replaces them.
 - **Cover every file you create, or declare that you did not.** Any path in
   `files.create` that appears in no `ac_coverage` entry must be listed in
   `uncovered`. A file the plan orders into existence that no criterion points at

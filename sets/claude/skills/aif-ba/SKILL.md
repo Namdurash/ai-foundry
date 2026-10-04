@@ -1,6 +1,6 @@
 ---
 name: aif-ba
-description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything; afterwards marks the request cut, cut in part (which slice became which ticket) or not cut. Writes the rules WITH the user, in conversation — a sentence each, the unit the size cap counts — then the key GIVEN/WHEN/THEN examples of each rule, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
+description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything; afterwards marks the request cut, cut in part (which slice became which ticket) or not cut. Reads every ticket's rules first (aif rules) — what is built and what is in flight — so a ticket never restates a rule another owns, and names the rules it changes. Writes the rules WITH the user, in conversation — a sentence each, the unit the size cap counts — then the key GIVEN/WHEN/THEN examples of each rule, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
 requires: [claude, board]
 ---
 
@@ -19,10 +19,12 @@ Three things distinguish this from an interview form:
    get lost. You have the conversation in context; you write the rules with the user —
    what must hold, a sentence each — then the key examples of each rule as GIVEN /
    WHEN / THEN, and the machine builds to exactly those.
-2. **You read the repository first.** Most of what looks like an open question is
-   already answered by the code — the existing endpoint shape, the error convention,
-   the test layout. Answer those yourself from the code and say so. Ask the user only
-   what the code cannot answer: what the product should *do*.
+2. **You read the map and the repository first.** Every ticket's rules (`aif rules`)
+   say what was meant and what is coming; the code says what exists. Most of what
+   looks like an open question is already answered by one of them — the existing
+   endpoint shape, the error convention, a rule a ticket in flight already owns.
+   Answer those yourself and say so. Ask the user only what neither can answer: what
+   the product should *do*.
 3. **You cut; you do not merge.** A request from the product partner arrives in
    slices, each one shippable and useful on its own. One slice, one ticket — or more
    than one, when a slice is too big for one run — and never one ticket across two
@@ -91,13 +93,25 @@ it maps to a ticket is not on the table again. A request written before the line
 existed has none: derive it from every `tasks/*/ticket.md` whose `request` names this
 file, and write it when you mark the request (step 5).
 
+**The cut gives out rules.** Before proposing it, read the map (step 2, first bullet)
+for the request's words, write the rules the request needs — a sentence each — and
+sort each one against the map: this request's own, a change to a rule in force, or
+another ticket's already. Then give every rule of this request to exactly one ticket.
+A rule in two tickets is the repetition this step exists to prevent; ticket 2 is
+written against ticket 1's rules, never against its code, which does not exist yet.
+
 If `slice N` was named, cut only that slice. Otherwise propose the whole cut, in one
-block, and wait for a yes:
+block, the rules of each ticket under it, and wait for a yes:
 
 ```
 requests/support-pulls-user-list.md — the cut
   slice 1  support pulls the user list themselves     → OPES-61   now
-  slice 2  the list arrives by email every Monday     → OPES-62   now
+           R-1  one command writes the user list
+           R-2  the list holds every active user, and no one else
+  slice 2  the list arrives by email every Monday     → OPES-62   now, after OPES-61
+           R-1  the list is mailed every Monday at 09:00, Kyiv time
+           R-2  a user who unsubscribed is not mailed — changes OPES-48 R-3
+           needs OPES-61 R-1 — not written again
   slice 3  the list can be filtered by plan           → OPES-63   later — say when
 ```
 
@@ -106,11 +120,31 @@ their own ids. A slice that waits stays in the request untouched, and the hand-o
 names the command that cuts it when it is due. Only after the yes: `aif _ticket-init`
 for each ticket cut now — never for one that waits.
 
-### 2. Understand — the code first, the user second
+### 2. Understand — the map, the code, then the user
 
-- **Read the repository** once, for every surface the tickets cut now touch: Grep and
-  Glob for the endpoint, the module, the existing tests, the conventions. Note what the
-  code already settles.
+- **The map first: `aif rules <words>`** — the words of the need: the screen, the
+  feature, the nouns of the domain; a cut has read it already, and reads it again only
+  for words the cut did not cover. It lists every ticket that mentions them, with its
+  column and its rules in force (a ticket written before rules shows its criteria):
+  Done is what the product does by intent, every other column is what is coming. Read
+  every ticket in flight it shows, whole — its code may not be on this branch yet, and
+  the code alone would tell you the behaviour is missing. Then sort every rule this
+  ticket needs:
+  - **new** — it is this ticket's;
+  - **a change to a rule in force** — this ticket's too, restated whole, with
+    `changes` naming what it replaces (`OPES-69 R-1`, or `OPES-69 AC-001` for a ticket
+    written before rules). When that ticket is not Done it goes in `depends_on`: what
+    has not been built cannot be changed yet;
+  - **another ticket's already** — not written again, not even as a precondition
+    criterion. This ticket `depends_on` the owner while it is not Done, and the
+    narrative names the rule it builds on;
+  - **in conflict with a rule in flight** — a question for the user before anything
+    is written: which one holds, and whether the other ticket changes.
+- **Then read the repository** once, for every surface the tickets cut now touch: Grep
+  and Glob for the endpoint, the module, the existing tests, the conventions. Note what
+  the code already settles. The code says what exists; the map says what was meant and
+  what is coming — where the two disagree on a built ticket, say so: either the code
+  drifted, or the rule was changed outside a ticket.
 - Then talk, ticket by ticket in slice order. Short exchanges, not a checklist read
   aloud: what is wrong or missing now, what should be true after, who feels it. A
   request has already answered those — carry them into the narrative, narrowed to the
@@ -151,6 +185,13 @@ examples are what the machine checks. The criteria are the contract:
   them here is how a ticket with six rules in it used to reach a cap of fifteen.
   More than about five examples on one rule usually means two rules, or a concept
   nobody has named yet — `aif _ready` says so on the pass path.
+- **A rule that replaces another ticket's says so,** in `changes` on the rule: each
+  rule it replaces (`<ID> R-n`), or each criterion of a ticket written before rules
+  (`<ID> AC-nnn`). The rule itself is the new behaviour restated whole, not the
+  difference, and its examples are this ticket's criteria. `aif _ready` checks every
+  name resolves under `tasks/`; the plan station reads the names to find the older
+  tests that move with this ticket — the one way it learns of them. The narrative
+  says it in a sentence: "Changes how OPES-69 counts what is left for the month".
 - **One criterion, one observable check.** `then` says one thing; `expect` is the
   **literal** a test will assert — `409`, `true`, `"conflict"` — never a phrase. If
   you cannot name a literal, the behaviour is not decided yet: it is an open question.
@@ -246,10 +287,11 @@ questions**, each with its default:
 - Run it again, on each ticket. When it passes, it prints what was **decided by
   default**; read that line out, per ticket, because it is the list of things the user
   did not decide.
-- It may print two more blocks on a pass. **KEPT WHOLE BY THE HUMAN** is the user's
+- It may print three more blocks on a pass. **KEPT WHOLE BY THE HUMAN** is the user's
   own size decision — read it back; a reviewer will see it too. **MANY EXAMPLES ON
   ONE RULE** is not a refusal: offer once to restate the rule, and leave it when the
-  user says it is one rule.
+  user says it is one rule. **CHANGES RULES OF OTHER TICKETS** lists what this ticket
+  replaces — read it out, because the older tests of those rules move with it.
 
 ### 5. Show it once, then hand off
 
@@ -349,7 +391,8 @@ into a bigger ticket.
   "risk": "<low | medium | high>",
   "surfaces": ["<each observable interface this touches, e.g. POST /api/users>"],
   "rules": [
-    { "id": "R-1", "text": "<one sentence of behaviour, in the user's language>" } ],
+    { "id": "R-1", "text": "<one sentence of behaviour, in the user's language>",
+      "changes": ["<only when it replaces another ticket's rule: <ID> R-n, or <ID> AC-nnn for a ticket written before rules>"] } ],
   "acceptance": [
     { "id": "AC-001",
       "rule": "<the rule this is an example of: R-1>",

@@ -383,6 +383,18 @@ decision, and the gate refuses one taken by default. The examples keep a backsto
 of their own (`limits.ticket_examples_max`, 30), and a ticket written before rules
 existed is held to its old cap on criteria (`limits.ticket_ac_max`, 15).
 
+**A ticket is a delta on the tickets before it.** The code says what exists; it
+does not say what was meant, nor what is coming, and an analyst reading only
+`main` could restate a rule a ticket in flight already owned, or change one
+without a word. So it reads the map first — `aif rules <words>`, every ticket's
+rules in force with the ticket's column, computed from `tasks/` and the board —
+and sorts each rule a new ticket needs: its own; a change to a rule in force,
+restated whole and named in `changes` (`OPES-69 R-1`, or `OPES-69 AC-001` for a
+ticket written before rules), which the ready gate holds to a ticket and a rule
+that exist and the plan station reads to find the older tests that move; or
+another ticket's, not written again, with that ticket in `depends_on`. A cut of a
+request gives each of its rules to exactly one ticket.
+
 Given a request from the product partner, **it cuts by the slices**: one ticket per
 slice, never one across two, every other slice a named non-goal of each ticket. It
 proposes the cut as one block — which slices now, which wait, the ids — and scaffolds
@@ -586,6 +598,7 @@ the gates rather than remembered.
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
 | `aif explain <ticket>` | draw how it got here — criteria, decisions, gaps, and the plan's reasoning |
+| `aif rules [<word>…] [--all]` | every ticket's rules in force, with its column — what the product does by intent (Done) and what is coming; the map the analyst writes against |
 | `aif test <eval> --profile <p>` | run an eval, N times, with a pass rate |
 
 There is no command per stage. The worker and the skills call a small internal
@@ -905,6 +918,7 @@ decide, in fields the gates check afterwards:
 | field | in | says |
 |---|---|---|
 | `rules[]` | ticket | what must hold, a sentence each — the unit the size cap counts |
+| `rules[].changes` | ticket | the rules of other tickets a rule replaces — their tests move with this ticket |
 | `acceptance[].rule` | ticket | the rule a criterion is an example of |
 | `acceptance[].surface` | ticket | where the criterion is observed |
 | `decided[].by` | ticket | `human`, or `default` — the analyst's proposal, unanswered |

@@ -76,11 +76,14 @@ them:
 - **One ticket never spans two slices.** If two slices cannot be built apart, that is a
   finding about the request: say so, and merge them only when the user says to, with
   the reason recorded in `decided`.
-- **A slice may become more than one ticket** when it would not build in one run —
-  more rules than the project's limit with an axis of variation to cut along (step 3,
-  *Over the cap*), more files than one plan holds, or two surfaces that ship
-  separately. Say why. Never by count: a ticket that holds the remainder of another,
-  or one that only makes sense right after its neighbour, is a fragment, not a slice.
+- **A slice may become more than one ticket** when it holds more rules than the
+  project's limit with an axis of variation to cut along (step 3, *Over the cap*), or
+  two surfaces that ship separately. Say why. Never by count: a ticket that holds the
+  remainder of another, or one that only makes sense right after its neighbour, is a
+  fragment, not a slice. And never by an estimate of lines or files — the worker caps
+  neither, and an estimate is not a measurement: the daily allowance was cut down to
+  fit "about 420 lines" against a 400-line cap, and the gate measured 186 when it was
+  built; OPES-75/76 were split, by default, to fit a 12-file cap no run had reached.
 - **Every other slice is a non-goal of this ticket**, by name, in `non_goals`. That is
   what keeps slice 2 out of slice 1's criteria.
 - **A request without `## Slices`** was written before they existed and has one slice:

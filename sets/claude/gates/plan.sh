@@ -72,7 +72,6 @@ meta="$(aif_g_meta_or_die "$plan" "plan.md")" || exit $?
 tmeta="$(aif_g_meta_or_die "$ticket" "ticket.md")" || exit $?
 
 ticket_hash="$(aif_g_sha256 "$ticket")"
-files_max="$(jq -r '.limits.plan_files_max // 12' "$project")"
 acs="$(printf '%s' "$tmeta" | jq -c '[.acceptance[]?.id]')"
 ticket_id="$(printf '%s' "$tmeta" | jq -r '.ticket // ""')"
 ticket_risk="$(printf '%s' "$tmeta" | jq -r '.risk // ""')"
@@ -80,7 +79,6 @@ check_names="$(jq -c '[.checks[]?.name]' "$project")"
 
 violations="$(
   printf '%s' "$meta" | jq -r \
-    --argjson files_max "$files_max" \
     --argjson acs "$acs" \
     --argjson check_names "$check_names" \
     --arg ticket_hash "$ticket_hash" \
@@ -121,10 +119,6 @@ violations="$(
       (if ($tests | length) == 0
         then "meta.files.tests is empty — there would be nothing for verify-red to run"
         else empty end),
-      (if ($impl | length) > $files_max
-        then "meta.files touches " + ($impl | length | tostring)
-             + " implementation files, limit is " + ($files_max | tostring)
-             + " — split the ticket" else empty end),
       (if ($impl | length) != ($impl | unique | length)
         then "meta.files lists the same path twice" else empty end),
 

@@ -426,7 +426,9 @@ aif_project_template() {
 # the file is current, or when its runner has no template to compare with.
 # Only what changes behaviour: a retired failure class still counted as red,
 # a template class missing, a type-check not bound to contract and red, a
-# limit the template sets and the file does not, a runner not recorded.
+# limit the template sets and the file does not, a limit the template retired
+# and the file still sets (it reads as a cap and is not one), a runner not
+# recorded.
 aif_project_drift() {
   local f="$1" kind t
   kind="$(aif_project_kind "$f")"
@@ -456,7 +458,10 @@ aif_project_drift() {
         | "check \"" + (.name // "?") + "\" is a type-check bound to [" + ((.phase // []) | join(",")) + "] — since the contract, the plan gate compiles the skeleton at contract and verify-red type-checks the tests at red; bound as it is, the skeleton is never compiled and a type error in a frozen test is found one implement dispatch late" ),
       ( ($t.limits // {}) | to_entries[] | select(.value != null) | . as $e
         | select((($p.limits // {}) | has($e.key)) | not)
-        | "limits." + $e.key + " is not set — the " + $kind + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" )
+        | "limits." + $e.key + " is not set — the " + $kind + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" ),
+      ( ($t.limits_retired // [])[] | . as $k
+        | select(($p.limits // {}) | has($k))
+        | "limits." + $k + " is set, and nothing reads it any more — aif retired it, so it looks like a cap and is not one" )
     ] | .[]
   ' "$f" 2>/dev/null
 }

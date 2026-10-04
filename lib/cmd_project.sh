@@ -412,7 +412,8 @@ _aif_project_check() {
 #   checks[].phase            a type-check is bound to contract, red and green,
 #                             keeping any other phase it had
 #   limits                    keys the template sets and the file lacks, at the
-#                             template's value; a value the project set stays
+#                             template's value; a value the project set stays;
+#                             a key the template retired (limits_retired) goes
 #
 # Idempotent: a current file is left alone and said to be current. What moved
 # is printed as the drift it closes; the file is the project's to review.
@@ -443,6 +444,7 @@ _aif_project_upgrade() {
     | .failure_classes.broken = ($tb + [ ($p.failure_classes.broken // [])[] | . as $x
         | select(($tb | index($x)) == null) ])
     | .limits = (($t.limits // {}) * ($p.limits // {}))
+    | .limits |= with_entries(select(.key as $k | ($t.limits_retired // []) | index($k) | not))
     | .checks = [ ($p.checks // [])[]
         | if (((.name // "") | test("type"; "i")) or ((.command // "") | test("tsc|mypy|pyright")))
           then .phase = (["contract", "red", "green"] + [ (.phase // [])[] | . as $x
@@ -478,6 +480,9 @@ _aif_project_upgrade() {
     (($a.limits // {}) | to_entries[] | .key as $k | .value as $v
        | select((($b.limits // {}) | has($k)) | not)
        | "  limits." + $k + " = " + ($v | tostring)),
+    (($b.limits // {}) | to_entries[] | .key as $k
+       | select((($a.limits // {}) | has($k)) | not)
+       | "  limits." + $k + " removed — retired, nothing reads it"),
     (($a.checks // []) | to_entries[] | .value as $c | .key as $i
        | select((($b.checks // [])[$i] // {}).phase != $c.phase)
        | "  check \"" + ($c.name // "?") + "\" → [" + ($c.phase | join(",")) + "]")

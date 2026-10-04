@@ -327,6 +327,11 @@ case "$station" in
   plan)
     change='["src/app.py"]'
     [ "${FAKE_DEPS:-0}" = 1 ] && change='["src/app.py", "package.json", "package-lock.json"]'
+    # A wide plan (FAKE_WIDEPLAN=N): src/w1.py … src/wN.py changed as well — a
+    # manifest past the 12-file cap the plan gate no longer holds it to.
+    if [ -n "${FAKE_WIDEPLAN:-}" ]; then
+      change="$(jq -cn --argjson n "$FAKE_WIDEPLAN" '["src/app.py"] + [range(1; $n + 1) | "src/w\(.).py"]')"
+    fi
     if [ "${FAKE_PLAN_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then change='["src/nowhere.py"]'; fi
     # The contract: with FAKE_CREATE the plan creates src/feat.py and writes
     # its skeleton — a signature whose body throws the marker — the way the
@@ -441,6 +446,15 @@ PLAN
       printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
       # The skeleton, filled: the marker's throw replaced by the behaviour.
       [ "${FAKE_CREATE:-0}" != 1 ] || printf 'def feat():\n    return 7\n' >"$wt/src/feat.py"
+    fi
+    # A large change (FAKE_BIGDIFF=N): N more lines in a planned file — past the
+    # 400-line cap scope no longer holds a change to.
+    if [ -n "${FAKE_BIGDIFF:-}" ]; then
+      i=0
+      while [ "$i" -lt "$FAKE_BIGDIFF" ]; do
+        printf '# line %s of a large change\n' "$i"
+        i=$((i + 1))
+      done >>"$wt/src/app.py"
     fi
     if [ "${FAKE_DRIFT:-0}" = 1 ]; then
       mkdir -p "$wt/deps" && : >"$wt/deps/drift"
@@ -3283,6 +3297,35 @@ eq "a word narrows the map, whatever its case — Cyrillic too" \
 eq "--json is the same map, for a script" \
   "$("$AIF" rules --json 2>/dev/null | jq -c '[.[] | {ticket, column, n: (.entries | length)}]')" \
   '[{"ticket":"AIF-60","column":"done","n":1},{"ticket":"AIF-62","column":"backlog","n":2}]'
+
+# ====== 45. the size of a plan and of a change are said, not capped ===========
+# The plan gate refused a manifest past 12 implementation files and scope a
+# change past 400 lines. On a live project neither ever fired; both shaped
+# tickets before any run, through the analyst's estimate of them
+# (docs/DEFECTS.md 12.4). Retired: the gates say the size and refuse nothing
+# for it, and a project.json that still sets the caps is told they do nothing.
+printf '\n45. a plan of fourteen files and a change of five hundred lines are built; the retired caps leave project.json\n'
+fresh_project "$SANDBOX/p45"
+i=1
+while [ "$i" -le 13 ]; do
+  printf 'W%s = %s\n' "$i" "$i" >"src/w$i.py"
+  i=$((i + 1))
+done
+ticket_for AIF-70
+git add -A && git commit -qm "ticket 45" >/dev/null
+rc=0
+FAKE_WIDEPLAN=13 FAKE_BIGDIFF=520 "$AIF" work AIF-70 --no-worktree >"$OUT/run45.out" 2>&1 || rc=$?
+eq "built" "$rc,$(jq -r '.status' tasks/AIF-70/run.json)" "0,built"
+eq "the plan named fourteen implementation files, and its gate said so and passed it" \
+  "$(jq -r '[.entries[] | select(.gate == "plan" and .result == "pass")] | last | .reason' tasks/AIF-70/ledger.json | grep -c '^plan: 14 implementation file(s)')" "1"
+eq "the change ran past five hundred lines, and scope said so and passed it" \
+  "$(jq -r '[.entries[] | select(.gate == "scope" and .result == "pass")] | last | .reason' tasks/AIF-70/ledger.json | grep -c -E 'change confined to the plan \(5[0-9][0-9] lines\)')" "1"
+jq '.limits.plan_files_max = 12 | .limits.diff_lines_max = 400 | .limits.revisions_max = 5' .aif/project.json >"$OUT/p45.json" && cp "$OUT/p45.json" .aif/project.json
+eq "project check names each retired cap the file still sets" \
+  "$("$AIF" project check 2>&1 | grep -c 'is set, and nothing reads it any more — aif retired it')" "3"
+"$AIF" project upgrade >"$OUT/up45.out" 2>&1
+eq "the upgrade takes them out, and says so" \
+  "$(jq -c '[.limits | has("plan_files_max", "diff_lines_max", "revisions_max")]' .aif/project.json),$(grep -c 'removed — retired, nothing reads it' "$OUT/up45.out")" "[false,false,false],3"
 
 # ----------------------------------------------------------------------------
 printf '\n'

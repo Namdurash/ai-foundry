@@ -50,8 +50,6 @@
     "ticket_rules_max": 6,
     "ticket_examples_max": 30,
     "rule_examples_warn": 5,
-    "plan_files_max": 12,
-    "diff_lines_max": 400,
     "attempts_max": 3,
     "plan_amendments_max": 3,
     "station_max_turns": 60,
@@ -61,6 +59,7 @@
     "repairs_max": 2,
     "replans_max": 1
   },
+  "limits_retired": ["plan_files_max", "diff_lines_max", "revisions_max"],
   "risk_rules": [
     {
       "paths": [

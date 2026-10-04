@@ -62,7 +62,6 @@ if [ -n "$amended" ]; then
   allowed="$(printf '%s\n%s' "$allowed" "$amended")"
 fi
 test_roots="$(jq -r '.test.roots[]?' "$project")"
-max_diff="$(jq -r '.limits.diff_lines_max // 400' "$project")"
 
 # Paths no implementation may touch, whatever the plan says. The list itself is
 # AIF_G_DENYLIST in _lib.sh — one list, shared with the plan gate, which refuses
@@ -172,15 +171,14 @@ EOF
 
 aif_g_report "${viol# }" "scope"
 
-# A green diff can still be a rewrite. Cap the size: a small model that changed
-# 2000 lines to pass three tests has done something other than the ticket.
-# tasks/ is excluded from the count — the ledger and the amendments file are
-# machine-written bookkeeping, and rows recorded for a failed attempt must not
-# eat the budget of the retry that fixes it.
+# The size of the change, said and not judged. It used to be capped at 400
+# lines, against a model that rewrites far more than the ticket asks — and in
+# every run on a live project the cap never fired once, while the analyst cut
+# features to fit an estimate of it (docs/DEFECTS.md 12.4). The blast radius
+# is bounded where it can be bounded: the paths above, which the plan named,
+# and green, which holds the whole suite. tasks/ is left out of the count — the
+# ledger and the amendments file are machine-written bookkeeping.
 added_removed="$(git -C "$root" diff --numstat "$base" -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
-if [ "${added_removed:-0}" -gt "$max_diff" ]; then
-  aif_g_reject "the change is $added_removed lines, over the limit of $max_diff — too large for the ticket, or out of scope"
-fi
 
 if [ -n "$amended" ]; then
   # Loudly, on the pass path. A widened manifest that only shows up when someone

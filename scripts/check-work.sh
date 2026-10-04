@@ -3128,6 +3128,99 @@ FAKE_CREATE=1 "$AIF" work AIF-42 --no-worktree >"$OUT/run42e.out" 2>&1 || rc=$?
 eq "resumed at plan: the stopped plan's files put back, said so, built" \
   "$rc,$(grep -c 'resume .*plan — .*file(s) the stopped plan left are put back' "$OUT/run42e.out"),$(git log --all --format=%s -- src/leftover.py | grep -c .)" "0,1,0"
 
+# ====== 43. the size cap counts rules, not examples ===========================
+# A criterion is an example of a rule, and what a person calls an acceptance
+# criterion is a rule: capped at fifteen examples, the analyst cut ordinary
+# six-rule stories into fragments (docs/DEFECTS.md 12.1). The cap counts rules
+# now; the examples keep a backstop; over the cap only the human keeps a ticket
+# whole; a ticket without rules is held to its old cap; and the worker builds a
+# ticket with rules as it did before — the criteria are what it reads.
+printf '\n43. the size cap counts rules, not examples; over it, only the human keeps a ticket whole\n'
+fresh_project "$SANDBOX/p43"
+rules_ticket() { # <id> <rules> <examples per rule> [decided-json] — rules 0: none, the old shape
+  "$AIF" _ticket-init "$1" >/dev/null
+  {
+    printf '%s\n' '<!-- aif:meta'
+    jq -n --arg id "$1" --argjson r "$2" --argjson e "$3" --argjson dec "${4:-[]}" '
+      def pad3: tostring | if length == 1 then "00" + . elif length == 2 then "0" + . else . end;
+      { schema: 2, ticket: $id, lang: "en", risk: "low", surfaces: ["export"],
+        acceptance: [ range(0; (if $r > 0 then $r * $e else $e end)) as $i
+          | { id: ("AC-" + (($i + 1) | pad3)), surface: "export",
+              given: ("case " + (($i + 1) | tostring)), when: "the export runs",
+              then: "writes the marker", expect: ("impl" + (($i + 1) | tostring)) }
+          + (if $r > 0 then { rule: ("R-" + ((($i / $e) | floor) + 1 | tostring)) } else {} end) ],
+        open: [], decided: $dec, verification_gaps: [], non_goals: [] }
+      + (if $r > 0
+         then { rules: [ range(1; $r + 1) | { id: ("R-" + tostring), text: ("the export keeps rule " + tostring) } ] }
+         else {} end)'
+    printf '%s\n' '-->' "# $1 — one-command user export" '' 'Support needs a one-command export of the user list.'
+  } >"tasks/$1/ticket.md"
+}
+ready_says() { # <id> — the ready gate's exit code and its words, as the analyst sees them
+  rc=0
+  "$AIF" _ready "$1" >"$OUT/ready-$1.out" 2>&1 || rc=$?
+}
+rules_ticket AIF-44 6 3
+ready_says AIF-44
+eq "six rules with eighteen examples — refused by the old cap of fifteen — are ready" \
+  "$rc,$(grep -c 'ready: 6 rule(s) · 18 criteria' "$OUT/ready-AIF-44.out")" "0,1"
+rules_ticket AIF-45 7 1
+ready_says AIF-45
+eq "seven rules: refused, naming the order to work in, and never 'split the ticket'" \
+  "$rc,$(grep -c 'meta.rules has 7 rules, limit is 6 — in this order: a rule that only lists cases is restated' "$OUT/ready-AIF-45.out"),$(grep -c 'split the ticket' "$OUT/ready-AIF-45.out")" "1,1,0"
+rules_ticket AIF-46 7 1 '[{ "question": "keep it whole?", "answer": "yes — one flow, no axis to cut along", "by": "human", "kind": "size" }]'
+ready_says AIF-46
+eq "…ready once the user keeps it whole, and the pass says so with their words" \
+  "$rc,$(grep -c 'KEPT WHOLE BY THE HUMAN — 7 rules, over the limit of 6' "$OUT/ready-AIF-46.out"),$(grep -c 'keep it whole? → yes — one flow' "$OUT/ready-AIF-46.out")" "0,1,1"
+rules_ticket AIF-47 7 1 '[{ "question": "keep it whole?", "answer": "yes", "by": "default", "kind": "size" }]'
+ready_says AIF-47
+eq "…but a size decision taken by default is refused: the analyst cannot lift its own limit" \
+  "$rc,$(grep -c 'keeps the ticket whole by default' "$OUT/ready-AIF-47.out"),$(grep -c 'meta.rules has 7 rules' "$OUT/ready-AIF-47.out")" "1,1,1"
+jq '.limits.ticket_rules_max = 7' .aif/project.json >"$OUT/p43.json" && cp "$OUT/p43.json" .aif/project.json
+ready_says AIF-45
+eq "a project that sets its own rules cap is held to it" "$rc" "0"
+jq '.limits.ticket_rules_max = 6' .aif/project.json >"$OUT/p43.json" && cp "$OUT/p43.json" .aif/project.json
+rules_ticket AIF-48 1 6
+ready_says AIF-48
+eq "six examples on one rule: ready, with the crowded rule named on the pass path" \
+  "$rc,$(grep -c 'MANY EXAMPLES ON ONE RULE' "$OUT/ready-AIF-48.out"),$(grep -c 'R-1: 6 examples (AC-001, AC-002, AC-003, AC-004, AC-005, AC-006)' "$OUT/ready-AIF-48.out")" "0,1,1"
+rules_ticket AIF-49 6 6
+ready_says AIF-49
+eq "thirty-six examples: the backstop refuses, pointing at the key examples, not at a second ticket" \
+  "$rc,$(grep -c 'meta.acceptance has 36 criteria, and the backstop is 30 — keep the key examples' "$OUT/ready-AIF-49.out")" "1,1"
+sed -i.bak 's/"rule": "R-6"/"rule": "R-9"/' tasks/AIF-44/ticket.md && rm -f tasks/AIF-44/ticket.md.bak
+ready_says AIF-44
+eq "a criterion naming a rule that is not there, and a rule nothing illustrates: both refused" \
+  "$rc,$(grep -c 'AC-016.rule "R-9" is not in meta.rules' "$OUT/ready-AIF-44.out"),$(grep -c 'R-6 has no criterion' "$OUT/ready-AIF-44.out")" "1,1,1"
+rules_ticket AIF-51 0 16
+ready_says AIF-51
+eq "a ticket without rules keeps the old cap — sixteen refused, told to group them under rules" \
+  "$rc,$(grep -c 'a ticket without rules is held to 15 — group them under meta.rules' "$OUT/ready-AIF-51.out")" "1,1"
+rules_ticket AIF-52 0 15
+ready_says AIF-52
+eq "…and fifteen pass, the summary as it always was" \
+  "$rc,$(grep -c 'ready: 15 criteria · 0 decided · 0 gap(s)$' "$OUT/ready-AIF-52.out"),$(grep -c 'rule(s)' "$OUT/ready-AIF-52.out")" "0,1,0"
+"$AIF" explain AIF-46 --format tree >"$OUT/explain46.out" 2>&1
+eq "explain draws the rules, each criterion's rule, and the size decision" \
+  "$(grep -c '^    R-1 — the export keeps rule 1  (AC-001)$' "$OUT/explain46.out"),$(grep -c 'AC-001 \[R-1\] — given' "$OUT/explain46.out"),$(grep -c '(size: kept whole over the cap)' "$OUT/explain46.out")" "1,1,1"
+# The caps reach a project made before them through the upgrade, and the gate
+# falls back to the template's values until then.
+jq 'del(.limits.ticket_rules_max, .limits.ticket_examples_max, .limits.rule_examples_warn)' .aif/project.json >"$OUT/p43.json" && cp "$OUT/p43.json" .aif/project.json
+ready_says AIF-45
+eq "without the keys the gate holds the template's caps" "$rc,$(grep -c 'limit is 6' "$OUT/ready-AIF-45.out")" "1,1"
+eq "…and project check names them as moved" "$("$AIF" project check 2>&1 | grep -c 'limits.ticket_rules_max is not set — the pytest template puts it at 6')" "1"
+"$AIF" project upgrade >/dev/null 2>&1
+eq "the upgrade brings all three forward" "$(jq -c '[.limits.ticket_rules_max, .limits.ticket_examples_max, .limits.rule_examples_warn]' .aif/project.json)" "[6,30,5]"
+# A ticket with rules goes through the worker untouched: the plan, the tests
+# and verify-red read the criteria, one by one, as before.
+rules_ticket AIF-53 3 1
+git add -A && git commit -qm "tickets 43" >/dev/null
+rc=0
+"$AIF" work AIF-53 --no-worktree >"$OUT/run43.out" 2>&1 || rc=$?
+eq "a ticket with rules is built" "$rc,$(jq -r '.status' tasks/AIF-53/run.json)" "0,built"
+eq "…its intake read the rules" \
+  "$(jq -r '[.entries[] | select(.gate == "ready")] | first | .reason' tasks/AIF-53/ledger.json)" "ready: 3 rule(s) · 3 criteria · 0 decided · 0 gap(s)"
+
 # ----------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

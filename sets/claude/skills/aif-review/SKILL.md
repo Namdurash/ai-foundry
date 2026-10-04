@@ -53,6 +53,9 @@ Short, in the user's language, in this order:
    asserts (`expect`), and where in the diff the behaviour lives. A criterion with no
    test carrying its id, or a test whose assertion is not the literal, is the first
    thing to say.
+   When the ticket has rules, take them in order and put each criterion under its
+   rule: the human agreed to the rules, and a rule whose every example passes can
+   still be missing a case the diff makes plain.
 3. **What the run did not establish.** The report's *Not verified by this run* list,
    re-emitted, each with what the human would have to do by hand to know. This is the
    list that used to dissolve; here it is the centre of the review.

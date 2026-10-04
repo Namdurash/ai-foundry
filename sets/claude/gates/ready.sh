@@ -15,6 +15,15 @@
 #     names a surface, and each carries a literal `expect` a test can assert
 #     against. That literal is the one property that turns prose into an
 #     oracle: verify-red later greps for it in a test file;
+#   - the rules, when the ticket has them, run R-1, R-2, … without a gap, each
+#     a sentence with at least one criterion naming it, and every criterion
+#     names one. A criterion is an EXAMPLE of a rule, and the size cap counts
+#     rules: a person's acceptance criterion is a rule, and the old cap on
+#     examples made the analyst cut ordinary stories into fragments
+#     (docs/DEFECTS.md 12.1). Over the cap, only the human keeps a ticket
+#     whole — a `decided` entry of kind `size`, by human. Examples keep a
+#     backstop of their own. A ticket without rules is capped on its criteria,
+#     as before;
 #   - every open question is answered or its default accepted: `open` is empty
 #     and `decided` says what was chosen and by whom. A question the human did
 #     not answer is decided by default and SAID SO, on the pass path — it is
@@ -54,13 +63,22 @@ fi
 
 meta="$(aif_g_meta_or_die "$ticket" "ticket.md")" || exit $?
 
+# The caps. ticket_ac_max is the old one, on the criteria of a ticket without
+# rules; the other three are read only when the ticket has rules. Each falls
+# back to the template's value, which is what `aif project check` says when the
+# key is missing from project.json.
 ac_max="$(jq -r '.limits.ticket_ac_max // .limits.spec_ac_max // 15' "$project")"
+rules_max="$(jq -r '.limits.ticket_rules_max // 6' "$project")"
+examples_max="$(jq -r '.limits.ticket_examples_max // 30' "$project")"
+rule_warn="$(jq -r '.limits.rule_examples_warn // 5' "$project")"
 ticket_re="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' "$project")"
 want_id="$(basename "$(cd "$work" && pwd -P)")"
 
 violations="$(
   printf '%s' "$meta" | jq -r \
     --argjson ac_max "$ac_max" \
+    --argjson rules_max "$rules_max" \
+    --argjson examples_max "$examples_max" \
     --arg ticket_re "$ticket_re" \
     --arg want_id "$want_id" '
 
@@ -83,6 +101,11 @@ violations="$(
     | ($m.acceptance // []) as $acs
     | ($m.surfaces // []) as $surfaces
     | ([ $acs[]?.id ]) as $ids
+    | ($m | has("rules")) as $has_rules
+    | (if ($m.rules | type) == "array" then $m.rules else [] end) as $rules
+    | ([ $rules[]? | objects | .id ]) as $rule_ids
+    | ([ ($m.decided // [])[]? | objects
+         | select(.kind == "size" and (.by // "human") == "human") ] | length > 0) as $kept_whole
     | [
       # ---- envelope ----------------------------------------------------
       (if ($m.schema? // null) != 2
@@ -105,11 +128,54 @@ violations="$(
       (if ($acs | length) < 1
         then "meta.acceptance is empty — a ticket with no criterion has no definition of done"
         else empty end),
-      (if ($acs | length) > $ac_max
+      (if ($has_rules | not) and (($acs | length) > $ac_max)
         then "meta.acceptance has " + ($acs | length | tostring)
-             + " criteria, limit is " + ($ac_max | tostring) + " — split the ticket"
+             + " criteria, and a ticket without rules is held to " + ($ac_max | tostring)
+             + " — group them under meta.rules, each criterion naming its rule: the limit then counts rules ("
+             + ($rules_max | tostring) + "), and examples only up to " + ($examples_max | tostring)
         else empty end),
       (if ($ids | length) != ($ids | unique | length) then "duplicate AC ids" else empty end),
+
+      # ---- rules: what the criteria are examples of ----------------------
+      # The cap counts these. Over it, the order is the one the analyst works
+      # by — restate, then an axis of variation, then the human — and never a
+      # ticket that holds the remainder of another (docs/DEFECTS.md 12.1).
+      (if $has_rules and (($m.rules | type) != "array")
+        then "meta.rules must be a list of { \"id\": \"R-1\", \"text\": \"<the rule, in a sentence>\" }"
+        elif $has_rules and (($rules | length) == 0)
+        then "meta.rules is empty — write the rules the criteria are examples of, or leave the key out"
+        else empty end),
+      (if $has_rules and (($rules | length) > $rules_max) and ($kept_whole | not)
+        then "meta.rules has " + ($rules | length | tostring) + " rules, limit is " + ($rules_max | tostring)
+             + " — in this order: a rule that only lists cases is restated, not split; then split along an axis of"
+             + " variation (a path, a rule, the data, an interface), each part a behaviour of its own; with no such"
+             + " axis the user keeps it whole: a decided entry of kind size, by human. Never a ticket that holds"
+             + " the remainder of another"
+        else empty end),
+      (if $has_rules and (($acs | length) > $examples_max)
+        then "meta.acceptance has " + ($acs | length | tostring) + " criteria, and the backstop is "
+             + ($examples_max | tostring) + " — keep the key examples of each rule (the typical case, each"
+             + " boundary that changes the outcome, the nearest counter-example); every other combination"
+             + " is for the tests station to cover"
+        else empty end),
+      ( $rules | to_entries[]
+        | .key as $i | .value as $r
+        | ("R-" + (($i + 1) | tostring)) as $want
+        | if ($r | type) != "object"
+            then "rules[" + ($i | tostring) + "] must be { \"id\": \"" + $want + "\", \"text\": \"…\" }"
+          else (
+            (if ($r.id // "") != $want
+              then "rules[" + ($i | tostring) + "].id is \"" + (($r.id // "?") | tostring)
+                   + "\", expected \"" + $want + "\" (ids run from R-1 without gaps)"
+              else empty end),
+            (if (($r.text // "") | tostring | length) == 0
+              then $want + ".text is empty — the rule, in one sentence" else empty end),
+            (if ([ $acs[]? | select(.rule? == $r.id) ] | length) == 0
+              then (($r.id // $want) | tostring) + " has no criterion — a rule no example illustrates is"
+                   + " not tested; give it its key example, or drop it"
+              else empty end)
+          ) end
+      ),
 
       # ---- per criterion -----------------------------------------------
       ( $acs | to_entries[]
@@ -130,6 +196,15 @@ violations="$(
             elif ($surfaces | index($ac.surface)) == null
             then $id + ".surface \"" + ($ac.surface | tostring) + "\" is not in meta.surfaces"
             else empty end),
+          (if $has_rules then
+             (if ($ac | has("rule") | not)
+               then $id + ".rule is required — the rule in meta.rules this criterion is an example of"
+               elif ($rule_ids | index($ac.rule)) == null
+               then $id + ".rule \"" + ($ac.rule | tostring) + "\" is not in meta.rules"
+               else empty end)
+           elif ($ac | has("rule"))
+             then $id + ".rule names " + ($ac.rule | tostring) + ", and the ticket has no meta.rules"
+           else empty end),
           (if ($ac | has("expect") | not)
             then $id + ".expect is required — the literal a test asserts against"
             else ($ac.expect | type) as $t
@@ -169,7 +244,14 @@ violations="$(
             then "decided[" + ($i | tostring) + "].answer is empty — a decision with no answer is an open question"
             else empty end),
           (if (["human","default"] | index($d.by // "human")) == null
-            then "decided[" + ($i | tostring) + "].by must be human or default" else empty end)
+            then "decided[" + ($i | tostring) + "].by must be human or default" else empty end),
+          # Keeping a ticket whole over the cap is the one size decision, and
+          # it is the user to take: a default here would be the analyst
+          # lifting its own limit.
+          (if ($d.kind // "") == "size" and ($d.by // "human") != "human"
+            then "decided[" + ($i | tostring) + "] keeps the ticket whole by default — a size decision"
+                 + " is for the user to take: by human, or not at all"
+            else empty end)
         )
       ),
 
@@ -223,7 +305,32 @@ aif_g_report "$all" "ticket.md"
 n_ac="$(printf '%s' "$meta" | jq '.acceptance | length')"
 n_dec="$(printf '%s' "$meta" | jq '(.decided // []) | length')"
 n_gap="$(printf '%s' "$meta" | jq '(.verification_gaps // []) | length')"
-printf 'ready: %s criteria · %s decided · %s gap(s)\n' "$n_ac" "$n_dec" "$n_gap"
+n_rules="$(printf '%s' "$meta" | jq 'if has("rules") then (.rules | length) else -1 end')"
+if [ "$n_rules" -ge 0 ]; then
+  printf 'ready: %s rule(s) · %s criteria · %s decided · %s gap(s)\n' "$n_rules" "$n_ac" "$n_dec" "$n_gap"
+else
+  printf 'ready: %s criteria · %s decided · %s gap(s)\n' "$n_ac" "$n_dec" "$n_gap"
+fi
+
+# On the PASS path, always: a ticket the human kept whole over the cap, and a
+# rule crowded with examples. The first is a decision a reviewer must see; the
+# second is not wrong, only the shape that most often hides two rules, or a
+# concept the ticket has not named (docs/DEFECTS.md 12.1).
+if [ "$n_rules" -gt "$rules_max" ]; then
+  kept="$(printf '%s' "$meta" | jq -r '.decided[]? | select(.kind == "size" and (.by // "human") == "human") | "    - " + .question + " → " + .answer')"
+  printf '  KEPT WHOLE BY THE HUMAN — %s rules, over the limit of %s:\n' "$n_rules" "$rules_max"
+  printf '%s\n' "$kept"
+fi
+crowded="$(printf '%s' "$meta" | jq -r --argjson warn "$rule_warn" '
+  (.acceptance // []) as $acs
+  | (.rules // [])[] | objects | .id as $r | (.text // "") as $text
+  | [ $acs[] | select(.rule == $r) | .id ] as $ex
+  | select(($ex | length) > $warn)
+  | "    - " + $r + ": " + ($ex | length | tostring) + " examples (" + ($ex | join(", ")) + ") — " + $text')"
+if [ -n "$crowded" ]; then
+  printf '  MANY EXAMPLES ON ONE RULE — over %s; often two rules, or a concept not yet named:\n' "$rule_warn"
+  printf '%s\n' "$crowded"
+fi
 
 # On the PASS path, always: what was decided by default rather than by the
 # human is exactly what a reviewer must not be unaware of. Same rule as

@@ -261,6 +261,16 @@ aif_project_validate() {
       (if (.limits.replans_max // null) == null then empty
        elif (.limits.replans_max | type) != "number" or .limits.replans_max < 0
          then "limits.replans_max must be a number of 0 or more" else empty end),
+      # ticket_rules_max / ticket_examples_max / rule_examples_warn — optional,
+      # the caps the ready gate puts on a ticket with rules (docs/DEFECTS.md
+      # 12.1). The gate hands them to jq as numbers, and a string there would
+      # stop it on every ticket. Absent, 6, 30 and 5.
+      ( ("ticket_rules_max", "ticket_examples_max", "rule_examples_warn") as $k
+        | (.limits[$k] // null) as $v
+        | if $v == null then empty
+          elif ($v | type) != "number" or $v < 1
+            then "limits." + $k + " must be a number of 1 or more"
+          else empty end ),
       (if (.tiers | type) != "object" then "tiers must be an object" else empty end),
       (if (.tiers.routine // "") == "" then "tiers.routine is required" else empty end),
       (if (.tiers.careful // "") == "" then "tiers.careful is required" else empty end)

@@ -8,8 +8,8 @@
 # by reading the finished artifact is a plausible story about the artifact, not
 # a record of anything, and it would raise a reader confidence no gate had
 # earned. So this renders ONLY fields the analyst and the stations wrote while
-# deciding and the gates check afterwards — the ticket's acceptance, decided and
-# verification_gaps; the plan's decisions.because/serves. It can draw nothing
+# deciding and the gates check afterwards — the ticket's rules, acceptance,
+# decided and verification_gaps; the plan's decisions.because/serves. It can draw nothing
 # that was not written, and nothing it draws is unchecked.
 #
 # Derived, like everything else here. explain.md is regenerated, never edited,
@@ -24,9 +24,9 @@ _aif_explain_usage() {
   cat <<EOF
 usage: aif explain <ticket> [options]
 
-  Draws the chain behind a ticket: its criteria by surface, what was decided
-  with the analyst (and what fell to a default), what this cycle will not
-  establish, and which decisions the plan made for it.
+  Draws the chain behind a ticket: its rules, its criteria by surface, what
+  was decided with the analyst (and what fell to a default), what this cycle
+  will not establish, and which decisions the plan made for it.
 
 options:
   --ticket          only the ticket
@@ -77,17 +77,24 @@ _aif_explain_ticket() {
     | ($m.surfaces // []) as $surfaces
     | if $format == "tree" then
         ( "ticket"
+        , ( if (($m.rules // []) | length) > 0 then "  rules" else empty end )
+        , ( ($m.rules // [])[]? | objects | . as $r
+            | "    " + ($r.id // "?") + " — " + ($r.text // "")
+              + "  (" + ([ $m.acceptance[]? | select(.rule == $r.id) | .id ] | join(", ")) + ")" )
         , ( $surfaces[]?
             | . as $s
             | "  " + $s
             , ( $m.acceptance[]? | select(.surface == $s)
-                | "    " + .id + " — given " + (.given // "") + ", when " + (.when // "")
+                | "    " + .id + (if .rule then " [" + (.rule | tostring) + "]" else "" end)
+                  + " — given " + (.given // "") + ", when " + (.when // "")
                   + ", then " + (.then // "") + " → " + (.expect | tostring) ) )
         , ( if (($m.decided // []) | length) > 0 then "  decided with the analyst" else empty end )
         , ( $m.decided[]?
             | "    " + (if .by == "default" then "BY DEFAULT  " else "human       " end)
               + .question + " → " + .answer
-              + (if (.kind // "") == "architecture" then "  (architecture)" else "" end) )
+              + (if (.kind // "") == "architecture" then "  (architecture)"
+                 elif (.kind // "") == "size" then "  (size: kept whole over the cap)"
+                 else "" end) )
         , ( if (($m.verification_gaps // []) | length) > 0 then "  not established by this cycle" else empty end )
         , ( $m.verification_gaps[]?
             | "    " + .id + " — " + .text
@@ -99,7 +106,8 @@ _aif_explain_ticket() {
         , "flowchart LR"
         , ( $surfaces[]? | "  " + (. | nid) + "([\"" + (. | lbl(40)) + "\"])" )
         , ( $m.acceptance[]?
-            | "  " + (.id | nid) + "[\"" + (.id | lbl(12)) + " — "
+            | "  " + (.id | nid) + "[\"" + (.id | lbl(12))
+              + (if .rule then " · " + (.rule | lbl(6)) else "" end) + " — "
               + ((.then // "") | lbl(60)) + " → " + ((.expect | tostring) | lbl(20)) + "\"]" )
         , ( $m.acceptance[]?
             | "  " + ((.surface // "") | nid) + " --> " + (.id | nid) )
@@ -114,12 +122,19 @@ _aif_explain_ticket() {
             | "  " + ($vg.id | nid) + " -.->|\"leaves unproven\"| " + (. | nid) )
         , "```"
         , ""
+        , ( if (($m.rules // []) | length) > 0 then ("### Rules", "") else empty end )
+        , ( ($m.rules // [])[]? | objects | . as $r
+            | "- **" + ($r.id // "?") + "** " + ($r.text // "") + " — "
+              + ([ $m.acceptance[]? | select(.rule == $r.id) | .id ] | join(", ")) )
+        , ( if (($m.rules // []) | length) > 0 then "" else empty end )
         , "### Decided with the analyst"
         , ""
         , ( ($m.decided // []) | if length == 0 then "- nothing was left open" else
             .[] | "- " + (if .by == "default" then "**by default, not by the human:** " else "" end)
               + .question + " → " + .answer
-              + (if (.kind // "") == "architecture" then " _(architecture)_" else "" end) end )
+              + (if (.kind // "") == "architecture" then " _(architecture)_"
+                 elif (.kind // "") == "size" then " _(size: kept whole over the cap)_"
+                 else "" end) end )
         , ""
         , ( if (($m.verification_gaps // []) | length) > 0
             then ( "### What this cycle will not establish", "" ) else empty end )

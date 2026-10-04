@@ -360,14 +360,28 @@ both a skill and a slash command with the same name, so it is reachable whether 
 your runner lets you type skills.
 
 Two things make it an analyst rather than an interview form. **It writes the
-acceptance criteria** — GIVEN / WHEN / THEN, each with the literal a test will
-assert — with you, in the conversation, rather than handing a narrative to a
+rules and their examples** with you, in the conversation — the rules first, a
+sentence each, then the key examples of each rule as GIVEN / WHEN / THEN, each
+with the literal a test will assert — rather than handing a narrative to a
 station that re-derives criteria blindfolded; that second translation was where
 a ticket's meaning used to get lost. And **it reads the repository first**, so
 the questions it puts to you are the ones the code cannot answer: what the
 product should *do*. Those are yours; a decision you do not make is recorded as
 *decided by default*, in the open, with the default named — never filled in
 silently.
+
+**The size cap counts rules, not examples** (`limits.ticket_rules_max`, 6). What a
+person calls an acceptance criterion is a rule; one of the ticket's criteria is an
+example of one — a single literal — and a cap of fifteen examples had the analyst
+cutting ordinary six-rule stories into tickets that each built one detail. Each rule
+gets its key examples only: the typical case, every boundary that changes the
+outcome, the nearest counter-example; the other combinations are the tests
+station's. Over the cap the analyst restates a rule that only lists cases, then
+looks for an axis of variation that leaves each part a behaviour of its own, and
+with none asks you to keep the ticket whole — your yes is recorded as a size
+decision, and the gate refuses one taken by default. The examples keep a backstop
+of their own (`limits.ticket_examples_max`, 30), and a ticket written before rules
+existed is held to its old cap on criteria (`limits.ticket_ac_max`, 15).
 
 Given a request from the product partner, **it cuts by the slices**: one ticket per
 slice, never one across two, every other slice a named non-goal of each ticket. It
@@ -890,9 +904,11 @@ decide, in fields the gates check afterwards:
 
 | field | in | says |
 |---|---|---|
+| `rules[]` | ticket | what must hold, a sentence each — the unit the size cap counts |
+| `acceptance[].rule` | ticket | the rule a criterion is an example of |
 | `acceptance[].surface` | ticket | where the criterion is observed |
 | `decided[].by` | ticket | `human`, or `default` — the analyst's proposal, unanswered |
-| `decided[].kind` | ticket | `architecture` marks a decision that commits the project |
+| `decided[].kind` | ticket | `architecture` marks a decision that commits the project; `size`, the human keeping a ticket whole over the rules cap |
 | `verification_gaps[].leaves` | ticket | the criteria a gap leaves unproven |
 | `decisions[].because` | plan | what forced the decision |
 | `decisions[].serves` | plan | the criteria it exists for |

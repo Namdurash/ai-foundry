@@ -40,6 +40,7 @@ aif_cmd_ticket_init() {
 <!-- aif:meta
 { "schema": 2, "ticket": "$ticket", "lang": "en", "risk": "medium",
   "surfaces": [],
+  "rules": [],
   "acceptance": [],
   "open": [],
   "decided": [],
@@ -50,7 +51,9 @@ aif_cmd_ticket_init() {
 <!-- Describe the need in your own words. Set lang and risk in the block above.
      risk drives the implementation tier: low and medium run on the routine
      engine, high on the careful one.
-     acceptance[] holds the GIVEN / WHEN / THEN criteria the code is built to;
+     rules[] holds the business rules, one sentence each — the size cap counts
+     these; acceptance[] holds the GIVEN / WHEN / THEN examples of each rule,
+     every one naming its rule, which the code is built to;
      open[] holds the questions still unanswered, each with a proposed default;
      /aif-ba fills all of this in with you, and aif _ready says when it is
      buildable. -->

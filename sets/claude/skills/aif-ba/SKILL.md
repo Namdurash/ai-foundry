@@ -1,6 +1,6 @@
 ---
 name: aif-ba
-description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything; afterwards marks the request cut, cut in part (which slice became which ticket) or not cut. Writes the GIVEN/WHEN/THEN criteria WITH the user, in conversation, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
+description: The analyst — turns a need into tickets the worker can build without asking anyone anything. Given a request (requests/<slug>.md) from the product partner, cuts it by its slices — one ticket per slice, never one ticket across two — and confirms the cut before scaffolding anything; afterwards marks the request cut, cut in part (which slice became which ticket) or not cut. Writes the rules WITH the user, in conversation — a sentence each, the unit the size cap counts — then the key GIVEN/WHEN/THEN examples of each rule, and ends with the Definition of Ready (aif _ready), which puts every still-open question in front of the user while they have the most context. Use when the user wants to write a ticket, cut a request into tickets, rework a ticket that came back from review, or invokes /aif-ba. Not for building — that is `aif work`.
 requires: [claude, board]
 ---
 
@@ -14,10 +14,11 @@ the one person who understands the product — and you make that cheap.
 
 Three things distinguish this from an interview form:
 
-1. **You write the acceptance criteria.** Not a narrative someone else turns into
+1. **You write the rules and their examples.** Not a narrative someone else turns into
    criteria later — that second translation is where the meaning of a ticket used to
-   get lost. You have the conversation in context; you write GIVEN / WHEN / THEN with
-   the user, and the machine builds to exactly those.
+   get lost. You have the conversation in context; you write the rules with the user —
+   what must hold, a sentence each — then the key examples of each rule as GIVEN /
+   WHEN / THEN, and the machine builds to exactly those.
 2. **You read the repository first.** Most of what looks like an open question is
    already answered by the code — the existing endpoint shape, the error convention,
    the test layout. Answer those yourself from the code and say so. Ask the user only
@@ -74,8 +75,10 @@ them:
   finding about the request: say so, and merge them only when the user says to, with
   the reason recorded in `decided`.
 - **A slice may become more than one ticket** when it would not build in one run —
-  more criteria than the project's limit, or two surfaces that ship separately. Say
-  why.
+  more rules than the project's limit with an axis of variation to cut along (step 3,
+  *Over the cap*), more files than one plan holds, or two surfaces that ship
+  separately. Say why. Never by count: a ticket that holds the remainder of another,
+  or one that only makes sense right after its neighbour, is a fragment, not a slice.
 - **Every other slice is a non-goal of this ticket**, by name, in `non_goals`. That is
   what keeps slice 2 out of slice 1's criteria.
 - **A request without `## Slices`** was written before they existed and has one slice:
@@ -114,6 +117,10 @@ for each ticket cut now — never for one that waits.
   slice, and do not ask again. Its `## Open` lines are your first open questions, each
   needing a default; `## Watch out` sets `risk` and seeds `verification_gaps`;
   `## Not this` seeds `non_goals`.
+- **Rules before examples.** Settle what must hold — the rules, a sentence each, in
+  the user's words — before a single example. Five or six sentences the user reads
+  and corrects in one go are worth more than fifteen GIVEN / WHEN / THEN they skim,
+  and a disagreement about a rule found now costs a sentence, not a rework.
 - Where the need touches something risk-bearing — concurrency, money, authn/authz,
   data migration, partial failure — ask what must hold there; those answers set
   `risk`, and a passing test would not prove correctness on them.
@@ -126,14 +133,28 @@ for each ticket cut now — never for one that waits.
 
 ### 3. Draft the ticket — one file per ticket
 
-Write `tasks/<ID>/ticket.md` in the format below. The criteria are the contract:
+Write `tasks/<ID>/ticket.md` in the format below. Rules first, then their examples —
+the way Example Mapping works a story: the rules are what the user agreed to, the
+examples are what the machine checks. The criteria are the contract:
 
+- **A rule is one sentence of behaviour**, in the user's language — "the allowance is
+  what is left for the month over the days to its end, today included" — in `rules`,
+  `R-1`, `R-2`, …. The size cap counts rules (`limits.ticket_rules_max`, 6): what a
+  person calls an acceptance criterion is a rule, and a story of six rules is an
+  ordinary one. One behaviour per rule — two joined with "and" are two rules, and
+  joining them to get under the cap hides from the user exactly what it is there to
+  show.
+- **Each rule gets its key examples, and only those:** the typical case, every
+  boundary that changes the outcome, and the nearest counter-example — the input
+  closest to the rule that must not trigger it. Each is a criterion naming its rule,
+  `"rule": "R-2"`. Every other combination is the tests station's to cover; listing
+  them here is how a ticket with six rules in it used to reach a cap of fifteen.
+  More than about five examples on one rule usually means two rules, or a concept
+  nobody has named yet — `aif _ready` says so on the pass path.
 - **One criterion, one observable check.** `then` says one thing; `expect` is the
   **literal** a test will assert — `409`, `true`, `"conflict"` — never a phrase. If
   you cannot name a literal, the behaviour is not decided yet: it is an open question.
 - **Every criterion names its surface**, and every surface is in `surfaces`.
-- **Prefer fewer, sharper criteria.** A criterion that is short and falsifiable beats
-  a thorough one nobody can test.
 - **Would today's tree already pass it?** Ask that of every criterion before you write
   it down, with the code in front of you. The plan station asks the same question
   first thing, and a criterion the tree already satisfies is a spec stop: one opus
@@ -147,6 +168,9 @@ Write `tasks/<ID>/ticket.md` in the format below. The criteria are the contract:
   not "no block while `idle`" but "present before and after `idle` → `connected`",
   `expect: "false → true"`; not "one request at 59 s" but "calls at 59 s and at
   90 s", `expect: "1 → 2"`. A guard folded that way is red now and stays a guard.
+  And a guard that is not the counter-example of a rule this ticket changes is not a
+  criterion at all: "everything else still works" is the Definition of Done, and
+  `green` already holds the whole suite to it.
 - **On a Trello board the ticket is the card's description, and Trello holds that to
   16 384 characters** (one per letter, two per emoji — `aif _ready` counts it and
   refuses a longer ticket on a Trello project). The rich tickets are the ones that
@@ -167,6 +191,33 @@ Write `tasks/<ID>/ticket.md` in the format below. The criteria are the contract:
   reads to move it from Backlog to Ready when everything it names is Done; a
   dependency only in prose is one the project manager has to carry by hand.
 
+#### Over the cap
+
+`aif _ready` refuses a ticket with more rules than the project's limit, and the way
+out is an order, not a split:
+
+1. **A rule that only lists cases is restated.** Six examples on "the block on Home"
+   are often three rules — it appears, where it sits, what it says — or one rule
+   missing the word for what they share. Restating changes no scope.
+2. **Then an axis of variation:** a path (the usual one first, the failures after), a
+   rule (relaxed now, kept later), the data (one kind first), an interface (a plain
+   one first). Each part must be a behaviour the user can see on its own, and the cut
+   is worth making when one part could wait, or be dropped. That is two tickets, the
+   second `depends_on` the first; propose it the way a cut is proposed, and wait for
+   the yes.
+3. **No such axis — the user keeps it whole.** Say so plainly: the rules, why no cut
+   leaves each part a behaviour of its own, and the question. Their yes is a `decided`
+   entry with `"kind": "size"` and `"by": "human"`; the gate then lets the ticket over
+   the cap and prints that it did. Never record it by default — a size decision you
+   take yourself is the analyst lifting its own limit, and the gate refuses it.
+4. **Never** a ticket that holds the remainder of another — the criteria that did not
+   fit — and never one that only makes sense right after its neighbour. Those are
+   fragments, not slices: each costs a run, a review and a card, and builds one detail
+   of something nobody can use yet.
+
+The examples have a backstop of their own (`limits.ticket_examples_max`, 30), and the
+way under it is the key examples above — never a second ticket.
+
 ### 4. The Definition of Ready — the only gate, and it is a conversation
 
 ```bash
@@ -186,13 +237,19 @@ questions**, each with its default:
   `decided` — `"by": "human"` with their answer, or `"by": "default"` with yours.
   Nothing stays in `open`, and nothing is dropped.
 - Fix anything else it complains about (a missing literal, a surface not listed, a
-  ticket too long for its Trello card) — those are yours, not the user's.
+  ticket too long for its Trello card) — those are yours, not the user's. More rules
+  than the limit is not one of them: that is the order in *Over the cap*, worked
+  through with the user.
 - It cannot ask the one question the plan station will: does the tree already pass
   a criterion? Read your criteria once more against the code before you run it, for
   the guard shapes named in step 3.
 - Run it again, on each ticket. When it passes, it prints what was **decided by
   default**; read that line out, per ticket, because it is the list of things the user
   did not decide.
+- It may print two more blocks on a pass. **KEPT WHOLE BY THE HUMAN** is the user's
+  own size decision — read it back; a reviewer will see it too. **MANY EXAMPLES ON
+  ONE RULE** is not a refusal: offer once to restate the rule, and leave it when the
+  user says it is one rule.
 
 ### 5. Show it once, then hand off
 
@@ -291,8 +348,11 @@ into a bigger ticket.
   "lang": "<uk | en | …>",
   "risk": "<low | medium | high>",
   "surfaces": ["<each observable interface this touches, e.g. POST /api/users>"],
+  "rules": [
+    { "id": "R-1", "text": "<one sentence of behaviour, in the user's language>" } ],
   "acceptance": [
     { "id": "AC-001",
+      "rule": "<the rule this is an example of: R-1>",
       "surface": "<one of the surfaces, verbatim>",
       "given": "<the precondition>",
       "when": "<the single action>",
@@ -307,7 +367,7 @@ into a bigger ticket.
     { "question": "<the question, as it was asked>",
       "answer": "<what was chosen>",
       "by": "<human | default>",
-      "kind": "<optional: architecture>" } ],
+      "kind": "<optional: architecture, or size — the user keeps it whole over the cap; by human only>" } ],
   "verification_gaps": [
     { "id": "VG-001", "text": "<what this cycle will NOT establish>", "leaves": ["AC-001"] } ],
   "non_goals": ["<what a reader might expect that is out of scope — every other slice of the request, by name>"] }
@@ -322,7 +382,10 @@ few sentences, not a restatement of the criteria. Then the behaviour in prose wh
 helps a reader, and the non-goals.>
 ```
 
-Ids run `AC-001, AC-002, …` and `VG-001, …` without gaps. `expect` for a domain value
+Ids run `R-1, R-2, …`, `AC-001, AC-002, …` and `VG-001, …` without gaps; every
+criterion names a rule, and every rule has at least one criterion. A ticket written
+before rules existed has none and is held to the old cap on its criteria; reworking
+it is the moment to give it rules. `expect` for a domain value
 that happens to read like a judgement — a status literally called `error` — is written
 in backticks: ``"expect": "`error`"``. `request` and `slice` are absent on a ticket that
 was not cut from a request, and `depends_on` when nothing must land first; `aif _ready`

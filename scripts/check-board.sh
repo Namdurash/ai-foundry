@@ -268,7 +268,10 @@ cp tasks/AIF-1/ticket.md "$OUT/orig.md"
 rm -rf tasks/AIF-1
 "$AIF" board pull AIF-1 >/dev/null
 if cmp -s "$OUT/orig.md" tasks/AIF-1/ticket.md; then ok "pull reads the card back byte for byte"; else bad "pull changed the ticket"; fi
-eq "pull initialises the ledger" "$(test -f tasks/AIF-1/ledger.json && echo yes)" "yes"
+# No ledger: the worker makes one at intake, in the worktree it pulls into —
+# one made here, in the developer's checkout, met the branch's at land
+# (docs/DEFECTS.md 13.2).
+eq "pull writes the ticket and no ledger" "$(test -f tasks/AIF-1/ledger.json && echo yes || echo no)" "no"
 "$AIF" board comment AIF-1 "$OUT/note.md" >/dev/null
 eq "the comment reached the server" "$(mock | jq -r '[.comments[][]] | .[0].data.text')" "the export must be signed"
 eq "show lists it" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].text')" "the export must be signed"
@@ -385,7 +388,7 @@ eq "doctor text shows the roles table" "$("$AIF" doctor 2>&1 | grep -c '✗ pjm'
 rc=0
 "$AIF" work AIF-1 --no-worktree >"$OUT/work-notoken.out" 2>&1 || rc=$?
 eq "the worker refuses before spending anything" "$rc" "3"
-eq "and no station ran" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-1/ledger.json)" "0"
+eq "and no station ran" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-1/ledger.json 2>/dev/null || echo 0)" "0"
 export TRELLO_TOKEN=t
 
 # =============================== 5. the worker through the board =============

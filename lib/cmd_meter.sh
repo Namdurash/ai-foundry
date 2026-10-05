@@ -122,8 +122,10 @@ aif_cmd_meter() {
     return 0
   }
   work="$(aif_task_dir "$root" "$ticket")"
-  [ -f "$(aif_ledger_path "$work")" ] || {
-    aif_err "meter: no ledger for $ticket — $station ran unmetered"
+  # The ticket, not its ledger: the fold makes the ledger when it first writes
+  # a row (docs/DEFECTS.md 13.1), and the analyst no longer makes one (13.2).
+  [ -d "$work" ] || {
+    aif_err "meter: no $AIF_TASKS_DIR/$ticket here — $station ran unmetered"
     return 0
   }
 

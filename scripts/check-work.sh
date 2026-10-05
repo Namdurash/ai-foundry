@@ -98,6 +98,12 @@
 #      around Cyrillic titles, in colour or not, wide, compact or ASCII; live,
 #      on a pty, the keys select a worker and stop it, the card saying who,
 #      and the terminal is left as it was found, the summary on it
+#  46  the ledger never stops a run, a gate or a land: a lock whose writer is
+#      gone or never signed is taken over, one held by a live writer costs
+#      a row and a warning, a ledger that is not JSON is set aside; the
+#      analyst's uncommitted ticket is taken aside at land, an empty ledger
+#      committed after the cut and a set that moved on are settled by owner,
+#      and a developer's own untracked file refuses the land untouched
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -1155,7 +1161,7 @@ eq "a conflict: exit 1" "$rc" "1"
 eq "the merge was aborted" "$(git rev-parse HEAD)" "$head_before"
 eq "no merge in progress" "$([ -f .git/MERGE_HEAD ] && echo yes || echo no)" "no"
 eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
-eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c 'does not merge cleanly')" "1"
+eq "with the reason, naming the file" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c -E 'conflicts with [^ ]+ in src/app.py')" "1"
 
 
 # ====== 20. verify-red measures a pre-existing failure against a baseline =====
@@ -3326,6 +3332,120 @@ eq "project check names each retired cap the file still sets" \
 "$AIF" project upgrade >"$OUT/up45.out" 2>&1
 eq "the upgrade takes them out, and says so" \
   "$(jq -c '[.limits | has("plan_files_max", "diff_lines_max", "revisions_max")]' .aif/project.json),$(grep -c 'removed — retired, nothing reads it' "$OUT/up45.out")" "[false,false,false],3"
+
+# ====== 46. the ledger never stops anything; the ticket's own files land =====
+# A ledger write that failed used to exit. A lock left behind made a gate that
+# had passed exit 1 — a rejection, to the worker — and the run then died
+# writing its report (docs/DEFECTS.md 13.1). And the ticket's own files met the
+# branch's at land: the analyst's scaffold, left uncommitted, refused the merge
+# (13.3); its empty ledger, committed after the branch was cut, conflicted
+# add/add with the branch's — on aif/OPES-74 the only file the merge stopped
+# on, the code merging clean (13.2). The set the branch was brought up to
+# conflicts the same way with a newer one on the checkout's branch.
+printf '\n46. the ledger never stops a run, a gate or a land; the ticket'"'"'s own files land with it\n'
+fresh_project "$SANDBOX/p46"
+ticket_for AIF-80
+eq "the analyst's scaffold carries no ledger" "$([ -f tasks/AIF-80/ledger.json ] && echo yes || echo no)" "no"
+git add -A && git commit -qm "ticket 46" >/dev/null
+# Three things a ledger write used to die on, met in one run: a lock whose
+# writer is gone, before the first row; a lock nobody signed, left after the
+# plan station; and, after the tests station, a ledger that is not JSON — what
+# a merge resolved by hand leaves behind.
+sleep 30 &
+gone=$!
+kill "$gone" 2>/dev/null
+wait "$gone" 2>/dev/null
+mkdir -p tasks/AIF-80/ledger.json.lock && printf '%s\n' "$gone" >tasks/AIF-80/ledger.json.lock/pid
+cat >"$SANDBOX/ledger-station.sh" <<'EOF'
+#!/bin/bash
+"$REAL_STATION" "$@"
+rc=$?
+case "$1" in
+  plan) mkdir -p "$3/tasks/$2/ledger.json.lock" ;;
+  tests) printf '<<<<<<< ours\n' >"$3/tasks/$2/ledger.json" ;;
+esac
+exit $rc
+EOF
+chmod +x "$SANDBOX/ledger-station.sh"
+real_station="$AIF_WORK_STATION_CMD"
+rc=0
+REAL_STATION="$real_station" AIF_WORK_STATION_CMD="$SANDBOX/ledger-station.sh" \
+  "$AIF" work AIF-80 --no-worktree >"$OUT/run46.out" 2>&1 || rc=$?
+eq "built, whatever the ledger met" "$rc,$(jq -r '.status' tasks/AIF-80/run.json)" "0,built"
+eq "no station was sent back for the ledger's trouble" "$(grep -c 'rejected' "$OUT/run46.out")" "0"
+eq "the locks were taken over, not obeyed, and none is left" \
+  "$([ -d tasks/AIF-80/ledger.json.lock ] && echo held || echo gone)" "gone"
+eq "the ledger that was not JSON was set aside where git does not look, and a new one started" \
+  "$(find .aif/tmp -maxdepth 1 -name 'ledger-AIF-80-*.json' | wc -l | tr -d ' '),$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-80/ledger.json)" "1,pass"
+eq "no temp file is left in the ticket's record" "$(find tasks/AIF-80 -name '.aif-tmp-*' | wc -l | tr -d ' ')" "0"
+# A live writer holding the ledger past the wait: the row is skipped with a
+# warning, and the gate's exit is its verdict.
+sleep 60 &
+holder=$!
+mkdir -p tasks/AIF-80/ledger.json.lock && printf '%s\n' "$holder" >tasks/AIF-80/ledger.json.lock/pid
+rc=0
+"$AIF" _gate plan AIF-80 >"$OUT/gate46.out" 2>&1 || rc=$?
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+rm -rf tasks/AIF-80/ledger.json.lock
+eq "a ledger held by a live writer: the gate still passes" "$rc" "0"
+eq "…and the row it could not write is a warning" \
+  "$([ "$(grep -c 'is held by pid' "$OUT/gate46.out")" -ge 1 ] && echo yes || echo no)" "yes"
+
+# The analyst's scaffold, left uncommitted the way /aif-ba leaves it: the
+# branch carries the ticket's record, and the land takes the local copy aside.
+fresh_project "$SANDBOX/p46b"
+ticket_for AIF-81
+"$AIF" board create tasks/AIF-81/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-81 >"$OUT/run46b.out" 2>&1 || rc=$?
+eq "built on its branch" "$rc,$(col AIF-81)" "0,review"
+# A file of the developer's own that the merge would write over: refused
+# before anything is touched, the card left in Review.
+printf '# mine\n' >tests/t1.py
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-81 >"$OUT/land46a.out" 2>&1 || rc=$?
+eq "a developer's untracked file in the way: refused, nothing touched" \
+  "$rc,$(col AIF-81),$(git rev-parse HEAD),$(cat tests/t1.py),$(cat tasks/AIF-81/ticket.md | grep -c '^# AIF-81')" \
+  "1,review,$head_before,# mine,1"
+eq "…naming it" "$(grep -c 'tests/t1.py' "$OUT/land46a.out")" "1"
+rm -f tests/t1.py
+rc=0
+"$AIF" land AIF-81 >"$OUT/land46b.out" 2>&1 || rc=$?
+eq "the analyst's uncommitted ticket: landed" "$rc,$(col AIF-81)" "0,done"
+eq "the record that landed is the branch's" \
+  "$(git ls-files tasks/AIF-81 | grep -c -E '^tasks/AIF-81/(ticket\.md|ledger\.json|run\.json|report\.md)$')" "4"
+eq "the local copy was taken aside, the same bytes as landed, and said so" \
+  "$(find .aif/tmp -path '*/land-AIF-81-*/tasks/AIF-81/ticket.md' | wc -l | tr -d ' '),$(grep -c '^aside: .*the same as what landed' "$OUT/land46b.out")" "1,1"
+eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+
+# OPES-74's shape: the analyst's ticket and an empty ledger committed on the
+# checkout's branch after the ticket's branch was cut — and the set moved on
+# there too, while the branch carries the one its run was brought up to.
+fresh_project "$SANDBOX/p46c"
+ticket_for AIF-82
+"$AIF" board create tasks/AIF-82/ticket.md --column ready >/dev/null
+printf '# the set as the run found it\n' >>.aif/gates/green.sh
+rc=0
+"$AIF" work AIF-82 >"$OUT/run46c.out" 2>&1 || rc=$?
+eq "built, its branch brought up to the set the run found" \
+  "$rc,$(col AIF-82),$(git show aif/AIF-82:.aif/gates/green.sh | tail -1)" "0,review,# the set as the run found it"
+git checkout -q -- .aif/gates/green.sh
+printf '# the set as it is now\n' >>.aif/gates/green.sh
+jq -n '{ schema: 1, ticket: "AIF-82", entries: [], accepted_at: null }' >tasks/AIF-82/ledger.json
+git add -A && git commit -qm "docs(AIF-82): the ticket; the set moved on" >/dev/null
+rc=0
+"$AIF" land AIF-82 >"$OUT/land46c.out" 2>&1 || rc=$?
+eq "the ledger added on both sides and the set changed on both: landed" "$rc,$(col AIF-82)" "0,done"
+eq "the ticket's record is the branch's" "$(jq '.entries | length > 0' tasks/AIF-82/ledger.json)" "true"
+eq "the set is the checkout's" "$(tail -1 .aif/gates/green.sh)" "# the set as it is now"
+target46="$(git symbolic-ref --short HEAD)"
+eq "both settlements are said, here, on the card and in the merge commit" \
+  "$(grep '^settled:  ' "$OUT/land46c.out" | grep -c "tasks/AIF-82/ledger.json (aif/AIF-82)"),$(grep '^settled:  ' "$OUT/land46c.out" | grep -c ".aif/gates/green.sh ($target46)"),$("$AIF" board show AIF-82 --json | jq -r '.comments[-1].text' | grep -c "conflicts in aif's own files, settled by owner"),$(git log -1 --format=%b | grep -c '^Settled by owner')" "1,1,1,1"
+eq "one merge commit, nothing left half-merged" \
+  "$(git log --format=%s -1),$([ -f .git/MERGE_HEAD ] && echo merging || echo clean),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" \
+  "aif: land AIF-82 — one-command user export,clean,0"
 
 # ----------------------------------------------------------------------------
 printf '\n'

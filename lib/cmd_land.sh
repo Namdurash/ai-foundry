@@ -12,11 +12,15 @@
 # authority on whether a yes is allowed at all.
 #
 #   refuse      not the main checkout, no branch, the card not in Review, the
-#               run record not `built`, uncommitted changes, --prepare with no
-#               "prepare" to run — nothing touched
+#               run record not `built`, uncommitted changes, an untracked file
+#               of the developer's that the merge would write over, --prepare
+#               with no "prepare" to run — nothing touched
 #   merge       aif/<ID> into the checkout's branch, --no-ff so the ticket
-#               stays one commit to find. A conflict is aborted and reported,
-#               never resolved by a model
+#               stays one commit to find. The analyst's uncommitted copy of the
+#               ticket is taken aside first, and a conflict in aif's own files
+#               — the ticket's record, the set — is settled by owner
+#               (lib/integrate.sh). Any other conflict is aborted and reported:
+#               nothing here settles code yet (docs/DEFECTS.md 13.4)
 #   install     only with --prepare, and only when the merge moved a dependency
 #               manifest or lockfile: project.json's "prepare", here
 #   suite       .test.command on the RESULT, here: the gates proved the branch
@@ -64,10 +68,14 @@ usage: aif land <ticket> [options]
 
   Refused, touching nothing, unless this is the main checkout, the branch
   exists, the card is in Review, the run ended built, and nothing here is
-  uncommitted. A merge conflict or a red suite undoes the merge and moves the
-  card to Needs Human with the reason. Stopped before the verdict — Ctrl-C, a
-  TERM — it undoes the merge and leaves the card in Review. The branch is
-  untouched either way.
+  uncommitted. The ticket's own files that the analyst left uncommitted here
+  are taken aside to .aif/tmp/ rather than merged over, and a conflict in
+  aif's own files — the ticket's record under tasks/<ticket>/, the set under
+  .aif/ and .claude/ — is settled by owner: the record is the branch's, the
+  set is this checkout's. Any other conflict, or a red suite, undoes the
+  merge and moves the card to Needs Human with the reason. Stopped before the
+  verdict — Ctrl-C, a TERM — it undoes the merge and leaves the card in
+  Review. The branch is untouched either way.
 
   A merge that moves a dependency manifest or lockfile (package.json,
   package-lock.json, ...) is judged against the dependencies installed here
@@ -133,9 +141,11 @@ _aif_land_prepare() {
 # installed here is the merge's, or whatever a failed install left, so it runs
 # again for the lockfile the reset put back — and the reset once more after
 # it, for anything it rewrote. Prints what became of the install, for the card.
+# What _aif_land_aside took aside comes back, untracked again, as it was.
 _aif_land_undo() {
   local root="$1" pre="$2" prepare="$3" log rc=0
   git -C "$root" reset --hard "$pre" >/dev/null 2>&1
+  _aif_land_restore_aside
   [ -n "$prepare" ] || return 0
   _aif_land_say "prepare" "again, for the lockfile the undo put back — $prepare"
   log="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
@@ -160,6 +170,143 @@ AIF_LAND_CARD=""
 AIF_LAND_AGAIN=""
 AIF_LAND_PREPARE=""
 AIF_LAND_OUT=""
+# The ticket's own files that are untracked here and that the merge would write
+# over, one path per line (_aif_land_clear); what was taken aside of them, and
+# where to; how many were not the bytes the branch carries (an empty ledger is
+# not counted — it held nothing).
+AIF_LAND_OWN=""
+AIF_LAND_ASIDE=""
+AIF_LAND_ASIDE_DIR=""
+AIF_LAND_ASIDE_DIFF=0
+
+# _aif_land_clear <root> <branch> <ticket> <again> — what git does not track
+# here and the merge would write over (docs/DEFECTS.md 13.3).
+#
+# git refuses a merge that would overwrite an untracked file, byte-identical or
+# not, and the commonest one is the analyst's: /aif-ba writes tasks/<ID>/ in
+# this checkout and nothing commits it, so the ticket's record arriving from
+# its branch stopped on the ticket's own scaffold — and the land reported that
+# as a conflict for a human. The ticket's own files are listed in AIF_LAND_OWN,
+# for _aif_land_aside to take aside once the stop handler is armed. Any other
+# file is the developer's, and the land stops here, before touching anything.
+_aif_land_clear() {
+  local root="$1" branch="$2" ticket="$3" again="$4" p added untracked own="" theirs=""
+  AIF_LAND_OWN=""
+  added="$(git -C "$root" -c core.quotePath=false diff --name-only --diff-filter=A HEAD "$branch" 2>/dev/null)" || added=""
+  untracked="$(git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)" || untracked=""
+  [ -n "$added" ] && [ -n "$untracked" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    # Matched as a whole line of the held list: `| grep -q` under pipefail
+    # reads "not found" when grep leaves early (docs/DEFECTS.md 5.3).
+    case "
+$untracked
+" in
+      *"
+$p
+"*) ;;
+      *) continue ;;
+    esac
+    if [ "$(aif_integrate_owner "$p" "$ticket")" = "ticket" ]; then
+      own="$own$p
+"
+    else
+      theirs="$theirs$p
+"
+    fi
+  done <<EOF
+$added
+EOF
+  if [ -n "$theirs" ]; then
+    aif_err "untracked files here would be overwritten by the merge — they are not the ticket's, so nothing was touched:"
+    printf '%s' "$theirs" | sed '/^$/d; s/^/  - /' >&2
+    case "$theirs" in
+      .aif/* | .claude/*) aif_err "they are the set's: aif init wrote them here and they are not committed yet — commit them, then: $again" ;;
+    esac
+    aif_die "move them or commit them, then: $again"
+  fi
+  AIF_LAND_OWN="$own"
+}
+
+# _aif_land_aside <root> <branch> <ticket> — AIF_LAND_OWN taken aside, under
+# .aif/tmp/ where git does not look; they come back if the land is undone
+# (_aif_land_restore_aside). After the stop handler is armed: a stop between
+# here and the verdict puts them back with the reset.
+_aif_land_aside() {
+  local root="$1" branch="$2" ticket="$3" p stamp
+  AIF_LAND_ASIDE=""
+  AIF_LAND_ASIDE_DIR=""
+  AIF_LAND_ASIDE_DIFF=0
+  [ -n "$AIF_LAND_OWN" ] || return 0
+  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+  AIF_LAND_ASIDE_DIR="$root/.aif/tmp/land-$ticket-$stamp"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ "$(git -C "$root" hash-object -- "$root/$p" 2>/dev/null)" != \
+      "$(git -C "$root" rev-parse -q --verify "$branch:$p" 2>/dev/null)" ] &&
+      ! jq -e '(.entries // [1]) | length == 0' "$root/$p" >/dev/null 2>&1; then
+      AIF_LAND_ASIDE_DIFF=$((AIF_LAND_ASIDE_DIFF + 1))
+    fi
+    { mkdir -p "$AIF_LAND_ASIDE_DIR/$(dirname "$p")" && mv "$root/$p" "$AIF_LAND_ASIDE_DIR/$p"; } 2>/dev/null ||
+      aif_die "could not take $p aside to ${AIF_LAND_ASIDE_DIR#"$root"/} — nothing was merged"
+    AIF_LAND_ASIDE="$AIF_LAND_ASIDE$p
+"
+  done <<EOF
+$AIF_LAND_OWN
+EOF
+  _aif_land_say "aside" "$(printf '%s' "$AIF_LAND_ASIDE" | grep -c .) uncommitted file(s) of $ticket's own record → ${AIF_LAND_ASIDE_DIR#"$root"/}; the branch carries the record"
+}
+
+# _aif_land_restore_aside — what _aif_land_aside took aside, back where it was.
+# Run after the reset that undoes a merge: the reset leaves untracked files be,
+# and these were untracked before the land.
+_aif_land_restore_aside() {
+  local p
+  [ -n "$AIF_LAND_ASIDE" ] && [ -n "$AIF_LAND_ASIDE_DIR" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    mkdir -p "$AIF_LAND_ROOT/$(dirname "$p")" 2>/dev/null || true
+    mv -f "$AIF_LAND_ASIDE_DIR/$p" "$AIF_LAND_ROOT/$p" 2>/dev/null || true
+  done <<EOF
+$AIF_LAND_ASIDE
+EOF
+  AIF_LAND_ASIDE=""
+}
+
+# _aif_land_settle <root> <ticket> <subject> <branch> <target> — the merge
+# stopped on conflicts: settle the ones in aif's own files by owner and commit
+# the merge, when those were all there were (lib/integrate.sh; docs/DEFECTS.md
+# 13.2). The commit says what was settled, under the subject the merge would
+# have had — not git's "# Conflicts:" list, which --no-edit would keep. rc 1
+# otherwise, with AIF_INTEGRATE_LEFT naming what is not aif's own — empty when
+# git refused the merge before starting it, and its own words are what to show.
+_aif_land_settle() {
+  local root="$1" ticket="$2" subject="$3" branch="$4" target="$5"
+  AIF_INTEGRATE_SETTLED=""
+  AIF_INTEGRATE_LEFT=""
+  git -C "$root" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || return 1
+  aif_integrate_own "$root" "$ticket" theirs || return 1
+  git -C "$root" commit -q --cleanup=strip -m "$subject" \
+    -m "Settled by owner (aif's own files): $(_aif_land_settled "$branch" "$target")" >>"$AIF_LAND_OUT" 2>&1
+}
+
+# _aif_land_settled <branch> <target> — what was settled, for the summary and
+# the card: "<path> (<whose copy>)", comma-separated.
+_aif_land_settled() {
+  local p owner tab out=""
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r p owner; do
+    [ -n "$p" ] || continue
+    if [ "$owner" = "ticket" ]; then
+      out="$out, $p ($1)"
+    else
+      out="$out, $p ($2)"
+    fi
+  done <<EOF
+$AIF_INTEGRATE_SETTLED
+EOF
+  printf '%s' "${out#, }"
+}
 
 # _aif_land_stopped <EXIT|INT|TERM> — the land stopped between its merge and
 # its verdict: Ctrl-C, a supervisor's TERM, or an error on the way (an aif_die,
@@ -190,6 +337,7 @@ _aif_land_stopped() {
     *) why="stopped by the error above" ;;
   esac
   git -C "$AIF_LAND_ROOT" reset --hard "$pre" >/dev/null 2>&1 || undone=0
+  _aif_land_restore_aside
   [ -z "$AIF_LAND_OUT" ] || rm -f "$AIF_LAND_OUT" "$AIF_LAND_OUT.tail"
   printf '\n' >&2
   if [ "$undone" -eq 1 ]; then
@@ -367,22 +515,39 @@ aif_cmd_land() {
     _aif_land_say "merge" "$branch is already in $target"
   else
     n_commits="$(git -C "$root" rev-list --count "HEAD..$branch" 2>/dev/null || printf '?')"
+    # What the merge would write over that git does not track here: the
+    # developer's refuses the land now; the ticket's own is listed for below.
+    _aif_land_clear "$root" "$branch" "$ticket" "$rerun"
     # From here to the verdict, a stop undoes the merge (_aif_land_stopped).
     # Armed before git merges rather than after: a merge cut off halfway
-    # leaves a half-merged tree, and the same reset clears that.
+    # leaves a half-merged tree, and the same reset clears that — and before
+    # the ticket's files are taken aside, which the same handler puts back.
     AIF_LAND_ROOT="$root"
     AIF_LAND_PRE="$pre"
     AIF_LAND_CARD="$ticket"
     AIF_LAND_AGAIN="$rerun"
     AIF_LAND_OUT="$out"
     aif_trap_arm "_aif_land_stopped"
+    _aif_land_aside "$root" "$branch" "$ticket"
     if git -C "$root" merge --no-ff --no-edit -m "aif: land $ticket — $title" "$branch" >"$out" 2>&1; then
       merged=1
       _aif_land_say "merge" "$branch into $target — $n_commits commit(s)"
+    elif _aif_land_settle "$root" "$ticket" "aif: land $ticket — $title" "$branch" "$target"; then
+      merged=1
+      _aif_land_say "merge" "$branch into $target — $n_commits commit(s); conflicts in aif's own files settled by owner: $(_aif_land_settled "$branch" "$target")"
     else
+      local left headline
+      left="$(printf '%s' "$AIF_INTEGRATE_LEFT" | sed '/^$/d' | paste -sd ',' - | sed 's/,/, /g')"
       git -C "$root" merge --abort >/dev/null 2>&1 || git -C "$root" reset --hard "$pre" >/dev/null 2>&1
-      _aif_land_fail "$root" "$ticket" \
-        "$branch does not merge cleanly into $target — a conflict is a human's to resolve, and nothing here resolves it" "$out" "$again"
+      _aif_land_restore_aside
+      if [ -n "$left" ]; then
+        headline="$branch conflicts with $target in $left — conflicts in aif's own files are settled by owner, and nothing here settles code yet (docs/DEFECTS.md 13.4); the merge was undone"
+      elif [ -n "$AIF_INTEGRATE_SETTLED" ]; then
+        headline="$branch merged into $target once aif's own files were settled by owner, and git refused the merge commit, in its own words below; the merge was undone"
+      else
+        headline="$branch does not merge into $target — git refused before merging, in its own words below; the merge was undone"
+      fi
+      _aif_land_fail "$root" "$ticket" "$headline" "$out" "$again"
     fi
   fi
 
@@ -510,7 +675,19 @@ aif_cmd_land() {
     fi
   fi
 
-  local sha note
+  # What the merge settled by itself and what it took aside, said where the
+  # human reads: neither was a decision, but both are things they did not see
+  # in the review.
+  local sha note settled="" aside=""
+  [ -z "$AIF_INTEGRATE_SETTLED" ] || settled="$(_aif_land_settled "$branch" "$target")"
+  if [ -n "$AIF_LAND_ASIDE" ]; then
+    aside="$(printf '%s' "$AIF_LAND_ASIDE" | grep -c .) uncommitted file(s) of the ticket's record taken aside to ${AIF_LAND_ASIDE_DIR#"$root"/}"
+    if [ "$AIF_LAND_ASIDE_DIFF" -gt 0 ]; then
+      aside="$aside — $AIF_LAND_ASIDE_DIFF of them differ from what landed; compare before deleting them"
+    else
+      aside="$aside — the same as what landed"
+    fi
+  fi
   sha="$(git -C "$root" rev-parse --short HEAD)"
   note="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
   # shellcheck disable=SC2016  # the backticks are markdown on the card, not substitution
@@ -521,6 +698,8 @@ aif_cmd_land() {
     else
       printf -- '- `%s` was already in `%s` (at `%s`)\n' "$branch" "$target" "$sha"
     fi
+    [ -z "$settled" ] || printf -- '- conflicts in aif'"'"'s own files, settled by owner: %s\n' "$settled"
+    [ -z "$aside" ] || printf -- '- %s\n' "$aside"
     printf -- '- suite on the result: %s\n' "$suite"
     [ -z "$dep_line" ] || printf -- '- dependencies: %s\n' "$dep_line"
     printf -- '- worktree %s; branch %s\n' "$wt_note" "$br_note"
@@ -540,6 +719,8 @@ aif_cmd_land() {
   printf 'landed:   %s → %s at %s' "$ticket" "$target" "$sha"
   [ "$merged" -eq 0 ] || printf ' (merge of %s, %s commits)' "$branch" "$n_commits"
   printf '\n'
+  [ -z "$settled" ] || printf 'settled:  %s\n' "$settled"
+  [ -z "$aside" ] || printf 'aside:    %s\n' "$aside"
   printf 'suite:    %s\n' "$suite"
   [ -z "$dep_line" ] || printf 'deps:     %s\n' "$dep_line"
   printf 'board:    %s is in Done  (aif board show %s)\n' "$ticket" "$ticket"

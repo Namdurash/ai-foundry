@@ -9,9 +9,9 @@
 # artifact — which the station's declaration knows and the caller should not have
 # to.
 #
-# Recording is the point as much as checking. A gate result in the ledger, bound
-# to the bytes it judged, is what makes the next station's precondition
-# checkable without re-running a gate that can no longer be re-run.
+# Each verdict is then recorded in the ledger, bound to the bytes it judged —
+# after the gates have spoken, and as a record only: nothing that happens to
+# the record changes the verdict (docs/DEFECTS.md 13.1).
 #
 # Exit: 0 all gates pass · 1 an artifact was rejected · 2 the ticket is the
 # problem (a spec stop, for the analyst) · 3 a gate could not render a verdict
@@ -119,8 +119,7 @@ aif_cmd_gate() {
     if [ "$rc" -eq 3 ]; then
       records="$records$gate$sep""error$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
-      _aif_gate_record_meter "$root" "$work"
-      _aif_gate_record "$work" "$root" "$records"
+      _aif_gate_book "$root" "$work" "$records"
       # No verdict on THIS station's work, and nothing more: a 3 is the
       # environment, or a defect no loop in the stage reaches. This line used
       # to name the first of those for all of them, and it headed a report
@@ -136,8 +135,7 @@ aif_cmd_gate() {
     if [ "$rc" -eq 2 ]; then
       records="$records$gate$sep""spec$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
-      _aif_gate_record_meter "$root" "$work"
-      _aif_gate_record "$work" "$root" "$records"
+      _aif_gate_book "$root" "$work" "$records"
       aif_err "$gate found the ticket not buildable as written — a spec stop, for the analyst:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
       return 2
@@ -149,9 +147,7 @@ aif_cmd_gate() {
     if [ "$rc" -eq 4 ]; then
       records="$records$gate$sep""repair$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
 "
-      _aif_gate_record_meter "$root" "$work"
-      _aif_gate_record "$work" "$root" "$records"
-      _aif_gate_record_checks "$root" "$work"
+      _aif_gate_book "$root" "$work" "$records" checks
       aif_err "$gate attributes the failure to the frozen tests, not to the $station station — a repair, for the tests station:"
       printf '%s\n' "$out" | sed 's/^/  /' >&2
       return 4
@@ -175,11 +171,33 @@ aif_cmd_gate() {
     printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$out" | head -1)"
   done
 
-  _aif_gate_record_meter "$root" "$work"
-  _aif_gate_record "$work" "$root" "$records"
-  _aif_gate_record_amendments "$work"
-  _aif_gate_record_checks "$root" "$work"
+  _aif_gate_book "$root" "$work" "$records" amendments checks
   return "$overall"
+}
+
+# _aif_gate_book <root> <work> <records> [amendments] [checks] — the record of
+# a verdict: the staged cost rows, the verdicts themselves, and the amendments
+# and the project's checks when named. rc 0 always.
+#
+# In a subshell, and a warning at most: the record must not change the verdict
+# it records (docs/DEFECTS.md 13.1). It did. The rows go in after the gates,
+# so a row that could not be written — a lock left behind, a ledger that was
+# not JSON — made a gate that had passed exit 1, and the worker, reading 1 as a
+# rejection, sent the station back with the ledger's complaint for its own.
+_aif_gate_book() {
+  local root="$1" work="$2" records="$3" what
+  shift 3
+  (
+    _aif_gate_record_meter "$root" "$work"
+    _aif_gate_record "$work" "$root" "$records"
+    for what in ${1+"$@"}; do
+      case "$what" in
+        amendments) _aif_gate_record_amendments "$work" ;;
+        checks) _aif_gate_record_checks "$root" "$work" ;;
+      esac
+    done
+  ) || aif_warn "the ledger did not take every row of this verdict — the verdict stands"
+  return 0
 }
 
 # _aif_gate_record_meter <root> <work>

@@ -19,6 +19,18 @@
 # did each attempt cost, and what did each gate say about which bytes", which
 # is a question a fold over an append-only log answers honestly and a stored
 # summary does not.
+#
+# And it is never more than the record: nothing it does may stop anything
+# (docs/DEFECTS.md 13.1). Nothing reads it to decide — the gates judge the
+# artifacts, the run record holds the stage — so a row that cannot be written
+# is skipped with a warning, and the run, the gate and the land go on. It used
+# to be the other way round. A lock left behind, a missing file or one that was
+# not JSON made the append exit, and because a gate records its verdicts after
+# rendering them, a gate that had PASSED exited 1 — which the worker reads as a
+# rejection: the station was sent back with "ledger is locked" for its
+# complaint, and the run then died writing its report. The ledger was built
+# when aif watched the money; on a subscription it is the least of what a run
+# is for, and it is ranked that way.
 
 AIF_LEDGER_SCHEMA=1
 
@@ -26,71 +38,134 @@ aif_ledger_path() {
   printf '%s/ledger.json' "$1"
 }
 
+# aif_ledger_init <work> <ticket> — an empty ledger, when there is none. rc 0
+# always: a ledger nobody could create is a warning, never a stop.
+#
+# Made where rows are written: the worker makes it in the ticket's worktree at
+# intake, and an append makes it when it finds none. Not by the analyst — an
+# empty one committed beside the ticket in the developer's checkout met the
+# branch's own at land as an add/add conflict, on aif/OPES-74 the only file the
+# merge stopped on (docs/DEFECTS.md 13.2).
 aif_ledger_init() {
-  local work="$1" ticket="$2"
-  local ledger
+  local work="$1" ticket="$2" ledger
   ledger="$(aif_ledger_path "$work")"
-  [ -f "$ledger" ] && return 0
-  jq -n --argjson schema "$AIF_LEDGER_SCHEMA" --arg ticket "$ticket" \
+  [ ! -f "$ledger" ] || return 0
+  if ! { jq -n --argjson schema "$AIF_LEDGER_SCHEMA" --arg ticket "$ticket" \
     '{ schema: $schema, ticket: $ticket, entries: [], accepted_at: null }' \
-    >"$ledger.tmp" && mv "$ledger.tmp" "$ledger"
+    >"$ledger.tmp" && mv "$ledger.tmp" "$ledger"; } 2>/dev/null; then
+    rm -f "$ledger.tmp" 2>/dev/null
+    aif_warn "ledger: could not create $ledger — what runs here goes unrecorded; nothing else is affected"
+  fi
+  return 0
 }
 
-# aif_ledger_append <work> <entry-json>
+# aif_ledger_append <work> <entry-json> — the entry, stamped with seq, at and
+# prev (the sha256 of the previous stored entry), appended. rc 0 always.
 #
-# Stamps the entry with seq, at, and prev (the sha256 of the previous stored
-# entry) and appends it. The chain is cheap self-consistency; git is the real
-# tamper-evidence, since tasks/ is committed.
+# The chain is cheap self-consistency; git is the real tamper-evidence, since
+# tasks/ is committed.
+#
+# In a subshell of its own, so that whatever happens inside ends there: a lock
+# nobody gave back, a file that is not JSON, a signal mid-write. The subshell
+# arms its own traps, which take the lock and the half-written file with them,
+# and the caller's traps are never touched — docs/DEFECTS.md 3.1 was a library
+# that cleared the caller's handler, and splicing that handler into this one's
+# trap was the fix until there was no shared trap to splice into.
 aif_ledger_append() {
-  local work="$1" entry="$2"
-  local ledger tmp seq prev last stamp
-  ledger="$(aif_ledger_path "$work")"
-  [ -f "$ledger" ] || aif_die "no ledger at $ledger — run 'aif _ticket-init' first"
+  (
+    _AIF_LEDGER_LOCK=""
+    _AIF_LEDGER_TMP=""
+    trap '[ -z "$_AIF_LEDGER_TMP" ] || rm -f "$_AIF_LEDGER_TMP"; [ -z "$_AIF_LEDGER_LOCK" ] || rm -rf "$_AIF_LEDGER_LOCK"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    _aif_ledger_append "$1" "$2"
+  ) || true
+  return 0
+}
 
-  # Read-modify-write, so two writers racing would silently drop one entry —
-  # and a ledger that quietly loses rows is worse than one that fails loudly,
-  # because the number it then reports is too low and looks fine. The metering
-  # hook made this reachable: it fires when a subagent finishes, and finishes
-  # are not serialised by anything aif controls.
-  #
+# _aif_ledger_append <work> <entry-json> — the append itself, inside the
+# subshell above: every step checked, nothing left to errexit, which the
+# subshell's `|| true` turns off anyway. rc 1 with a warning said.
+_aif_ledger_append() {
+  local work="$1" entry="$2" ledger lock holder tries=0 n prev last stamp tmp aside
+  ledger="$(aif_ledger_path "$work")"
+  [ -f "$ledger" ] || aif_ledger_init "$work" "$(basename "$work")"
+  [ -f "$ledger" ] || return 1
+
   # mkdir is the lock: atomic on every POSIX filesystem, needs no flock (absent
-  # from stock macOS), and leaves a directory a human can see and delete.
-  local lock="$ledger.lock" waited=0 sig
+  # from stock macOS), and leaves a directory a human can see. A writer's
+  # appends are serial — the worker's, then `aif _gate`'s, never at once — so
+  # the lock is insurance against a second process, not a queue, and a lock
+  # nobody holds is taken over instead of obeyed: one left by this very
+  # process (an append of it that was killed mid-write), one whose process is
+  # gone, one older than a minute, and one never signed after half a second.
+  # A live writer is waited for five seconds; after that this row is skipped.
+  lock="$ledger.lock"
   while ! mkdir "$lock" 2>/dev/null; do
-    waited=$((waited + 1))
-    if [ "$waited" -gt 100 ]; then
-      aif_die "ledger is locked by another writer ($lock) — remove it if no run is in progress"
+    tries=$((tries + 1))
+    holder="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [ "$tries" -gt 50 ]; then
+      aif_warn "ledger: $lock is held${holder:+ by pid $holder} — one row of $(basename "$work") is not recorded; nothing else is affected"
+      return 1
+    fi
+    if [ "$holder" = "$$" ] || { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } ||
+      { [ -z "$holder" ] && [ "$tries" -gt 5 ]; } ||
+      [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      rm -rf "${lock:?}" 2>/dev/null || true
+      continue
     fi
     sleep 0.1 2>/dev/null || sleep 1
   done
-  # The path is expanded into the trap NOW, not read from a local at fire time —
-  # by then the local is out of scope. The caller's handler is appended rather
-  # than displaced: a signal arriving mid-write must still do whatever the
-  # command had arranged for it, and `trap -` on the way out used to take that
-  # handler with it (docs/DEFECTS.md 3.1). One trap per signal, because the
-  # handler is told which one fired (aif_trap_arm).
-  for sig in EXIT INT TERM; do
-    # shellcheck disable=SC2064 # expanding now is the point, see above
-    trap "rmdir '$lock' 2>/dev/null || true; ${AIF_TRAP_ARMED:+$AIF_TRAP_ARMED $sig}" "$sig"
-  done
+  _AIF_LEDGER_LOCK="$lock"
+  printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
 
-  seq=$(($(jq '.entries | length' "$ledger") + 1))
-  if [ "$seq" -eq 1 ]; then
+  # A ledger that is not JSON — conflict markers from a merge resolved by hand,
+  # a file edited — is set aside under .aif/tmp/, where git does not look, and
+  # a new one is started: the rows from here on are worth more than a run
+  # stopped over the rows before.
+  n="$(jq '.entries | length' "$ledger" 2>/dev/null)" || n=""
+  case "$n" in
+    '' | *[!0-9]*)
+      case "$work" in
+        */"$AIF_TASKS_DIR"/*) aside="${work%/"$AIF_TASKS_DIR"/*}/.aif/tmp" ;;
+        *) aside="${TMPDIR:-/tmp}" ;;
+      esac
+      aside="$aside/ledger-$(basename "$work")-$(date -u '+%Y%m%dT%H%M%SZ').json"
+      mkdir -p "$(dirname "$aside")" 2>/dev/null || true
+      if ! { cp "$ledger" "$aside" && rm -f "$ledger"; } 2>/dev/null; then
+        aif_warn "ledger: $ledger is not JSON and could not be set aside — one row of $(basename "$work") is not recorded"
+        return 1
+      fi
+      aif_ledger_init "$work" "$(basename "$work")"
+      [ -f "$ledger" ] || return 1
+      aif_warn "ledger: $ledger was not JSON — kept at $aside, and a new one started"
+      n=0
+      ;;
+  esac
+
+  if [ "$n" -eq 0 ]; then
     prev="null"
   else
-    last="$(jq -S -c '.entries[-1]' "$ledger")"
+    last="$(jq -S -c '.entries[-1]' "$ledger" 2>/dev/null)" || last=""
     prev="\"$(printf '%s' "$last" | aif_sha256_stdin)\""
   fi
   stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-  tmp="$(aif_tmpfile "$ledger")"
-  jq --argjson entry "$entry" --argjson seq "$seq" \
+  tmp="$(aif_tmpfile "$ledger" 2>/dev/null)" || tmp=""
+  [ -n "$tmp" ] || {
+    aif_warn "ledger: no temp file beside $ledger — one row of $(basename "$work") is not recorded"
+    return 1
+  }
+  _AIF_LEDGER_TMP="$tmp"
+  if ! jq --argjson entry "$entry" --argjson seq "$((n + 1))" \
     --argjson prev "$prev" --arg at "$stamp" \
     '.entries += [ $entry + { seq: $seq, at: $at, prev: $prev } ]' \
-    "$ledger" >"$tmp" && mv "$tmp" "$ledger"
-
-  rmdir "$lock" 2>/dev/null || true
-  aif_trap_restore
+    "$ledger" >"$tmp" 2>/dev/null || ! mv "$tmp" "$ledger" 2>/dev/null; then
+    aif_warn "ledger: a row of $(basename "$work") was not recorded — it was not a JSON object: $(printf '%s' "$entry" | tr '\n' ' ' | cut -c1-120)"
+    return 1
+  fi
+  _AIF_LEDGER_TMP=""
+  return 0
 }
 
 # aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason>
@@ -105,4 +180,3 @@ aif_ledger_gate() {
     '{ gate: $gate, result: $result, subject: $subject,
        subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }')"
 }
-

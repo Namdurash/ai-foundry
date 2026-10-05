@@ -104,7 +104,13 @@ aif_run_update() {
   f="$(aif_run_path "$work")"
   [ -f "$f" ] || return 1
   tmp="$(aif_tmpfile "$f")"
-  jq "$@" "$filter" "$f" >"$tmp" && mv "$tmp" "$f"
+  # The temp file sits beside the record, under tasks/, and scope reads a file
+  # it finds there as an implementation editing the pipeline's own record: it
+  # never outlives a write that failed (docs/DEFECTS.md 13.12).
+  if ! { jq "$@" "$filter" "$f" >"$tmp" && mv "$tmp" "$f"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # aif_run_resumable <work> [set-version] — rc 0 iff a record is there AND it

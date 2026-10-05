@@ -62,7 +62,7 @@ Then, for every ticket that will be written now:
   (default `^[A-Z]{2,10}-[0-9]+$`), after the highest already in `tasks/` and on the
   board.
 - **`aif _ticket-init <ID>`**, always — never a hand-made directory. It validates the
-  id and writes the ledger the worker needs. If it says the ticket exists, you are
+  id and writes the ticket's stub. If it says the ticket exists, you are
   refining, not creating: read it whole first.
 - Detect the user's **language** and conduct everything in it. The `aif:meta` block
   stays English; the narrative and the criteria text are in the user's language.

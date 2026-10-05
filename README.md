@@ -145,8 +145,13 @@ at first — and takes the verdict. `aif land <ID>` is the yes: it merges the br
 into the checkout's branch, runs the suite on the *result*, moves the card to Done,
 removes the worktree and the branch, and releases the tickets whose `depends_on`
 names it from Backlog to Ready — which is how a request's slices flow without the
-project manager touching each one. A conflict or a red suite undoes the merge and
-moves the card to Needs Human with the reason; nothing is ever resolved by a model.
+project manager touching each one. A conflict in aif's own files is settled by owner,
+with no model: the ticket's record under `tasks/<ID>/` is the branch's, the set under
+`.aif/` and `.claude/` is your checkout's, and the analyst's uncommitted copy of the
+ticket is taken aside to `.aif/tmp/` instead of stopping the merge — the land note
+says which. Any other conflict, or a red suite, undoes the merge and moves the card
+to Needs Human with the reason (settling conflicts in code is the next step:
+docs/DEFECTS.md 13.4).
 The suite runs against what is installed in *your* checkout, so a merge that moves a
 dependency manifest or lockfile is judged against the install from before it — land
 says so, and a red gives the command that lands it installed: `--prepare` runs
@@ -1083,6 +1088,13 @@ Every station is metered from its own `claude -p` envelope: four token classes,
 a turn count and the model that actually ran, appended as a row to
 `tasks/<ID>/ledger.json` — one row per attempt, never updated in place, because
 overwriting a row is how rework disappears from a metric that exists to count it.
+
+The ledger is a record and never a verdict: nothing reads it to decide anything,
+so nothing it does can stop anything. A row it cannot write — a lock left behind
+by a killed process, a ledger that is no longer JSON — is skipped with a warning
+(a lock nobody holds is taken over, an unreadable ledger is kept under `.aif/tmp/`
+and a new one started), and the run, the gate and the land go on. The worker makes
+it in the ticket's worktree at intake; the analyst no longer writes one.
 
 Tokens are the raw datum; dollars are derived from `.aif/prices.json`. **That
 table ships empty on purpose.** A wrong price produces a confident figure nobody

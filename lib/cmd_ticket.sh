@@ -9,11 +9,15 @@
 # where a ticket lives and what it is initialised with, and whether it is
 # buildable as it stands.
 
-# `aif _ticket-init <ticket>` — create tasks/<ticket>/ and its ledger.
+# `aif _ticket-init <ticket>` — create tasks/<ticket>/ with the ticket's stub.
 #
-# Not a bare mkdir: it validates the id against the project's pattern and
-# initialises ledger.json. A ticket dir without a ledger looks fine until the
-# first station tries to record an attempt into a file that is not there.
+# Not a bare mkdir: it validates the id against the project's pattern. It
+# writes no ledger. It used to, and the empty file, committed with the ticket
+# in the developer's checkout, met the one the worker had filled on the
+# ticket's branch as an add/add conflict at land — on aif/OPES-74 the only file
+# the merge stopped on, the code merging clean (docs/DEFECTS.md 13.2). The
+# worker makes the ledger where its rows are written: in the worktree, at
+# intake.
 aif_cmd_ticket_init() {
   local ticket="${1:-}"
   [ -n "$ticket" ] || aif_die "usage: aif _ticket-init <ticket>"
@@ -59,7 +63,6 @@ aif_cmd_ticket_init() {
      buildable. -->
 EOF
 
-  aif_ledger_init "$work" "$ticket"
   printf '%screated%s %s/%s/\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$AIF_TASKS_DIR" "$ticket"
 }
 

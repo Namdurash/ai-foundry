@@ -129,12 +129,20 @@ aif_meta_body() {
 aif_meta_replace() {
   local file="$1" json="$2" tmp
   tmp="$(aif_tmpfile "$file")"
-  {
-    printf '<!-- aif:meta\n'
-    printf '%s' "$json" | jq .
-    printf -- '-->\n'
-    aif_meta_body "$file"
-  } >"$tmp" && mv "$tmp" "$file"
+  # Beside the artifact, which lives under tasks/ — where scope reads a stray
+  # file as an implementation editing the pipeline's record: it goes with a
+  # write that failed (docs/DEFECTS.md 13.12).
+  if ! {
+    {
+      printf '<!-- aif:meta\n'
+      printf '%s' "$json" | jq .
+      printf -- '-->\n'
+      aif_meta_body "$file"
+    } >"$tmp" && mv "$tmp" "$file"
+  }; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # aif_meta_get <file> <key> [default] — read one KEY=VALUE line.

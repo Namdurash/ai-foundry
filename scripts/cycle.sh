@@ -107,6 +107,7 @@ lib/cmd_work.sh|--loop|aif work --loop drains Ready
 lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
 lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
+lib/cmd_land.sh|aif_integrate_own "$root" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner
 sets/claude/skills/aif-ba/SKILL.md|depends_on|a ticket names the tickets it needs built first
 sets/claude/skills/aif-review/SKILL.md|aif land <ID>|the reviewer's brief ends in aif land, or a comment
 ANCHORS
@@ -262,7 +263,7 @@ $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
     $last_gate --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ $repairs_max per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ $replans_max per ticket"| S_plan
-    LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
+    LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
@@ -277,7 +278,7 @@ $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
   QA -->|"land it"| LAND
   QA -->|"wrong — a comment in the reviewer's words"| PJM
   LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's words"| BACKLOG

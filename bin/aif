@@ -163,6 +163,8 @@ main() {
       . "$AIF_ROOT/lib/secret.sh"
       # shellcheck source=lib/board.sh
       . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/integrate.sh
+      . "$AIF_ROOT/lib/integrate.sh"
       # shellcheck source=lib/cmd_land.sh
       . "$AIF_ROOT/lib/cmd_land.sh"
       aif_cmd_land ${1+"$@"}

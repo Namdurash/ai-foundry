@@ -51,7 +51,7 @@ flowchart TB
     G_implement --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ 2 per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ 1 per ticket"| S_plan
-    LAND["aif land — merge into the checkout's branch,<br/>the suite on the result, Done, the next slice released"]
+    LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
@@ -66,7 +66,7 @@ flowchart TB
   QA -->|"land it"| LAND
   QA -->|"wrong — a comment in the reviewer's words"| PJM
   LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's words"| BACKLOG

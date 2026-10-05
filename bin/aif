@@ -150,6 +150,8 @@ main() {
       . "$AIF_ROOT/lib/run.sh"
       # shellcheck source=lib/tui.sh
       . "$AIF_ROOT/lib/tui.sh"
+      # shellcheck source=lib/integrate.sh
+      . "$AIF_ROOT/lib/integrate.sh"
       # shellcheck source=lib/cmd_work.sh
       . "$AIF_ROOT/lib/cmd_work.sh"
       aif_cmd_work ${1+"$@"}

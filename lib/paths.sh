@@ -16,14 +16,22 @@ AIF_PROFILE_STATE=".aif/profile.local"
 #
 # At the root, not under .aif/, and that is a deliberate split: .aif/ holds what
 # `aif init` installed and `aif uninstall` may remove (project.json, gates,
-# agents, hooks), while tasks/ holds the project's own work — tickets, specs,
-# plans, ledgers. Uninstalling the foundry must never take the record of what it
-# built with it.
+# agents, hooks), while tasks/ holds the project's own work — tickets, plans,
+# run records, reports. Uninstalling the foundry must never take the record of
+# what it built with it.
 #
-# Committed, not ignored: git is the real tamper-evidence behind the ledger's
-# hash chain (see lib/ledger.sh).
+# Committed, not ignored — except the ledger, which left git: it moved
+# through every merge a ticket's branch made, and conflicted in the first one
+# that could not land (docs/DEFECTS.md 13.2, 13.13). It lives in
+# AIF_LEDGERS_DIR now.
 # shellcheck disable=SC2034
 AIF_TASKS_DIR="tasks"
+
+# Where the work ledgers live: in the MAIN checkout, one file per ticket, under
+# .aif/state/ — gitignored, beside the run locks. A record of what this machine
+# spent, never a verdict, and never in git (lib/ledger.sh).
+# shellcheck disable=SC2034
+AIF_LEDGERS_DIR=".aif/state/ledgers"
 
 # Where `aif work` checks a ticket out to build it, relative to the project root.
 #

@@ -260,6 +260,13 @@ fact about your contract, decide the seam again, and write the plan and the
 skeleton anew. There is one replan per ticket; a contract that fails twice goes
 to a human.
 
+A **rebuild** comes back with REBUILD in front of it: the ticket was built
+before, on an older version of the branch it lands on, and that build could
+not be brought onto the branch as it is now. The tree is that branch's HEAD;
+the old plan follows, as a reference. Plan the ticket on the tree as it is —
+the repository moved, and a premise of the old plan may not hold — and keep
+what still holds.
+
 ## Judgement
 
 Nothing reads your plan to grade it. What judges it is the OUTCOME: the tests

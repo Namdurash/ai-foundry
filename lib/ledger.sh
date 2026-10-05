@@ -31,25 +31,49 @@
 # complaint, and the run then died writing its report. The ledger was built
 # when aif watched the money; on a subscription it is the least of what a run
 # is for, and it is ranked that way.
+#
+# Nor is it in git (docs/DEFECTS.md 13.13). It was committed with the ticket,
+# so it rode every merge the ticket's branch made — and an empty one the
+# analyst had committed met the branch's at land, the only file the merge of
+# aif/OPES-74 stopped on (13.2). It lives in the main checkout now, under
+# AIF_LEDGERS_DIR, one file per ticket: every worktree writes to the same one,
+# it outlives the worktree, and no branch carries it. What a reviewer needs of
+# it — each station's attempts and tokens, each gate's verdict — the report
+# carries, on the branch.
 
 AIF_LEDGER_SCHEMA=1
 
+# aif_ledger_path <work> — the ledger of the ticket whose directory is <work>:
+# AIF_LEDGERS_DIR/<ID>.json in the main checkout of the repository <work> is
+# in, whichever worktree that is. A directory that is not a ticket's keeps its
+# ledger beside it, as every ledger once did.
 aif_ledger_path() {
-  printf '%s/ledger.json' "$1"
+  local work="$1" root
+  case "$work" in
+    */"$AIF_TASKS_DIR"/*)
+      root="${work%/"$AIF_TASKS_DIR"/*}"
+      printf '%s/%s/%s.json' "$(aif_main_root "$root")" "$AIF_LEDGERS_DIR" "$(basename "$work")"
+      ;;
+    *) printf '%s/ledger.json' "$work" ;;
+  esac
 }
 
-# aif_ledger_init <work> <ticket> — an empty ledger, when there is none. rc 0
-# always: a ledger nobody could create is a warning, never a stop.
+# aif_ledger_init <work> <ticket> — a ledger, when there is none. rc 0 always:
+# a ledger nobody could create is a warning, never a stop.
 #
-# Made where rows are written: the worker makes it in the ticket's worktree at
-# intake, and an append makes it when it finds none. Not by the analyst — an
-# empty one committed beside the ticket in the developer's checkout met the
-# branch's own at land as an add/add conflict, on aif/OPES-74 the only file the
-# merge stopped on (docs/DEFECTS.md 13.2).
+# Empty — unless the ticket carries one from when ledgers were committed
+# (<work>/ledger.json, readable): then that is where its rows go on from. The
+# old file is read, never written again; its rows stay in git's history and on
+# the branches that have it.
 aif_ledger_init() {
-  local work="$1" ticket="$2" ledger
+  local work="$1" ticket="$2" ledger legacy="$1/ledger.json"
   ledger="$(aif_ledger_path "$work")"
   [ ! -f "$ledger" ] || return 0
+  mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
+  if [ "$legacy" != "$ledger" ] && jq -e '.entries | type == "array"' "$legacy" >/dev/null 2>&1 &&
+    cp "$legacy" "$ledger.tmp" 2>/dev/null && mv "$ledger.tmp" "$ledger" 2>/dev/null; then
+    return 0
+  fi
   if ! { jq -n --argjson schema "$AIF_LEDGER_SCHEMA" --arg ticket "$ticket" \
     '{ schema: $schema, ticket: $ticket, entries: [], accepted_at: null }' \
     >"$ledger.tmp" && mv "$ledger.tmp" "$ledger"; } 2>/dev/null; then
@@ -62,8 +86,8 @@ aif_ledger_init() {
 # aif_ledger_append <work> <entry-json> — the entry, stamped with seq, at and
 # prev (the sha256 of the previous stored entry), appended. rc 0 always.
 #
-# The chain is cheap self-consistency; git is the real tamper-evidence, since
-# tasks/ is committed.
+# The chain is self-consistency and no more: the ledger is not in git, and
+# nothing decides anything by it.
 #
 # In a subshell of its own, so that whatever happens inside ends there: a lock
 # nobody gave back, a file that is not JSON, a signal mid-write. The subshell
@@ -119,19 +143,13 @@ _aif_ledger_append() {
   _AIF_LEDGER_LOCK="$lock"
   printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
 
-  # A ledger that is not JSON — conflict markers from a merge resolved by hand,
-  # a file edited — is set aside under .aif/tmp/, where git does not look, and
-  # a new one is started: the rows from here on are worth more than a run
-  # stopped over the rows before.
+  # A ledger that is not JSON — a file edited by hand, a disk that filled — is
+  # set aside beside itself, and a new one is started: the rows from here on
+  # are worth more than a run stopped over the rows before.
   n="$(jq '.entries | length' "$ledger" 2>/dev/null)" || n=""
   case "$n" in
     '' | *[!0-9]*)
-      case "$work" in
-        */"$AIF_TASKS_DIR"/*) aside="${work%/"$AIF_TASKS_DIR"/*}/.aif/tmp" ;;
-        *) aside="${TMPDIR:-/tmp}" ;;
-      esac
-      aside="$aside/ledger-$(basename "$work")-$(date -u '+%Y%m%dT%H%M%SZ').json"
-      mkdir -p "$(dirname "$aside")" 2>/dev/null || true
+      aside="${ledger%.json}.unreadable-$(date -u '+%Y%m%dT%H%M%SZ').json"
       if ! { cp "$ledger" "$aside" && rm -f "$ledger"; } 2>/dev/null; then
         aif_warn "ledger: $ledger is not JSON and could not be set aside — one row of $(basename "$work") is not recorded"
         return 1

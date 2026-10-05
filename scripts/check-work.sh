@@ -28,7 +28,8 @@
 #      --max-tickets, and after two runs in a row that did not build
 #  19  land: the yes after review — merge, suite on the result, Done, the
 #      worktree and branch gone, the ticket that depended on it released; a
-#      red suite or a conflict undoes the merge and posts why
+#      red suite or a conflict undoes the merge and sends the card back to the
+#      worker, saying why
 #  20  verify-red measures a failing pre-existing test against the tree the
 #      tests station started from: red there is the repo's (a stop, named);
 #      green there is the new tests' interaction (admitted, recorded, and
@@ -98,12 +99,18 @@
 #      around Cyrillic titles, in colour or not, wide, compact or ASCII; live,
 #      on a pty, the keys select a worker and stop it, the card saying who,
 #      and the terminal is left as it was found, the summary on it
-#  46  the ledger never stops a run, a gate or a land: a lock whose writer is
-#      gone or never signed is taken over, one held by a live writer costs
-#      a row and a warning, a ledger that is not JSON is set aside; the
-#      analyst's uncommitted ticket is taken aside at land, an empty ledger
-#      committed after the cut and a set that moved on are settled by owner,
-#      and a developer's own untracked file refuses the land untouched
+#  46  the ledger never stops a run, a gate or a land, and is not in git: a
+#      lock whose writer is gone or never signed is taken over, one held by a
+#      live writer costs a row and a warning, a ledger that is not JSON is set
+#      aside; the analyst's uncommitted ticket is taken aside at land, a ticket
+#      edited and committed after the cut and a set that moved on are settled
+#      by owner, and a developer's own untracked file refuses the land untouched
+#  47  a conflict at land goes back to the worker, which brings the branch
+#      onto the target in its worktree: a conflict in code settled by the
+#      implement station and the merged tree judged again, the card back
+#      in Review saying so; the station unable to settle it, or a test
+#      file in conflict, and the ticket is built again from the target,
+#      the first build kept; a target that moved elsewhere merged clean
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -329,6 +336,44 @@ acs="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' | jq 
 nums="$(printf '%s\n' "$acs" | sed 's/AC-00//')"
 tests_json="$(printf '%s\n' "$nums" | jq -R 'select(length>0) | "tests/t" + . + ".py"' | jq -sc .)"
 
+# The sync's station (docs/DEFECTS.md 13.4): MERGE in the implement station's
+# prompt. It settles every conflict the merge left in src/ by keeping both
+# sides, then writes in any word a test asserts and the code lacks — the merged
+# tree then passes both branches' tests. FAKE_MERGE_FAIL leaves the markers: a
+# station that never settles them. Either way the implement branch below stays
+# out of it.
+if [ "$station" = implement ]; then
+  case "$prompt" in
+    *MERGE*)
+      if [ "${FAKE_MERGE_FAIL:-0}" != 1 ]; then
+        # FAKE_MERGE_DROP_FIRST: the first settlement keeps this ticket's side
+        # only, dropping the other branch's, and adds nothing — a regression
+        # the gates have to name.
+        kt=1
+        case "$prompt" in
+          *"MERGE — this ticket"*) [ "${FAKE_MERGE_DROP_FIRST:-0}" != 1 ] || kt=0 ;;
+        esac
+        for f in "$wt"/src/*.py; do
+          [ -f "$f" ] || continue
+          grep -qE '^(<<<<<<<|>>>>>>>) ' "$f" || continue
+          awk -v kt="$kt" '/^<<<<<<< /{m=1; next} /^\|\|\|\|\|\|\| /{m=2; next} /^=======$/{m=3; next} /^>>>>>>> /{m=0; next}
+            m == 0 || m == 1 || (m == 3 && kt == 1) { print }' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+        done
+        if [ "$kt" = 1 ]; then
+          for t in "$wt"/tests/t*.py; do
+            [ -f "$t" ] || continue
+            sed -n 's/.*asserts \([a-z0-9]*\).*/\1/p' "$t" | while IFS= read -r w; do
+              [ -n "$w" ] && [ "$w" != feat ] || continue
+              grep -q "$w" "$wt/src/app.py" 2>/dev/null || printf '# %s\n' "$w" >>"$wt/src/app.py"
+            done
+          done
+        fi
+      fi
+      station=merge
+      ;;
+  esac
+fi
+
 case "$station" in
   plan)
     change='["src/app.py"]'
@@ -533,20 +578,20 @@ eq "run.json status" "$(jq -r '.status' tasks/AIF-1/run.json)" "built"
 eq "run.json froze the ticket's hash" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 tasks/AIF-1/ticket.md | cut -d' ' -f1)"
 eq "three stations metered, headless" \
-  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' tasks/AIF-1/ledger.json)" "3"
+  "$(jq '[.entries[] | select(.station != null and .mode == "headless")] | length' .aif/state/ledgers/AIF-1.json)" "3"
 eq "station rows carry the model that ran" \
-  "$(jq -r '[.entries[] | select(.station == "plan")] | last | .model' tasks/AIF-1/ledger.json)" "fake-model"
+  "$(jq -r '[.entries[] | select(.station == "plan")] | last | .model' .aif/state/ledgers/AIF-1.json)" "fake-model"
 eq "the ready gate's pass is in the ledger" \
-  "$(jq -r '[.entries[] | select(.gate == "ready")] | length > 0' tasks/AIF-1/ledger.json 2>/dev/null || echo skip)" "true"
+  "$(jq -r '[.entries[] | select(.gate == "ready")] | length > 0' .aif/state/ledgers/AIF-1.json 2>/dev/null || echo skip)" "true"
 eq "one commit per accepted station, plus intake and report" \
   "$(git log --format=%s | grep -c '^aif: ')" "5"
 eq "the run record reached done" "$(jq -r '.stage' tasks/AIF-1/run.json)" "done"
 eq "the spend crossed into the run record as a number, not a locale string" \
   "$(jq -r '(.spent_usd | type) + ":" + ((.spent_usd > 0) | tostring)' tasks/AIF-1/run.json)" "number:true"
 eq "a pre-existing skipped test did not block green" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-1/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-1.json)" "pass"
 eq "and green said it allowed one" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-1/ledger.json | grep -c 'skipped elsewhere')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-1.json | grep -c 'skipped elsewhere')" "1"
 eq "the freeze recorded what the rest of the suite looked like" \
   "$(jq -r '.suite_at_freeze["tests.t9::t9"]' tasks/AIF-1/tests.lock.json)" "skipped"
 eq "the tool wrote the plan's binding, not the model" \
@@ -581,25 +626,25 @@ rc=0
 FAKE_PLAN_BAD_FIRST=1 FAKE_TESTS_BAD_FIRST=1 "$AIF" work AIF-2 --no-worktree >"$OUT/run2.out" 2>&1 || rc=$?
 eq "exit 0 — built after the retry" "$rc" "0"
 eq "plan was dispatched twice" \
-  "$(jq '[.entries[] | select(.station == "plan")] | length' tasks/AIF-2/ledger.json)" "2"
+  "$(jq '[.entries[] | select(.station == "plan")] | length' .aif/state/ledgers/AIF-2.json)" "2"
 eq "the plan gate recorded a fail then a pass" \
-  "$(jq -r '[.entries[] | select(.gate == "plan") | .result] | join(",")' tasks/AIF-2/ledger.json)" "fail,pass"
+  "$(jq -r '[.entries[] | select(.gate == "plan") | .result] | join(",")' .aif/state/ledgers/AIF-2.json)" "fail,pass"
 eq "the second attempt saw the complaint" "$(grep -c 'attempt 2' tasks/AIF-2/plan.md)" "1"
 eq "the report counts both attempts" \
   "$(grep -E '^\| plan \|' tasks/AIF-2/report.md | awk -F'|' '{ gsub(/ /,"",$3); print $3 }')" "2"
 eq "the tests station was retried too" \
-  "$(jq '[.entries[] | select(.gate == "verify-red")] | length' tasks/AIF-2/ledger.json)" "2"
+  "$(jq '[.entries[] | select(.gate == "verify-red")] | length' .aif/state/ledgers/AIF-2.json)" "2"
 # A gate that rejects BEFORE its subject exists — verify-red, whose subject is
 # the lock file it has not written yet — used to record the rejection with an
 # empty reason, because consecutive tabs collapse in a bash IFS and every
 # field after the empty subject shifted left. Two live rejections were logged
 # that way before anyone noticed.
 eq "every rejection says why" \
-  "$(jq '[.entries[] | select(.result == "fail") | select((.reason // "") == "")] | length' tasks/AIF-2/ledger.json)" "0"
+  "$(jq '[.entries[] | select(.result == "fail") | select((.reason // "") == "")] | length' .aif/state/ledgers/AIF-2.json)" "0"
 eq "and the subject column did not eat it" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .subject' tasks/AIF-2/ledger.json)" ""
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .subject' .aif/state/ledgers/AIF-2.json)" ""
 eq "the verify-red reason is the gate's own words" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .reason' tasks/AIF-2/ledger.json | grep -c 'REJECT')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .reason' .aif/state/ledgers/AIF-2.json | grep -c 'REJECT')" "1"
 
 # =============================== 3. not ready ================================
 printf '\n3. a ticket that is not ready stops at intake, nothing spent\n'
@@ -610,7 +655,7 @@ rc=0
 "$AIF" work AIF-3 --no-worktree >"$OUT/run3.out" 2>&1 || rc=$?
 eq "a stub: exit 1 — needs a person" "$rc" "1"
 eq "says why" "$(grep -c 'scaffold stub' "$OUT/run3.out")" "1"
-eq "no station ran" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-3/ledger.json)" "0"
+eq "no station ran" "$(jq '[.entries[] | select(.station != null)] | length' .aif/state/ledgers/AIF-3.json)" "0"
 
 ticket_for AIF-6 '[{ "id": "Q-001", "question": "should the export be signed?", "default": "no", "affects": ["AC-001"] }]'
 git add -A && git commit -qm "open question" >/dev/null
@@ -626,7 +671,7 @@ eq "under the line the project manager routes on: the ticket's problem" \
   "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 eq "and no report was written for a run that never started" \
   "$(test -f tasks/AIF-6/report.md && echo yes || echo no)" "no"
-eq "no station ran on it" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-6/ledger.json)" "0"
+eq "no station ran on it" "$(jq '[.entries[] | select(.station != null)] | length' .aif/state/ledgers/AIF-6.json)" "0"
 
 # =============================== 4. worktree =================================
 printf '\n4. the worktree path\n'
@@ -663,7 +708,7 @@ eq "the report says why" "$(grep -c 'rewrote nothing\|rejected .* time\|same com
 # The convergence rule: the same complaint twice in a row is a station that
 # cannot act on it, and the third attempt it used to get was the same coin.
 eq "implement was dispatched twice, not attempts_max times — the same complaint twice is a stop" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-5/ledger.json)" "2"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-5.json)" "2"
 eq "the accepted stations are committed, the failed one is not" \
   "$(git log --format=%s | grep -c '^aif: implement AIF-5')" "0"
 eq "run.json status" "$(jq -r '.status' tasks/AIF-5/run.json)" "stopped"
@@ -778,14 +823,14 @@ rc=0
 "$AIF" work AIF-8 --no-worktree >"$OUT/run8.out" 2>&1 || rc=$?
 eq "exit 1 — the run stopped instead of passing" "$rc" "1"
 eq "green could not render a verdict" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-8/ledger.json)" "error"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-8.json)" "error"
 eq "and said the report contradicts the runner" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-8/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-8.json |
      grep -c 'contradicts the runner')" "1"
 # An un-renderable verdict is a 3, so the loop stops. Retrying implement here
 # buys nothing: the suite is broken somewhere the report does not describe.
 eq "implement was dispatched once, not attempts_max times" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-8/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-8.json)" "1"
 eq "the ticket did not reach review" "$(jq -r '.status' tasks/AIF-8/run.json)" "stopped"
 
 # ======== 9. the lock says how sharp it was, and green repeats it ============
@@ -827,10 +872,10 @@ FAKE_COMMIT=1 "$AIF" work AIF-10 --no-worktree >"$OUT/run10.out" 2>&1 || rc=$?
 eq "exit 0 — built" "$rc" "0"
 eq "the station's commit is in the history" "$(git log --format=%s | grep -c 'the station committed')" "1"
 eq "scope judged the real change, not an empty diff" \
-  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' tasks/AIF-10/ledger.json)" \
+  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-10.json)" \
   "scope: change confined to the plan (2 lines)"
 eq "green's revert-recheck held — the tests do depend on the code" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-10/ledger.json | grep -c 'depend on the implementation')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-10.json | grep -c 'depend on the implementation')" "1"
 eq "the run record carries the dispatch baseline" \
   "$(jq -r '.dispatch_base | length' tasks/AIF-10/run.json)" "40"
 # The note on scope's pass path: the ledger keeps a gate's first line only, so
@@ -897,7 +942,7 @@ eq "stopped by the budget" "$(jq -r '.why' tasks/AIF-11/run.json | grep -c '^bud
 eq "with a spend above zero, though every envelope said USD 0" \
   "$(jq -r '.spent_usd > 0' tasks/AIF-11/run.json)" "true"
 eq "and the ledger priced the same tokens" \
-  "$(jq -r '[.entries[] | select(.station != null)] | first | .cost_source' tasks/AIF-11/ledger.json)" "priced"
+  "$(jq -r '[.entries[] | select(.station != null)] | first | .cost_source' .aif/state/ledgers/AIF-11.json)" "priced"
 eq "the station was handed what was left of it" \
   "$([ -n "$(cat .aif/tmp/fake-budget)" ] && echo yes || echo no)" "yes"
 
@@ -1008,12 +1053,12 @@ rc=0
 "$AIF" work AIF-15 --no-worktree >"$OUT/run15.out" 2>&1 || rc=$?
 eq "exit 1 — stopped" "$rc" "1"
 eq "verify-red could not render a verdict" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-15/ledger.json)" "error"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' .aif/state/ledgers/AIF-15.json)" "error"
 eq "and said the suite did not run" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-15/ledger.json | grep -c 'did not run')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-15.json | grep -c 'did not run')" "1"
 eq "nothing was frozen" "$(test -f tasks/AIF-15/tests.lock.json && echo yes || echo no)" "no"
 eq "implement was never dispatched" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-15/ledger.json)" "0"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-15.json)" "0"
 
 # ====== 16. runner detection survives a large tests/ tree ==================
 # `find | head -1 | grep -q .` as an elif condition: head leaves after one
@@ -1076,7 +1121,7 @@ rc=0
 eq "exit 1 — not every ticket built" "$rc" "1"
 eq "both went to Needs Human" "$(col AIF-19),$(col AIF-20)" "needs_human,needs_human"
 eq "and two in a row stopped the loop" "$(grep -c 'two runs in a row did not build' "$OUT/run16b.out")" "1"
-eq "nothing was dispatched" "$(grep -c '"station"' tasks/AIF-19/ledger.json tasks/AIF-20/ledger.json 2>/dev/null | awk -F: '{ s += $2 } END { print s + 0 }')" "0"
+eq "nothing was dispatched" "$(grep -c '"station"' .aif/state/ledgers/AIF-19.json .aif/state/ledgers/AIF-20.json 2>/dev/null | awk -F: '{ s += $2 } END { print s + 0 }')" "0"
 
 # --max-tickets takes that many and leaves the rest in Ready
 ticket_for AIF-21
@@ -1144,12 +1189,14 @@ rc=0
 "$AIF" land AIF-17 >"$OUT/land17b.out" 2>&1 || rc=$?
 eq "red on the result: exit 1" "$rc" "1"
 eq "the merge was undone" "$(git rev-parse HEAD)" "$head_before"
-eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
-eq "with the reason" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c 'suite is red')" "1"
+eq "the card went back to the worker, at the top of Ready" "$(col AIF-17)" "ready"
+eq "with the reason, on a sync: line" \
+  "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c '^sync: the suite is red')" "1"
 if git show-ref --verify --quiet refs/heads/aif/AIF-17; then ok "the branch is untouched"; else bad "the branch is gone"; fi
 eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
 
-# a conflict is aborted, never resolved
+# a conflict in code is aborted here, and the card goes back to the worker,
+# which brings the branch onto main in its worktree (scenario 47)
 "$AIF" board move AIF-17 review >/dev/null
 git rm -q tests/t2.py
 printf 'def users():\n    return []  # main moved on\n' >src/app.py
@@ -1160,7 +1207,7 @@ rc=0
 eq "a conflict: exit 1" "$rc" "1"
 eq "the merge was aborted" "$(git rev-parse HEAD)" "$head_before"
 eq "no merge in progress" "$([ -f .git/MERGE_HEAD ] && echo yes || echo no)" "no"
-eq "the card is in Needs Human" "$(col AIF-17)" "needs_human"
+eq "the card went back to the worker" "$(col AIF-17),$(grep -c 'not landed — the worker brings it onto' "$OUT/land17c.out")" "ready,1"
 eq "with the reason, naming the file" "$("$AIF" board show AIF-17 --json | jq -r '.comments[-1].text' | grep -c -E 'conflicts with [^ ]+ in src/app.py')" "1"
 
 
@@ -1195,11 +1242,11 @@ rc=0
 "$AIF" work AIF-20 --no-worktree >"$OUT/run20.out" 2>&1 || rc=$?
 eq "red only with the new tests, cleared by the implementation: built" "$rc" "0"
 eq "verify-red admitted it, and says so on the line the ledger keeps" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-20/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-20.json |
      grep -c '1 pre-existing test(s) red only with them')" "1"
 eq "the lock names it" "$(jq -c '.red_with_tests' tasks/AIF-20/tests.lock.json)" '["tests.t0::t0"]'
 eq "and green passed once the code existed" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-20/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-20.json)" "pass"
 
 # A repository already red: still a stop — but naming the test, and saying it
 # was measured without this ticket's files. In a worktree, as the worker runs
@@ -1217,9 +1264,9 @@ eq "red before the new tests existed: stopped" "$rc" "1"
 eq "…and not refused as a runner collecting the worker's checkouts" \
   "$(grep -c 'it collects .aif/worktrees/ too' "$OUT/run20b.out")" "0"
 eq "verify-red could not render a verdict" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' "$w20/ledger.json")" "error"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' .aif/state/ledgers/AIF-20.json)" "error"
 eq "and it names the test, on the line the ledger keeps" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' "$w20/ledger.json" |
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-20.json |
      grep -c 'red without this ticket.s test files too (1 failing: tests.t0::t0)')" "1"
 eq "nothing was frozen" "$(test -f "$w20/tests.lock.json" && echo yes || echo no)" "no"
 
@@ -1235,20 +1282,20 @@ rc=0
 "$AIF" work AIF-20 --no-worktree >"$OUT/run20c.out" 2>&1 || rc=$?
 eq "red with the tests, out of the implementation's reach: stopped" "$rc" "1"
 eq "verify-red admitted it" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .result' tasks/AIF-20/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | first | .result' .aif/state/ledgers/AIF-20.json)" "pass"
 # Out of the implementation's reach and the new tests' doing: not a stop any
 # more but a REPAIR — the tests station is dispatched in a copy without the
 # implementation, twice, and when the oracle still breaks the suite the run
 # stops at limits.repairs_max rather than at a human on the first attempt.
 eq "green attributed it to the oracle, as a repair" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' tasks/AIF-20/ledger.json)" "repair"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' .aif/state/ledgers/AIF-20.json)" "repair"
 eq "and said it is out of the implementation's reach" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' tasks/AIF-20/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' .aif/state/ledgers/AIF-20.json |
      grep -c 'out of the implementation.s reach')" "1"
 eq "implement was dispatched once, not attempts_max times" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-20/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-20.json)" "1"
 eq "the tests station was dispatched for each repair, in the copy" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-20/ledger.json),$(jq -r '.repairs' tasks/AIF-20/run.json)" "3,2"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-20.json),$(jq -r '.repairs' tasks/AIF-20/run.json)" "3,2"
 eq "and the run stopped at the repair cap, saying so" \
   "$(grep -c 'after 2 repair(s)' tasks/AIF-20/report.md)" "1"
 eq "the report says the new tests break it, and not to reinstall" \
@@ -1312,7 +1359,7 @@ rc=0
 FAKE_TESTS_TYPEBUG_FIRST=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21.out" 2>&1 || rc=$?
 eq "a mistyped test is sent back before the freeze, and the retry builds" "$rc" "0"
 eq "verify-red rejected it, then admitted the fix" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-21/ledger.json)" "fail,pass"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-21.json)" "fail,pass"
 eq "the retry was told where the error is" \
   "$(grep -c 'tests/t1.py(2,5): error TS2322' .aif/tmp/fake-prompt-tests-2)" "1"
 eq "…all of it, not the last line alone" \
@@ -1320,9 +1367,9 @@ eq "…all of it, not the last line alone" \
 eq "…and nothing the missing implementation causes" \
   "$(grep -c 'TS2307' .aif/tmp/fake-prompt-tests-2)" "0"
 eq "the red check that let the missing module through says so" \
-  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "red")] | last | .result' tasks/AIF-21/ledger.json)" "expected"
+  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "red")] | last | .result' .aif/state/ledgers/AIF-21.json)" "expected"
 eq "and the same check passed at green" \
-  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "green")] | last | .result' tasks/AIF-21/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.event == "check" and .phase == "green")] | last | .result' .aif/state/ledgers/AIF-21.json)" "pass"
 eq "legitimate_at_red on a check not bound to red is refused" \
   "$(jq '.checks[0].phase = ["green"]' .aif/project.json >"$OUT/bad21.json" &&
      /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/project.sh"; aif_project_validate "$2"' \
@@ -1339,10 +1386,10 @@ rc=0
 "$AIF" work AIF-21 --no-worktree >"$OUT/run21d.out" 2>&1 || rc=$?
 eq "a red check failing outside the tests: stopped" "$rc" "1"
 eq "verify-red could not render a verdict, and said where it failed" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' tasks/AIF-21/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' .aif/state/ledgers/AIF-21.json |
      grep -c '^error: .*fails somewhere other than this ticket.s test files')" "1"
 eq "the tests station was not sent round again for it" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-21/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-21.json)" "1"
 
 # Green only: the mistyped mock is frozen. The typecheck fails in the frozen
 # test, fails the same way without the implementation, and the run stops at
@@ -1359,14 +1406,14 @@ eq "a type error frozen into a test, repaired twice to the same type error: stop
 # attempt, so the repair cap is what stops it — at the cap, not at a human on
 # the first attempt.
 eq "green attributed it to the frozen tests, as a repair" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' tasks/AIF-21/ledger.json)" "repair"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .result' .aif/state/ledgers/AIF-21.json)" "repair"
 eq "…and says the failure is the frozen tests'" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' tasks/AIF-21/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | first | .reason' .aif/state/ledgers/AIF-21.json |
      grep -c 'fails in the frozen tests, not in the implementation')" "1"
 eq "implement was dispatched once, not attempts_max times" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-21/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-21.json)" "1"
 eq "the tests station was dispatched twice more, in the copy" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-21/ledger.json)" "3"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-21.json)" "3"
 eq "the report carries the located line" \
   "$(grep -c 'tests/t1.py(2,5): error TS2322' tasks/AIF-21/report.md)" "1"
 
@@ -1380,7 +1427,7 @@ rc=0
 FAKE_IMPL_BADTYPE_FIRST=1 "$AIF" work AIF-21 --no-worktree >"$OUT/run21c.out" 2>&1 || rc=$?
 eq "a type error the implementation added: rejected, retried, built" "$rc" "0"
 eq "green rejected it, then passed" \
-  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-21/ledger.json)" "fail,pass"
+  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-21.json)" "fail,pass"
 eq "the retry was told the file and the line" \
   "$(grep -c 'src/app.py(2,12): error TS2345' .aif/tmp/fake-prompt-implement-2)" "1"
 
@@ -1402,12 +1449,12 @@ rc=0
 FAKE_DRIFT=1 "$AIF" work AIF-22 --no-worktree >"$OUT/run22.out" 2>&1 || rc=$?
 eq "an installed dependency moved under the run: stopped" "$rc" "1"
 eq "green could not render a verdict on the implementation" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-22/ledger.json)" "error"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-22.json)" "error"
 eq "and said the test is out of the implementation's reach" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-22/ledger.json |
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-22.json |
      grep -c 'out of the implementation.s reach')" "1"
 eq "implement was dispatched once" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-22/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-22.json)" "1"
 eq "the report says where to look" "$(grep -c 'Run "prepare" in the worktree' tasks/AIF-22/report.md)" "1"
 eq "…and gives no advice that belongs to another kind of failure" \
   "$(grep -c 'the new tests' tasks/AIF-22/report.md)" "0"
@@ -1526,14 +1573,14 @@ rc=0
 FAKE_DEPS=1 "$AIF" work AIF-24 --no-worktree >"$OUT/run24.out" 2>&1 || rc=$?
 eq "a dependency added around the lock, then through it: built" "$rc" "0"
 eq "the first attempt was sent back by prepare, before any gate" \
-  "$(jq -r '[.entries[] | select(.gate == "prepare") | .result] | join(",")' tasks/AIF-24/ledger.json)" "fail"
+  "$(jq -r '[.entries[] | select(.gate == "prepare") | .result] | join(",")' .aif/state/ledgers/AIF-24.json)" "fail"
 eq "with prepare's own words in the retry" "$(grep -c 'are in sync' .aif/tmp/fake-prompt-implement-2)" "1"
 eq "implement was dispatched twice" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-24/ledger.json)" "2"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-24.json)" "2"
 eq "the dependencies were installed from the lockfile the retry left" \
   "$(tr '\n' ' ' <deps/installed)" '"dep-a" "dep-new" '
 eq "and scope let the lockfile the plan names move" \
-  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .result' tasks/AIF-24/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .result' .aif/state/ledgers/AIF-24.json)" "pass"
 
 # ====== 25. land, when the merge moves the dependencies =======================
 #
@@ -1720,7 +1767,7 @@ rc=0
 FAKE_TESTS_REHOME=1 "$AIF" work AIF-26 --no-worktree >"$OUT/run26.out" 2>&1 || rc=$?
 eq "a criterion whose only test is never collected: sent back, then built" "$rc" "0"
 eq "verify-red rejected it — the tests station's to fix — then admitted the fix" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-26/ledger.json)" "fail,pass"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-26.json)" "fail,pass"
 eq "the retry was told which criterion, and the file its test is in" \
   "$(grep -c 'AC-002 is named only in a file the runner collected no test from: tests/t2.py' .aif/tmp/fake-prompt-tests-2)" "1"
 eq "…and that a test in that file runs nowhere" \
@@ -1949,14 +1996,14 @@ plan_commit="$(git log --format='%H %s' | awk '/aif: plan AIF-28/ { print $1; ex
 eq "the plan's commit carries the skeleton, throwing the marker" \
   "$(git show "$plan_commit:src/feat.py" | grep -c 'aif: not implemented: feat')" "1"
 eq "the plan gate counted it" \
-  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .reason' tasks/AIF-28/ledger.json | grep -c '1 skeleton(s)')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .reason' .aif/state/ledgers/AIF-28.json | grep -c '1 skeleton(s)')" "1"
 eq "verify-red saw the test red for the marker, twice" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-28/ledger.json)" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-28.json)" \
   "verify-red: 1 new test(s) red for the right reason, twice, all criteria covered"
 eq "the freeze holds the skeleton's hash, and creates nothing" \
   "$(jq -r '(.impl_frozen | has("src/feat.py") | tostring) + "," + (.impl_created | length | tostring)' tasks/AIF-28/tests.lock.json)" "true,0"
 eq "green's recheck put the skeleton back and the test went red again" \
-  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' tasks/AIF-28/ledger.json | grep -c 'depend on the implementation')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-28.json | grep -c 'depend on the implementation')" "1"
 eq "the branch has the behaviour" "$(grep -c 'return 7' src/feat.py)" "1"
 
 # A tests station that edits the contract it was handed is sent back, before
@@ -1968,7 +2015,7 @@ rc=0
 FAKE_CREATE=1 FAKE_SKELETON_EDIT=1 "$AIF" work AIF-28 --no-worktree >"$OUT/run28b.out" 2>&1 || rc=$?
 eq "a tests station that wrote the behaviour into the skeleton: stopped" "$rc" "1"
 eq "verify-red rejected it, every time, naming the skeleton" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | map(.result) | join(",")' tasks/AIF-28/ledger.json)" "fail,fail"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | map(.result) | join(",")' .aif/state/ledgers/AIF-28.json)" "fail,fail"
 eq "…with the reason" \
   "$(grep -c 'the test station changed the skeleton src/feat.py' .aif/tmp/fake-prompt-tests-2)" "1"
 eq "…and the convergence rule stopped it at the second identical complaint" \
@@ -1990,11 +2037,11 @@ FAKE_VERDICT=already_true "$AIF" work AIF-29 --no-worktree >"$OUT/run29.out" 2>&
 eq "a criterion the plan finds already true: exit 1, for a human" "$rc" "1"
 eq "the run's status is spec" "$(jq -r '.status' tasks/AIF-29/run.json)" "spec"
 eq "the plan gate recorded a spec verdict" \
-  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .result' tasks/AIF-29/ledger.json)" "spec"
+  "$(jq -r '[.entries[] | select(.gate == "plan")] | last | .result' .aif/state/ledgers/AIF-29.json)" "spec"
 eq "with the plan's reason, for the analyst" \
   "$(grep -c 'AC-001 is already_true: src/app.py:2' tasks/AIF-29/report.md)" "1"
 eq "one dispatch, and the tests station never ran" \
-  "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-29/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station != null)] | length' .aif/state/ledgers/AIF-29.json)" "1"
 eq "nothing was frozen" "$(test -f tasks/AIF-29/tests.lock.json && echo yes || echo no)" "no"
 eq "the card went to Needs Human" "$(jq -r '.column' .aif/board/AIF-29.json)" "needs_human"
 eq "the report is headed as a spec stop" "$(head -1 tasks/AIF-29/report.md)" "# AIF-29 — spec"
@@ -2006,9 +2053,9 @@ rc=0
 FAKE_TESTS_NOTE_UNF=1 "$AIF" work AIF-29 --no-worktree >"$OUT/run29b.out" 2>&1 || rc=$?
 eq "a criterion the tests station cannot falsify: a spec stop" "$rc,$(jq -r '.status' tasks/AIF-29/run.json)" "1,spec"
 eq "verify-red recorded it as spec, with the station's reason" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-29/ledger.json),$(grep -c 'AC-001 cannot be falsified: no literal observation decides it' tasks/AIF-29/report.md)" "spec,1"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' .aif/state/ledgers/AIF-29.json),$(grep -c 'AC-001 cannot be falsified: no literal observation decides it' tasks/AIF-29/report.md)" "spec,1"
 eq "the tests station was dispatched once" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-29/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-29.json)" "1"
 
 # Every criterion already built, said in the note and confirmed green: the
 # ticket is done, which is the human's to say — not three attempts at red.
@@ -2021,7 +2068,7 @@ FAKE_TESTS_NOTE_BUILT=1 "$AIF" work AIF-29 --no-worktree >"$OUT/run29c.out" 2>&1
 eq "every criterion already built, by the station's account: a spec stop" "$rc,$(jq -r '.status' tasks/AIF-29/run.json)" "1,spec"
 eq "…saying so" "$(grep -c 'every criterion is already built' tasks/AIF-29/report.md)" "1"
 eq "…after one tests dispatch, not attempts_max" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-29/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-29.json)" "1"
 # Without the note, the same tree is the old rejection: nothing red remains.
 fresh_project "$SANDBOX/p29d"
 printf 'def users():\n    return []  # impl1\n' >src/app.py
@@ -2030,7 +2077,7 @@ git add -A && git commit -qm "ticket 29d, already built, unsaid" >/dev/null
 rc=0
 "$AIF" work AIF-29 --no-worktree >"$OUT/run29d.out" 2>&1 || rc=$?
 eq "unsaid, it is a rejection the station gets back, and the convergence rule stops it" \
-  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' tasks/AIF-29/ledger.json)" "1,fail"
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' .aif/state/ledgers/AIF-29.json)" "1,fail"
 eq "…naming the note as the way to say it" \
   "$(grep -c 'tests.note.json, already_built' .aif/tmp/fake-prompt-tests-2)" "1"
 
@@ -2051,7 +2098,7 @@ red_rejection() { # <label> <env> <reason-grep>
   env "$2=1" "$AIF" work AIF-30 --no-worktree >"$OUT/run30-$1.out" 2>&1 || rc=$?
   eq "$1: sent back, then built" "$rc" "0"
   eq "$1: verify-red rejected then admitted" \
-    "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-30/ledger.json)" "fail,pass"
+    "$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-30.json)" "fail,pass"
   eq "$1: the retry was told why" "$(grep -c "$3" .aif/tmp/fake-prompt-tests-2)" "1"
 }
 red_rejection broken FAKE_TESTS_BROKEN_FIRST 'did not run — it is broken, not red: .*SyntaxError: invalid syntax'
@@ -2093,17 +2140,17 @@ rc=0
 FAKE_TESTS_BUG=1 FAKE_IMPL_CLAIMS=1 "$AIF" work AIF-31 --no-worktree >"$OUT/run31.out" 2>&1 || rc=$?
 eq "a wrong frozen test, claimed and repaired: built" "$rc" "0"
 eq "green said repair, then passed" \
-  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-31/ledger.json)" "repair,pass"
+  "$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-31.json)" "repair,pass"
 eq "the tests station was dispatched twice: the freeze, and the repair" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-31/ledger.json)" "2"
+  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-31.json)" "2"
 eq "implement was dispatched once — judged again, not run again" \
-  "$(jq '[.entries[] | select(.station == "implement")] | length' tasks/AIF-31/ledger.json)" "1"
+  "$(jq '[.entries[] | select(.station == "implement")] | length' .aif/state/ledgers/AIF-31.json)" "1"
 # The repair ran in the copy, so its prompt file went with the copy; the
 # envelope the worker kept carries the prompt (the fake runner puts it there).
 eq "the repair dispatch was told it was one, with the claim, and its envelope was kept as the fourth" \
   "$(jq -r '.result' tasks/AIF-31/stations/04-tests.json | grep -c '^REPAIR'),$(jq -r '.result' tasks/AIF-31/stations/04-tests.json | grep -c 'it asserts the wrong literal')" "1,1"
 eq "the repaired oracle was admitted in the copy, red against the skeleton" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' tasks/AIF-31/ledger.json | grep -c '^repair 1: verify-red: 1 new test(s) red')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-31.json | grep -c '^repair 1: verify-red: 1 new test(s) red')" "1"
 repair_commit="$(git log --format='%H %s' | awk '/aif: tests AIF-31 \(repair 1\)/ { print $1; exit }')"
 eq "the repair commit holds the oracle and not the implementation" \
   "$(git show "$repair_commit:tests/t1.py" | grep -c BUG),$(git show "$repair_commit:src/app.py" | grep -c impl1)" "0,0"
@@ -2120,7 +2167,7 @@ git add -A && git commit -qm "ticket 31b" >/dev/null
 rc=0
 FAKE_TESTS_BUG=1 "$AIF" work AIF-31 --no-worktree >"$OUT/run31b.out" 2>&1 || rc=$?
 eq "unclaimed: rejected, and stopped on the same complaint twice" \
-  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' tasks/AIF-31/ledger.json)" "1,fail,fail"
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-31.json)" "1,fail,fail"
 eq "…without a repair" "$(jq -r '.repairs' tasks/AIF-31/run.json)" "0"
 
 # ====== 32. the replan loop: the contract cannot hold the behaviour ============
@@ -2136,9 +2183,9 @@ rc=0
 FAKE_CREATE=1 FAKE_REPLAN_FIRST=1 "$AIF" work AIF-32 --no-worktree >"$OUT/run32.out" 2>&1 || rc=$?
 eq "a contract declared unable to hold it, replanned once: built" "$rc" "0"
 eq "every station ran twice" \
-  "$(jq -r '[.entries[] | select(.station != null) | .station] | join(",")' tasks/AIF-32/ledger.json)" "plan,tests,implement,plan,tests,implement"
+  "$(jq -r '[.entries[] | select(.station != null) | .station] | join(",")' .aif/state/ledgers/AIF-32.json)" "plan,tests,implement,plan,tests,implement"
 eq "the replan is in the ledger" \
-  "$(jq -r '[.entries[] | select(.gate == "replan")] | last | .result' tasks/AIF-32/ledger.json)" "pass"
+  "$(jq -r '[.entries[] | select(.gate == "replan")] | last | .result' .aif/state/ledgers/AIF-32.json)" "pass"
 eq "the second plan dispatch was told it was a replan, with the words" \
   "$(grep -c '^REPLAN' .aif/tmp/fake-prompt-plan-2),$(grep -c 'nowhere to put the marker' .aif/tmp/fake-prompt-plan-2)" "1,1"
 eq "the run record counts it, and the report" \
@@ -2155,7 +2202,7 @@ FAKE_REPLAN=1 "$AIF" work AIF-32 --no-worktree >"$OUT/run32b.out" 2>&1 || rc=$?
 eq "declared twice: stopped at the replan cap" "$rc,$(jq -r '.status' tasks/AIF-32/run.json)" "1,stopped"
 eq "…saying so" "$(grep -q 'after 1 replan(s)' tasks/AIF-32/report.md && echo yes)" "yes"
 eq "…with the replan recorded as refused" \
-  "$(jq -r '[.entries[] | select(.gate == "replan") | .result] | join(",")' tasks/AIF-32/ledger.json)" "pass,fail"
+  "$(jq -r '[.entries[] | select(.gate == "replan") | .result] | join(",")' .aif/state/ledgers/AIF-32.json)" "pass,fail"
 
 # ====== 33. the tests station's Bash, once the guard has been seen to deny ======
 # Granted only once `aif doctor --probe` has watched the hook deny a command in
@@ -2515,8 +2562,8 @@ ticket_for AIF-37
 git add -A && git commit -qm "ticket 37c" >/dev/null
 rc=0
 FAKE_TESTS_SEQ="NONAME BROKEN BADCALL OK" "$AIF" work AIF-37 --no-worktree >"$OUT/run37c.out" 2>&1 || rc=$?
-eq "three rejections, then built on the fourth attempt" "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' tasks/AIF-37/ledger.json)" "0,fail,fail,fail,pass"
-eq "the tests station was dispatched four times" "$(jq '[.entries[] | select(.station == "tests")] | length' tasks/AIF-37/ledger.json)" "4"
+eq "three rejections, then built on the fourth attempt" "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-37.json)" "0,fail,fail,fail,pass"
+eq "the tests station was dispatched four times" "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-37.json)" "4"
 eq "…each retry told the attempt it was, of four" "$(grep -c 'tests rejected (attempt 3/4)' "$OUT/run37c.out")" "1"
 eq "the plan station declares no cap of its own, so it is held to three" \
   "$(sed -n '/^<!-- aif:meta$/,/^-->$/p' .claude/agents/aif-plan.md | sed '1d;$d' | jq -r '.max_attempts // "none"')" "none"
@@ -3135,7 +3182,7 @@ eq "…the restart line says the ticket changed and what was put back" \
   "$(grep -c 'restart .*the ticket changed since the last run .* file(s) put back to' "$OUT/run42d.out")" "1"
 eq "…and the stopped plan's leftover is gone, in no commit" \
   "$(test -e src/leftover.py && echo there || echo gone),$(git log --all --format=%s -- src/leftover.py | grep -c .)" "gone,0"
-eq "the record kept its ledger across the restart" "$(jq '[.entries[] | select(.gate == "plan")] | length' tasks/AIF-42/ledger.json)" "2"
+eq "the record kept its ledger across the restart" "$(jq '[.entries[] | select(.gate == "plan")] | length' .aif/state/ledgers/AIF-42.json)" "2"
 # A spec stop re-run with the ticket unchanged resumes the plan station on a
 # clean tree: the leftovers are put back, said so.
 fresh_project "$SANDBOX/p42c"
@@ -3239,7 +3286,7 @@ rc=0
 "$AIF" work AIF-53 --no-worktree >"$OUT/run43.out" 2>&1 || rc=$?
 eq "a ticket with rules is built" "$rc,$(jq -r '.status' tasks/AIF-53/run.json)" "0,built"
 eq "…its intake read the rules" \
-  "$(jq -r '[.entries[] | select(.gate == "ready")] | first | .reason' tasks/AIF-53/ledger.json)" "ready: 3 rule(s) · 3 criteria · 0 decided · 0 gap(s)"
+  "$(jq -r '[.entries[] | select(.gate == "ready")] | first | .reason' .aif/state/ledgers/AIF-53.json)" "ready: 3 rule(s) · 3 criteria · 0 decided · 0 gap(s)"
 
 # ====== 44. a ticket is a delta on the tickets before it ======================
 # The analyst read main and nothing in flight, so a new ticket could restate a
@@ -3323,9 +3370,9 @@ rc=0
 FAKE_WIDEPLAN=13 FAKE_BIGDIFF=520 "$AIF" work AIF-70 --no-worktree >"$OUT/run45.out" 2>&1 || rc=$?
 eq "built" "$rc,$(jq -r '.status' tasks/AIF-70/run.json)" "0,built"
 eq "the plan named fourteen implementation files, and its gate said so and passed it" \
-  "$(jq -r '[.entries[] | select(.gate == "plan" and .result == "pass")] | last | .reason' tasks/AIF-70/ledger.json | grep -c '^plan: 14 implementation file(s)')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "plan" and .result == "pass")] | last | .reason' .aif/state/ledgers/AIF-70.json | grep -c '^plan: 14 implementation file(s)')" "1"
 eq "the change ran past five hundred lines, and scope said so and passed it" \
-  "$(jq -r '[.entries[] | select(.gate == "scope" and .result == "pass")] | last | .reason' tasks/AIF-70/ledger.json | grep -c -E 'change confined to the plan \(5[0-9][0-9] lines\)')" "1"
+  "$(jq -r '[.entries[] | select(.gate == "scope" and .result == "pass")] | last | .reason' .aif/state/ledgers/AIF-70.json | grep -c -E 'change confined to the plan \(5[0-9][0-9] lines\)')" "1"
 jq '.limits.plan_files_max = 12 | .limits.diff_lines_max = 400 | .limits.revisions_max = 5' .aif/project.json >"$OUT/p45.json" && cp "$OUT/p45.json" .aif/project.json
 eq "project check names each retired cap the file still sets" \
   "$("$AIF" project check 2>&1 | grep -c 'is set, and nothing reads it any more — aif retired it')" "3"
@@ -3340,8 +3387,9 @@ eq "the upgrade takes them out, and says so" \
 # branch's at land: the analyst's scaffold, left uncommitted, refused the merge
 # (13.3); its empty ledger, committed after the branch was cut, conflicted
 # add/add with the branch's — on aif/OPES-74 the only file the merge stopped
-# on, the code merging clean (13.2). The set the branch was brought up to
-# conflicts the same way with a newer one on the checkout's branch.
+# on, the code merging clean (13.2). The ledger has left git since (13.13), and
+# the ticket's own text, edited on the checkout's branch, conflicts the same
+# way — as does the set the branch was brought up to, with a newer one there.
 printf '\n46. the ledger never stops a run, a gate or a land; the ticket'"'"'s own files land with it\n'
 fresh_project "$SANDBOX/p46"
 ticket_for AIF-80
@@ -3355,14 +3403,14 @@ sleep 30 &
 gone=$!
 kill "$gone" 2>/dev/null
 wait "$gone" 2>/dev/null
-mkdir -p tasks/AIF-80/ledger.json.lock && printf '%s\n' "$gone" >tasks/AIF-80/ledger.json.lock/pid
+mkdir -p .aif/state/ledgers/AIF-80.json.lock && printf '%s\n' "$gone" >.aif/state/ledgers/AIF-80.json.lock/pid
 cat >"$SANDBOX/ledger-station.sh" <<'EOF'
 #!/bin/bash
 "$REAL_STATION" "$@"
 rc=$?
 case "$1" in
-  plan) mkdir -p "$3/tasks/$2/ledger.json.lock" ;;
-  tests) printf '<<<<<<< ours\n' >"$3/tasks/$2/ledger.json" ;;
+  plan) mkdir -p "$3/.aif/state/ledgers/$2.json.lock" ;;
+  tests) printf '<<<<<<< ours\n' >"$3/.aif/state/ledgers/$2.json" ;;
 esac
 exit $rc
 EOF
@@ -3374,20 +3422,22 @@ REAL_STATION="$real_station" AIF_WORK_STATION_CMD="$SANDBOX/ledger-station.sh" \
 eq "built, whatever the ledger met" "$rc,$(jq -r '.status' tasks/AIF-80/run.json)" "0,built"
 eq "no station was sent back for the ledger's trouble" "$(grep -c 'rejected' "$OUT/run46.out")" "0"
 eq "the locks were taken over, not obeyed, and none is left" \
-  "$([ -d tasks/AIF-80/ledger.json.lock ] && echo held || echo gone)" "gone"
-eq "the ledger that was not JSON was set aside where git does not look, and a new one started" \
-  "$(find .aif/tmp -maxdepth 1 -name 'ledger-AIF-80-*.json' | wc -l | tr -d ' '),$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' tasks/AIF-80/ledger.json)" "1,pass"
-eq "no temp file is left in the ticket's record" "$(find tasks/AIF-80 -name '.aif-tmp-*' | wc -l | tr -d ' ')" "0"
+  "$([ -d .aif/state/ledgers/AIF-80.json.lock ] && echo held || echo gone)" "gone"
+eq "the ledger that was not JSON was set aside beside itself, and a new one started" \
+  "$(find .aif/state/ledgers -maxdepth 1 -name 'AIF-80.unreadable-*.json' | wc -l | tr -d ' '),$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-80.json)" "1,pass"
+eq "no temp file is left beside the ledger or in the ticket's record" \
+  "$(find tasks/AIF-80 .aif/state/ledgers -name '.aif-tmp-*' | wc -l | tr -d ' ')" "0"
+eq "and no ledger in git: the run committed none" "$(git ls-files tasks/AIF-80 | grep -c 'ledger' || true)" "0"
 # A live writer holding the ledger past the wait: the row is skipped with a
 # warning, and the gate's exit is its verdict.
 sleep 60 &
 holder=$!
-mkdir -p tasks/AIF-80/ledger.json.lock && printf '%s\n' "$holder" >tasks/AIF-80/ledger.json.lock/pid
+mkdir -p .aif/state/ledgers/AIF-80.json.lock && printf '%s\n' "$holder" >.aif/state/ledgers/AIF-80.json.lock/pid
 rc=0
 "$AIF" _gate plan AIF-80 >"$OUT/gate46.out" 2>&1 || rc=$?
 kill "$holder" 2>/dev/null
 wait "$holder" 2>/dev/null
-rm -rf tasks/AIF-80/ledger.json.lock
+rm -rf .aif/state/ledgers/AIF-80.json.lock
 eq "a ledger held by a live writer: the gate still passes" "$rc" "0"
 eq "…and the row it could not write is a warning" \
   "$([ "$(grep -c 'is held by pid' "$OUT/gate46.out")" -ge 1 ] && echo yes || echo no)" "yes"
@@ -3414,38 +3464,170 @@ rm -f tests/t1.py
 rc=0
 "$AIF" land AIF-81 >"$OUT/land46b.out" 2>&1 || rc=$?
 eq "the analyst's uncommitted ticket: landed" "$rc,$(col AIF-81)" "0,done"
-eq "the record that landed is the branch's" \
-  "$(git ls-files tasks/AIF-81 | grep -c -E '^tasks/AIF-81/(ticket\.md|ledger\.json|run\.json|report\.md)$')" "4"
+eq "the record that landed is the branch's, and no ledger rode it" \
+  "$(git ls-files tasks/AIF-81 | grep -c -E '^tasks/AIF-81/(ticket\.md|run\.json|report\.md)$'),$(git ls-files tasks/AIF-81 | grep -c ledger || true)" "3,0"
 eq "the local copy was taken aside, the same bytes as landed, and said so" \
   "$(find .aif/tmp -path '*/land-AIF-81-*/tasks/AIF-81/ticket.md' | wc -l | tr -d ' '),$(grep -c '^aside: .*the same as what landed' "$OUT/land46b.out")" "1,1"
 eq "the checkout is clean afterwards" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
 
-# OPES-74's shape: the analyst's ticket and an empty ledger committed on the
-# checkout's branch after the ticket's branch was cut — and the set moved on
-# there too, while the branch carries the one its run was brought up to.
+# OPES-74's shape, as it stands with the ledger out of git: the analyst's
+# ticket committed on the checkout's branch after the ticket's branch was cut —
+# edited since, so the two copies differ — and the set moved on there too, while
+# the branch carries the one its run was brought up to. An empty ledger an
+# older analyst committed beside it collides with nothing now.
 fresh_project "$SANDBOX/p46c"
 ticket_for AIF-82
 "$AIF" board create tasks/AIF-82/ticket.md --column ready >/dev/null
 printf '# the set as the run found it\n' >>.aif/gates/green.sh
 rc=0
 "$AIF" work AIF-82 >"$OUT/run46c.out" 2>&1 || rc=$?
-eq "built, its branch brought up to the set the run found" \
-  "$rc,$(col AIF-82),$(git show aif/AIF-82:.aif/gates/green.sh | tail -1)" "0,review,# the set as the run found it"
+eq "built, its branch brought up to the set the run found, and carrying no ledger" \
+  "$rc,$(col AIF-82),$(git show aif/AIF-82:.aif/gates/green.sh | tail -1),$(git ls-tree -r --name-only aif/AIF-82 -- tasks/AIF-82 | grep -c ledger || true)" \
+  "0,review,# the set as the run found it,0"
+built_ticket="$(git show aif/AIF-82:tasks/AIF-82/ticket.md | shasum -a 256 | cut -d' ' -f1)"
 git checkout -q -- .aif/gates/green.sh
 printf '# the set as it is now\n' >>.aif/gates/green.sh
+printf '\nAn edit the analyst made after the build.\n' >>tasks/AIF-82/ticket.md
 jq -n '{ schema: 1, ticket: "AIF-82", entries: [], accepted_at: null }' >tasks/AIF-82/ledger.json
 git add -A && git commit -qm "docs(AIF-82): the ticket; the set moved on" >/dev/null
 rc=0
 "$AIF" land AIF-82 >"$OUT/land46c.out" 2>&1 || rc=$?
-eq "the ledger added on both sides and the set changed on both: landed" "$rc,$(col AIF-82)" "0,done"
-eq "the ticket's record is the branch's" "$(jq '.entries | length > 0' tasks/AIF-82/ledger.json)" "true"
+eq "the ticket added on both sides and the set changed on both: landed" "$rc,$(col AIF-82)" "0,done"
+eq "the ticket's record is the branch's — the bytes that were built" \
+  "$(shasum -a 256 tasks/AIF-82/ticket.md | cut -d' ' -f1)" "$built_ticket"
 eq "the set is the checkout's" "$(tail -1 .aif/gates/green.sh)" "# the set as it is now"
 target46="$(git symbolic-ref --short HEAD)"
 eq "both settlements are said, here, on the card and in the merge commit" \
-  "$(grep '^settled:  ' "$OUT/land46c.out" | grep -c "tasks/AIF-82/ledger.json (aif/AIF-82)"),$(grep '^settled:  ' "$OUT/land46c.out" | grep -c ".aif/gates/green.sh ($target46)"),$("$AIF" board show AIF-82 --json | jq -r '.comments[-1].text' | grep -c "conflicts in aif's own files, settled by owner"),$(git log -1 --format=%b | grep -c '^Settled by owner')" "1,1,1,1"
+  "$(grep '^settled:  ' "$OUT/land46c.out" | grep -c "tasks/AIF-82/ticket.md (aif/AIF-82)"),$(grep '^settled:  ' "$OUT/land46c.out" | grep -c ".aif/gates/green.sh ($target46)"),$("$AIF" board show AIF-82 --json | jq -r '.comments[-1].text' | grep -c "conflicts in aif's own files, settled by owner"),$(git log -1 --format=%b | grep -c '^Settled by owner')" "1,1,1,1"
 eq "one merge commit, nothing left half-merged" \
   "$(git log --format=%s -1),$([ -f .git/MERGE_HEAD ] && echo merging || echo clean),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" \
   "aif: land AIF-82 — one-command user export,clean,0"
+
+# ====== 47. a branch is brought onto the branch it lands on, by the machine ===
+# Tickets built side by side are cut from one HEAD, and whichever lands second
+# meets the first. The land stopped on that and sent the card to a human
+# (docs/DEFECTS.md 13.4). It sends it back to the worker now, which merges the
+# target into the branch in its worktree, has the implement station settle a
+# conflict in code, judges the merged tree with green and scope, and returns
+# the card to Review; when the station cannot settle it, or a test file is in
+# conflict, the ticket is built again from the target, the first build kept.
+printf '\n47. a conflict at land goes back to the worker: settled by the implement station, or the ticket built again\n'
+fresh_project "$SANDBOX/p47"
+ticket_for AIF-90
+git add -A && git commit -qm "ticket 47" >/dev/null
+"$AIF" board create tasks/AIF-90/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-90 >"$OUT/run47a.out" 2>&1 || rc=$?
+eq "built; nothing to bring it onto yet" \
+  "$rc,$(col AIF-90),$(jq -r '.sync // "none"' .aif/worktrees/AIF-90/tasks/AIF-90/run.json)" "0,review,none"
+# Another ticket lands meanwhile: the same line of src/app.py, and its test.
+printf 'def users():\n    return []  # moved\n' >src/app.py
+printf '# AIF-91 AC-001 asserts moved — expects moved\n' >tests/t2.py
+git add -A && git commit -qm "aif: land AIF-91 — another ticket" >/dev/null
+main47="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-90 >"$OUT/land47a.out" 2>&1 || rc=$?
+eq "the land meets the conflict: exit 1, nothing merged, the card back in Ready" \
+  "$rc,$(git rev-parse HEAD),$(col AIF-90)" "1,$main47,ready"
+eq "…saying so on a sync: line" \
+  "$("$AIF" board show AIF-90 --json | jq -r '.comments[-1].text' | sed -n 1p | grep -c -E '^sync: aif/AIF-90 conflicts with [^ ]+ in src/app.py')" "1"
+rc=0
+"$AIF" work AIF-90 >"$OUT/run47b.out" 2>&1 || rc=$?
+eq "the worker brings it onto main: built, back in Review" "$rc,$(col AIF-90)" "0,review"
+eq "through the implement station, MERGE in its prompt, once" \
+  "$(grep -l 'MERGE — this ticket' .aif/worktrees/AIF-90/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "1"
+eq "the branch holds main, and both sides' code" \
+  "$(git merge-base --is-ancestor "$main47" aif/AIF-90 && echo yes),$(git show aif/AIF-90:src/app.py | grep -c -E 'impl1|moved')" "yes,2"
+eq "the run record names what it was brought onto, and what the station settled" \
+  "$(git show aif/AIF-90:tasks/AIF-90/run.json | jq -r --arg m "$main47" '[(.sync.onto == $m), (.sync.station | join(","))] | map(tostring) | join(",")')" "true,src/app.py"
+eq "the report says where the reviewer should look" \
+  "$(git show aif/AIF-90:tasks/AIF-90/report.md | grep -c 'conflicts in code, settled by the implement station')" "1"
+eq "the sync is one merge commit, and no ledger rode it" \
+  "$(git log --format=%s aif/AIF-90 | grep -c '^aif: sync AIF-90 onto '),$(git ls-tree -r --name-only aif/AIF-90 -- tasks/AIF-90 | grep -c ledger || true)" "1,0"
+rc=0
+"$AIF" land AIF-90 >"$OUT/land47c.out" 2>&1 || rc=$?
+eq "then it lands, both tickets' tests green on the result" "$rc,$(col AIF-90)" "0,done"
+
+# The station cannot settle it: three attempts, then the ticket is built again
+# from main, and the first build is kept under refs/aif/archive.
+fresh_project "$SANDBOX/p47b"
+ticket_for AIF-92
+git add -A && git commit -qm "ticket 47b" >/dev/null
+"$AIF" board create tasks/AIF-92/ticket.md --column ready >/dev/null
+"$AIF" work AIF-92 >"$OUT/run47d.out" 2>&1 || true
+printf 'def users():\n    return []  # main moved on\n' >src/app.py
+git add -A && git commit -qm "main moved the same line" >/dev/null
+main47b="$(git rev-parse HEAD)"
+"$AIF" land AIF-92 >"$OUT/land47d.out" 2>&1 || true
+rc=0
+FAKE_MERGE_FAIL=1 "$AIF" work AIF-92 >"$OUT/run47e.out" 2>&1 || rc=$?
+eq "not settled: built again from main, back in Review" "$rc,$(col AIF-92)" "0,review"
+eq "after the implement station's three attempts" \
+  "$(grep -l 'MERGE' .aif/worktrees/AIF-92/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "3"
+eq "the first build is kept, not lost" \
+  "$(git rev-parse -q --verify refs/aif/archive/AIF-92/1 >/dev/null && echo kept)" "kept"
+eq "the new build starts from main" \
+  "$(git merge-base --is-ancestor "$main47b" aif/AIF-92 && echo yes),$(git show aif/AIF-92:tasks/AIF-92/run.json | jq -r --arg m "$main47b" '[.rebuilds, (.base == $m)] | map(tostring) | join(",")')" "yes,1,true"
+eq "the report says it was built again, and where the first build is" \
+  "$(git show aif/AIF-92:tasks/AIF-92/report.md | grep -c 'refs/aif/archive/AIF-92/1')" "1"
+rc=0
+"$AIF" land AIF-92 >"$OUT/land47f.out" 2>&1 || rc=$?
+eq "and it lands" "$rc,$(col AIF-92)" "0,done"
+
+# A test file in conflict is the oracle's, and no merge settles it: built again
+# from main at once, no station asked.
+fresh_project "$SANDBOX/p47c"
+ticket_for AIF-93
+git add -A && git commit -qm "ticket 47c" >/dev/null
+"$AIF" board create tasks/AIF-93/ticket.md --column ready >/dev/null
+"$AIF" work AIF-93 >"$OUT/run47g.out" 2>&1 || true
+printf '# MAIN-3 AC-009 asserts users — expects users\n' >tests/t1.py
+git add -A && git commit -qm "main wrote a test where the ticket did" >/dev/null
+"$AIF" land AIF-93 >"$OUT/land47g.out" 2>&1 || true
+rc=0
+"$AIF" work AIF-93 >"$OUT/run47h.out" 2>&1 || rc=$?
+eq "a test file in conflict: built again from main, no station asked to settle it" \
+  "$rc,$(col AIF-93),$(grep -l 'MERGE' .aif/worktrees/AIF-93/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "0,review,0"
+eq "…saying why" "$(git show aif/AIF-93:tasks/AIF-93/run.json | jq -r '.rebuild_why' | grep -c 'in test files')" "1"
+
+# A settlement that drops the other side: the merged tree loses main's
+# behaviour, and green names main's test — which came in with the merge, so it
+# is pre-existing for this ticket, not one its own tests brought — and the
+# station's next attempt keeps both.
+fresh_project "$SANDBOX/p47e"
+ticket_for AIF-95
+git add -A && git commit -qm "ticket 47e" >/dev/null
+"$AIF" board create tasks/AIF-95/ticket.md --column ready >/dev/null
+"$AIF" work AIF-95 >"$OUT/run47k.out" 2>&1 || true
+printf 'def users():\n    return []  # moved\n' >src/app.py
+printf '# AIF-96 AC-001 asserts moved — expects moved\n' >tests/t2.py
+git add -A && git commit -qm "aif: land AIF-96 — another ticket" >/dev/null
+"$AIF" land AIF-95 >"$OUT/land47k.out" 2>&1 || true
+rc=0
+FAKE_MERGE_DROP_FIRST=1 "$AIF" work AIF-95 >"$OUT/run47l.out" 2>&1 || rc=$?
+eq "main's side dropped: rejected, then settled on the next attempt" \
+  "$rc,$(col AIF-95),$(grep -l 'MERGE' .aif/worktrees/AIF-95/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "0,review,2"
+again47="$(grep -l 'MERGE, again — the merged tree was rejected' .aif/worktrees/AIF-95/.aif/tmp/fake-prompt-implement-* 2>/dev/null | sed -n 1p)"
+eq "green named main's test as the pre-existing suite broken, not as this ticket's oracle" \
+  "$(grep -c 'AIF-96 AC-001 t2 (failure) — the pre-existing suite broke' "$again47" 2>/dev/null),$(grep -c 'REPAIR' "$again47" 2>/dev/null)" "1,0"
+
+# The target moved somewhere else entirely: the branch takes it in on its way
+# back to Review, merged clean, judged again, no station asked.
+fresh_project "$SANDBOX/p47d"
+ticket_for AIF-94
+git add -A && git commit -qm "ticket 47d" >/dev/null
+"$AIF" board create tasks/AIF-94/ticket.md --column ready >/dev/null
+"$AIF" work AIF-94 >"$OUT/run47i.out" 2>&1 || true
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved elsewhere" >/dev/null
+main47d="$(git rev-parse HEAD)"
+"$AIF" board move AIF-94 ready >/dev/null
+rc=0
+"$AIF" work AIF-94 >"$OUT/run47j.out" 2>&1 || rc=$?
+eq "merged clean on its way back to Review, no station asked" \
+  "$rc,$(col AIF-94),$(grep -l 'MERGE' .aif/worktrees/AIF-94/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "0,review,0"
+eq "the branch holds main, and the report says it merged clean" \
+  "$(git merge-base --is-ancestor "$main47d" aif/AIF-94 && echo yes),$(git show aif/AIF-94:tasks/AIF-94/report.md | grep -c 'merged into the branch, clean')" "yes,1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

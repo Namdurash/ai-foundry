@@ -108,6 +108,12 @@ lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the lande
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
 lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
 lib/cmd_land.sh|aif_integrate_own "$root" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner
+lib/cmd_land.sh|_aif_land_requeue "$root" "$ticket"|aif land sends a conflict in code, or a red on the result, back to Ready for the worker
+lib/cmd_land.sh|ready top|…to the top of Ready
+lib/cmd_work.sh|_aif_work_sync "$root" "$wt" "$ticket"|the worker brings the branch onto the branch it lands on before it reports built
+lib/cmd_work.sh|aif_integrate_own "$wt" "$ticket" ours|…settling aif's own files by owner
+lib/cmd_work.sh|MERGE — this ticket's branch is being brought onto|…a conflict in code by the implement station
+lib/cmd_work.sh|_aif_work_rebuild "$root" "$wt" "$ticket"|…and, when it cannot be brought on, builds the ticket again from that branch
 sets/claude/skills/aif-ba/SKILL.md|depends_on|a ticket names the tickets it needs built first
 sets/claude/skills/aif-review/SKILL.md|aif land <ID>|the reviewer's brief ends in aif land, or a comment
 sets/claude/skills/aif-review/SKILL.md|The product partner's demo, in a fresh context|on the human's land, the product partner's demo runs before anything lands
@@ -265,8 +271,11 @@ flowchart TB
     INTAKE["intake — the ticket's bytes frozen<br/>one worktree, one branch aif/&lt;ID&gt;, one budget"]
     G_READY{{"gate ready"}}
     INTAKE --> G_READY
-$mermaid_stations    REPORT["report.md, beside the diff on the branch"]
-    $last_gate --> REPORT
+$mermaid_stations    SYNC["sync — the branch brought onto the checkout's branch:<br/>a conflict in code settled by the implement station, the merged tree judged again"]
+    $last_gate --> SYNC
+    SYNC -.->|"it cannot be brought on: built again from that branch, once"| S_plan
+    REPORT["report.md, beside the diff on the branch"]
+    SYNC --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ $repairs_max per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ $replans_max per ticket"| S_plan
     LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
@@ -286,7 +295,7 @@ $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG

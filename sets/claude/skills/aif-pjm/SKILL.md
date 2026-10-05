@@ -119,6 +119,11 @@ on the kind:
 A comment with no `blocked:` line is from before the worker wrote one: read it, and
 route a ticket problem as rework and anything else to the human, as above.
 
+A card at the top of Ready whose last comment begins `sync:` is one `aif land` sent
+back: its branch conflicts with the checkout's, or is red on it. The worker brings it
+onto the checkout's branch — or builds it again from there — and it returns to Review,
+to be looked at again. Nothing for you; do not move it.
+
 ### Stuck cards
 
 From `status --json`, anything in `review` or `needs_human` whose `moved_at` is older

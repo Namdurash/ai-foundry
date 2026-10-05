@@ -109,27 +109,57 @@ changed="$(git -C "$root" diff --name-only "$base" 2>/dev/null || true)"
 created="$(git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true)"
 deleted="$(git -C "$root" diff --name-only --diff-filter=D "$base" 2>/dev/null || true)"
 
+# A branch the worker brought onto the branch it lands on (its sync,
+# docs/DEFECTS.md 13.4) carries that branch's changes in the diff since the
+# dispatch, and they are not the implementation's. The run record names the
+# commit it was brought onto; a path whose content is exactly what that commit
+# holds — or that it removed as well — is passed over, and anything that
+# differs from both is judged as ever: a conflict settled inside the plan's
+# files passes, an edit outside them does not.
+sync_base="$(jq -r '.sync_base // empty' "$work/run.json" 2>/dev/null)"
+if [ -n "$sync_base" ] && ! git -C "$root" rev-parse -q --verify "$sync_base^{commit}" >/dev/null 2>&1; then
+  sync_base=""
+fi
+from_target() { # <path> — rc 0 when the tree holds at <path> what the target holds
+  [ -n "$sync_base" ] || return 1
+  if git -C "$root" cat-file -e "$sync_base:$1" 2>/dev/null; then
+    [ -f "$root/$1" ] &&
+      [ "$(git -C "$root" hash-object -- "$root/$1" 2>/dev/null)" = "$(git -C "$root" rev-parse "$sync_base:$1" 2>/dev/null)" ]
+  else
+    [ ! -e "$root/$1" ]
+  fi
+}
+
 # The amendments file itself is under tasks/, so the denylist would reject the
 # very mechanism that exists to be used. Exempted by exact path — not the whole
 # directory, which still holds the plan and the ledger this gate protects.
 amend_rel="${amend_file#"$root"/}"
 
-# The ledger and the run record too, and for the same reason: aif itself writes
-# them, between two aif commits. A failed attempt's verdicts are recorded the
-# moment the gate rejects, and the run record's attempt count and spend are
-# updated before the station is dispatched — so on a retry both sit modified in
-# the very diff this gate reads, and the pipeline's own bookkeeping reads as the
-# implementation editing its record. The hook's cost rows are staged out of the
-# diff entirely (.aif/tmp/, folded in by `aif _gate`); these two must land when
-# they happen or a crash loses the attempt. Tamper evidence does not thin: the
-# ledger is hash-chained, both are committed, and the guard hook still refuses
-# any station that tries to write under tasks/.
+# The run record too, and for the same reason: aif itself writes it, between
+# two aif commits. Its attempt count and spend are updated before the station
+# is dispatched — so on a retry it sits modified in the very diff this gate
+# reads, and the pipeline's own bookkeeping reads as the implementation editing
+# its record. The guard hook still refuses any station that tries to write
+# under tasks/. The ledger was here for the same reason until it left the tree
+# (docs/DEFECTS.md 13.13); a branch from before that still carries one, which
+# the worker no longer writes, and it stays exempt.
 ledger_rel="${work#"$root"/}/ledger.json"
 run_rel="${work#"$root"/}/run.json"
 # And the implementer's own note — the one file under tasks/ it may write: a
 # frozen test it declares wrong, a contract it declares unable to hold the
 # behaviour. Read by green and the worker, not by this gate.
 note_rel="${work#"$root"/}/implement.note.json"
+# And, on a branch being brought onto its target, the ticket's whole record:
+# the worker rewrites the lock with the test files the merge brought, before
+# the merge is committed, and puts its copy back after every station; a run
+# resumed to be brought on (the card sent back by aif land) carries the report
+# and the stations' accounts its first round committed after the dispatch this
+# diff starts from (docs/DEFECTS.md 13.4). All of it is aif's; the guard still
+# refuses a station that writes under tasks/, the lock is the worker's copy,
+# and green holds the plan to the lock's hash. Only then — at any other time a
+# lock in this diff is the oracle being moved.
+record_rel=""
+[ -z "$sync_base" ] || record_rel="${work#"$root"/}/"
 
 # A lockfile moves only when the PLAN named it — the plan gate made sure it
 # named the manifest beside it. Not the amendments: `aif _amend-plan` refuses
@@ -141,6 +171,10 @@ viol=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   if [ "$p" = "$amend_rel" ] || [ "$p" = "$ledger_rel" ] || [ "$p" = "$run_rel" ] || [ "$p" = "$note_rel" ]; then
+    continue
+  elif [ -n "$record_rel" ] && [ "${p#"$record_rel"}" != "$p" ]; then
+    continue
+  elif from_target "$p"; then
     continue
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol
@@ -163,6 +197,7 @@ EOF
 # out of scope.
 while IFS= read -r p; do
   [ -n "$p" ] || continue
+  ! from_target "$p" || continue
   viol="$viol
 $p was deleted — the plan did not authorise removing it"
 done <<EOF
@@ -178,7 +213,9 @@ aif_g_report "${viol# }" "scope"
 # is bounded where it can be bounded: the paths above, which the plan named,
 # and green, which holds the whole suite. tasks/ is left out of the count — the
 # ledger and the amendments file are machine-written bookkeeping.
-added_removed="$(git -C "$root" diff --numstat "$base" -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
+# After a sync, counted against what it was brought onto: the target's own
+# changes are in the diff since the dispatch and are not this ticket's size.
+added_removed="$(git -C "$root" diff --numstat "${sync_base:-$base}" -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
 
 if [ -n "$amended" ]; then
   # Loudly, on the pass path. A widened manifest that only shows up when someone

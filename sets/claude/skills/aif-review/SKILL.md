@@ -105,9 +105,11 @@ Ask for one word and take it:
      moves the card to Done, removes the worktree and releases the next slice. The
      suite can take minutes: run it in the background if your commands time out
      sooner, and wait for it. Then say what it said — landed, and what it released;
-     refused, and why, with nothing touched and the card still in Review; or undone,
-     with the reason, and the card in Needs Human. Do not run it again, and do not fix
-     what it refused over.
+     refused, and why, with nothing touched and the card still in Review; sent back to
+     the worker, when the branch conflicts with the checkout's or is red on it — the
+     card at the top of Ready with a `sync:` comment, to come back to Review brought
+     onto it, to be looked at again; or undone, with the reason, and the card in Needs
+     Human. Do not run it again, and do not fix what it refused over.
   5. **Not as expected — stop there.** The reasons are on the card, and the project
      manager routes them (`/aif-pjm`): rework for the analyst, a `request:` line to the
      product partner first. Say so, and that the human can still land it over the

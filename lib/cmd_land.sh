@@ -19,16 +19,22 @@
 #               stays one commit to find. The analyst's uncommitted copy of the
 #               ticket is taken aside first, and a conflict in aif's own files
 #               — the ticket's record, the set — is settled by owner
-#               (lib/integrate.sh). Any other conflict is aborted and reported:
-#               nothing here settles code yet (docs/DEFECTS.md 13.4)
+#               (lib/integrate.sh). A conflict in code is aborted, and the card
+#               goes back to Ready for the worker, which brings the branch onto
+#               this one and returns it to Review (docs/DEFECTS.md 13.4)
 #   install     only with --prepare, and only when the merge moved a dependency
 #               manifest or lockfile: project.json's "prepare", here
 #   suite       .test.command on the RESULT, here: the gates proved the branch
 #               alone, this proves it with everything landed since. Red undoes
 #               the merge — the tree was clean, so a reset to the sha from
-#               before it loses nothing — and reports
-#   card        → Done with what happened as a comment; a failure after the
-#               merge → Needs Human with the same comment
+#               before it loses nothing — and sends the card back to the
+#               worker the same way, unless the red is dependencies nobody
+#               installed here: that one is reported, with --prepare
+#   card        → Done with what happened as a comment; back to Ready with a
+#               `sync:` comment for the worker (a conflict in code, a red on
+#               the result); → Needs Human with the comment for the rest — an
+#               install that failed, git refusing the merge, a red over
+#               dependencies not installed here
 #   release     every ticket whose `depends_on` names this one, and whose other
 #               dependencies are Done, moves Backlog → Ready. That is how a
 #               request's slices flow without the project manager touching
@@ -72,10 +78,13 @@ usage: aif land <ticket> [options]
   are taken aside to .aif/tmp/ rather than merged over, and a conflict in
   aif's own files — the ticket's record under tasks/<ticket>/, the set under
   .aif/ and .claude/ — is settled by owner: the record is the branch's, the
-  set is this checkout's. Any other conflict, or a red suite, undoes the
-  merge and moves the card to Needs Human with the reason. Stopped before the
-  verdict — Ctrl-C, a TERM — it undoes the merge and leaves the card in
-  Review. The branch is untouched either way.
+  set is this checkout's. A conflict in code, or a red suite on the result,
+  undoes the merge and sends the card back to the top of Ready: the worker
+  brings the branch onto this one — the conflicts settled by the implement
+  station, or the ticket built again from here when they cannot be — and it
+  comes back to Review. Stopped before the verdict — Ctrl-C, a TERM — it
+  undoes the merge and leaves the card in Review. The branch is untouched
+  either way.
 
   A merge that moves a dependency manifest or lockfile (package.json,
   package-lock.json, ...) is judged against the dependencies installed here
@@ -122,6 +131,44 @@ _aif_land_fail() {
   aif_err "$headline"
   [ -z "$more" ] || printf '%s\n' "$more" | sed '/./s/^/  /' >&2
   _aif_land_say "board" "$ticket → needs_human, the reason posted"
+  exit 1
+}
+
+# _aif_land_requeue <root> <ticket> <headline> <detail-file> <target> [<more>]
+# — the merge undone, and the card handed back to the worker, not to a human
+# (docs/DEFECTS.md 13.4). A conflict in code, or a red on the result, is the
+# branch not yet brought onto what it lands on: the worker brings it there in
+# its worktree — the conflicts settled by the implement station, or the ticket
+# built again from the target when they cannot be — and the card comes back to
+# Review, to be looked at again (the user's call, 2026-10-05). It goes to the
+# top of Ready, the reason in a comment whose first line is `sync:`. Exit 1:
+# nothing landed.
+_aif_land_requeue() {
+  local root="$1" ticket="$2" headline="$3" detail="$4" target="$5" more="${6:-}" note
+  aif_trap_disarm
+  note="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
+  {
+    printf 'sync: %s\n\n' "$headline"
+    printf 'Nothing landed: the merge was undone, and aif/%s is untouched. The worker brings it onto %s in its worktree — a conflict in code settled by the implement station, or the ticket built again from %s when it cannot be — and the card comes back to Review, to be looked at again.\n' \
+      "$ticket" "$target" "$target"
+    if [ -s "$detail" ]; then
+      printf '\n```\n'
+      sed 's/\x1b\[[0-9;]*m//g' "$detail" | sed -n '1,20p'
+      printf '```\n'
+    fi
+    [ -z "$more" ] || printf '\n%s\n' "$more"
+  } >"$note"
+  (AIF_BOARD_BY="aif land" aif_board_comment "$root" "$ticket" "$note" >/dev/null) || true
+  if (aif_board_move "$root" "$ticket" ready top >/dev/null); then
+    _aif_land_say "board" "$ticket → ready (top), for the worker to bring it onto $target"
+  else
+    aif_warn "could not move $ticket to Ready — run: aif board move $ticket ready --top"
+  fi
+  rm -f "${note:?}" "${detail:?}"
+  aif_err "$headline"
+  [ -z "$more" ] || printf '%s\n' "$more" | sed '/./s/^/  /' >&2
+  printf '  not landed — the worker brings it onto %s, and it comes back to Review: aif work %s (aif work --loop takes it from Ready by itself)\n' \
+    "$target" "$ticket" >&2
   exit 1
 }
 
@@ -541,7 +588,7 @@ aif_cmd_land() {
       git -C "$root" merge --abort >/dev/null 2>&1 || git -C "$root" reset --hard "$pre" >/dev/null 2>&1
       _aif_land_restore_aside
       if [ -n "$left" ]; then
-        headline="$branch conflicts with $target in $left — conflicts in aif's own files are settled by owner, and nothing here settles code yet (docs/DEFECTS.md 13.4); the merge was undone"
+        _aif_land_requeue "$root" "$ticket" "$branch conflicts with $target in $left — the merge was undone" "$out" "$target"
       elif [ -n "$AIF_INTEGRATE_SETTLED" ]; then
         headline="$branch merged into $target once aif's own files were settled by owner, and git refused the merge commit, in its own words below; the merge was undone"
       else
@@ -625,20 +672,28 @@ aif_cmd_land() {
       [ -n "$failures" ] || failures=0
     fi
     if [ "$suite_rc" -ne 0 ] || [ "$failures" -gt 0 ]; then
-      if [ "$prepared" -eq 1 ]; then
-        more="The merge moved $deps, and the suite ran with them installed here ($prepare). $(_aif_land_undo "$root" "$pre" "$prepare")"
-      else
-        _aif_land_undo "$root" "$pre" ""
-        if [ -n "$deps" ]; then
-          more="The merge moved $deps, and the suite ran against the dependencies installed here before it — the red may be that install, not the change. "
-          if [ -n "$prepare" ]; then
-            more="${more}To land it with them installed from the lockfile, here ($prepare):"
-          else
-            more="${more}There is no \"prepare\" in .aif/project.json to install them with: set it (e.g. \"npm ci\"), then:"
-          fi
-          more="$more$(printf '\n\n    %s --prepare' "$again")"
+      # Red with the dependencies as the merge pins them — none moved, or
+      # --prepare installed them — is the two branches not yet working
+      # together: the worker's to settle, like a conflict. Red over
+      # dependencies nobody installed here stays the human's: the install is
+      # theirs to choose (6.3), and the worker's tree would be green.
+      if [ -z "$deps" ] || [ "$prepared" -eq 1 ]; then
+        if [ "$prepared" -eq 1 ]; then
+          more="The merge moved $deps, and the suite ran with them installed here ($prepare). $(_aif_land_undo "$root" "$pre" "$prepare")"
+        else
+          _aif_land_undo "$root" "$pre" ""
         fi
+        _aif_land_requeue "$root" "$ticket" \
+          "the suite is red on $target with $branch merged (exit $suite_rc, $failures failing) — the merge was undone" "$out" "$target" "$more"
       fi
+      _aif_land_undo "$root" "$pre" ""
+      more="The merge moved $deps, and the suite ran against the dependencies installed here before it — the red may be that install, not the change. "
+      if [ -n "$prepare" ]; then
+        more="${more}To land it with them installed from the lockfile, here ($prepare):"
+      else
+        more="${more}There is no \"prepare\" in .aif/project.json to install them with: set it (e.g. \"npm ci\"), then:"
+      fi
+      more="$more$(printf '\n\n    %s --prepare' "$again")"
       _aif_land_fail "$root" "$ticket" \
         "the suite is red on $target with $branch merged (exit $suite_rc, $failures failing) — the merge was undone" "$out" "$again" "$more"
     fi

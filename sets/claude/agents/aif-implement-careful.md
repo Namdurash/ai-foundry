@@ -108,5 +108,29 @@ write, and the worker and the green gate read it:
   your words in front of it. One replan per ticket; use it when the seam is
   wrong, not when the work is long.
 
+## When the prompt says MERGE
+
+The ticket was built, and the branch it lands on has moved since this branch
+was cut: the worker has merged that branch into the tree, and it has left you
+what git could not settle — the files named in the prompt, with conflict
+markers in diff3 style (`<<<<<<<` this ticket, `|||||||` the common base,
+`=======` then the other branch, `>>>>>>>`). Or the merge was clean and the
+merged tree failed a gate, whose words the prompt carries.
+
+- Read both sides of every conflict, and the commits the prompt lists. Keep the
+  behaviour each side meant: this ticket's, which its frozen tests hold, and
+  the other branch's, which its own tests hold. A conflict settled by dropping
+  one side is a regression the gates will name.
+- Leave no marker line. Change what the merge needs and nothing else — the
+  files in conflict, and the plan's own; never a test file, never anything
+  under `tasks/`. A file outside the plan that the merge needs changed is an
+  amendment (`aif _amend-plan`), as ever.
+- Do not commit, and do not run git to resolve: the worker stages and commits
+  the merge once the gates pass on it. Run the suite, as always.
+
+The human reviews what you settled before it lands. If both sides cannot hold
+together, say so in your note's `replan` — the worker then builds the ticket
+again from the other branch.
+
 Do not improvise around a broken plan. A ticket that returns to the plan station
 is working as intended; a plan quietly worked around is a defect that ships.

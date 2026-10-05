@@ -336,9 +336,9 @@ _aif_trello_pull() {
     aif_die "the card $id has no aif:meta block in its description — it was not written by the analyst (/aif-ba)"
   fi
   mv "$work/ticket.md.tmp" "$work/ticket.md"
-  # No ledger: the worker makes it at intake, in the worktree it pulled into.
-  # One made by a pull in the developer's checkout would meet the branch's at
-  # land (docs/DEFECTS.md 13.2).
+  # No ledger: the worker makes one at intake, outside git (docs/DEFECTS.md
+  # 13.13). One made here, in the developer's checkout, met the branch's at
+  # land (13.2).
   printf 'pulled %s → %s/%s/ticket.md (%s bytes)\n' "$id" "$AIF_TASKS_DIR" "$id" \
     "$(wc -c <"$work/ticket.md" | tr -d ' ')"
 }

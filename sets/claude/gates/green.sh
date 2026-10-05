@@ -334,15 +334,22 @@ if aif_g_have python3; then
     # live ticket it was printed about six tests in a file the run had just
     # created, and the human read it as a regression in their own repository.
     # The freeze knows: an id absent from it did not exist when the tests were
-    # frozen and cannot be pre-existing — whatever else it is.
+    # frozen and cannot be pre-existing — whatever else it is. Unless the
+    # branch was brought onto the one it lands on after the freeze (the
+    # worker's sync, docs/DEFECTS.md 13.4): a test from a file that came in
+    # with that branch is that branch's — pre-existing, for this ticket.
+    jq -c '.synced_files // []' "$lock" >"$gtmp/synced.json"
     rows="$(printf '%s' "$results" | jq -r \
-      --argjson mine "$mine_json" --slurpfile fz "$gtmp/freeze.json" '
+      --argjson mine "$mine_json" --slurpfile fz "$gtmp/freeze.json" --slurpfile sy "$gtmp/synced.json" '
       $fz[0] as $freeze
+      | $sy[0] as $synced
       | .[] | . as $t
       | (($freeze // {})[$t.id] // "") as $fs
       | (if ($mine | index($t.id)) != null then (if $t.status != "pass" then "mine" else empty end)
          elif ($t.status == "failure" or $t.status == "error") then
-           (if $freeze == null then "unknown" elif $fs == "" then "post" else "pre" end)
+           (if $freeze == null then "unknown"
+            elif $fs == "" then (if ($synced | index($t.file // "")) != null then "pre" else "post" end)
+            else "pre" end)
          elif $t.status == "skipped" and $fs != "" and $fs != "skipped" then "quiet"
          else empty end) as $k
       | $k + "\t" + $t.id + "\t" + $t.status + "\t" + $fs')"

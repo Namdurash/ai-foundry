@@ -78,7 +78,7 @@ aif_integrate_own() {
         continue
         ;;
     esac
-    if _aif_integrate_take "$dir" "$p" "$keep"; then
+    if aif_integrate_take "$dir" "$p" "$keep"; then
       AIF_INTEGRATE_SETTLED="$AIF_INTEGRATE_SETTLED$p$tab$owner
 "
     else
@@ -91,10 +91,12 @@ EOF
   [ -z "$AIF_INTEGRATE_LEFT" ]
 }
 
-# _aif_integrate_take <dir> <path> <ours|theirs> — one side's copy of a
+# aif_integrate_take <dir> <path> <ours|theirs> — one side's copy of a
 # conflicted path, staged: its content where that side has the file, its
-# removal where that side removed it (a modify/delete conflict).
-_aif_integrate_take() {
+# removal where that side removed it (a modify/delete conflict). The worker's
+# sync takes a conflicted lockfile this way too, from the branch it lands on,
+# and has the package manager write it again.
+aif_integrate_take() {
   local dir="$1" p="$2" keep="$3" stage=2
   [ "$keep" = ours ] || stage=3
   if git -C "$dir" ls-files -u -- "$p" 2>/dev/null | awk -v s="$stage" '$3 == s { f = 1 } END { exit !f }'; then

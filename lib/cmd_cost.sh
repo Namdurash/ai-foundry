@@ -213,18 +213,28 @@ _aif_cost_empty() {
   printf '\n'
 }
 
+# _aif_cost_ledger <root> <ticket> — the ticket's ledger: the one in
+# AIF_LEDGERS_DIR, else the one committed beside the ticket before ledgers left
+# git (docs/DEFECTS.md 13.13). Empty when there is neither.
+_aif_cost_ledger() {
+  local work ledger
+  work="$(aif_task_dir "$1" "$2")"
+  ledger="$(aif_ledger_path "$work")"
+  [ -f "$ledger" ] || ledger="$work/ledger.json"
+  [ ! -f "$ledger" ] || printf '%s' "$ledger"
+}
+
 # _aif_cost_one <root> <ticket> — the per-station readout for one ticket.
 _aif_cost_one() {
-  local root="$1" ticket="$2" work ledger roll
-  work="$(aif_task_dir "$root" "$ticket")"
-  ledger="$(aif_ledger_path "$work")"
+  local root="$1" ticket="$2" ledger roll
+  ledger="$(_aif_cost_ledger "$root" "$ticket")"
 
-  [ -f "$ledger" ] ||
-    aif_die "no ledger at $AIF_TASKS_DIR/$ticket/ledger.json — has this ticket run?"
+  [ -n "$ledger" ] ||
+    aif_die "no ledger for $ticket here — has it run on this machine? (ledgers are kept per checkout, in $AIF_LEDGERS_DIR/)"
 
   roll="$(_aif_cost_roll "$ledger")"
   printf '%s' "$roll" | jq -e . >/dev/null 2>&1 ||
-    aif_die "could not read $AIF_TASKS_DIR/$ticket/ledger.json — not valid JSON?"
+    aif_die "could not read ${ledger#"$(aif_main_root "$root")"/} — not valid JSON?"
 
   if [ "$AIF_COST_JSON" -eq 1 ]; then
     printf '%s\n' "$roll" | jq .
@@ -247,16 +257,27 @@ _aif_cost_one() {
 # The same roll-up shape as a single ticket, with tickets standing in for
 # stations, so both views share _aif_cost_render and _aif_cost_notes. Tickets
 # with no ledger are skipped silently: a scaffolded ticket that never ran has
-# nothing to report and is not a gap in the accounting.
+# nothing to report and is not a gap in the accounting. Every ticket that ran
+# here has one in AIF_LEDGERS_DIR, whether or not its tasks/ directory is in
+# this checkout yet; one that ran before ledgers left git may have only the
+# committed one.
 _aif_cost_all() {
-  local root="$1" dir ticket ledger roll tsv roll_all
+  local root="$1" ticket ledger roll tsv roll_all tickets
   tsv="$(mktemp "${TMPDIR:-/tmp}/aif-cost-XXXXXX")"
+  tickets="$({
+    for ledger in "$(aif_main_root "$root")/$AIF_LEDGERS_DIR"/*.json "$root/$AIF_TASKS_DIR"/*/ledger.json; do
+      [ -f "$ledger" ] || continue
+      case "$ledger" in
+        */ledger.json) basename "$(dirname "$ledger")" ;;
+        *.unreadable-*) ;;
+        *) basename "$ledger" .json ;;
+      esac
+    done
+  } | sort -u)"
 
-  for dir in "$root/$AIF_TASKS_DIR"/*; do
-    [ -d "$dir" ] || continue
-    ticket="$(basename "$dir")"
-    ledger="$(aif_ledger_path "$dir")"
-    [ -f "$ledger" ] || continue
+  for ticket in $tickets; do
+    ledger="$(_aif_cost_ledger "$root" "$ticket")"
+    [ -n "$ledger" ] || continue
     roll="$(_aif_cost_roll "$ledger")"
     printf '%s' "$roll" | jq -e . >/dev/null 2>&1 || continue
     printf '%s' "$roll" |
@@ -266,7 +287,7 @@ _aif_cost_all() {
 
   if [ ! -s "$tsv" ]; then
     rm -f "$tsv"
-    aif_die "no ledgers under $AIF_TASKS_DIR/ — nothing has run yet"
+    aif_die "no ledgers in $AIF_LEDGERS_DIR/ — nothing has run on this machine yet"
   fi
 
   roll_all="$(jq -s '. as $t

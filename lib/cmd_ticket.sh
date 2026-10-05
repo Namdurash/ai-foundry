@@ -16,8 +16,8 @@
 # in the developer's checkout, met the one the worker had filled on the
 # ticket's branch as an add/add conflict at land — on aif/OPES-74 the only file
 # the merge stopped on, the code merging clean (docs/DEFECTS.md 13.2). The
-# worker makes the ledger where its rows are written: in the worktree, at
-# intake.
+# worker makes the ledger at intake, and not in git at all: in the main
+# checkout's .aif/state/ledgers/ (13.13).
 aif_cmd_ticket_init() {
   local ticket="${1:-}"
   [ -n "$ticket" ] || aif_die "usage: aif _ticket-init <ticket>"

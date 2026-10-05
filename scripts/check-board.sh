@@ -388,7 +388,7 @@ eq "doctor text shows the roles table" "$("$AIF" doctor 2>&1 | grep -c '✗ pjm'
 rc=0
 "$AIF" work AIF-1 --no-worktree >"$OUT/work-notoken.out" 2>&1 || rc=$?
 eq "the worker refuses before spending anything" "$rc" "3"
-eq "and no station ran" "$(jq '[.entries[] | select(.station != null)] | length' tasks/AIF-1/ledger.json 2>/dev/null || echo 0)" "0"
+eq "and no station ran" "$(jq '[.entries[] | select(.station != null)] | length' .aif/state/ledgers/AIF-1.json 2>/dev/null || echo 0)" "0"
 export TRELLO_TOKEN=t
 
 # =============================== 5. the worker through the board =============

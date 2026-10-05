@@ -48,8 +48,11 @@ flowchart TB
     S_implement["station implement · sonnet · opus if risk is high"] --> G_implement{{"gates green, scope"}}
     G_tests --> S_implement
     G_implement -.-> S_implement
+    SYNC["sync — the branch brought onto the checkout's branch:<br/>a conflict in code settled by the implement station, the merged tree judged again"]
+    G_implement --> SYNC
+    SYNC -.->|"it cannot be brought on: built again from that branch, once"| S_plan
     REPORT["report.md, beside the diff on the branch"]
-    G_implement --> REPORT
+    SYNC --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ 2 per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ 1 per ticket"| S_plan
     LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
@@ -69,7 +72,7 @@ flowchart TB
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
+  LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG

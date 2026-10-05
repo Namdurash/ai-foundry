@@ -1038,7 +1038,7 @@ _aif_work_dispatch() {
 
 $complaint"
         ;;
-      "REPLAN"*)
+      "REPLAN"* | "MERGE"* | "REBUILD"*)
         prompt="$prompt
 
 $complaint"
@@ -1453,6 +1453,413 @@ Write the plan again, and the skeleton with it, so that the contract can. Everyt
   return 0
 }
 
+# _aif_work_sync <root> <wt> <ticket> <budget-left> <dispatched> — the ticket's
+# branch brought onto the branch it lands on, before the run says built
+# (docs/DEFECTS.md 13.4).
+#
+# A ticket's branch is cut from the checkout's HEAD on its first run, and with
+# --loop two of them are cut from the same HEAD: whichever lands second meets
+# the first in every file both touched. `aif land` used to stop there and hand
+# the conflict to a human; with tickets built side by side that is the normal
+# case, and nothing in it is a decision. So the last thing a run does is take
+# in what the checkout's branch holds now — in the worktree, never in the
+# developer's checkout:
+#
+#   merge   the checkout's HEAD into aif/<ID>, --no-commit; nothing to do when
+#           the branch already holds it
+#   own     conflicts in aif's own files settled by owner (lib/integrate.sh); a
+#           conflicted lockfile taken from the target, for the package manager
+#           to write again
+#   tests   a conflict in a test file is the oracle's, and no merge settles a
+#           frozen test: the run is built again instead (rc 1)
+#   code    a conflict in code goes to the implement station, MERGE in its
+#           prompt: both sides' intent to hold, no marker to stay
+#   judged  the dependencies installed again when the merge moved them; the
+#           test files the target brought taken into the lock; green and scope
+#           on the merged tree, the run record naming the commit it was brought
+#           onto. A rejection goes back to the station with the gates' words,
+#           up to the implement station's attempts cap
+#   sealed  one merge commit: aif: sync <ID> onto <branch> at <sha>
+#
+# rc 0 the branch holds the target · 1 it could not be brought on — a test file
+# in conflict, or the station's attempts spent — and the ticket is to be built
+# again from the target (AIF_WORK_SYNC_WHY) · 3 the environment: an install
+# that failed, a gate with no verdict, a merge git would not start.
+# AIF_WORK_SYNC_DISPATCHES and AIF_WORK_SYNC_SPENT are what it cost.
+_aif_work_sync() {
+  local root="$1" wt="$2" ticket="$3" budget_left="$4" dispatched="${5:-0}"
+  local work project target target_name pre p left="" lockfiles="" tests_hit="" roots
+  local agent attempts_max n=0 complaint="" out rc gate_out markers deps deps_done="" prepare log tab
+  local replan_was replan_now lock_kept=""
+  AIF_WORK_SYNC_WHY=""
+  AIF_WORK_SYNC_DISPATCHES=0
+  AIF_WORK_SYNC_SPENT=0
+  AIF_INTEGRATE_SETTLED=""
+  AIF_INTEGRATE_LEFT=""
+  [ "$wt" != "$root" ] || return 0
+  target="$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" || return 0
+  # A checkout on no branch names nothing to land on: there is no target.
+  target_name="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null)" || return 0
+  [ -n "$target_name" ] || return 0
+  ! git -C "$wt" merge-base --is-ancestor "$target" HEAD 2>/dev/null || return 0
+  work="$(aif_task_dir "$wt" "$ticket")"
+  project="$(aif_project_config "$wt")"
+  tab="$(printf '\t')"
+
+  # What the run left uncommitted is its own record: in first, because git does
+  # not start a merge over local changes to a path the merge brings.
+  if [ -n "$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+      commit -q -m "aif: record $ticket before the sync" >/dev/null 2>&1 || true
+  fi
+  pre="$(git -C "$wt" rev-parse HEAD)"
+  _aif_work_say "sync" "aif/$ticket onto $target_name at ${target:0:7}"
+
+  if ! git -C "$wt" -c merge.conflictStyle=diff3 merge --no-ff --no-commit "$target" >/dev/null 2>&1; then
+    if ! git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+      AIF_WORK_SYNC_WHY="git would not start the merge of $target_name into aif/$ticket in ${wt#"$root"/}"
+      _aif_work_sync_abort "$wt" "$pre"
+      return 3
+    fi
+    aif_integrate_own "$wt" "$ticket" ours || true
+    roots="$(jq -r '.test.roots[]?' "$project" 2>/dev/null)"
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if _aif_work_is_test_path "$p" "$roots" "$work"; then
+        tests_hit="$tests_hit$p
+"
+      elif printf '%s\n' "$p" | grep -qE "$AIF_DEP_LOCKFILES" && aif_integrate_take "$wt" "$p" theirs; then
+        lockfiles="$lockfiles$p
+"
+      else
+        left="$left$p
+"
+      fi
+    done <<EOF
+$AIF_INTEGRATE_LEFT
+EOF
+    if [ -n "$tests_hit" ]; then
+      AIF_WORK_SYNC_WHY="it conflicts with $target_name in test files — $(printf '%s' "$tests_hit" | paste -sd ',' - | sed 's/,/, /g'): the oracle is in conflict, and no merge settles a frozen test"
+      _aif_work_sync_abort "$wt" "$pre"
+      return 1
+    fi
+  fi
+  # shellcheck disable=SC2016  # jq's variable, bound by --arg
+  aif_run_update "$work" '.sync_base = $t' --arg t "$target" || true
+  # The test files the merge brought, taken into the lock now — from the merge
+  # alone, before any station touches the tree — and the lock kept: it is the
+  # worker's, and a station that rewrote it could bless an edit to a frozen
+  # test. It is put back after every dispatch.
+  _aif_work_lock_rebase "$wt" "$work" "$target"
+  lock_kept="$wt/.aif/tmp/sync-$ticket.lock.json"
+  mkdir -p "$wt/.aif/tmp"
+  [ ! -f "$work/tests.lock.json" ] || cp "$work/tests.lock.json" "$lock_kept"
+
+  agent="$(aif_station_agent "$wt" implement "$work" 2>/dev/null)"
+  attempts_max="$(_aif_work_attempts_max "$wt" implement "$project")"
+  gate_out="$wt/.aif/tmp/sync-$ticket.out"
+  # A replan the station writes in its note during the sync says the two sides
+  # cannot hold together: the ticket is built again from the target. Told from
+  # one the note already carried by what it says.
+  replan_was="$(jq -r '.replan // empty' "$work/implement.note.json" 2>/dev/null)" || replan_was=""
+  prepare="$(jq -r '.prepare // empty' "$(aif_project_config "$root")" 2>/dev/null)"
+  if [ -n "$left" ]; then
+    complaint="MERGE — this ticket's branch is being brought onto $target_name, which moved since the branch was cut: $target_name's commits since then are merged into the tree, and these files hold conflicts git could not settle, marked in diff3 style (<<<<<<< this ticket, ||||||| the common base, ======= then $target_name, >>>>>>>):
+$(printf '%s' "$left" | sed '/^$/d; s/^/  - /')
+Settle each so that both hold — what this ticket's plan built and what $target_name changed: read both sides, keep the behaviour of each. Leave no conflict marker. Change only what the merge needs, in the files above and the plan's own; never a test file, never anything under $AIF_TASKS_DIR/. $target_name's commits since the branch was cut, newest first:
+$(git -C "$wt" log --format='  %h %s' "$pre..$target" 2>/dev/null | sed -n '1,20p')
+The gates judge the merged tree when you finish: this ticket's frozen tests, every test $target_name has, and the project's checks."
+  fi
+
+  while :; do
+    if [ -n "$complaint" ]; then
+      n=$((n + 1))
+      if [ "$n" -gt "$attempts_max" ]; then
+        AIF_WORK_SYNC_WHY="the implement station could not bring aif/$ticket onto $target_name in $attempts_max attempt(s); the last word on it: $(printf '%s\n' "$complaint" | grep -v '^[[:space:]]*$' | sed -n 2p | cut -c1-200)"
+        _aif_work_sync_abort "$wt" "$pre"
+        return 1
+      fi
+      _aif_work_say "sync" "the implement station, MERGE (attempt $n/$attempts_max)"
+      out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
+      rc=0
+      _aif_work_dispatch "$wt" "$ticket" implement "$agent" "$complaint" "$budget_left" "$out" || rc=$?
+      if [ "$rc" -eq 3 ]; then
+        rm -f "$out"
+        AIF_WORK_SYNC_WHY="the runner could not run the implement station for the sync (no envelope) — the environment, not the ticket"
+        _aif_work_sync_abort "$wt" "$pre"
+        return 3
+      fi
+      AIF_WORK_SYNC_DISPATCHES=$((AIF_WORK_SYNC_DISPATCHES + 1))
+      _aif_work_keep_envelope "$wt" "$ticket" "$((dispatched + AIF_WORK_SYNC_DISPATCHES))" implement "$out"
+      AIF_WORK_SYNC_SPENT="$(awk -v s="$AIF_WORK_SYNC_SPENT" -v c="$(_aif_work_envelope_cost "$wt" "$out")" 'BEGIN { printf "%.4f", s + c }')"
+      rm -f "$out"
+      if [ -f "$lock_kept" ] && ! cmp -s "$lock_kept" "$work/tests.lock.json"; then
+        cp "$lock_kept" "$work/tests.lock.json"
+        _aif_work_say "sync" "the station changed tests.lock.json — put back; the lock is the worker's"
+      fi
+      replan_now="$(jq -r '.replan // empty' "$work/implement.note.json" 2>/dev/null)" || replan_now=""
+      if [ -n "$replan_now" ] && [ "$replan_now" != "$replan_was" ]; then
+        AIF_WORK_SYNC_WHY="the implement station declares that this ticket and $target_name cannot hold together as built: $(printf '%s' "$replan_now" | sed -n 1p | cut -c1-200)"
+        _aif_work_sync_abort "$wt" "$pre"
+        return 1
+      fi
+      markers=""
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        if grep -qE '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)( |$)' "$wt/$p" 2>/dev/null; then
+          markers="$markers$p
+"
+        fi
+      done <<EOF
+$left
+EOF
+      if [ -n "$markers" ]; then
+        complaint="MERGE, again — conflict markers are still in:
+$(printf '%s' "$markers" | sed '/^$/d; s/^/  - /')
+Settle each conflict: both sides' behaviour kept, and no <<<<<<<, |||||||, ======= or >>>>>>> line left."
+        continue
+      fi
+      git -C "$wt" add -A >/dev/null 2>&1 || true
+    fi
+
+    # The dependencies, whenever the tree's manifests or lockfiles are no
+    # longer what was installed: what the merge brought, or what the station
+    # wrote. Installed from the lockfile, as everywhere else (6.3).
+    deps="$(git -C "$wt" -c core.quotePath=false diff --name-only "$pre" 2>/dev/null | grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u)" || deps=""
+    if [ -n "$prepare" ] && [ -n "$deps" ] && [ "$deps" != "$deps_done" ]; then
+      _aif_work_say "prepare" "$(printf '%s' "$deps" | paste -sd ' ' -) moved in the sync — $prepare"
+      mkdir -p "$wt/.aif/tmp"
+      log="$wt/.aif/tmp/prepare.log"
+      rc=0
+      (cd "$wt" && eval "$prepare") </dev/null >"$log" 2>&1 || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        complaint="MERGE, again — the dependencies of the merged tree do not install: \"prepare\" ($prepare) exits $rc:
+$(grep -v '^[[:space:]]*$' "$log" | sed 's/\x1b\[[0-9;]*m//g' | tail -12 | cut -c1-240 | sed 's/^/    /')
+A conflicted lockfile was taken from $target_name; the manifest is the merge's. Write the lockfile again through the package manager (npm install, never by hand), so that it pins what the manifest asks for."
+        deps_done=""
+        continue
+      fi
+      deps_done="$deps"
+    fi
+
+    rc=0
+    "$AIF_ROOT/bin/aif" _gate implement "$ticket" >"$gate_out" 2>&1 || rc=$?
+    case "$rc" in
+      0) break ;;
+      3)
+        AIF_WORK_SYNC_WHY="a gate could not render a verdict on the merged tree:
+$(sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | sed -n '1,20p')"
+        rm -f "$gate_out"
+        _aif_work_sync_abort "$wt" "$pre"
+        return 3
+        ;;
+      *)
+        complaint="MERGE, again — the merged tree was rejected. The tree holds this ticket's work and $target_name's; make both hold. The gates' words, verbatim:
+$(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
+        ;;
+    esac
+  done
+  rm -f "$gate_out" "$lock_kept"
+
+  git -C "$wt" add -A >/dev/null 2>&1 || true
+  if ! git -C "$wt" -c user.email="aif@local" -c user.name="aif" commit -q --cleanup=strip \
+    -m "aif: sync $ticket onto $target_name at ${target:0:7}" \
+    -m "$(_aif_work_sync_body "$left" "$lockfiles" "$n")" >/dev/null 2>&1; then
+    AIF_WORK_SYNC_WHY="could not commit the merge of $target_name into aif/$ticket"
+    _aif_work_sync_abort "$wt" "$pre"
+    return 3
+  fi
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+  aif_run_update "$work" \
+    '.syncs = ((.syncs // 0) + 1)
+     | .sync = { onto: $t, name: $name, pre: $pre, post: $post, at: $at,
+                 settled: ($settled | split("\n") | map(select(length > 0)
+                   | split("\t") | { path: .[0], owner: .[1] })),
+                 station: ($left | split("\n") | map(select(length > 0))),
+                 attempts: ($n | tonumber),
+                 lockfiles: ($locks | split("\n") | map(select(length > 0))) }' \
+    --arg t "$target" --arg name "$target_name" --arg pre "$pre" \
+    --arg post "$(git -C "$wt" rev-parse HEAD)" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg settled "$AIF_INTEGRATE_SETTLED" --arg left "$left" --arg n "$n" --arg locks "$lockfiles" || true
+  if [ -n "$left" ]; then
+    _aif_work_say "sync" "onto $target_name — $(printf '%s' "$left" | grep -c .) conflict(s) settled by the implement station in $n attempt(s); the review sees them"
+  else
+    _aif_work_say "sync" "onto $target_name — merged clean, judged again on the result"
+  fi
+  return 0
+}
+
+# _aif_work_sync_body <left> <lockfiles> <attempts> — what the sync commit
+# says it did, beyond its subject.
+_aif_work_sync_body() {
+  local tab
+  tab="$(printf '\t')"
+  [ -z "$AIF_INTEGRATE_SETTLED" ] ||
+    printf 'Settled by owner (aif'"'"'s own files): %s\n' \
+      "$(printf '%s' "$AIF_INTEGRATE_SETTLED" | sed '/^$/d' | sed "s/$tab.*//" | paste -sd ',' - | sed 's/,/, /g')"
+  [ -z "$1" ] ||
+    printf 'Settled by the implement station, in %s attempt(s): %s\n' "$3" "$(printf '%s' "$1" | sed '/^$/d' | paste -sd ',' - | sed 's/,/, /g')"
+  [ -z "$2" ] ||
+    printf 'Taken from the target and installed again: %s\n' "$(printf '%s' "$2" | sed '/^$/d' | paste -sd ',' - | sed 's/,/, /g')"
+  [ -n "$AIF_INTEGRATE_SETTLED$1$2" ] || printf 'Merged clean.\n'
+}
+
+# _aif_work_sync_abort <wt> <pre> — a sync given up: the worktree exactly as it
+# was before it, the merge and whatever the station wrote gone with it.
+_aif_work_sync_abort() {
+  git -C "$1" merge --abort >/dev/null 2>&1 || true
+  git -C "$1" reset -q --hard "$2" >/dev/null 2>&1 || true
+  git -C "$1" clean -fdq >/dev/null 2>&1 || true
+}
+
+# _aif_work_is_test_path <path> <roots> <work> — rc 0 when <path> is a test
+# file: under one of the project's test roots, or one this ticket's lock holds.
+_aif_work_is_test_path() {
+  local p="$1" r
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    case "$p" in
+      "$r"/*) return 0 ;;
+    esac
+  done <<EOF
+$2
+EOF
+  [ -f "$3/tests.lock.json" ] &&
+    jq -e --arg p "$p" '(.tests // {}) | has($p)' "$3/tests.lock.json" >/dev/null 2>&1
+}
+
+# _aif_work_lock_rebase <wt> <work> <onto> — the test files a sync brought,
+# taken into the lock (docs/DEFECTS.md 13.4).
+#
+# green holds every file under the test roots to the hash it was frozen at, so
+# a test the target added or changed reads as the oracle moving; it did not —
+# it is the target's. Every path the lock holds or the roots now hold is
+# hashed again; a changed one, a new one and a removed one are listed in
+# synced_files, which green reads as pre-existing tests. A conflict in a test
+# file never gets here: that ticket is built again instead.
+_aif_work_lock_rebase() {
+  local wt="$1" work="$2" onto="$3" lock="$2/tests.lock.json" roots rows="" synced="" p was now tmp
+  [ -f "$lock" ] || return 0
+  roots="$(jq -r '.test.roots[]?' "$(aif_project_config "$wt")" 2>/dev/null)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    was="$(jq -r --arg p "$p" '.tests[$p] // ""' "$lock" 2>/dev/null)"
+    now=""
+    [ ! -f "$wt/$p" ] || now="$(aif_sha256 "$wt/$p")"
+    [ -z "$now" ] || rows="$rows$p	$now
+"
+    [ "$was" = "$now" ] || synced="$synced$p
+"
+  done <<EOF
+$({
+    jq -r '.tests // {} | keys[]' "$lock" 2>/dev/null
+    while IFS= read -r p; do
+      [ -n "$p" ] && [ -d "$wt/$p" ] || continue
+      (cd "$wt" && find "$p" -type f 2>/dev/null)
+    done <<ROOTS
+$roots
+ROOTS
+  } | sort -u)
+EOF
+  [ -n "$synced" ] || return 0
+  tmp="$(aif_tmpfile "$lock")" || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the flags below
+  if ! jq --rawfile rows <(printf '%s' "$rows") --rawfile synced <(printf '%s' "$synced") --arg onto "$onto" '
+      .tests = ($rows | split("\n") | map(select(length > 0) | split("\t") | { (.[0]): .[1] }) | add // {})
+      | .synced_files = (((.synced_files // []) + ($synced | split("\n") | map(select(length > 0)))) | unique)
+      | .synced_onto = $onto' "$lock" >"$tmp" || ! mv "$tmp" "$lock"; then
+    rm -f "$tmp"
+  fi
+}
+
+# _aif_work_rebuild <root> <wt> <ticket> <why> — the build could not be brought
+# onto the branch it lands on, so the ticket is built again from that branch's
+# HEAD (docs/DEFECTS.md 13.4; the user's call, 2026-10-05: automatically).
+#
+# The build is kept, not lost: refs/aif/archive/<ID>/<n> holds it, a ref no
+# branch list shows and no push sends. The worktree goes to the target, the
+# ticket the run froze comes back into it, the set is brought forward and the
+# dependencies installed, and a fresh run record — naming the build it
+# replaces — starts at the plan station, which is told what happened and
+# handed the old plan as a reference. Once per ticket (limits.rebuilds_max,
+# 1): a ticket the target keeps moving under is a question for a human.
+#
+# rc 0 the run starts again at plan, AIF_WORK_REBUILD_COMPLAINT for the plan
+# station · 1 not — the cap — and AIF_WORK_REBUILD_WHY says why · 3 the
+# environment: the install failed on the target's tree.
+_aif_work_rebuild() {
+  local root="$1" wt="$2" ticket="$3" why="$4" work project n max old target target_name ref keep prepare log rc=0 set_version old_plan
+  AIF_WORK_REBUILD_WHY=""
+  AIF_WORK_REBUILD_COMPLAINT=""
+  work="$(aif_task_dir "$wt" "$ticket")"
+  project="$(aif_project_config "$wt")"
+  n="$(aif_run_get "$work" '.rebuilds')" || n=""
+  n="${n:-0}"
+  max="$(jq -r '.limits.rebuilds_max // 1' "$project" 2>/dev/null)"
+  if [ "$n" -ge "${max:-1}" ]; then
+    AIF_WORK_REBUILD_WHY="$why — and it was built again from the branch it lands on $n time(s) already (limits.rebuilds_max). The target keeps moving under this ticket: a question for a human."
+    return 1
+  fi
+  target="$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" || return 1
+  target_name="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null)" || target_name="${target:0:7}"
+  ref="refs/aif/archive/$ticket/$((n + 1))"
+  # The stations' own accounts of the build, kept with it: they wait under
+  # .aif/tmp/ until the report, and the build they describe is about to go.
+  if [ -d "$wt/.aif/tmp/stations-$ticket" ]; then
+    mkdir -p "$work/stations"
+    cp "$wt/.aif/tmp/stations-$ticket"/*.json "$work/stations/" 2>/dev/null || true
+    rm -rf "${wt:?}/.aif/tmp/stations-${ticket:?}"
+  fi
+  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+      commit -q -m "aif: record $ticket — the build kept at $ref" >/dev/null 2>&1 || true
+  fi
+  old="$(git -C "$wt" rev-parse HEAD)"
+  if ! git -C "$root" update-ref "$ref" "$old" >/dev/null 2>&1; then
+    AIF_WORK_REBUILD_WHY="$why — and the build could not be kept at $ref, so it was not built again"
+    return 1
+  fi
+  old_plan="$(git -C "$wt" show "$old:$AIF_TASKS_DIR/$ticket/plan.md" 2>/dev/null | sed -n '1,150p')" || old_plan=""
+  keep="$(mktemp "${TMPDIR:-/tmp}/aif-ticket-XXXXXX")"
+  cp "$work/ticket.md" "$keep" 2>/dev/null || true
+  git -C "$wt" reset -q --hard "$target" >/dev/null 2>&1 || {
+    rm -f "$keep"
+    AIF_WORK_REBUILD_WHY="$why — and the worktree could not be put at $target_name to build it again"
+    return 1
+  }
+  git -C "$wt" clean -fdq >/dev/null 2>&1 || true
+  mkdir -p "$work"
+  cp "$keep" "$work/ticket.md" 2>/dev/null || true
+  rm -f "$keep"
+  _aif_work_set_forward "$root" "$wt" "$ticket"
+  prepare="$(jq -r '.prepare // empty' "$(aif_project_config "$root")" 2>/dev/null)"
+  if [ -n "$prepare" ]; then
+    _aif_work_say "prepare" "$prepare — the dependencies of $target_name"
+    mkdir -p "$wt/.aif/tmp"
+    log="$wt/.aif/tmp/prepare.log"
+    (cd "$wt" && eval "$prepare") </dev/null >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      AIF_WORK_REBUILD_WHY="the ticket was to be built again from $target_name, and \"prepare\" ($prepare) failed there (exit $rc) — the environment; the build is kept at $ref"
+      return 3
+    fi
+  fi
+  set_version="$(jq -r '.set_version // empty' "$wt/.aif/manifest.json" 2>/dev/null)"
+  aif_run_init "$work" "$ticket" "aif/$ticket" "$target" "${wt#"$root"/}" "$set_version"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  aif_run_update "$work" '.rebuilds = ($n | tonumber) | .rebuilt_from = $old | .rebuild_ref = $ref | .rebuild_why = $why' \
+    --arg n "$((n + 1))" --arg old "$old" --arg ref "$ref" --arg why "$why" || true
+  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    commit -q -m "aif: rebuild $ticket on $target_name at ${target:0:7} — the build at ${old:0:7} could not be brought onto it; kept at $ref" >/dev/null 2>&1 || true
+  _aif_work_say "rebuild" "$ticket from $target_name at ${target:0:7}; the build at ${old:0:7} is kept at $ref"
+  AIF_WORK_REBUILD_COMPLAINT="REBUILD — this ticket was built before, on an older $target_name, and that build could not be brought onto $target_name as it is now: $why
+It is built again from $target_name's HEAD. Plan it on the tree as it is now — the repository has moved, and the old plan's premises may not hold. The old plan, as a reference and not a constraint:
+$old_plan"
+  return 0
+}
+
 # _aif_work_report <root> <wt> <ticket> <status> <why> <started>
 #
 # The artifact the human reviews. Everything in it is read from files the run
@@ -1477,7 +1884,10 @@ _aif_work_report() {
     rm -rf "$stations"
   fi
 
-  base="$(jq -r '.base // "none"' "$run" 2>/dev/null)"
+  # Against what the branch was last brought onto, when it was: after a sync
+  # the run's own base is behind the target, and base..HEAD would count every
+  # change the target made as this ticket's.
+  base="$(jq -r '.sync.onto // .base // "none"' "$run" 2>/dev/null)"
   if [ "$base" != "none" ]; then
     diffstat="$(git -C "$wt" diff --shortstat "$base" HEAD -- . ":(exclude)$AIF_TASKS_DIR" 2>/dev/null | sed 's/^ *//')"
   fi
@@ -1549,6 +1959,27 @@ _aif_work_report() {
       jq -r '(.station_errors // [])[]
         | "- `" + .stage + "` attempt " + (.attempt | tostring) + " — " + .error' "$run" 2>/dev/null
     fi
+
+    # Where the branch was brought onto the one it lands on, and what that
+    # took (docs/DEFECTS.md 13.4). A conflict settled by a station is code the
+    # reviewer has not seen in any other form, so it says where to look.
+    jq -r '
+      (if .rebuilds then
+        "\n## Built again\n\n- the build at `" + (.rebuilt_from[0:7]) + "` could not be brought onto the branch it lands on: "
+        + (.rebuild_why | split("\n")[0]) + "\n- it is kept at `" + .rebuild_ref + "`; this build started from `" + (.base[0:7]) + "`"
+      else empty end),
+      (if .sync then
+        "\n## Brought onto " + .sync.name + "\n\n- `" + .sync.name + "` at `" + (.sync.onto[0:7]) + "` merged into the branch"
+        + (if (.sync.station | length) == 0 and (.sync.settled | length) == 0 and (.sync.lockfiles | length) == 0 then ", clean" else "" end)
+        + (if (.sync.settled | length) > 0 then "\n- conflicts in aif'"'"'s own files, settled by owner: " + (.sync.settled | map(.path) | join(", ")) else "" end)
+        + (if (.sync.lockfiles | length) > 0 then "\n- lockfiles taken from " + .sync.name + " and installed again: " + (.sync.lockfiles | join(", ")) else "" end)
+        + (if (.sync.station | length) > 0 then
+            "\n- **conflicts in code, settled by the implement station** in " + (.sync.attempts | tostring) + " attempt(s): "
+            + (.sync.station | join(", ")) + " — look at them: `git diff " + (.sync.pre[0:7]) + " " + (.sync.post[0:7]) + " -- "
+            + (.sync.station | join(" ")) + "`"
+          else "" end)
+        + "\n- the merged tree judged again: green and scope passed on it"
+      else empty end)' "$run" 2>/dev/null
 
     if [ -f "$work/plan.md" ]; then
       printf '\n## Decisions the plan made\n\n'
@@ -2422,8 +2853,49 @@ aif_cmd_work() {
 
     stage="$(aif_run_get "$work" '.stage')"
     if [ "$stage" = "done" ] || [ -z "$stage" ]; then
-      status="built"
-      break
+      # Built — and before it says so, brought onto the branch it lands on
+      # (_aif_work_sync). A build that cannot be is built again from that
+      # branch, here, with this run's clock and caps started over.
+      budget_left=""
+      if [ -n "$budget" ]; then
+        budget_left="$(awk -v b="$budget" -v s="$spent" 'BEGIN { r = b - s; if (r < 0.01) r = 0.01; printf "%.2f", r }')"
+      fi
+      rc=0
+      _aif_work_sync "$root" "$wt" "$ticket" "$budget_left" "$dispatches" || rc=$?
+      dispatches=$((dispatches + AIF_WORK_SYNC_DISPATCHES))
+      spent="$(awk -v s="$spent" -v c="$AIF_WORK_SYNC_SPENT" 'BEGIN { printf "%.4f", s + c }')"
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+      aif_run_update "$work" '.dispatches = $d | .spent_usd = $s' --argjson d "$dispatches" --argjson s "$spent"
+      case "$rc" in
+        0)
+          status="built"
+          break
+          ;;
+        1)
+          _aif_work_say "sync" "$(printf '%s\n' "$AIF_WORK_SYNC_WHY" | sed -n 1p) — the ticket is built again from it"
+          # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+          _aif_work_live '.last = $l | .last_tone = "retry"' --arg l "could not be brought onto the branch it lands on — built again from it"
+          rc=0
+          _aif_work_rebuild "$root" "$wt" "$ticket" "$AIF_WORK_SYNC_WHY" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            complaint="$AIF_WORK_REBUILD_COMPLAINT"
+            prev_sha=""
+            prev_stage=""
+            dispatches=0
+            spent=0
+            started="$(date +%s)"
+            continue
+          fi
+          status="stopped"
+          why="$AIF_WORK_REBUILD_WHY"
+          break
+          ;;
+        *)
+          status="stopped"
+          why="the branch could not be brought onto the branch it lands on — the environment, not the ticket: $AIF_WORK_SYNC_WHY"
+          break
+          ;;
+      esac
     fi
 
     agent="$(aif_station_agent "$wt" "$stage" "$work" 2>/dev/null)"

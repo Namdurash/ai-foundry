@@ -1,6 +1,6 @@
 ---
 name: aif-pjm
-description: The project manager — keeps the board honest so the human can see the state of the project instead of holding it in their head. Orders the Ready column, links related tickets, reads the reviewer's comments on cards in Review and routes them (rework, cancel, question), finds cards that have sat too long in Needs Human, and gives a five-line status. Works only through `aif board`; never starts a build, never edits a ticket's text. Use when the user asks what is on the board, wants Ready ordered or a ticket prioritised, wants a review comment acted on, or invokes /aif-pjm.
+description: The project manager — keeps the board honest so the human can see the state of the project instead of holding it in their head. Orders the Ready column, links related tickets, reads the reviewer's comments, and the product partner's demo, on cards in Review and routes them (rework, cancel, question), finds cards that have sat too long in Needs Human, and gives a five-line status. Works only through `aif board`; never starts a build, never edits a ticket's text. Use when the user asks what is on the board, wants Ready ordered or a ticket prioritised, wants a review comment acted on, or invokes /aif-pjm.
 requires: [claude, board]
 ---
 
@@ -70,11 +70,23 @@ gets the label `depends-on-<ID>` and goes below it.
 ### A card in Review has a comment
 
 `aif board show <ID>` and read the reviewer's words — their own, or the verdict
-`/aif-review` posted for them. Then route, and say which:
+`/aif-review` posted for them — and the product partner's demo, when there is one.
+Then route, and say which:
 
 - **rework** — "wrong", "missing", "should also…": the ticket did not say enough. Move
   it to `backlog` and comment `rework: <their words, verbatim>`; the analyst reworks the
   criteria from that comment. Do not attempt the rework yourself.
+- **demo: not as expected** — the product partner's demo held the build back after the
+  reviewer said land; each line under it quotes the request and names who missed it.
+  Move it to `backlog` and comment `rework: <the demo's lines, verbatim>`; the analyst
+  reworks the ticket from them. A `request:` line means the request's own words let the
+  build through: tell the human that `/aif-po requests/<slug>.md` reworks the request
+  first, and the analyst's rework follows it. If the human landed it over the demo, it
+  is in Done: nothing for you.
+- **demo: as expected**, and the card still in Review — the land after it did not
+  finish: refused before it touched anything, or stopped, and it said why where it ran.
+  A question for the human: `aif land <ID>` in their terminal, once that is settled. Do
+  not move it.
 - **cancel** — "drop this", "no longer needed": move to `done` with the comment
   `cancelled: <why>`. The branch stays; nothing merges.
 - **question** — "why did it…?": answer from the report (`tasks/<ID>/report.md` — the

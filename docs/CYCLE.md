@@ -11,12 +11,13 @@ They meet only on the board.
 ```mermaid
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    PO["/aif-po — the product partner<br/>against the map and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most 6 rules — over that, only the human keeps it whole"}}
-    PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
+    PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's<br/>and the demo's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
+    DEMO{"/aif-po — the demo<br/>the build held to the request it came from,<br/>in a fresh context, on the human's land"}
     PO -->|"writes it — Status: not cut"| REQ
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
@@ -63,13 +64,16 @@ flowchart TB
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA
-  QA -->|"land it"| LAND
+  QA -->|"land"| DEMO
   QA -->|"wrong — a comment in the reviewer's words"| PJM
+  DEMO -->|"as expected — the review runs it"| LAND
+  DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
   LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
-  PJM -->|"rework, in the reviewer's words"| BACKLOG
+  PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG
+  PJM -.->|"a demo's request: line — the request reworked first"| PO
   PJM -->|"cancelled"| DONE
   BACKLOG -.->|"/aif-ba reworks the criteria"| BA
 ```

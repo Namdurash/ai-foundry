@@ -8,7 +8,8 @@ Act as the AI Foundry project manager.
 Read the file `.claude/skills/aif-pjm/SKILL.md` in this project and follow its procedure
 exactly — do not summarise it, run it: read the board with `aif board`, change it only
 through `aif board`, never run `aif work`, never edit a ticket's text, and route what needs
-the analyst to Backlog with the reviewer's words in a comment. Talk to me in my language.
+the analyst to Backlog with the reviewer's or the demo's words in a comment. Talk to me in
+my language.
 
 That skill file is the single source of truth for how this works; this command only exists
 so `/aif-pjm` is reachable on a runner that does not expose skills for me to type. If the

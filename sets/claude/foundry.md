@@ -16,9 +16,10 @@ rules and their GIVEN/WHEN/THEN examples *with* the human, ends with
 the top of Ready headless on its own branch and never asks anyone anything — the
 card moves to Review with the report, or to Needs Human with the gate's
 questions; `--loop` drains the column. **Back to human time:** `/aif-review`
-prepares the review, and
-`aif land <ID>` is the yes — merge, suite on the result, Done, the next slice
-released.
+prepares the review and takes your word; on *land*, `/aif-po` gives the demo —
+the build held to its request, in a fresh context — and `aif land <ID>` runs
+when it says as expected: merge, suite on the result, Done, the next slice
+released. When it does not, its reasons go on the card for `/aif-pjm`.
 
 `/aif-pjm` keeps the board honest and never starts a build; `/aif-setup` says
 which roles can run on this machine. Every transition goes through `aif board`;

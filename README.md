@@ -141,7 +141,11 @@ stops it (after a `y`), `l` shows its log, `q` takes no new card. Anywhere else,
 with `--no-tui`, it prints a line per start and per end. Either way it ends with a
 summary and the `aif land` for each built card. `/aif-review` prepares the human's three-minute review of a card in Review —
 per criterion the test that proves it, what the run did not establish, what to look
-at first — and takes the verdict. `aif land <ID>` is the yes: it merges the branch
+at first — and takes the verdict. On *land*, the product partner gives the demo
+before anything merges: in a fresh context it holds the build to the request it came
+from, and when it says *as expected* the review runs `aif land <ID>` itself; when it
+does not, its reasons go on the card for `/aif-pjm` to route, and you can still land
+over it in your own terminal. `aif land <ID>` is the yes: it merges the branch
 into the checkout's branch, runs the suite on the *result*, moves the card to Done,
 removes the worktree and the branch, and releases the tickets whose `depends_on`
 names it from Backlog to Ready — which is how a request's slices flow without the
@@ -341,17 +345,37 @@ their sources froze neither, and nothing noticed.
 solution — says back what is wrong today and gets a yes — proposes a *smaller* version
 than the one you brought and asks what it misses, and cuts one outcome into **slices**
 that each ship, and are useful, on their own. It writes nothing until the request clears
-a short bar: what is wrong now and who feels it, one observable *After* with no mechanism
-in it, ordered slices with the core first, at least one thing that is not included, and
-one concrete thing that would make it not worth doing. Say "write it as is" and it writes
-anyway, with what is still soft under *Open* instead of a blank.
+a short bar: what is wrong now, who feels it and how we know — a count, a complaint, your
+own use, or a guess said as one — one observable *After* with no mechanism in it, ordered
+slices with the core first, at least one thing that is not included, and one concrete
+thing that would make it not worth doing. Say "write it as is" and it writes anyway, with
+what is still soft under *Open* instead of a blank.
 
 It writes `requests/<slug>.md` and stops; the analyst takes one slice per ticket. It does
-**not** write criteria, does not read the codebase, and decides nothing: feasibility is
-the analyst's, and a product decision made quietly is one nobody made. `requests/` sits
-beside `tasks/` and is committed — it is the record of *why* the work exists. Give it an
-existing request (`/aif-po requests/<slug>.md`) and it holds that to the same bar and
-reworks only what fails — including requests written before slices existed.
+**not** write criteria, does not read the codebase to decide what to want, and decides
+nothing: feasibility is the analyst's, and a product decision made quietly is one nobody
+made. What it does read, before it says a need back, is what the product already is:
+`aif rules` over the need's words — the rules of every ticket, built or in flight — and
+the requests not yet cut. So a need a Done ticket already meets, one a ticket in flight
+is about to change, or one a request's slice already covers comes up in the first
+exchange, not as a second request. `requests/` sits beside `tasks/` and is committed — it is the record of *why* the
+work exists. Give it an existing request (`/aif-po requests/<slug>.md`) and it holds that
+to the same bar and reworks only what fails — including requests written before slices
+existed.
+
+**The demo.** The ticket is the analyst's reading of the request, and once it is built
+nobody asked whether it is what you meant — the reviewer holds the diff to the ticket.
+So on your *land* in `/aif-review`, the product partner gives the demo: a fresh context
+that has not read the reviewer's brief reads the request, the ticket's rules and
+defaults, the report and the diff — for what a user would meet, not for the code — and
+answers with one block. `demo: as expected` and the review runs `aif land`. `demo: not
+as expected` holds it back with reasons that each quote the request line the build
+misses and name the document that missed it — `ticket:` for the analyst, `request:` for
+the request itself — on the card, for `/aif-pjm` to route. The last slice of a request
+adds whether *After* is now true as built, and what *Now* said to watch. It reads only,
+runs nothing, and can hold a land back but never push one through: your *land* is still
+the yes, and `aif land <ID>` in your own terminal lands over it. `/aif-po <ID>` gives the
+same demo by hand, and only reports.
 
 Five minutes or an hour; the bar decides when there is enough, and you can override it
 out loud. This is the one part of the foundry with no gate and nothing downstream that
@@ -443,7 +467,8 @@ ends in **Needs Human** with a comment whose first line says whose problem it is
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
 machine, nothing spent) or `blocked: stopped` (and by whom) — so a taken card is never
 left in Ready for the next run to take again, nor anywhere without its reason. You
-review beside the diff; the project manager routes what you say.
+review beside the diff, the product partner's demo holds your *land* to the request,
+and the project manager routes what either of you says.
 Every transition goes through one adapter, `aif board`, in bash — a model
 "remembering" to move a card is fail-open bookkeeping, and a card that quietly
 did not move is the same defect as a meter that quietly did not fire.
@@ -468,8 +493,9 @@ intake, the repository after. `scripts/check-board.sh` drives both backends
 offline, the Trello one against a stand-in server (`scripts/mock-trello.py`).
 
 **`/aif-pjm`** is the project manager: it orders Ready, links tickets, reads the
-reviewer's words on a card in Review and routes them — rework to Backlog with the
-comment for the analyst, cancel to Done — and finds cards that have sat too long.
+reviewer's words and the demo's on a card in Review and routes them — rework to
+Backlog with the comment for the analyst, a demo's `request:` line to the product
+partner first, cancel to Done — and finds cards that have sat too long.
 It works only through `aif board`. **It never starts a build and never edits a
 ticket's text**: the worker consumes Ready, the project manager decides what is
 in it. Every decision it makes is a card position or a label you can override by
@@ -1350,6 +1376,7 @@ Never `git tag` a release by hand.
 - [x] `/aif-po` — the product partner, and `requests/` as what the analyst cuts from
 - [x] `aif work --loop`, `aif land`, `/aif-review` — the queue drains, the yes is one command, the review has a brief
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
+- [x] The demo — on the reviewer's land, the product partner holds the build to its request before `aif land` runs
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

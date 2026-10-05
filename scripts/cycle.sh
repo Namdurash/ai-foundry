@@ -110,6 +110,11 @@ lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
 lib/cmd_land.sh|aif_integrate_own "$root" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner
 sets/claude/skills/aif-ba/SKILL.md|depends_on|a ticket names the tickets it needs built first
 sets/claude/skills/aif-review/SKILL.md|aif land <ID>|the reviewer's brief ends in aif land, or a comment
+sets/claude/skills/aif-review/SKILL.md|The product partner's demo, in a fresh context|on the human's land, the product partner's demo runs before anything lands
+sets/claude/skills/aif-review/SKILL.md|As expected — land it, here|…and the review runs aif land when the demo says as expected
+sets/claude/skills/aif-po/SKILL.md|demo: not as expected|the demo holds a build back with its reasons, each quoting the request
+sets/claude/skills/aif-po/SKILL.md|aif rules <words>|the product partner reads the map and the open requests before saying a need back
+sets/claude/skills/aif-pjm/SKILL.md|demo: not as expected|the project manager routes the demo's reasons as rework, to Backlog
 ANCHORS
 
 # --------------------------------------------------------------------------
@@ -232,12 +237,13 @@ grep -q 'aif_g_spec' "$SET/gates/plan.sh" || die "plan.sh no longer answers a sp
 diagram="$(cat <<MERMAID
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    PO["/aif-po — the product partner<br/>against the map and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most $rules_max rules — over that, only the human keeps it whole"}}
-    PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's words"]
+    PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's<br/>and the demo's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
+    DEMO{"/aif-po — the demo<br/>the build held to the request it came from,<br/>in a fresh context, on the human's land"}
     PO -->|"writes it — Status: not cut"| REQ
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
@@ -275,13 +281,16 @@ $mermaid_stations    REPORT["report.md, beside the diff on the branch"]
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA
-  QA -->|"land it"| LAND
+  QA -->|"land"| DEMO
   QA -->|"wrong — a comment in the reviewer's words"| PJM
+  DEMO -->|"as expected — the review runs it"| LAND
+  DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
   LAND -->|"a conflict in code, or red on the result: the merge undone"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
-  PJM -->|"rework, in the reviewer's words"| BACKLOG
+  PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG
+  PJM -.->|"a demo's request: line — the request reworked first"| PO
   PJM -->|"cancelled"| DONE
   BACKLOG -.->|"/aif-ba reworks the criteria"| BA
 MERMAID
@@ -434,8 +443,9 @@ EOH
   <ul class="legend" aria-label="Reading the diagram">
     <li style="--dot: var(--human)">Human time — a skill, run when you want, for as long as you want</li>
     <li style="--dot: var(--board)">The board — where the state is seen; every move goes through <code>aif board</code></li>
-    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review</li>
+    <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review, run on the human's land once the demo says as expected</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
+    <li style="--dot: var(--human)">The diamond is the demo: it can hold a land back, never push one through</li>
     <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
   </ul>
 

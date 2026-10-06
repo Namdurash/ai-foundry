@@ -32,7 +32,7 @@ flowchart TB
     REVIEW[Review]
     DONE[Done]
     NEEDS_HUMAN[Needs Human]
-    BACKLOG -->|"released by aif land, or by /aif-pjm by hand"| READY
+    BACKLOG -->|"released by aif land or aif board release, or by /aif-pjm by hand"| READY
   end
 
   subgraph MACHINE["Machine time · aif work"]
@@ -61,18 +61,19 @@ flowchart TB
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
   READY -->|"the top card — one, or --loop until empty"| INTAKE
-  INTAKE -.->|"the card"| IN_PROGRESS
+  INTAKE -.->|"the card, with a taken: claim — host, pid, time"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA
   QA -->|"land"| DEMO
-  QA -->|"wrong — a comment in the reviewer's words"| PJM
+  QA -->|"wrong — a comment in the reviewer's words, its first line wrong:"| PJM
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
   LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
+  LAND -->|"undone after its merge — an install that failed, git refusing the merge,<br/>a red over dependencies not installed here: a land: comment"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG

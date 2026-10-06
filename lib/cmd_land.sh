@@ -32,8 +32,8 @@
 #               installed here: that one is reported, with --prepare
 #   card        → Done with what happened as a comment; back to Ready with a
 #               `sync:` comment for the worker (a conflict in code, a red on
-#               the result); → Needs Human with the comment for the rest — an
-#               install that failed, git refusing the merge, a red over
+#               the result); → Needs Human with a `land:` comment for the rest
+#               — an install that failed, git refusing the merge, a red over
 #               dependencies not installed here
 #   release     every ticket whose `depends_on` names this one, and whose other
 #               dependencies are Done, moves Backlog → Ready. That is how a
@@ -61,7 +61,8 @@
 # It never runs a model and never starts a build. Exit: 0 landed · 1 refused,
 # or undone (the card and the comment say why) · 3 the environment cannot land
 # anything (not a project, a worktree, the board unreachable) · 130 or 143
-# stopped by an INT or a TERM before the verdict, and undone.
+# stopped by an INT or a TERM before the verdict, and undone · 129 the
+# terminal closed over it (HUP) before the verdict, and undone.
 
 _aif_land_usage() {
   cat <<EOF
@@ -82,8 +83,8 @@ usage: aif land <ticket> [options]
   undoes the merge and sends the card back to the top of Ready: the worker
   brings the branch onto this one — the conflicts settled by the implement
   station, or the ticket built again from here when they cannot be — and it
-  comes back to Review. Stopped before the verdict — Ctrl-C, a TERM — it
-  undoes the merge and leaves the card in Review. The branch is untouched
+  comes back to Review. Stopped before the verdict — Ctrl-C, a TERM, the terminal
+  closing over it — it undoes the merge and leaves the card in Review. The branch is untouched
   either way.
 
   A merge that moves a dependency manifest or lockfile (package.json,
@@ -108,6 +109,17 @@ _aif_land_say() {
 # exit 1. <again> is the command that lands it once it is resolved. <more>
 # follows the detail, on the card and here: what the red was measured against,
 # what became of the install, a better command than <again> when there is one.
+#
+# The note's first line is `land: <headline>` — a head. The project manager
+# and `aif board head` route a card on the first line of the newest comment aif
+# or a role wrote, without reading it as prose: the worker's every stop is a
+# `blocked: <kind>`, a card the land hands back to the worker is a `sync:`.
+# This note began `# <ID> — not landed`, a title, and a failed land was the one
+# card in Needs Human whose first line nothing could route on
+# (docs/AUTOPILOT-RESEARCH.md §4.5; docs/DEFECTS.md 14.9). The heads are listed
+# in AIF_BOARD_HEADS, lib/board.sh, where the old title stays for the cards
+# written before this. What the terminal prints is unchanged: there the
+# headline is the error line.
 _aif_land_fail() {
   local root="$1" ticket="$2" headline="$3" detail="$4" again="$5" more="${6:-}" note
   # A verdict, reached with the merge undone: the stop handler has nothing left
@@ -115,7 +127,7 @@ _aif_land_fail() {
   aif_trap_disarm
   note="$(mktemp "${TMPDIR:-/tmp}/aif-land-XXXXXX")"
   {
-    printf '# %s — not landed\n\n%s\n' "$ticket" "$headline"
+    printf 'land: %s\n' "$headline"
     if [ -s "$detail" ]; then
       printf '\n```\n'
       sed 's/\x1b\[[0-9;]*m//g' "$detail" | sed -n '1,20p'
@@ -355,11 +367,15 @@ EOF
   printf '%s' "${out#, }"
 }
 
-# _aif_land_stopped <EXIT|INT|TERM> — the land stopped between its merge and
-# its verdict: Ctrl-C, a supervisor's TERM, or an error on the way (an aif_die,
-# a command failing under set -e). Each used to leave the merge commit on the
-# developer's branch, the card in Review, the worktree gone and, with
-# --prepare, half an install — and nothing said so.
+# _aif_land_stopped <EXIT|INT|TERM|HUP> — the land stopped between its merge
+# and its verdict: Ctrl-C, a supervisor's TERM, the terminal closing over it,
+# or an error on the way (an aif_die, a command failing under set -e). Each
+# used to leave the merge commit on the developer's branch, the card in
+# Review, the worktree gone and, with --prepare, half an install — and nothing
+# said so. The hang-up was the last of them to be caught: a window closed
+# during the suite killed the land outright, merge in place, with nobody
+# told (docs/AUTOPILOT-RESEARCH.md §6.11, verification 2; docs/DEFECTS.md
+# 14.8).
 #
 # The merge is undone: the tree was clean before it, so the reset loses nothing
 # git tracks. Nothing else is. The card stays in Review: the land did not
@@ -377,10 +393,11 @@ _aif_land_stopped() {
   # And whole. This ends the process, so nothing after it relies on errexit,
   # and a second Ctrl-C must not cut the reset in half.
   set +e
-  trap '' INT TERM
+  trap '' INT TERM HUP
   case "${1:-EXIT}" in
     INT) why="interrupted" ;;
     TERM) why="terminated" ;;
+    HUP) why="the terminal closed (HUP)" ;;
     *) why="stopped by the error above" ;;
   esac
   git -C "$AIF_LAND_ROOT" reset --hard "$pre" >/dev/null 2>&1 || undone=0
@@ -407,13 +424,31 @@ _aif_land_stopped() {
   case "${1:-EXIT}" in
     INT) exit 130 ;;
     TERM) exit 143 ;;
+    HUP) exit 129 ;;
   esac
 }
 
 # _aif_land_column <root> <ticket> — the card's column, or empty when there is
-# no card.
+# no card; rc 3, the reason said, when the board could not answer.
+#
+# The column alone, never through `show`: a comments read that failed for
+# good — three 500s on the actions call — makes `show` die (docs/DEFECTS.md
+# 14.7), and this read of it, under `2>/dev/null … || true`, answered an
+# empty column, which the case below refused as "no card on the board" —
+# the wrong reason, with nothing landed. A board that cannot say where the
+# card is is the environment, the 3 every other unreachable board here ends
+# in, not a verdict on the ticket.
 _aif_land_column() {
-  aif_board_show_json "$1" "$2" 2>/dev/null | jq -r '.column // empty' 2>/dev/null || true
+  local col rc=0
+  col="$(aif_board_card_column "$1" "$2" 2>&1)" || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$col" ;;
+    1) ;;
+    *)
+      aif_err "the board could not say where $2's card is — ${col:-no answer}; nothing landed (aif board check)"
+      return 3
+      ;;
+  esac
 }
 
 # _aif_land_release <root> <ticket> — the tickets that were waiting on this
@@ -519,7 +554,7 @@ aif_cmd_land() {
     exit 3
   fi
   local column
-  column="$(_aif_land_column "$root" "$ticket")"
+  column="$(_aif_land_column "$root" "$ticket")" || exit 3
   case "$column" in
     review) ;;
     done)

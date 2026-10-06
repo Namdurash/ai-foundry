@@ -36,6 +36,7 @@ Read the board:
 aif board status            # every card, by column
 aif board status --json     # the same, with moved_at and labels, for sorting
 aif board show <ID>         # one card, with its comments — the reviewer's words
+aif board head <ID>         # the first line of the newest comment aif or a role wrote — what you route on
 aif board next-ready        # what the worker would take next
 ```
 
@@ -73,8 +74,10 @@ gets the label `depends-on-<ID>` and goes below it.
 `/aif-review` posted for them — and the product partner's demo, when there is one.
 Then route, and say which:
 
-- **rework** — "wrong", "missing", "should also…": the ticket did not say enough. Move
-  it to `backlog` and comment `rework: <their words, verbatim>`; the analyst reworks the
+- **rework** — a comment whose first line is `wrong:` (the reviewer's brief writes its
+  verdict so), or the human's own "wrong", "missing", "should also…": the ticket did
+  not say enough. Move it to `backlog` and comment `rework: <their words, verbatim>` —
+  a `wrong:` comment's lines with that prefix taken off; the analyst reworks the
   criteria from that comment. Do not attempt the rework yourself.
 - **demo: not as expected** — the product partner's demo held the build back after the
   reviewer said land; each line under it quotes the request and names who missed it.
@@ -87,7 +90,8 @@ Then route, and say which:
   finish: refused before it touched anything, or stopped, and it said why where it ran.
   A question for the human: `aif land <ID>` in their terminal, once that is settled. Do
   not move it.
-- **cancel** — "drop this", "no longer needed": move to `done` with the comment
+- **cancel** — a comment whose first line is `cancel:` (the reviewer's brief), or the
+  human's "drop this", "no longer needed": move to `done` with the comment
   `cancelled: <why>`. The branch stays; nothing merges.
 - **question** — "why did it…?": answer from the report (`tasks/<ID>/report.md` — the
   decisions and the checklist are there) if the answer is there; otherwise take the
@@ -115,6 +119,15 @@ on the kind:
   to `ready` only when they say it is fixed.
 - **`blocked: stopped`** — a person stopped the run (Ctrl-C, `aif work <ID> --stop`) or
   a TERM did; the line says who and during which stage. Their decision — leave it.
+- **`land:`** — not the worker's: `aif land` undid its merge after an install that
+  failed, git refusing the merge, or a red over dependencies not installed here. The
+  lines under it name the command that lands it once that is resolved
+  (`aif board move <ID> review && aif land <ID>`, with `--prepare` when they say so).
+  It is for the human; say what the comment names, and do not move it.
+
+A `taken: <host> pid <pid> at <time> — aif work` line is the worker's claim on the card
+when it took it — which machine, which process, when — and never a reason to route: the
+report or the `blocked:` line after it is what says how the run ended.
 
 A comment with no `blocked:` line is from before the worker wrote one: read it, and
 route a ticket problem as rework and anything else to the human, as above.
@@ -136,7 +149,10 @@ The analyst cuts one ticket per slice of the request: the first slice's ticket i
 the rest in Backlog in slice order, and each ticket names the ticket it needs built
 first in its own `depends_on`. `aif land` reads that: when everything a ticket names is
 Done, it moves the ticket to Ready itself. Label them `depends-on-<ID>` for the eye,
-and move one by hand only when the human merged by hand. Say the order.
+and move one by hand only when the human merged by hand. When they did, `aif board
+release --dry-run` says which Backlog cards wait on what, and `aif board release` moves
+the ones whose dependencies are Done and landed — a dependent of a merge by hand it
+names, with the move that releases it, and leaves to you. Say the order.
 
 ## What you do not do — stated so it is not tried
 

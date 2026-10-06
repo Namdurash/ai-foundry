@@ -121,8 +121,9 @@ verified, what it cost — beside the diff, which is the one place a reviewer ha
 enough context to judge it. Run several tickets at once: each gets its own
 worktree, and one ticket gets one worker — a second `aif work` on a ticket already
 being built is refused before it touches anything. `aif work TICK-1 --stop`, from any
-terminal, ends that run the way its own Ctrl-C would. The offline walk of the whole
-thing is `scripts/check-work.sh`.
+terminal, ends that run the way its own Ctrl-C would — and so does the terminal
+closing over it, the card saying so. The offline walk of the whole thing is
+`scripts/check-work.sh`.
 
 **The queue drains, and the yes is one command.** `aif work --loop` builds the cards
 in Ready, two at a time (`--parallel N`; one with `--no-worktree`), each in a worktree
@@ -133,13 +134,17 @@ two. It takes no new card when a run cannot start, or after two that did not bui
 because two cards in Needs Human usually mean the problem is not the cards. Ctrl-C
 takes no new card and lets the runs in flight finish; Ctrl-C again stops them, each
 card saying so. A `--stop` on one run is not held against the cards, and its slot
-takes the next. Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log`. On a
-terminal the loop draws a dashboard — itself in the middle, each worker around it with
-its ticket, station and attempt, model, progress and last verdict, joined by a line
-whose colour is that worker's state — and takes keys: `1`–`9` select a worker, `s`
-stops it (after a `y`), `l` shows its log, `q` takes no new card. Anywhere else, or
-with `--no-tui`, it prints a line per start and per end. Either way it ends with a
-summary and the `aif land` for each built card. `/aif-review` prepares the human's three-minute review of a card in Review —
+takes the next. Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — or under
+`AIF_WORK_LOOP_LOGDIR`, when it names a directory — and `summary.json` beside the
+logs says how the loop ended: what it took, built, blocked and stopped, and why it
+took no more; the exit code says how the process ended, not what Ready still holds,
+so whatever started the loop reads the file. On a terminal the loop draws a
+dashboard — itself in the middle, each worker around it with its ticket, station and
+attempt, model, progress and last verdict, joined by a line whose colour is that
+worker's state — and takes keys: `1`–`9` select a worker, `s` stops it (after a
+`y`), `l` shows its log, `q` takes no new card. Anywhere else, or with `--no-tui`, it
+prints a line per start and per end. Either way it ends with a summary and the
+`aif land` for each built card. `/aif-review` prepares the human's three-minute review of a card in Review —
 per criterion the test that proves it, what the run did not establish, what to look
 at first — and takes the verdict. On *land*, the product partner gives the demo
 before anything merges: in a fresh context it holds the build to the request it came
@@ -166,9 +171,10 @@ dependency manifest or lockfile is judged against the install from before it —
 says so, and a red gives the command that lands it installed: `--prepare` runs
 `prepare` (`npm ci`) in your checkout before the suite, and again after an undo, for
 the lockfile the undo put back. It is never run there unasked. A land stopped before
-its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, an error
-on the way — undoes its own merge and leaves the card in Review, since a stop decides
-nothing; an install `--prepare` had started is named, with its command, not run again.
+its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, the
+terminal closing over it, an error on the way — undoes its own merge and leaves the
+card in Review, since a stop decides nothing; an install `--prepare` had started is
+named, with its command, not run again.
 
 A worktree reads everything about aif — the stations, the gates, the hooks, the
 fragments, the guide, `project.json` — from its own branch, and `aif init`
@@ -467,13 +473,16 @@ Backlog → Ready → In Progress → Review → Done
 
 The analyst puts a ready ticket in **Ready**. `aif work` — with no argument —
 takes the card at the top and moves it to **In Progress** before anything else,
+says who took it — one `taken: <host> pid <pid> at <time>` comment, so a board two
+machines share can tell a live worker elsewhere from a card dragged there by hand —
 builds, and moves it to **Review** with the report as a comment. Every other way out
 ends in **Needs Human** with a comment whose first line says whose problem it is —
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
-machine, nothing spent) or `blocked: stopped` (and by whom) — so a taken card is never
-left in Ready for the next run to take again, nor anywhere without its reason. You
-review beside the diff, the product partner's demo holds your *land* to the request,
-and the project manager routes what either of you says.
+machine, nothing spent) or `blocked: stopped` (and by whom), or `land:` when `aif
+land` undid its merge, with why and the command that lands it once resolved — so a
+taken card is never left in Ready for the next run to take again, nor anywhere
+without its reason. You review beside the diff, the product partner's demo holds
+your *land* to the request, and the project manager routes what either of you says.
 Every transition goes through one adapter, `aif board`, in bash — a model
 "remembering" to move a card is fail-open bookkeeping, and a card that quietly
 did not move is the same defect as a meter that quietly did not fire.
@@ -483,6 +492,8 @@ aif board status                  # every card, by column
 aif board next-ready              # what the worker would take
 aif board move TICK-1 ready --top # the project manager's order
 aif board show TICK-1             # the card, with the reviewer's comments
+aif board head TICK-1             # the first line aif or a role wrote last — what is routed on
+aif board release --dry-run       # what in Backlog waits on what; without the flag, release what can be
 aif board check                   # is it reachable, as configured?
 ```
 
@@ -629,7 +640,7 @@ the gates rather than remembered.
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; one worker per ticket on this machine; `--clean` removes the worktree, `--stop` ends the run building it, from any terminal |
 | `aif work --loop [--parallel N] [--max-tickets N] [--no-tui]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree, on a dashboard where there is a terminal; takes no new card on an empty column, a run that cannot start, two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight |
 | `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
-| `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `label`, `check`, `init` |
+| `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `head` (the first line aif or a role wrote last), `label`, `check`, `release [--dry-run]` (the Backlog cards whose every dependency is Done and landed, to the bottom of Ready), `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |

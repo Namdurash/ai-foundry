@@ -45,8 +45,8 @@
 #      the lock, and one that went around the lock is sent back
 #  25  land, when the merge moves the dependencies: without --prepare the
 #      suite's verdict says it ran against the install from before the merge,
-#      with the command; with it the install is made here, and made again
-#      after an undo
+#      with the command, on a land: line the project manager routes on; with
+#      it the install is made here, and made again after an undo
 #  26  verify-red counts a criterion covered only by a test the runner
 #      collected: its only test in a declared file the runner never collects
 #      is sent back to the tests station, naming the file, which may stay as
@@ -111,6 +111,20 @@
 #      in Review saying so; the station unable to settle it, or a test
 #      file in conflict, and the ticket is built again from the target,
 #      the first build kept; a target that moved elsewhere merged clean
+#  48  the worker's claim on the card it takes — taken: host, pid, time —
+#      under which the report is still the head; a rework committed in the
+#      checkout reaches a branch that already carries a ticket, the ticket
+#      alone, and the run restarts on it; the loop writes summary.json where
+#      AIF_WORK_LOOP_LOGDIR says, for a parent that cannot read its exit code
+#      as the board; a hang-up to a worker's group ends it in 129 with the
+#      card saying so; and the loop whose own terminal closes over it — every
+#      line it prints failing from then on — stops its runs, writes its
+#      summary and ends in 129
+#  49  aif board release moves the Backlog cards whose every dependency is
+#      Done and landed to the bottom of Ready, with a comment; holds one on a
+#      rework: head or a parked label; names a Done dependency with no land
+#      commit here as a merge by hand, with the move that releases it;
+#      --dry-run says the same and touches nothing
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -665,9 +679,9 @@ eq "an open question: exit 1 — back to the analyst" "$rc" "1"
 # Nothing was spent, so there is no run to report on — the card carries the
 # gate's own questions instead, which is where the analyst reads them.
 eq "the card carries the question and its default" \
-  "$("$AIF" board show AIF-6 --json | jq -r '.comments[0].text' | grep -c 'open question Q-001.*default: no')" "1"
+  "$("$AIF" board show AIF-6 --json | jq -r '.comments[-1].text' | grep -c 'open question Q-001.*default: no')" "1"
 eq "under the line the project manager routes on: the ticket's problem" \
-  "$("$AIF" board show AIF-6 --json | jq -r '.comments[0].text' | sed -n 1p)" \
+  "$("$AIF" board show AIF-6 --json | jq -r '.comments[-1].text' | sed -n 1p)" \
   "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 eq "and no report was written for a run that never started" \
   "$(test -f tasks/AIF-6/report.md && echo yes || echo no)" "no"
@@ -1649,6 +1663,8 @@ eq "…and the command that lands it installed" \
 eq "the terminal has the command too" \
   "$(grep -c 'aif board move AIF-25 review && aif land AIF-25 --prepare' "$OUT/land25a.out")" "1"
 eq "the card is in Needs Human" "$(col AIF-25)" "needs_human"
+eq "…under a land: head, which aif board head returns" \
+  "$(last_comment AIF-25 | sed -n 1p | grep -c '^land: the suite is red on '),$("$AIF" board head AIF-25 | grep -c '^land: ')" "1,1"
 
 # green without --prepare: in a copy of this checkout whose developer had
 # installed dep-new by hand, trying the branch. It lands, and says the install
@@ -3628,6 +3644,245 @@ eq "merged clean on its way back to Review, no station asked" \
   "$rc,$(col AIF-94),$(grep -l 'MERGE' .aif/worktrees/AIF-94/.aif/tmp/fake-prompt-implement-* 2>/dev/null | wc -l | tr -d ' ')" "0,review,0"
 eq "the branch holds main, and the report says it merged clean" \
   "$(git merge-base --is-ancestor "$main47d" aif/AIF-94 && echo yes),$(git show aif/AIF-94:tasks/AIF-94/report.md | grep -c 'merged into the branch, clean')" "yes,1"
+
+# ====== 48. the claim, the carry-in, the loop's summary, and a hang-up ========
+#
+# Four things a supervisor leans on, each read against the code and found
+# wanting (docs/AUTOPILOT-RESEARCH.md §6.11). The claim: the move to In
+# Progress said that work was happening, not where, and on a Trello board
+# shared by two machines a live remote worker looked exactly like a card
+# dragged by hand — the run lock that knows the pid is in one machine's .aif
+# (docs/DEFECTS.md 14.4). The card's first comment is now `taken: <host> pid
+# <pid> at <time> — aif work`, and the report after it is still the head. The
+# carry-in: on the local board the checkout is canonical for the ticket's
+# text, as the card is on Trello, and a rework committed there never reached
+# a branch that already carried a ticket — round two resumed at done and the
+# old build went to Review (13.6); the ticket alone is carried in now, never
+# the checkout's stale run record over the branch's, and the run restarts on
+# it. The summary: the loop's exit code says how it ENDED, not what the board
+# holds — rc 0 with a card still in Ready, rc 1 with nothing taken — so a
+# parent reads summary.json, in the directory AIF_WORK_LOOP_LOGDIR names
+# (14.3). The hang-up: nothing in aif handled HUP, and a closed window left
+# its worker building for nobody; a terminal sends it to the whole process
+# group, and the worker ends in 129 with its card saying so (14.8).
+printf '\n48. the worker says who took a card, carries a rework in, sums the loop up, and ends on a hang-up\n'
+fresh_project "$SANDBOX/p48"
+ticket_for AIF-100
+git add -A && git commit -qm "ticket 48" >/dev/null
+"$AIF" board create tasks/AIF-100/ticket.md --column ready >/dev/null
+# The host the claim names is the worker's `hostname -s`, with its fallbacks.
+host48="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-?}")"
+host48="$(printf '%s' "$host48" | tr -d '[:space:]')"
+n_comments() { "$AIF" board show "$1" --json | jq -r '.comments | length'; }
+first_line() { "$AIF" board show "$1" --json | jq -r --argjson i "$2" '.comments[$i].text' | sed -n 1p; }
+rc=0
+"$AIF" work AIF-100 >"$OUT/run48a.out" 2>&1 || rc=$?
+eq "built in a worktree, the card in Review" "$rc,$(col AIF-100)" "0,review"
+eq "two comments: the claim, then the report" "$(n_comments AIF-100)" "2"
+eq "the claim: taken on this host, a pid, a UTC time, by the worker" \
+  "$(first_line AIF-100 0 | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work$'),$(first_line AIF-100 0 | grep -c "^taken: ${host48:-?} pid "),$("$AIF" board show AIF-100 --json | jq -r '.comments[0].by')" "1,1,aif work"
+eq "…and the report after it is still the head" "$(first_line AIF-100 1),$("$AIF" board head AIF-100)" "# AIF-100 — built,# AIF-100 — built"
+
+# The analyst adds a criterion in the checkout and commits it; the card goes
+# back to Ready. The branch already carries a ticket — where the rework used
+# to be lost. The fake station's attempt counters live in the worktree, and
+# are reset as scenario 6 resets them in place.
+ticket_for AIF-100 '[]' ',
+    { "id": "AC-002", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl2" }'
+git add -A && git commit -qm "AIF-100 reworked in the checkout" >/dev/null
+"$AIF" board move AIF-100 ready >/dev/null
+rm -f .aif/worktrees/AIF-100/.aif/tmp/fake-*.count
+rc=0
+"$AIF" work AIF-100 >"$OUT/run48b.out" 2>&1 || rc=$?
+eq "round two: built, back in Review" "$rc,$(col AIF-100)" "0,review"
+eq "the ticket was carried into the worktree, and the run restarted on it" \
+  "$(grep -c 'the ticket changed in the checkout since the last run — carried in' "$OUT/run48b.out"),$(grep -c 'restart.*the ticket changed' "$OUT/run48b.out")" "1,1"
+eq "the branch's ticket is the checkout's, byte for byte" \
+  "$(git show aif/AIF-100:tasks/AIF-100/ticket.md | shasum -a 256 | cut -d' ' -f1)" "$(shasum -a 256 tasks/AIF-100/ticket.md | cut -d' ' -f1)"
+eq "and the plan on the branch covers both criteria" \
+  "$(git show aif/AIF-100:tasks/AIF-100/plan.md | sed -n '/^<!-- aif:meta$/,/^-->$/p' | sed '1d;$d' | jq -r '.ac_coverage | keys | join(",")')" "AC-001,AC-002"
+eq "four comments — a claim and a report per run — and the head is the report" "$(n_comments AIF-100),$("$AIF" board head AIF-100)" "4,# AIF-100 — built"
+"$AIF" board move AIF-100 ready >/dev/null
+rc=0
+"$AIF" work AIF-100 >"$OUT/run48c.out" 2>&1 || rc=$?
+eq "a third run with the ticket unchanged: nothing carried in, resumed at done" \
+  "$rc,$(grep -c 'carried in' "$OUT/run48c.out"),$(grep -c 'resume.*done' "$OUT/run48c.out")" "0,0,1"
+
+# The loop, told where its logs go, and its summary for whoever started it.
+ticket_for AIF-101
+ticket_for AIF-102
+git add -A && git commit -qm "two for the loop" >/dev/null
+"$AIF" board create tasks/AIF-101/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-102/ticket.md --column ready >/dev/null
+rc=0
+AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-loop" "$AIF" work --loop --no-tui >"$OUT/run48d.out" 2>&1 || rc=$?
+eq "the loop: both built, exit 0, the logs where it was told and nowhere else" \
+  "$rc,$(col AIF-101),$(col AIF-102),$(test -f "$SANDBOX/p48-loop/AIF-101.log" && test -f "$SANDBOX/p48-loop/AIF-102.log" && echo both),$(grep -c 'logs in .*p48-loop' "$OUT/run48d.out"),$(find .aif/tmp -maxdepth 1 -name 'loop-*' 2>/dev/null | wc -l | tr -d ' ')" "0,review,review,both,1,0"
+S48="$SANDBOX/p48-loop/summary.json"
+eq "summary.json says how it ended: two taken, two built, Ready empty" \
+  "$(jq -r '[.taken, .built, .why] | map(tostring) | join(",")' "$S48")" "2,2,Ready is empty"
+eq "…nothing blocked, stopped, killed or hung up on" "$(jq -c '[.blocked, .stopped, .env, .ctrl_c, .killed, .hup]' "$S48")" "[0,0,0,0,null,0]"
+eq "…each run's end, its minutes a number, the file written whole" \
+  "$(jq -r '[.results[] | .ticket + " " + .what] | sort | join(";")' "$S48"),$(jq -r '[.results[].minutes | type] | unique | join(",")' "$S48"),$(test -e "$S48.tmp" && echo half || echo whole)" \
+  "AIF-101 built → Review;AIF-102 built → Review,number,whole"
+eq "each of the loop's workers claimed its card first" "$(first_line AIF-101 0 | grep -c '^taken: '),$(first_line AIF-102 0 | grep -c '^taken: ')" "1,1"
+
+# A hang-up, as a terminal sends one: to the worker's whole process group.
+# Started under set -m, the way the loop starts its runs, so the job is a
+# group of its own — a HUP to the worker's pid alone would leave its station
+# sleeping out its 37 seconds. Job control goes off again at once: left on,
+# bash would hand the terminal to every foreground command after this
+# (docs/FINDINGS.md #24).
+ticket_for AIF-103
+git add -A && git commit -qm "one to hang up on" >/dev/null
+"$AIF" board create tasks/AIF-103/ticket.md --column ready >/dev/null
+set -m
+FAKE_SLEEP_IN="AIF-103:plan" "$AIF" work AIF-103 >"$OUT/run48e.out" 2>&1 &
+w48=$!
+set +m
+wait_for .aif/worktrees/AIF-103/.aif/tmp/fake-running-AIF-103-plan
+t0="$(date +%s)"
+kill -HUP -- "-$w48" 2>/dev/null
+rc=0
+wait "$w48" || rc=$?
+secs=$(($(date +%s) - t0))
+eq "HUP to the worker's group while its plan station runs: exit 129 at once, the card in Needs Human" \
+  "$rc,$(col AIF-103),$([ "$secs" -lt 15 ] && echo prompt || echo "${secs}s")" "129,needs_human,prompt"
+eq "…the card says a hang-up stopped it, and during which stage" \
+  "$("$AIF" board head AIF-103)" "blocked: stopped — by a hang-up — the terminal closed — during plan"
+eq "…the station went with it, and the run lock is released" \
+  "$(pgrep -f 'fake-station.sh plan AIF-103' | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-103 && echo held || echo released)" "0,released"
+
+# The loop, hung up on by its own terminal — the one event that produces a
+# HUP, and the one a HUP to a worker's group does not stand in for: with the
+# window gone, every line the loop prints fails (EIO on the pty), and errexit
+# holds inside a trap (bash 3.2, probed), so a loop that forwarded the TERM and
+# went on to say "stopped (exit 143)" died of the saying — rc 1, no summary,
+# a parent waiting for the file (docs/DEFECTS.md 14.8). So the loop runs on a
+# pty of its own, as pty.fork gives it, its run holding a station; the master
+# closed is the terminal closing: the kernel hangs up on the session leader,
+# and the line is dead for whatever it prints next. Its lines from then on
+# are in its loop.log, its summary says hup, and the run was stopped.
+ticket_for AIF-104
+git add -A && git commit -qm "one for the loop to be hung up on" >/dev/null
+"$AIF" board create tasks/AIF-104/ticket.md --column ready >/dev/null
+rm -rf "$SANDBOX/p48-hup"
+rc="$(FAKE_SLEEP_IN="AIF-104:plan" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-hup" \
+  python3 - "$AIF" "$OUT/screen48" .aif/worktrees/AIF-104/.aif/tmp/fake-running-AIF-104-plan <<'PY3'
+import os, pty, select, sys, time
+aif, raw, mark = sys.argv[1:4]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(aif, [aif, "work", "--loop", "--no-tui"])
+buf = b""
+deadline = time.time() + 60
+while not os.path.exists(mark) and time.time() < deadline:
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            buf += os.read(fd, 65536)
+        except OSError:
+            break
+os.close(fd)
+_, status = os.waitpid(pid, 0)
+open(raw, "wb").write(buf)
+print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY3
+)"
+S48h="$SANDBOX/p48-hup/summary.json"
+eq "the terminal closes over the loop while its run holds a station: exit 129, the summary written, the run stopped" \
+  "$rc,$(jq -r '[.hup, .taken, .built, .stopped, .killed, .why] | map(tostring) | join(",")' "$S48h" 2>/dev/null)" \
+  "129,1,1,0,1,TERM,the terminal closed (HUP) — the runs in flight were stopped too"
+eq "…its lines after the hang-up are in its own log, and the card is settled as stopped by the loop's TERM" \
+  "$(grep -c 'AIF-104 stopped (exit 143)' "$SANDBOX/p48-hup/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup/loop.log"),$(col AIF-104),$("$AIF" board head AIF-104 | grep -c '^blocked: stopped — by a TERM signal, during plan')" "1,1,needs_human,1"
+eq "…the station went with it, and nothing of the loop is left" \
+  "$(pgrep -f 'fake-station.sh plan AIF-104' | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-104 && echo held || echo released)" "0,released"
+
+# ====== 49. aif board release: Backlog cards whose dependencies are Done and landed
+#
+# Backlog holds the later slices of a request, waiting through depends_on, and
+# one thing released them: the land of the ticket they name. A ticket merged
+# by hand, a land whose move failed on the board, a dependent cut after its
+# dependency landed — each left a card nothing would ever release
+# (docs/AUTOPILOT-RESEARCH.md §4.4). `aif board release` is the pass that
+# does, judging each card on its own (lib/release.sh): Done is not enough — a
+# cancelled ticket is in Done too, its branch never merged — so a dependency
+# counts when this checkout carries its land commit, and a Done card without
+# one is named as the merge by hand it probably is, with the move that
+# releases the dependent on purpose; a rework:, blocked: or cancelled: head
+# holds the card, a person's reply under it notwithstanding, and so does the
+# human's hold label; a released card goes to the bottom of Ready — the top is
+# the project manager's — with a comment saying what moved it; and --dry-run
+# says all of it and touches nothing.
+printf '\n49. aif board release: the Backlog cards whose dependencies are Done and landed, and what holds the rest\n'
+fresh_project "$SANDBOX/p49"
+ticket_for AIF-110
+git add -A && git commit -qm "ticket 49" >/dev/null
+"$AIF" board create tasks/AIF-110/ticket.md --column ready >/dev/null
+"$AIF" work AIF-110 >"$OUT/run49.out" 2>&1 || true
+rc=0
+"$AIF" land AIF-110 >"$OUT/land49.out" 2>&1 || rc=$?
+eq "the dependency is built and landed by aif land" "$rc,$(col AIF-110),$(git log --format=%s -1)" "0,done,aif: land AIF-110 — one-command user export"
+# Cut after the land, so the land released none of them: B on it; C on it,
+# under a rework: comment with a person's reply after it; D on E, which a
+# human moved to Done with nothing merged; F on it, labelled parked; G on a
+# ticket with no card; a card already in Ready; and one in Backlog that waits
+# on nothing.
+ticket_for AIF-111 '[]' '' '["AIF-110"]'
+ticket_for AIF-112 '[]' '' '["AIF-110"]'
+ticket_for AIF-113 '[]' '' '["AIF-114"]'
+ticket_for AIF-114
+ticket_for AIF-115 '[]' '' '["AIF-110"]'
+ticket_for AIF-116
+ticket_for AIF-117
+ticket_for AIF-118 '[]' '' '["AIF-119"]'
+git add -A && git commit -qm "the dependents" >/dev/null
+for t in AIF-111 AIF-112 AIF-113 AIF-115 AIF-117 AIF-118; do
+  "$AIF" board create "tasks/$t/ticket.md" >/dev/null
+done
+"$AIF" board create tasks/AIF-114/ticket.md --column "done" >/dev/null
+"$AIF" board create tasks/AIF-116/ticket.md --column ready >/dev/null
+printf 'rework: the export must be signed — back to the analyst\n' >"$OUT/rework49.md"
+"$AIF" board comment AIF-112 "$OUT/rework49.md" >/dev/null
+printf 'noted — I will get to it on Monday\n' >"$OUT/reply49.md"
+"$AIF" board comment AIF-112 "$OUT/reply49.md" >/dev/null
+"$AIF" board label AIF-115 parked >/dev/null
+rc=0
+"$AIF" board release --dry-run >"$OUT/release49a.out" 2>"$OUT/release49a.err" || rc=$?
+eq "--dry-run: exit 0, nothing on stderr" "$rc,$(wc -c <"$OUT/release49a.err" | tr -d ' ')" "0,0"
+eq "B would be released" "$(grep -c '^AIF-111  would release → Ready (bottom)$' "$OUT/release49a.out")" "1"
+eq "C is held on its rework: head, the person's reply under it notwithstanding" \
+  "$(grep -c '^AIF-112  held: rework: the export must be signed — back to the analyst$' "$OUT/release49a.out")" "1"
+eq "D waits on E — Done, but no land commit here: a merge by hand, named, with the move that releases D" \
+  "$(grep -cF 'AIF-113  waits on AIF-114 (Done, but no "aif: land AIF-114" commit here — merged by hand? then: aif board move AIF-113 ready)' "$OUT/release49a.out")" "1"
+eq "F is held by its label" "$(grep -c '^AIF-115  held: label parked$' "$OUT/release49a.out")" "1"
+eq "G waits on a ticket with no card" "$(grep -c '^AIF-118  waits on AIF-119 (no card on the board)$' "$OUT/release49a.out")" "1"
+eq "the landed ticket, the Done one, the card in Ready and the card with no depends_on are not named" \
+  "$(grep -cE '^AIF-11[0467] ' "$OUT/release49a.out")" "0"
+eq "the count line" "$(tail -1 "$OUT/release49a.out")" "would release 1 · held 2 · waiting 2 · not read 0"
+eq "and nothing moved or was posted" "$(col AIF-111),$("$AIF" board show AIF-111 --json | jq -r '.comments | length')" "backlog,0"
+rc=0
+"$AIF" board release >"$OUT/release49b.out" 2>"$OUT/release49b.err" || rc=$?
+eq "the real run: B released, the same verdicts for the rest, nothing on stderr" \
+  "$rc,$(grep -c '^AIF-111  released → Ready (bottom)$' "$OUT/release49b.out"),$(tail -1 "$OUT/release49b.out"),$(wc -c <"$OUT/release49b.err" | tr -d ' ')" "0,1,released 1 · held 2 · waiting 2 · not read 0,0"
+eq "B is in Ready, below the card that was there — the top is the project manager's" "$(col AIF-111),$("$AIF" board next-ready)" "ready,AIF-116"
+eq "with a comment saying what moved it, by whom" \
+  "$(last_comment AIF-111)|$("$AIF" board show AIF-111 --json | jq -r '.comments[-1].by')" \
+  "released by aif board release: every ticket it depends on is Done and landed (AIF-110)|aif board release"
+eq "C, D, F and G are where they were" "$(col AIF-112),$(col AIF-113),$(col AIF-115),$(col AIF-118)" "backlog,backlog,backlog,backlog"
+eq "a second pass releases nothing more, and posts nothing" \
+  "$("$AIF" board release 2>&1 | tail -1),$("$AIF" board show AIF-111 --json | jq -r '.comments | length')" "released 0 · held 2 · waiting 2 · not read 0,1"
+eq "aif board head on each: the land's note, the release, the rework; nothing routable on D, F or E" \
+  "$("$AIF" board head AIF-110)|$("$AIF" board head AIF-111)|$("$AIF" board head AIF-112)|$("$AIF" board head AIF-113 >/dev/null 2>&1; echo $?)|$("$AIF" board head AIF-115 >/dev/null 2>&1; echo $?)|$("$AIF" board head AIF-114 >/dev/null 2>&1; echo $?)" \
+  "# AIF-110 — landed|released by aif board release: every ticket it depends on is Done and landed (AIF-110)|rework: the export must be signed — back to the analyst|1|1|1"
+# The human makes the move the line named, and D is no longer the sweep's. An
+# option the sweep does not take is refused before anything is read.
+"$AIF" board move AIF-113 ready >/dev/null
+eq "after the move the line named, D is not the sweep's any more" "$("$AIF" board release --dry-run 2>&1 | grep -c '^AIF-113 ')" "0"
+rc=0
+"$AIF" board release --top >"$OUT/release49c.out" 2>&1 || rc=$?
+eq "an option it does not take is refused" "$rc,$(grep -c 'unknown option: --top' "$OUT/release49c.out")" "1,1"
 
 # ----------------------------------------------------------------------------
 printf '\n'

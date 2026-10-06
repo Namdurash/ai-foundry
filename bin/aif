@@ -62,7 +62,7 @@ usage: aif <command> [options]
 commands:
   work          Build the next Ready ticket (or a named one) headless — no questions asked
   land          The yes after review: merge the branch, suite on the result, card to Done, next slice released
-  board         The board: next-ready, move, comment, create, status, check, init
+  board         The board: next-ready, move, comment, create, status, show, head, release, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
   init          Install a foundry set into this project
   uninstall     Remove it again, reverting only what aif installed
@@ -178,6 +178,8 @@ main() {
       . "$AIF_ROOT/lib/secret.sh"
       # shellcheck source=lib/board.sh
       . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/release.sh
+      . "$AIF_ROOT/lib/release.sh"
       # shellcheck source=lib/cmd_board.sh
       . "$AIF_ROOT/lib/cmd_board.sh"
       aif_cmd_board ${1+"$@"}

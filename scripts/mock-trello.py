@@ -21,8 +21,22 @@ Comments are held to what Trello holds them to: 1 to 16384 characters, counted
 as JavaScript counts them (UTF-16 code units), and text that is not UTF-8 is
 refused with a 400 — what the project saw a comment cut through a Cyrillic
 letter get (docs/DEFECTS.md 10.1).
+
+Faults, for the adapter's retry and its loud failures (docs/DEFECTS.md 13.8,
+14.7). When the environment variable MOCK_FAULT_FILE names a file that exists,
+every request reads it as one line, `<code> <count> [<path-substring>]`, and
+while count > 0 and the request's path — its query string included, so that
+`actions?` is the comments GET and never the comment's POST — contains the
+substring (any request when none is given) the answer is <code> — with
+`Retry-After: 0` on a 429 — and the count
+in the file goes down by one; at 0 the file is removed. So a check writes the
+line between two commands, runs the next, and reads the outcome off the file:
+gone, every fault was served and the adapter came back for the rest; still
+there, it did not — which is what a POST the adapter must not retry leaves
+behind. The mock's own /_state, /_fail and /_desc routes are never faulted.
 """
 import json
+import os
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -72,6 +86,47 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _fault(self, path):
+        """Answer with the fault file's code when its line names this request
+        (see the module's docstring); True when it did. Read on every request,
+        so a check writes the line between two commands and restarts nothing.
+        The count goes back to the file, not to memory, because the check
+        reads it: a file still there after a POST is the proof that the
+        adapter made one attempt and no more."""
+        name = os.environ.get("MOCK_FAULT_FILE")
+        if not name or not os.path.exists(name):
+            return False
+        try:
+            parts = open(name).read().split()
+            code, count = int(parts[0]), int(parts[1])
+            sub = parts[2] if len(parts) > 2 else ""
+        except (IndexError, ValueError, OSError):
+            return False
+        if count <= 0:
+            os.remove(name)
+            return False
+        if sub not in path:
+            return False
+        # The request's body first: a connection closed with the body unread
+        # is a reset to curl, not the status the fault is about.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        count -= 1
+        if count > 0:
+            open(name, "w").write(" ".join([str(code), str(count)] + ([sub] if sub else [])) + "\n")
+        else:
+            os.remove(name)
+        data = json.dumps({"error": f"the mock was told to answer {code}"}).encode()
+        self.send_response(code)
+        if code == 429:
+            self.send_header("Retry-After", "0")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def _route(self, method):
         path = urlparse(self.path).path
         STATE["log"].append(f"{method} {path}")
@@ -83,6 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/_desc/limit/on", "/_desc/limit/off"):
             STATE["desc_limit"] = path.endswith("/on")
             return self._send(200, {"desc_limit": STATE["desc_limit"]})
+        if self._fault(self.path):
+            return None
         if not self._auth():
             return None
         p = self._params()

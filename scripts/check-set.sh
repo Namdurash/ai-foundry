@@ -148,6 +148,31 @@ $runs
 EOF
 done
 
+printf '\nhuman roles carry no model line\n'
+# A skill's or a command's frontmatter `model:` decides the engine it answers
+# from, and it beats the `--model` flag of the session that runs it; only
+# `inherit` lets the flag through (docs/FINDINGS.md #27, probed on claude
+# 2.1.226). A role's engine is the user's choice — `aif start --model …` opens
+# the session with it — and one line in the set would take that choice away
+# without a word: the flag would look obeyed, and `.modelUsage` in the
+# envelope would be the only place the truth showed. A skill beats a command
+# of the same name, and `aif init` installs both, so the SKILL.md is the file
+# that decides; both are held to it (docs/DEFECTS.md 14.11). The stations
+# under agents/ keep theirs: a station's engine is its tier's, checked above.
+for f in "$ROOT"/sets/claude/skills/aif-*/SKILL.md "$ROOT"/sets/claude/commands/*.md; do
+  [ -f "$f" ] || continue
+  case "$f" in
+    */skills/*) base="skills/$(basename "$(dirname "$f")")/SKILL.md" ;;
+    *) base="commands/$(basename "$f")" ;;
+  esac
+  m="$(frontmatter_get "$f" model)"
+  case "$m" in
+    "") ok "$base: no model line — the session's --model decides" ;;
+    inherit) ok "$base: model: inherit — the session's --model decides" ;;
+    *) bad "$base: frontmatter model: '$m' — a role's model is the user's choice (aif start --model …), and a model: line beats the flag (docs/FINDINGS.md #27)" ;;
+  esac
+done
+
 printf '\nhooks are executable\n'
 # The one property of these files no other check covers, and the one that broke.
 # Every test below invokes a hook as `/bin/bash <path>`, which works at any mode —

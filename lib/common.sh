@@ -36,10 +36,20 @@ fi
 # shellcheck disable=SC2034  # read by the modules that source this file
 AIF_TRAP_ARMED=""
 
-# aif_trap_arm <handler> — run <handler> on EXIT, INT and TERM, with the name
-# of the one that fired as its argument. A handler that ends the process needs
-# it: an interrupt ends in 130 and a TERM in 143, while an exit — an aif_die, a
-# command failing under set -e — keeps its own code.
+# aif_trap_arm <handler> — run <handler> on EXIT, INT, TERM and HUP, with the
+# name of the one that fired as its argument. A handler that ends the process
+# needs it: an interrupt ends in 130, a TERM in 143 and a hang-up in 129, while
+# an exit — an aif_die, a command failing under set -e — keeps its own code.
+#
+# HUP is a closed terminal: the window goes, the shell in it hangs up on its
+# jobs, and until 0.15.0 nothing in aif caught it. The loop and the land died
+# of it where they stood — a land between its merge and its verdict left the
+# merge on the branch — while the loop's workers, each in a process group of
+# its own, were no job of that shell, got nothing, and went on building and
+# writing with nobody left to read them (docs/AUTOPILOT-RESEARCH.md §6.11,
+# verifications 2, 5 and 6; docs/DEFECTS.md 14.8). Trapped, the one process
+# that does get the hang-up can settle its card, undo its merge, or tell the
+# runs under it to stop.
 aif_trap_arm() {
   AIF_TRAP_ARMED="$1"
   aif_trap_restore
@@ -49,10 +59,10 @@ aif_trap_arm() {
 aif_trap_restore() {
   local sig
   if [ -z "${AIF_TRAP_ARMED:-}" ]; then
-    trap - EXIT INT TERM
+    trap - EXIT INT TERM HUP
     return 0
   fi
-  for sig in EXIT INT TERM; do
+  for sig in EXIT INT TERM HUP; do
     # shellcheck disable=SC2064  # the handler IS the argument; expanding it now
     trap "$AIF_TRAP_ARMED $sig" "$sig"
   done

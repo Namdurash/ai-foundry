@@ -86,6 +86,7 @@ while IFS='|' read -r a_file a_literal a_claim; do
 done <<'ANCHORS'
 lib/cmd_work.sh|aif_gate_run "$wt" ready|the ready gate runs at intake, before the first token
 lib/cmd_work.sh|aif_board_move "$root" "$ticket" in_progress|the card moves to In progress before anything is spent
+lib/cmd_work.sh|taken: %s|the worker stamps the card with its host and pid when it takes it
 lib/cmd_work.sh|aif_board_move "$root" "$ticket" needs_human|a ticket refused at intake goes to Needs Human with the gate's lines
 lib/cmd_work.sh|col=review|a built ticket's card goes to Review with the report
 lib/cmd_work.sh|col=needs_human|a stopped run's card goes to Needs Human with what it tried
@@ -106,7 +107,9 @@ sets/claude/skills/aif-pjm/SKILL.md|`aif work` takes the top card|the worker con
 lib/cmd_work.sh|--loop|aif work --loop drains Ready
 lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
+lib/release.sh|aif_release_sweep|aif board release moves the Backlog cards whose dependencies are Done and landed
 lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
+lib/cmd_land.sh|land: %s|a land undone after its merge says so on a land: line
 lib/cmd_land.sh|aif_integrate_own "$root" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner
 lib/cmd_land.sh|_aif_land_requeue "$root" "$ticket"|aif land sends a conflict in code, or a red on the result, back to Ready for the worker
 lib/cmd_land.sh|ready top|…to the top of Ready
@@ -118,6 +121,7 @@ sets/claude/skills/aif-ba/SKILL.md|depends_on|a ticket names the tickets it need
 sets/claude/skills/aif-review/SKILL.md|aif land <ID>|the reviewer's brief ends in aif land, or a comment
 sets/claude/skills/aif-review/SKILL.md|The product partner's demo, in a fresh context|on the human's land, the product partner's demo runs before anything lands
 sets/claude/skills/aif-review/SKILL.md|As expected — land it, here|…and the review runs aif land when the demo says as expected
+sets/claude/skills/aif-review/SKILL.md|wrong:|the reviewer's wrong is a comment whose first line is wrong:
 sets/claude/skills/aif-po/SKILL.md|demo: not as expected|the demo holds a build back with its reasons, each quoting the request
 sets/claude/skills/aif-po/SKILL.md|aif rules <words>|the product partner reads the map and the open requests before saying a need back
 sets/claude/skills/aif-pjm/SKILL.md|demo: not as expected|the project manager routes the demo's reasons as rework, to Backlog
@@ -264,7 +268,7 @@ flowchart TB
     REVIEW[Review]
     DONE[Done]
     NEEDS_HUMAN[Needs Human]
-    BACKLOG -->|"released by aif land, or by /aif-pjm by hand"| READY
+    BACKLOG -->|"released by aif land or aif board release, or by /aif-pjm by hand"| READY
   end
 
   subgraph MACHINE["Machine time · aif work"]
@@ -284,18 +288,19 @@ $mermaid_stations    SYNC["sync — the branch brought onto the checkout's branc
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
   READY -->|"the top card — one, or --loop until empty"| INTAKE
-  INTAKE -.->|"the card"| IN_PROGRESS
+  INTAKE -.->|"the card, with a taken: claim — host, pid, time"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN
   REPORT -->|"built"| REVIEW
   REPORT -->|"stopped: a cap hit, or a station that will not converge"| NEEDS_HUMAN
   REVIEW -->|"the card, the diff, the report"| QA
   QA -->|"land"| DEMO
-  QA -->|"wrong — a comment in the reviewer's words"| PJM
+  QA -->|"wrong — a comment in the reviewer's words, its first line wrong:"| PJM
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
   LAND -->|"merged, the suite green"| DONE
   LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
+  LAND -->|"undone after its merge — an install that failed, git refusing the merge,<br/>a red over dependencies not installed here: a land: comment"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG
@@ -471,7 +476,7 @@ EOH
     </section>
     <section class="block board">
       <h2><small>The boundary</small>The board</h2>
-      <p><code>$(printf '%s' "$columns_pretty" | html_escape)</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog, and <code>aif land</code> releases each one when the tickets it depends on are Done.</p>
+      <p><code>$(printf '%s' "$columns_pretty" | html_escape)</code>, plus <code>Needs Human</code>: the columns <code>lib/board.sh</code> knows, on a local board or on Trello. The first slice's ticket lands in Ready; the other slices wait in Backlog, and <code>aif land</code> — or a pass of <code>aif board release</code> — releases each one when the tickets it depends on are Done and landed.</p>
     </section>
     <section class="block machine">
       <h2><small>The machine half</small>Stations and gates</h2>

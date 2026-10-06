@@ -14,20 +14,31 @@
 #      file is 0600; the environment overrides the store; the CLI never prints
 #      a value
 #   2  the local board: create/move/next-ready/comment/show/label/status, and a
-#      move made from inside a worktree lands on the developer's board
+#      move made from inside a worktree lands on the developer's board; head
+#      is the first line of the newest comment aif or a role wrote — under a
+#      person's reply — and nothing, exit 1, on a card with only theirs
 #   3  trello: init maps the columns it can and creates the rest only when
 #      told; check refuses a missing token loudly; create writes the ticket as
 #      the card's description and pull reads it back byte for byte; a card the
-#      analyst did not write is refused at pull; comment, label, status, show;
-#      a comment is held to Trello's 16384 characters counted as Trello counts
-#      them — a Ukrainian one that fits by characters is posted whole, a longer
-#      one is cut on a letter, saying where the whole text is (DEFECTS.md 10.1)
+#      analyst did not write is refused at pull; comment, label, status, show,
+#      head; a comment is held to Trello's 16384 characters counted as Trello
+#      counts them — a Ukrainian one that fits by characters is posted whole, a
+#      longer one is cut on a letter, saying where the whole text is
+#      (DEFECTS.md 10.1); through the mock's fault file, a comments read that
+#      fails three times is a loud failure, not a card with no comment (14.7),
+#      a 429 or a 5xx on a GET is retried and the answer is as before, and a
+#      503 on a comment's POST is one attempt (13.8); a card's column is read
+#      without its comments: `aif work <ID> --stop` on a worker that is gone
+#      settles its card under that same failing comments read, and keeps the
+#      lock when the board cannot be read at all
 #   4  doctor reports per role what is missing, and stops saying "not ready"
 #      the moment the token is set
 #   5  the worker pulls the next Ready card, moves it through In Progress to
 #      Review with the report as a comment, and to Needs Human when the ticket
 #      is not ready; when the board refuses the comment, it says the report is
-#      not on the card, and the command it prints posts it once the board answers
+#      not on the card, and the command it prints posts it once the board
+#      answers; a land whose comments read fails lands from the card's column,
+#      and one whose board cannot say where the card is exits 3, nothing landed
 #
 # Run by `make check`. Requires git, jq, curl and python3.
 
@@ -63,6 +74,17 @@ export AIF_SECRETS_DIR="$SANDBOX/secrets"
 # The worker scenarios run --no-worktree, which is refused unless the checkout
 # is declared disposable. These sandboxes are.
 export AIF_DISPOSABLE=1
+# The adapter sleeps between its retries — Retry-After when the server names
+# one, else 1, 3, 7 seconds (lib/board.sh, docs/DEFECTS.md 13.8). The faults
+# the mock serves below are the retry path's whole point, and every one of
+# those sleeps would be this check waiting for nothing.
+export AIF_TRELLO_RETRY_SLEEP="0 0 0"
+# The mock's fault file: `fault <code> <count> [<path-substring>]` writes the
+# one line scripts/mock-trello.py reads on every request, and the mock answers
+# <code> that many times to the requests whose path has the substring, then
+# removes the file — so its absence after a command says every fault was met.
+FAULT="$SANDBOX/mock.fault"
+fault() { printf '%s\n' "$*" >"$FAULT"; }
 
 MOCK_PID=""
 cleanup() { [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null; }
@@ -202,6 +224,22 @@ printf 'the export must be signed\n' >"$OUT/note.md"
 "$AIF" board comment AIF-1 "$OUT/note.md" >/dev/null
 eq "a comment is on the card" "$("$AIF" board show AIF-1 --json | jq -r '.comments | length')" "1"
 eq "and show prints it" "$("$AIF" board show AIF-1 | grep -c 'must be signed')" "1"
+# The line a shell routes on: the first line of the newest comment aif or a
+# role wrote (AIF_BOARD_HEADS, lib/board.sh). A person's comment is not one —
+# with only theirs the card has no head — and their reply under aif's line is
+# an answer to it, not the head (docs/AUTOPILOT-RESEARCH.md §6.11,
+# verification 3), so the blocked: line is what comes back.
+rc=0
+"$AIF" board head AIF-1 >"$OUT/head-local1.out" 2>&1 || rc=$?
+eq "head on a card with only a person's comment: nothing, exit 1" "$rc,$(wc -c <"$OUT/head-local1.out" | tr -d ' ')" "1,0"
+printf '%s\n\n%s\n' "blocked: ticket — not ready — the ready gate's questions are below, for the analyst" "- Q-001 signed? (default: no)" >"$OUT/blocked.md"
+"$AIF" board comment AIF-1 "$OUT/blocked.md" >/dev/null
+printf 'yes, signed — I will move it back to Ready\n' >"$OUT/reply.md"
+"$AIF" board comment AIF-1 "$OUT/reply.md" >/dev/null
+eq "head is the blocked: line, under the person's reply" "$("$AIF" board head AIF-1)" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+rc=0
+"$AIF" board head AIF-9 >/dev/null 2>"$OUT/head-local9.err" || rc=$?
+eq "head on a card that is not there: exit 2, the board's problem, named" "$rc,$(grep -c "could not read AIF-9's comments" "$OUT/head-local9.err")" "2,1"
 "$AIF" board label AIF-1 blocked >/dev/null
 eq "a label is on the card" "$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-1") | .labels[0]')" "blocked"
 eq "status renders every card" "$("$AIF" board status | grep -cE '^  (ready|backlog) ')" "2"
@@ -232,7 +270,7 @@ eq "every pos is distinct" \
 
 # =============================== 3. trello ===================================
 printf '\n3. trello, against a stand-in server\n'
-python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock.port" 2>"$OUT/mock.err" &
+MOCK_FAULT_FILE="$FAULT" python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock.port" 2>"$OUT/mock.err" &
 MOCK_PID=$!
 i=0
 while [ ! -s "$OUT/mock.port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
@@ -275,6 +313,12 @@ eq "pull writes the ticket and no ledger" "$(test -f tasks/AIF-1/ledger.json && 
 "$AIF" board comment AIF-1 "$OUT/note.md" >/dev/null
 eq "the comment reached the server" "$(mock | jq -r '[.comments[][]] | .[0].data.text')" "the export must be signed"
 eq "show lists it" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].text')" "the export must be signed"
+rc=0
+"$AIF" board head AIF-1 >"$OUT/head-mock1.out" 2>&1 || rc=$?
+eq "trello: head on a card with only a person's comment: nothing, exit 1" "$rc,$(wc -c <"$OUT/head-mock1.out" | tr -d ' ')" "1,0"
+"$AIF" board comment AIF-1 "$OUT/blocked.md" >/dev/null
+"$AIF" board comment AIF-1 "$OUT/reply.md" >/dev/null
+eq "trello: head is the blocked: line, under the person's reply" "$("$AIF" board head AIF-1)" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 
 # A comment in Ukrainian, two bytes a letter (docs/DEFECTS.md 10.1). The cut
 # counted bytes: anything over 16000 was cut at byte 15800 — through a letter,
@@ -374,6 +418,87 @@ eq "with the whole description on it" \
 eq "show finds it" "$("$AIF" board show AIF-5 --json | jq -r .ticket)" "AIF-5"
 eq "move finds it" "$("$AIF" board move AIF-5 in_progress 2>&1)" "moved AIF-5 → in_progress"
 
+# A board that misbehaves (docs/DEFECTS.md 13.8, 14.7). The adapter retries a
+# GET or a PUT on a 429 or a 5xx — at most three attempts, Retry-After or its
+# own list between them — and a POST never: a comment whose first attempt
+# landed and whose answer was lost would be the card's record twice. And a
+# comments read that fails for good used to come back as `[]`, a card with
+# nothing to say, which every routing decision downstream read as one. The
+# mock's fault file is how each is met here; the request log counts the
+# attempts, and the file's absence afterwards says every fault was served.
+printf '  · faults from the mock: a 500 three times, a 429 once, a 503 on a POST\n'
+actions_gets() { mock | jq '[.log[] | select(test("^GET /1/cards/[^/]+/actions$"))] | length'; }
+before="$(actions_gets)"
+fault 500 3 /actions
+rc=0
+"$AIF" board show AIF-1 --json >"$OUT/show-500.out" 2>"$OUT/show-500.err" || rc=$?
+eq "three 500s on the comments read: show fails after three attempts, saying so — not a card with no comment" \
+  "$rc,$(grep -c 'Trello: could not read the comments of AIF-1' "$OUT/show-500.err"),$(($(actions_gets) - before)),$(test -f "$FAULT" && echo left || echo spent),$(wc -c <"$OUT/show-500.out" | tr -d ' ')" "1,1,3,spent,0"
+fault 500 3 /actions
+rc=0
+"$AIF" board head AIF-1 >"$OUT/head-500.out" 2>"$OUT/head-500.err" || rc=$?
+eq "…and head says it is the board, not the card: exit 2, with the reason, nothing on stdout" \
+  "$rc,$(grep -c "could not read AIF-1's comments" "$OUT/head-500.err"),$(grep -c 'could not read the comments of AIF-1' "$OUT/head-500.err"),$(wc -c <"$OUT/head-500.out" | tr -d ' ')" "2,1,1,0"
+want="$("$AIF" board next-ready)"
+fault 429 1 /lists/
+rc=0
+got="$("$AIF" board next-ready 2>"$OUT/next-429.err")" || rc=$?
+eq "one 429 with Retry-After: 0 on a GET: retried, the answer as before, nothing said" \
+  "$rc,$got,$(wc -c <"$OUT/next-429.err" | tr -d ' '),$(test -f "$FAULT" && echo left || echo spent)" "0,$want,0,spent"
+fault 500 2 /lists/
+rc=0
+got="$("$AIF" board next-ready 2>"$OUT/next-500.err")" || rc=$?
+eq "two 500s, then the answer: the third attempt is the one that counts" \
+  "$rc,$got,$(wc -c <"$OUT/next-500.err" | tr -d ' '),$(test -f "$FAULT" && echo left || echo spent)" "0,$want,0,spent"
+fault 503 2 /actions/comments
+rc=0
+"$AIF" board comment AIF-1 "$OUT/note.md" >"$OUT/comment-503.out" 2>&1 || rc=$?
+eq "a 503 on the comment's POST is one attempt, not retried: the second fault is left unserved" \
+  "$rc,$(cat "$FAULT" 2>/dev/null)" "1,503 1 /actions/comments"
+rm -f "$FAULT"
+
+# Two readers only ever wanted a card's column — the land's "is it in
+# Review", and --stop's "is the card of a worker that is gone still In
+# Progress" — and read it out of `show`, so the loud failure above reached
+# them as an empty column: the land refused a landable card as missing, the
+# stop removed the lock under an In Progress card and left it there for the
+# next `aif work` to take as fresh (docs/DEFECTS.md 14.7). Each reads the
+# column on its own now (aif_board_card_column), never asking for the
+# comments: a fault on the comments GET alone — `actions?`, its query string
+# telling it from the comment's POST — is left unserved, and the card is
+# settled; a board that cannot be read at all keeps the lock, and says so.
+# The land's half is in section 5, where a build on a branch is.
+printf '  · the column of a card is read without its comments\n'
+sleep 0 &
+dead=$!
+wait "$dead" 2>/dev/null || true
+stage_dead_lock() { # <ID> — the lock of a worker that is gone, its card In Progress
+  mkdir -p ".aif/state/runs/$1"
+  printf '{ "ticket": "%s", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$1" "$dead" >".aif/state/runs/$1/owner.json"
+  "$AIF" board move "$1" in_progress >/dev/null
+}
+column_of() { "$AIF" board status --json | jq -r --arg t "$1" '.[] | select(.ticket == $t) | .column'; }
+stage_dead_lock AIF-1
+before="$(actions_gets)"
+fault 500 3 'actions?'
+rc=0
+"$AIF" work AIF-1 --stop >"$OUT/stop-500.out" 2>&1 || rc=$?
+eq "--stop on a worker that is gone while the comments GET fails: the card settled from its column, no comments asked, the fault unserved" \
+  "$rc,$(column_of AIF-1),$(posted AIF-1 | sed -n 1p | grep -c "^blocked: stopped — by .* (aif work AIF-1 --stop): the worker that took it (pid $dead) was already gone"),$(($(actions_gets) - before)),$(cat "$FAULT" 2>/dev/null),$(test -d .aif/state/runs/AIF-1 && echo held || echo released)" \
+  "0,needs_human,1,0,500 3 actions?,released"
+rm -f "$FAULT"
+stage_dead_lock AIF-1
+fault 500 3 /boards/b1/cards
+rc=0
+"$AIF" work AIF-1 --stop >"$OUT/stop-unread.out" 2>&1 || rc=$?
+eq "…and when the board cannot be read at all: the lock is kept, the card untouched, saying so" \
+  "$rc,$(grep -c 'the lock is kept' "$OUT/stop-unread.out"),$(grep -c 'could not list the board' "$OUT/stop-unread.out"),$(test -f "$FAULT" && echo left || echo spent),$(test -d .aif/state/runs/AIF-1 && echo held || echo released),$(column_of AIF-1)" \
+  "1,1,1,spent,held,in_progress"
+rm -rf .aif/state/runs/AIF-1
+# Back where section 5 expects it: at the top of Ready, above the card the
+# analyst did not write.
+"$AIF" board move AIF-1 ready --top >/dev/null
+
 # =============================== 4. doctor ===================================
 printf '\n4. doctor says per role what is missing\n'
 eq "pjm ready with the token in the environment" "$("$AIF" doctor --json | jq -r '.roles[] | select(.role == "pjm") | .ready')" "true"
@@ -444,6 +569,35 @@ later "$OUT/work-refused2.out" || rc=$?
 eq "…and the reason, under its blocked: line" \
   "$rc,$(posted AIF-7 | sed -n 1p)" "0,blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
 
+# The land's read of a card's column — is it in Review? — went through
+# `show` too, and the comments read failing for good (section 3) refused a
+# landable card as "no card on the board", the wrong reason, with nothing
+# landed; a board that cannot say where the card is is the environment, the
+# land's 3 (docs/DEFECTS.md 14.7). A land needs a branch, so a build in a
+# worktree, on a project of its own.
+fresh_project "$SANDBOX/p3c"
+"$AIF" board init trello --board b1 >/dev/null 2>&1
+ticket_for AIF-8
+git add -A && git commit -qm "one to land" >/dev/null
+"$AIF" board create tasks/AIF-8/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-8 >"$OUT/work-land.out" 2>&1 || rc=$?
+eq "a build in a worktree against the mock board: in Review, on its branch" \
+  "$rc,$(column_of AIF-8),$(git show-ref --verify --quiet refs/heads/aif/AIF-8 && echo branch)" "0,review,branch"
+fault 500 3 /boards/b1/cards
+rc=0
+"$AIF" land AIF-8 >"$OUT/land-unread.out" 2>&1 || rc=$?
+eq "land when the board cannot say where the card is: exit 3, said as the board's, nothing landed" \
+  "$rc,$(grep -c "could not say where AIF-8's card is" "$OUT/land-unread.out"),$(grep -c 'has no card on the board' "$OUT/land-unread.out"),$(test -f "$FAULT" && echo left || echo spent),$(column_of AIF-8),$(git log --format=%s -1)" \
+  "3,1,0,spent,review,one to land"
+before="$(actions_gets)"
+fault 500 3 'actions?'
+rc=0
+"$AIF" land AIF-8 >"$OUT/land-500.out" 2>&1 || rc=$?
+eq "land while the comments GET fails: landed from the card's column, the comments never asked for" \
+  "$rc,$(column_of AIF-8),$(($(actions_gets) - before)),$(cat "$FAULT" 2>/dev/null),$(git log --format=%s -1 | grep -c '^aif: land AIF-8 — ')" "0,done,0,500 3 actions?,1"
+rm -f "$FAULT"
+
 fresh_project "$SANDBOX/p5"
 unset AIF_TRELLO_API
 ticket_for AIF-1
@@ -455,12 +609,12 @@ rc=0
 "$AIF" work --no-worktree >"$OUT/work-local1.out" 2>&1 || rc=$?
 eq "local: the top of Ready was not ready — exit 1" "$rc" "1"
 eq "AIF-3 → needs_human" "$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-3") | .column')" "needs_human"
-eq "with the gate's question as the comment" "$("$AIF" board show AIF-3 --json | jq -r '.comments[0].text' | grep -c 'open question Q-001')" "1"
+eq "with the gate's question as the comment" "$("$AIF" board show AIF-3 --json | jq -r '.comments[-1].text' | grep -c 'open question Q-001')" "1"
 rc=0
 "$AIF" work --no-worktree >"$OUT/work-local2.out" 2>&1 || rc=$?
 eq "the next run takes AIF-1 and builds it" "$rc" "0"
 eq "AIF-1 → review" "$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-1") | .column')" "review"
-eq "the report is on the card, by the worker" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].by')" "aif work"
+eq "the report is on the card, by the worker" "$("$AIF" board show AIF-1 --json | jq -r '.comments[-1].by')" "aif work"
 rc=0
 "$AIF" work --no-worktree >"$OUT/work-local3.out" 2>&1 || rc=$?
 eq "nothing left in Ready is said, not guessed" "$(grep -c "nothing in the board's Ready column" "$OUT/work-local3.out")" "1"

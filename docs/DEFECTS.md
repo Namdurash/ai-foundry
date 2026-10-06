@@ -1,7 +1,7 @@
 # Defects — the one log
 
-Every defect found in aif, from the review of 0.5.0 to the first `aif work
---loop` after 0.11.0. One file, two halves: an **open** defect is written in
+Every defect found in aif, from the review of 0.5.0 to the research for the
+autopilot mode after 0.15.0. One file, two halves: an **open** defect is written in
 full — how it was established (probed, read, observed or reported), the
 observation quoted, what a fix has to decide — because an open entry is a
 work order; a **closed** one is a line — what went wrong, how it was
@@ -30,7 +30,9 @@ How an entry is established, in every log:
 An open entry is written in full, under `### N.M <title> — how established`,
 with the observation, the code it names, what a fix has to decide, and a
 `#### Directions` list; it moves to Closed, as one line, when the fix is on
-`main` with the scenario that holds it. A tag the tap does not serve is a fix
+`main` with the scenario that holds it. A fix on `main` in part is a
+`#### Progress` paragraph before the directions that remain, so the entry
+still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
 ### 11.1 The loop's shell can lose a Ctrl-C that lands as a tick ends — probed
@@ -167,29 +169,6 @@ its verdict instead of running the suite again here.
   fast-forward, which needs no clean tree for files the merge does not touch.
 - The green-phase checks run beside the suite.
 
-### 13.6 A rework on the local board never reaches a branch that already exists — probed
-
-On a local board the worker copies `tasks/<ID>/` from the developer's
-checkout into the worktree only when the worktree has no ticket
-(`_aif_work_intake`, lib/cmd_work.sh: `[ ! -f "$work/ticket.md" ]`). After a
-first run the branch carries the ticket it built, so a ticket the analyst
-reworked in the checkout is never carried in. Probed in scratch, scenario 6's
-shape through a worktree: round two said "resume done — the ticket has not
-changed since the last run", the branch had built AC-001 while the checkout's
-ticket asked for AC-001 and AC-002, and the card went to Review with the old
-build. A Trello board is not affected — the card is pulled into the worktree
-on every run. Scenario 6 runs `--no-worktree`, where the two are one file.
-
-What a fix has to decide: on a local board the developer's checkout is
-canonical for the ticket's text until intake, as the card is on Trello — so
-the ticket is carried in on every run where it differs, and the run restarts
-on the new bytes as it does on Trello.
-
-#### Directions
-
-- Carry the checkout's `ticket.md` in at intake when it differs from the
-  worktree's; scenario 6 run through a worktree as well.
-
 ### 13.7 A usage limit, or a runner that did not answer, is billed to the station — read
 
 Nothing in `lib/` classifies a runner's error: no line mentions a usage limit,
@@ -231,14 +210,35 @@ comment first lists all the board's cards with their descriptions
 429 is likely: on the claim it is exit 3, on the final move it leaves the card
 In Progress with no worker behind it.
 
-What a fix has to decide: a retry with backoff for the board (429 and 5xx,
-honouring Retry-After) and for the install; which exits mean the machine
-cannot run anything — and stop the loop — and which only end one card;
-whether two in a row counts runs the environment stopped.
+What a fix has to decide: a retry with backoff for the install (the board's
+is on `main` — Progress, below); which exits mean the machine cannot run
+anything — and stop the loop — and which only end one card; whether two in a
+row counts runs the environment stopped.
+
+#### Progress
+
+On `main` after 0.15.0, the board's half: every curl call carries
+`--connect-timeout 10 --max-time 60`, so a connection that hangs costs a
+minute, not the night; a GET or a PUT is tried up to `AIF_TRELLO_RETRIES`
+(three) times on a 429, 500, 502, 503 or 504, or on curl's connect, timeout,
+empty-reply and network exits, sleeping what `Retry-After` says when the
+board says it (up to 60 s) and else the next of `AIF_TRELLO_RETRY_SLEEP`
+(1, 3, 7) — a POST stays one attempt, because a comment posted twice is the
+card's record twice; and `show` dies with the reason when the comments read
+fails, where it answered `[]` (14.7). `scripts/check-board.sh` holds each
+through the mock's fault file (`_aif_trello_call`, lib/board.sh). Still
+open: the lookup that asks for one card instead of listing the board (every
+move and comment still lists it, and the claim of 14.4 is one more round
+trip per take); the loop's reading of exit 3 — stop only when the preflight
+fails again; and a runner that produced no envelope — the network, a CLI
+that could not start — which the paragraph above has as the environment and
+the code settles as `blocked: run` with "the environment, not the ticket"
+in its why (research §6.11, verification 6), so the loop counts it toward
+two in a row and never as the machine.
 
 #### Directions
 
-- `_aif_trello_call` retries; the lookup asks for one card, not the board.
+- The lookup asks for one card, not the board.
 - The loop stops on exit 3 only when the preflight fails again; two in a row
   counts `blocked: run` and `blocked: ticket`, not `blocked: environment`.
 
@@ -319,6 +319,185 @@ environment.
 #### Directions
 
 - `--no-verify` on the worker's own commits; the land's merge keeps the hooks.
+
+### 14.1 The run lock records the worker's pid, not the station's — read
+
+Found 2026-10-05 reading what a supervisor could trust about a card In
+Progress (docs/AUTOPILOT-RESEARCH.md §6.11, verification 5). `_aif_work_lock`
+writes `{ ticket, pid, started_at }` with the worker's own pid, and
+`_aif_work_lock_live` asks whether that pid is alive and runs something
+named `aif` (lib/cmd_work.sh). The station — `claude -p`, a child of the
+worker, in the worker's process group — is in no lock. So a worker killed
+outright, `kill -9` (and, until 14.8, a closed terminal), leaves its station
+writing in the worktree with nobody to judge what it writes: the lock's pid
+is gone, the lock reads as dead, the next `aif work <ID>` takes it over
+(14.5), resumes from the run record, and dispatches a station of its own
+into the tree the orphan is still editing. `--stop` and Ctrl-C reach the
+station because the worker is alive to forward them; a death the worker
+never saw forwards nothing.
+
+What a fix has to decide: what the lock records of the station — its
+process group, taken as each dispatch starts — so a takeover can tell an
+orphaned station from a free worktree; whether a takeover refuses while any
+process has the worktree as its working directory; and whether a takeover
+first does what `--stop` does, a TERM to the group and a wait for it, before
+it builds.
+
+#### Directions
+
+- The station's pgid in the lock beside the worker's pid, written as a
+  dispatch starts and cleared as it ends.
+- No takeover while a process has the worktree as cwd; name it instead.
+- A `--stop`-style TERM to the recorded group first, then the takeover.
+
+### 14.2 `_aif_work_block` moves the card to Needs Human even when its comment was not posted — read
+
+`_aif_work_block` (lib/cmd_work.sh) posts the `blocked:` comment and, when
+the board refuses it, keeps the text in `.aif/tmp/blocked-<ID>.md`, warns
+with the command that posts it later — and moves the card anyway. The move
+was deliberate: a card left in Ready is taken again by the next run, and a
+card left In Progress claims work that is not happening. But the card is
+then in Needs Human with no first line to route on — the project manager
+reads whatever comment is newest, `aif board head` finds nothing, and the
+reason sits on one machine's disk (docs/AUTOPILOT-RESEARCH.md §6.11,
+verification 3). `scripts/check-board.sh` asserts exactly this state, since
+10.1: under a board that refuses comments, AIF-7 ends in Needs Human with
+"why NOT on the card" printed, and the kept file is posted later, by hand.
+
+What a fix has to decide: whether the reason is re-posted from the kept file
+by the next thing that touches the card — the worker's next run, a pass of
+`aif board` — before anyone routes on it; or whether the move waits for the
+comment, the card left In Progress under its run lock until the board
+answers, which a card with a claim (14.4) and no verdict already means.
+
+#### Directions
+
+- Re-post from `.aif/tmp/blocked-<ID>.md` on the next run that touches the
+  card, or by `aif board`; remove the file once the line is up.
+- Or hold the move until the comment is posted.
+
+### 14.3 The loop's exit code is not the board's state — probed; the summary is on `main`
+
+The loop's exit ladder reads 0 for a Ready drained, 1 for a card not built,
+3 for the environment (`_aif_work_loop`, lib/cmd_work.sh), and the research
+probed each against the board (docs/AUTOPILOT-RESEARCH.md §6.11,
+verification 1): rc 0 with a card still in Ready — a live run lock on it
+("0 taken, 0 built — Ready is empty", the card left where it was), the
+taken list, `--max-tickets`; rc 1 from a preflight `aif_die` with nothing
+taken (probed without `aif-implement.md`); rc 3 from one Trello 429. A
+parent that read the code alone would start a loop again over a Ready it had
+just drained, hold one that had taken nothing, or treat one 429 as the
+machine.
+
+#### Progress
+
+On `main` after 0.15.0 the loop writes `summary.json` beside its logs —
+`taken`, `built`, `blocked`, `stopped`, `env`, `ctrl_c`, `killed`, `hup`,
+`why`, and a `results` row per run with its ticket, how it ended and its
+minutes — whole, to a temp name and then moved, so a parent polling for it
+never reads half; and `AIF_WORK_LOOP_LOGDIR` names the directory, so a parent
+knows where to look before the loop prints anything
+(`_aif_work_loop_summary`). Scenario 48 holds both. Written on every path
+once the directory exists: the loop's EXIT handler writes it when something
+ends the loop before its end — an errexit in the body, a print that failed —
+with the counts as they stood, so a parent polling for the file never waits
+for nothing. The exit ladder is unchanged.
+
+What a fix has to decide: whether the codes are made distinct — Ready
+drained, stopped with cards left, nothing taken — or every caller reads the
+file and the rc is only how the process ended, which is what a supervisor
+does with it; and whether an exit 3 is read as the machine only once `aif
+board check` has failed too (13.8).
+
+#### Directions
+
+- Distinct exit codes, or callers read `summary.json`; never the rc alone.
+- `aif board check` before a 3 is treated as the machine; one 429 is the
+  board, not the environment.
+
+### 14.4 Two machines on one Trello board cannot tell a live remote worker from a hand-drag — read; the claim is on `main`
+
+A take is a GET then a PUT with no compare-and-set: the worker lists the
+board's cards, reads the top of Ready, and moves it (`aif_board_next_ready`,
+`aif_board_move`, lib/board.sh), and two loops on two machines can list the
+same card and both move it, each then building it on a branch of its own.
+And once a card is In Progress nothing on it says where: the run lock that
+knows the pid is in one machine's `.aif/state`, which the other cannot read,
+so a live worker elsewhere and a card somebody dragged there look the same
+(docs/AUTOPILOT-RESEARCH.md §6.11, verification 5).
+
+#### Progress
+
+On `main` after 0.15.0 the worker posts `taken: <host> pid <pid> at <time>
+— aif work` on the card the moment it has moved it to In Progress — the
+host, the pid the lock records, the time — a claim, listed in
+`AIF_BOARD_HEADS` and routed on by nobody; the report or the `blocked:` line
+after it is the newer head (`_aif_work_claim`, lib/cmd_work.sh). A claim the
+board refused is a warning, not a stop. Scenario 48 and `check-board.sh`
+hold it. Nothing yet reads a claim before a take.
+
+What a fix has to decide: whether a take reads the card's head first and
+skips a card another host claimed within a run's wall clock; and whether a
+board shared across machines carries an owner and a heartbeat, so a claim
+whose worker died (14.1) ages out.
+
+#### Directions
+
+- A claim check before a take: the newest head a `taken:` by another host,
+  younger than the wall clock — skipped, and said.
+- An owner and a heartbeat on the card, for a board two machines share.
+
+### 14.5 A dead lock is taken over by `rm -rf` then `mkdir`, and liveness matches `*aif*` on the pid's command line — read
+
+`_aif_work_lock` (lib/cmd_work.sh), finding the lock held, asks
+`_aif_work_lock_live` — `kill -0` on the recorded pid, then `ps -o command=`
+matched against `*aif*` — and when that says dead, removes the directory and
+makes it again. Two runs that find the same dead lock in the same instant
+both remove and both `mkdir`, and the second believes it holds a lock the
+first is already working under; the function's own comment writes the window
+down. A pid the system has since handed to any program with `aif` in its
+command line reads as a live worker, so that lock is never taken over — a
+reused pid satisfies the test. And a takeover starts the run record's
+counters again: a resume gives the record a fresh attempt count and budget
+by design, the caps being per invocation, so a ticket that stops the same
+way under every worker that takes it is never seen to (research §4.5).
+
+What a fix has to decide: an order of operations that makes the takeover
+one step — the dead lock moved aside (`mv` is atomic), its pid compared with
+the one that was read, then the `mkdir`, so a second taker finds the
+directory gone and its own `mkdir` decides; a liveness test that matches the
+command, `aif work`, not the word; and a takeover count in `run.json` that a
+resume leaves alone, with a cap.
+
+#### Directions
+
+- Rename the dead lock aside, compare its pid, then `mkdir`.
+- Match `aif work` on the command line, not `*aif*`.
+- A takeover counter in `run.json` that a resume does not reset, and a cap
+  on it.
+
+### 14.6 The `fable` alias is not routed by a profile — read
+
+`AIF_ROUTING_VARS` (lib/profile.sh:140-147) carries
+`ANTHROPIC_DEFAULT_OPUS_MODEL`, `_SONNET_` and `_HAIKU_` and no variable for
+`fable`; the worker resolves the three aliases through those and nothing
+else (`_aif_work_dispatch`, lib/cmd_work.sh); `profiles/glm.profile` maps
+the three to its models. So `--model fable` under `anthropic` works — the
+CLI knows the alias (docs/FINDINGS.md #27: `modelUsage` keyed
+`claude-fable-5`) — and under `glm` is sent as it is to an endpoint that has
+never heard of it: the one alias the profile leaves untranslated, failing on
+the far side instead of here, where a wrong base URL is caught.
+
+What a fix has to decide: whether a profile refuses an alias it does not map
+before a station is dispatched, and names the ones it does; or whether the
+routing list gains the variable for it — once the CLI's name for that slot
+is known — and every profile that maps the other three maps this one.
+
+#### Directions
+
+- Refuse an alias the loaded profile does not map, with the ones it does.
+- Or the fable slot in `AIF_ROUTING_VARS` and in `glm.profile`, once the CLI
+  names it.
 
 ---
 
@@ -428,15 +607,34 @@ in the code: `aif/OPES-74` met `main` in `tasks/OPES-74/ledger.json` alone.
 That started a read of every place a ticket stops for a reason other than its
 implementation — twelve. 13.1–13.3 and 13.12 closed in 0.13.1 (scenario 46);
 13.4 and 13.13, the user's calls on them, on `main` after 0.14.0 (scenario
-47); the rest open above.
+47); 13.6 on `main` after 0.15.0 (scenario 48); the rest open above.
 
 - **13.1** A ledger write that failed stopped the run — probed: a lock left in `tasks/<ID>/`, and the plan gate passed while `aif _gate` exited 1 on the append; the worker sent the plan back as rejected, then died writing its report — Needs Human, `blocked: run … ledger is locked`, no report; `|| true` around the fold caught nothing, since `aif_die` is an exit. Every ledger write is best-effort now, in a subshell of its own: a lock nobody holds is taken over (this process's, a gone one's, an unsigned one, one older than a minute), a live writer is waited for five seconds and the row then skipped with a warning, a ledger that is not JSON is set aside and a new one started; `aif _gate` records its verdicts in a block whose failure is a warning, so its exit is the gates' verdict alone. Released in 0.13.1; scenario 46.
 - **13.2** aif's own files conflicted at land — observed on `opes`: `aif/OPES-74` (built 2026-10-02) conflicted with `main` in `tasks/OPES-74/ledger.json` alone, added on both sides — the analyst's empty one, committed with the reworked ticket after the branch was cut, and the branch's with fourteen rows; `ticket.md` was one blob on both sides and the code merged clean. Probed the same in scratch. `aif _ticket-init` and `aif board pull` write no ledger now; the worker makes it at intake. `aif land` settles a conflict in aif's own files by owner (lib/integrate.sh): the ticket's record under `tasks/<ID>/` is the branch's; another ticket's, and the set under `.aif/` and `.claude/`, the checkout's. The merge commit, the summary and the card say what was settled. Conflicts in code are 13.4. Released in 0.13.1; scenario 46.
 - **13.3** The analyst's uncommitted ticket stopped the land's merge — probed: git refuses to write over an untracked file, byte-identical or not, and the land reported it as a conflict for a human. The land takes the ticket's own untracked files aside to `.aif/tmp/land-<ID>-<when>/` before merging, puts them back if the merge is undone, and says whether they differed from what landed; anyone else's untracked file in the merge's way refuses the land before anything is touched, the card left in Review. Released in 0.13.1; scenario 46.
 - **13.4** A branch never took in the branch it lands on, and a conflict in code had no way through — read; observed on `opes` (`aif/OPES-74` 28 commits behind `main` when it came to land; `aif land` aborted, the card went to a human, and back in Ready the built run resumed at `done` and stopped on the same conflict). The worker brings the branch onto the checkout's branch before it says built (`_aif_work_sync`): the merge in the worktree, aif's own files by owner, a conflicted lockfile taken from the target for the package manager to write again, a conflict in code to the implement station with MERGE in its prompt (both sides' behaviour kept, no marker left — the worker checks), the test files the merge brought taken into the lock and the lock guarded from the station, then green and scope on the merged tree: scope passes over a path that is exactly the target's, and the ticket's own record; green reads a failing test from a file the merge brought as pre-existing. A test file in conflict, a replan in the station's note, or its attempts spent: the ticket is built again from the target, automatically — the first build kept under `refs/aif/archive/<ID>/<n>`, the plan station told and handed the old plan, once (`limits.rebuilds_max`). `aif land` sends a conflict in code, or a red on the result with the dependencies as the merge pins them, back to the top of Ready with a `sync:` comment, and the card returns to Review to be looked at again — the user's calls, 2026-10-05: back to Review after a settlement, a rebuild without asking. The report says what the sync took and where to look. On `main` after 0.14.0; scenario 47.
+- **13.6** A rework on the local board never reached a branch that already existed — probed (scenario 6's shape through a worktree: round two said "resume done — the ticket has not changed since the last run", the branch had built AC-001 while the checkout's ticket asked for AC-001 and AC-002, and the card went to Review with the old build; a Trello card is pulled into the worktree on every run, so only the local board was affected). The worker carries the checkout's `ticket.md` into an existing worktree when it differs — the ticket alone, never the checkout's stale run record over the branch's — and the run restarts on the new bytes as it does on Trello (`_aif_work_intake`, lib/cmd_work.sh). On `main` after 0.15.0; scenario 48.
 - **13.12** aif's temp files sat in `tasks/<ID>/`, where scope reads any file as an implementation editing the pipeline's record — read. The ledger's go with its subshell; `aif_run_update` and `aif_meta_replace` remove theirs when a write fails. A write killed between its `mktemp` and its `mv` still leaves one. Released in 0.13.1.
 - **13.13** The ledger was committed with the ticket, so it rode every merge the ticket's branch made — decided (the user, 2026-10-05): out of git. It lives in the main checkout, `.aif/state/ledgers/<ID>.json`, gitignored, written by every worktree; a ticket's old committed ledger is read once as the start of the new one and never written again; `aif cost` reads both; scope keeps the old path exempt for branches from before. On `main` after 0.14.0; scenarios 46, 47.
-- *(13.5–13.11 are open, above.)*
+- *(13.5 and 13.7–13.11 are open, above.)*
+
+### Log 14 — 0.15.0, the autopilot research (2026-10-05/06)
+
+The research for `aif start` — a mode that would open the human roles'
+sessions one after another and run the loop between them — read and probed
+every place such a supervisor would lean on, and the unhappy paths gave way
+on each (docs/AUTOPILOT-RESEARCH.md §6.11; FINDINGS #27). Twelve entries:
+14.7–14.12 on `main` after 0.15.0, held by scenarios 25, 48 and 49,
+`check-board.sh` and `check-set.sh`; 14.1–14.6 open above, 14.3 and 14.4 in
+part.
+
+- **14.7** Trello's `show` hid a failed comments read as `[]` with rc 0 — read (research §6.11, verification 3). A card whose comments the API would not give looked like a card with no comment, and every reading of a first line downstream — the project manager's, a sweep's — would have read "nothing here". The adapter dies with the reason (`Trello: could not read the comments of <ID> — …`); `aif board head` exits 2 for it, apart from the 1 of a card with no head; `check-board.sh` asserts it under three 500s on the actions call, through the mock's fault file. The two readers that only ever wanted a card's column — the land's "is it in Review" and `--stop`'s "is the gone worker's card still In Progress" — read it out of `show` under `2>/dev/null … || true`, so the loud failure reached them as an empty column: the land refused a landable card as "no card on the board", and the stop removed the lock under an In Progress card, left for the next `aif work` to take as fresh. Both read it through `aif_board_card_column` now — one listing of the cards, no comments asked — and a board that cannot say is the land's exit 3 and a stop that keeps the lock; `check-board.sh` holds each under a fault on the comments GET alone (`actions?`, the query string telling it from the comment's POST). On `main` after 0.15.0.
+- **14.8** Nothing in aif handled HUP — read (research §6.11, verifications 2, 5 and 6). A closed window hung up on the worker's whole group: the station died of it and the card stayed In Progress; a land between its merge and its verdict died with the merge in place and nobody told. `aif_trap_arm` traps HUP beside EXIT, INT and TERM; the worker settles its card as `blocked: stopped — by a hang-up — the terminal closed — during <stage>` and exits 129, the loop stops its runs and exits 129 with `hup` in its summary — its own lines going to its loop.log from the hang-up on, because the terminal they went to is gone, a print to it fails with EIO, and errexit holds inside a trap (bash 3.2, probed): a loop that forwarded the TERM and went on to say "stopped (exit 143)" died of the saying, at 1, with no summary — the land undoes its merge and leaves the card in Review, and the ledger's own trap covers it. On `main` after 0.15.0; scenario 48, the worker's group hung up on while its plan station runs, and the loop on a pty whose master closes over it.
+- **14.9** A failed land's comment had no routable first line — read (research §4.5). The note opened with `# <ID> — not landed`, a title no reader of first lines knew, so a card in Needs Human over an undone merge was the one the project manager could not route. The first line is `land: <headline>` — the suite red on the result, a merge git refused, `prepare` failing or moving a tracked file — and the note's last paragraph names the command that lands it once resolved; `AIF_BOARD_HEADS` lists it and the pjm skill routes on it. On `main` after 0.15.0; scenario 25.
+- **14.10** The reviewer's `wrong` and `cancel` comments had no fixed first line — read. The verdict was prose in the reviewer's words, and the project manager — or anything in bash — had to read the whole comment to know it was one. The review skill and command write `wrong: <the first thing wrong>` and `cancel: <why>` as the first line, one line per further thing under it; the pjm routes on them, and still on a human's own words. On `main` after 0.15.0; a project gets it when `aif init` refreshes its set.
+- **14.11** A role's `model:` frontmatter would silently override the user's `--model` — probed (FINDINGS #27: `model: haiku` in a skill or a command answered from haiku under `--model sonnet`; only `inherit` lets the flag through; a skill beats a command of the same name). `check-set.sh` refuses a `model:` line other than `inherit` on every human role, `skills/aif-*/SKILL.md` and `commands/*.md`; the stations under `agents/` keep theirs, which is the tier's. On `main` after 0.15.0.
+- **14.12** A dependent was released by the land of the ticket it names, and by nothing else — read (research §4.4; §6.11, verification 4). `_aif_land_release` takes the cards that name the ticket it just landed, so a slice cut after its dependency landed, a dependency merged by hand, or a land whose move on the board failed left a card in Backlog that nothing would release; and the Done column alone is not a landed ticket — the project manager's cancel puts a card there too. `aif board release [--dry-run]` (lib/release.sh) is the pass: every Backlog card with a `depends_on`, moved to the bottom of Ready under a `released by aif board release:` comment when each dependency is Done and `aif: land <dep> — ` is a commit on the main checkout's branch; held under a `rework:`, `blocked:` or `cancelled:` head, or a `parked` / `retired-direction` label (`AIF_RELEASE_HOLD_LABELS`); a Done dependency without a land commit named as a merge by hand, with the move that releases its dependent on purpose; loud when the board cannot be read. The land's own release is unchanged. On `main` after 0.15.0; scenario 49.
+- *(14.1–14.6 are open, above.)*
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

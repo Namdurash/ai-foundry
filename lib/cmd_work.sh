@@ -44,7 +44,8 @@
 # Exit: 0 built · 1 stopped, needs a human (the card's comment and the report
 # say why) · 3 the environment cannot run a ticket (nothing was spent; a card
 # already taken is in Needs Human saying what) · 130 / 143 stopped by Ctrl-C,
-# by `aif work <ID> --stop` or by a TERM (the card says which).
+# by `aif work <ID> --stop` or by a TERM (the card says which) · 129 stopped
+# by a hang-up — the terminal closed over it.
 
 # AIF_WORK_WORKTREES lives in lib/paths.sh: `aif doctor` needs it too, to tell
 # a project whose test runner is collecting these checkouts beside the real tree.
@@ -94,7 +95,9 @@ usage: aif work [<ticket>] [options]
                      mean the problem is not the cards. Ctrl-C takes no new card
                      and lets the runs in flight finish; Ctrl-C again stops them.
                      --stop on one run stops that one, and its slot goes on.
-                     Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
+                     Each worker's output is in .aif/tmp/loop-<when>/<ID>.log,
+                     or under AIF_WORK_LOOP_LOGDIR when it names a directory;
+                     summary.json there says how the loop ended
   --parallel N       with --loop: N tickets at once (default 2; 1 with
                      --no-worktree, which builds in this checkout)
   --no-tui           with --loop: lines, not the dashboard. On a terminal the
@@ -125,16 +128,20 @@ _aif_work_say() {
   printf '%s%-9s%s %s\n' "$AIF_C_DIM" "$1" "$AIF_C_RESET" "$2" >&2
 }
 
-# _aif_work_abandon <EXIT|INT|TERM> — the card stops claiming that work is
-# happening, and says why.
+# _aif_work_abandon <EXIT|INT|TERM|HUP> — the card stops claiming that work
+# is happening, and says why.
 #
-# Armed for EXIT, INT and TERM the moment the run lock is taken, and it has to
-# cover all three. Ctrl-C and a supervisor's TERM are the obvious two; the
-# common one is neither — it is any `aif_die` or `set -e` failure between the
-# claim and the report, which used to leave the card In Progress with nobody
-# working on it. That is the same defect as a meter that quietly did not fire,
-# and for one release the handler meant to prevent it was disarmed by the
-# first ledger write of every run (docs/DEFECTS.md 3.1–3.3).
+# Armed for EXIT, INT, TERM and HUP the moment the run lock is taken, and it
+# has to cover all four. Ctrl-C and a supervisor's TERM are the obvious two;
+# the common one is neither — it is any `aif_die` or `set -e` failure between
+# the claim and the report, which used to leave the card In Progress with
+# nobody working on it. That is the same defect as a meter that quietly did
+# not fire, and for one release the handler meant to prevent it was disarmed
+# by the first ledger write of every run (docs/DEFECTS.md 3.1–3.3). The fourth
+# is the terminal closing over a run: the shell hangs up on the worker's whole
+# group, the station dies of it, and nothing said so on the card — it stayed
+# In Progress, exactly the gap the other three had closed (docs/DEFECTS.md
+# 14.8).
 #
 # It used to move the card and say nothing: whoever opened Needs Human found a
 # card with no reason on it, and the reason was in the scrollback of whoever
@@ -143,8 +150,8 @@ _aif_work_say() {
 #
 # Idempotent, and silent once the run has settled the card itself; the run
 # lock is released either way. Where it acts it exits 130 for an INT, 143 for
-# a TERM and 1 for an exit — a run nobody finished IS "stopped, needs a
-# human", which is what 1 means here.
+# a TERM, 129 for a HUP and 1 for an exit — a run nobody finished IS "stopped,
+# needs a human", which is what 1 means here.
 _aif_work_abandon() {
   local rc_in=$? sig="${1:-EXIT}" code=1 kind why stage who
   # `aif work <ID> --stop` waits for this: once the handler runs, the stop has
@@ -153,6 +160,7 @@ _aif_work_abandon() {
   case "$sig" in
     INT) code=130 ;;
     TERM) code=143 ;;
+    HUP) code=129 ;;
   esac
   if [ "${AIF_WORK_SETTLED:-0}" = "0" ] && [ -n "${AIF_WORK_CARD:-}" ]; then
     AIF_WORK_SETTLED=1
@@ -171,6 +179,9 @@ _aif_work_abandon() {
     elif [ "$sig" = "TERM" ]; then
       kind=stopped
       why="by a TERM signal, during $stage"
+    elif [ "$sig" = "HUP" ]; then
+      kind=stopped
+      why="by a hang-up — the terminal closed — during $stage"
     else
       # Before intake no station has run: what stopped it is the machine.
       case "${AIF_WORK_PHASE:-}" in
@@ -181,14 +192,17 @@ _aif_work_abandon() {
       [ -z "${AIF_LAST_ERR:-}" ] || why="$why; the last error it printed: $AIF_LAST_ERR"
     fi
     _aif_work_block "$AIF_WORK_ROOT" "$AIF_WORK_CARD" "$kind" "$why" "" || true
+    # After a hang-up this terminal may be gone, and a write to it fails;
+    # errexit holds inside a trap too (bash 3.2, probed), and a failed print
+    # here would end the process with the print's code, not the signal's.
     printf '\n%s did not finish — moved to needs_human, blocked: %s %s; the branch keeps what was accepted\n' \
-      "$AIF_WORK_CARD" "$kind" "$why" >&2
+      "$AIF_WORK_CARD" "$kind" "$why" >&2 || true
     _aif_work_unlock
     exit "$code"
   fi
   _aif_work_unlock
   case "$sig" in
-    INT | TERM) exit "$code" ;;
+    INT | TERM | HUP) exit "$code" ;;
   esac
   return 0
 }
@@ -283,6 +297,37 @@ _aif_work_refuse() {
   AIF_WORK_SETTLED=1
   [ -z "${4:-}" ] || rm -f "$4"
   exit 3
+}
+
+# _aif_work_claim <root> <ticket> — stamp the card with who took it: one
+# comment whose first line is `taken: <host> pid <pid> at <time> — aif work`.
+#
+# The move to In Progress says that work is happening; it does not say
+# where. On a Trello board shared by two machines that is the whole
+# question: a card In Progress is a live worker on the other machine, or a
+# card somebody dragged there by hand, and nothing on it told the two apart
+# — the run lock that knows the pid is in this machine's .aif, where the
+# other cannot look (docs/AUTOPILOT-RESEARCH.md §6.11, verification 5;
+# docs/DEFECTS.md 14.4). So the worker says it on the card, in the words the
+# lock holds: the host, the pid the lock records, the time. A claim and
+# nothing more — the project manager routes on none of it (AIF_BOARD_HEADS,
+# lib/board.sh), and the report or the blocked: line that follows is the
+# newer head.
+#
+# Bookkeeping never blocks a build (docs/DEFECTS.md 13.8): a claim that could
+# not be posted is a warning, and the run goes on with no host on the card.
+_aif_work_claim() {
+  local root="$1" ticket="$2" host f
+  host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-?}")"
+  host="$(printf '%s' "$host" | tr -d '[:space:]')"
+  f="$(mktemp "${TMPDIR:-/tmp}/aif-taken-XXXXXX")"
+  {
+    printf 'taken: %s pid %s at %s — aif work\n' "${host:-?}" "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '\nThe worker on %s has this card; its run lock there records the same pid. A claim, not a reason to route — the comment that follows says how the run ended.\n' "${host:-?}"
+  } >"$f"
+  (AIF_BOARD_BY="aif work" aif_board_comment "$root" "$ticket" "$f" >/dev/null) ||
+    aif_warn "could not post the claim on $ticket — the card shows no host"
+  rm -f "$f"
 }
 
 # _aif_work_lock_pid <lock-dir> — the pid that holds the run lock, or empty.
@@ -397,7 +442,7 @@ _aif_work_descendants() {
 # rc 0 stopped, or found gone and settled · 1 nothing to stop, or it did not
 # stop within a minute.
 _aif_work_stop() {
-  local root="$1" ticket="$2" lock pid who col p t0 now last
+  local root="$1" ticket="$2" lock pid who col p t0 now last rc
   lock="$(aif_run_lock_dir "$root" "$ticket")"
   if [ ! -d "$lock" ]; then
     aif_err "no worker on this machine is building $ticket — nothing to stop (a run on another machine holds its lock there)"
@@ -408,8 +453,18 @@ _aif_work_stop() {
   pid="$(_aif_work_lock_pid "$lock")"
   if ! _aif_work_lock_live "$lock"; then
     # The worker is gone without running its handler, and nothing but this
-    # will tell its card so.
-    col="$(aif_board_show_json "$root" "$ticket" 2>/dev/null | jq -r '.column // empty' 2>/dev/null)"
+    # will tell its card so. The column alone, never through `show`: its
+    # comments read dying (docs/DEFECTS.md 14.7) came back here as no column
+    # at all, and the lock went under an In Progress card that was left for
+    # the next `aif work` to take as fresh. A board that cannot say where the
+    # card is keeps the lock, and this is run again.
+    rc=0
+    col="$(aif_board_card_column "$root" "$ticket" 2>&1)" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      aif_err "the worker on $ticket (pid ${pid:-?}) is gone, but the board could not say where its card is — ${col:-no answer}; the lock is kept: run this again when the board answers (aif board check)"
+      return 1
+    fi
+    [ "$rc" -eq 0 ] || col=""
     rm -rf "${lock:?}"
     if [ "$col" = "in_progress" ]; then
       _aif_work_block "$root" "$ticket" stopped \
@@ -452,7 +507,7 @@ _aif_work_stop() {
     fi
     sleep 0.1 2>/dev/null || sleep 1
   done
-  col="$(aif_board_show_json "$root" "$ticket" 2>/dev/null | jq -r '.column // empty' 2>/dev/null)"
+  col="$(aif_board_card_column "$root" "$ticket" 2>/dev/null)" || col=""
   printf '%sstopped%s %s — the card is in %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$ticket" "${col:-an unknown column}"
   return 0
 }
@@ -809,8 +864,16 @@ _aif_work_intake() {
 
   # The board is canonical for the ticket's text until this moment: on a
   # trello board the card's description is pulled into THIS checkout and
-  # becomes the bytes the run freezes. The local board holds no text — the
-  # ticket is already in tasks/, and the copy below carries it in.
+  # becomes the bytes the run freezes. The local board holds no text — there
+  # the developer's checkout is canonical, as the card is on Trello — so the
+  # ticket is carried in from tasks/ on the first run, and again on every
+  # later run where the checkout's differs from the branch's. The ticket
+  # ALONE on those: a copy of the whole directory would write the checkout's
+  # stale run.json and plan.md over the branch's, which hold the run
+  # (docs/AUTOPILOT-RESEARCH.md §6.11, verification 6). Before this, a branch
+  # that already had a ticket never saw a rework — round two resumed at done
+  # and the card went to Review with the old build (docs/DEFECTS.md 13.6).
+  # aif_run_resumable sees the sha move, and the restart below does the rest.
   #
   # A card the analyst did not write — no aif:meta in its description — is the
   # ticket's problem; anything else that stops the pull (the network, the
@@ -825,9 +888,14 @@ _aif_work_intake() {
       esac
       return 3
     fi
-  elif [ ! -f "$work/ticket.md" ] && [ -f "$src/ticket.md" ] && [ "$src" != "$work" ]; then
-    mkdir -p "$work"
-    cp -R "$src/." "$work/"
+  elif [ "$src" != "$work" ] && [ -f "$src/ticket.md" ]; then
+    if [ ! -f "$work/ticket.md" ]; then
+      mkdir -p "$work"
+      cp -R "$src/." "$work/"
+    elif ! cmp -s "$src/ticket.md" "$work/ticket.md"; then
+      cp "$src/ticket.md" "$work/ticket.md"
+      _aif_work_say "intake" "the ticket changed in the checkout since the last run — carried in"
+    fi
   fi
 
   [ -f "$work/ticket.md" ] || {
@@ -2048,10 +2116,12 @@ _aif_work_report() {
 #             checkout, removing the report and waiting for it to appear; N at
 #             once would delete each other's. Each worker gets AIF_WORK_LOOP=1
 #             and skips only that.
-#   output    each worker writes its own log under .aif/tmp/loop-<when>/. On a
-#             terminal the loop draws its dashboard (lib/tui.sh) from what each
-#             worker writes into its run lock as it moves; anywhere else it
-#             says one line per start and per end. A summary either way.
+#   output    each worker writes its own log under .aif/tmp/loop-<when>/ — or
+#             under AIF_WORK_LOOP_LOGDIR, so a parent can name the directory it
+#             will read. On a terminal the loop draws its dashboard (lib/tui.sh)
+#             from what each worker writes into its run lock as it moves;
+#             anywhere else it says one line per start and per end. A summary
+#             either way, and summary.json beside the logs for a parent.
 #   Ctrl-C    each worker starts in a process group of its own, so the
 #             terminal's Ctrl-C reaches the loop alone. The first takes no new
 #             card and lets the runs in flight finish; the second stops them,
@@ -2069,7 +2139,8 @@ _aif_work_report() {
 # takes the next card.
 #
 # Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
-# environment · 130 / 143 stopped by Ctrl-C or a TERM.
+# environment · 130 / 143 stopped by Ctrl-C or a TERM · 129 the terminal
+# closed over it (HUP), the runs in flight stopped too.
 # The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
 # shellcheck disable=SC2034
 _aif_work_loop() {
@@ -2089,8 +2160,16 @@ _aif_work_loop() {
   [ "$use_worktree" -eq 1 ] || set -- "$@" --no-worktree
 
   main="$(aif_main_root "$root")"
-  logdir="$main/.aif/tmp/loop-$(date '+%Y%m%d-%H%M%S')"
+  # A parent that starts the loop names the directory, so it knows where the
+  # logs and summary.json will be before the loop prints anything — a
+  # timestamped name is found only by listing after the fact (docs/DEFECTS.md
+  # 14.3).
+  logdir="${AIF_WORK_LOOP_LOGDIR:-$main/.aif/tmp/loop-$(date '+%Y%m%d-%H%M%S')}"
   mkdir -p "$logdir"
+  # A directory a parent names may be one it named before: the summary in it
+  # is the last loop's end, and would be read as this one's by whoever polls
+  # for the file — and taken by the EXIT handler as already written.
+  rm -f "$logdir/summary.json"
 
   # What the loop, its handler and its dashboard share, in globals: a trap
   # fires with the signal's name only, and lib/tui.sh draws from these.
@@ -2101,6 +2180,7 @@ _aif_work_loop() {
   AIF_WORK_LOOP_STOP=""     # why no new card is taken — the first reason wins
   AIF_WORK_LOOP_CTRL_C=0    # how many Ctrl-Cs (or q) have arrived
   AIF_WORK_LOOP_KILLED=""   # INT or TERM, once every run in flight was told to stop
+  AIF_WORK_LOOP_HUP=0       # 1 once the terminal closed over the loop (HUP)
   AIF_WORK_LOOP_RUNNING=""  # "<pid>:<ticket>:<started>:<slot>" per run in flight
   AIF_TUI_PARALLEL="$parallel" AIF_TUI_STARTED="$(date +%s)" AIF_TUI_NOW="$AIF_TUI_STARTED"
   AIF_TUI_BUILT=0 AIF_TUI_BLOCKED=0 AIF_TUI_STOPPED=0 AIF_TUI_READY="" AIF_TUI_LOAD="" AIF_TUI_DISK=""
@@ -2149,7 +2229,10 @@ EOF
             AIF_WORK_LOOP_STOP="$id could not start (exit 3) — the environment, not the card; the loop takes no new card"
           _aif_work_loop_event red "$id could not start (exit 3) — the environment, not the card; its log says what"
           ;;
-        130 | 143)
+        # 129 as well: a worker whose own group was hung up on — not by this
+        # loop, which forwards a TERM — was stopped, not judged, like the
+        # other two.
+        129 | 130 | 143)
           what="stopped (exit $rc)"
           AIF_TUI_STOPPED=$((AIF_TUI_STOPPED + 1))
           AIF_LS_RESULT[slot]=stopped
@@ -2256,7 +2339,6 @@ EOF
     fi
     _aif_work_loop_tick
   done
-  aif_trap_disarm
   _aif_work_loop_tui_stop
 
   [ -z "$AIF_WORK_LOOP_STOP" ] || why="$AIF_WORK_LOOP_STOP"
@@ -2271,7 +2353,15 @@ EOF
 $results
 EOF
   [ "$taken_n" -eq 0 ] || printf '  %slogs: %s/%s\n' "$AIF_C_DIM" "${logdir#"$main"/}" "$AIF_C_RESET" >&2
+  _aif_work_loop_summary "$logdir/summary.json" "$taken_n" "$env" "$why" "$results"
+  # Disarmed only now: the summary is the last thing the loop owes whoever
+  # started it, and while the handler is armed its EXIT branch writes the
+  # summary should a print above end the loop first (docs/DEFECTS.md 14.3).
+  aif_trap_disarm
 
+  # The hang-up first: it stops the runs with a TERM of its own, and the code
+  # has to say what happened to the loop, not what it did about it.
+  [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] || exit 129
   [ "$AIF_WORK_LOOP_KILLED" != "TERM" ] || exit 143
   [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ] || exit 130
   [ "$env" -eq 0 ] || exit 3
@@ -2298,6 +2388,48 @@ _aif_work_loop_starting() {
   return 1
 }
 
+# _aif_work_loop_summary <file> <taken> <env> <why> <result-lines> — how the
+# loop ended, as JSON beside the logs, for whoever started it and cannot read
+# its terminal.
+#
+# The exit code says how the loop ENDED, not what the board holds: rc 0 comes
+# with a non-empty Ready when a live lock or the taken list skipped a card, or
+# at --max-tickets; rc 1 from a preflight die with nothing taken; rc 3 from one
+# 429 (docs/AUTOPILOT-RESEARCH.md §6.11, verification 1; docs/DEFECTS.md
+# 14.3). A parent that read the code alone would start a loop again over a
+# Ready it had just drained, or hold one that had taken nothing — so the
+# counts, the reason and each run's end are written here, and a parent reads
+# the file, never the rc alone. The results array is built by jq from the
+# `id|what|minutes` lines the loop keeps: the environment carries no arrays,
+# bash 3.2 has none worth passing, and jq owns the escaping. Written whole
+# — to a temp name, then moved — so a parent polling for it never reads half.
+# Not writing it is a warning, not a stop: every run is settled on its card
+# already, and the lines on the terminal say the same. Written at the loop's
+# end, and by its EXIT branch when something ends the loop before that, so
+# the file is there on every path once the logdir is.
+_aif_work_loop_summary() {
+  local file="$1" taken="$2" env="$3" why="$4" lines="$5" results
+  results="$(printf '%s' "$lines" | jq -R -s '
+    split("\n") | map(select(length > 0) | split("|")
+      | { ticket: .[0], what: .[1], minutes: (.[2] | tonumber? // 0) })' 2>/dev/null)" || results="[]"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  if {
+    jq -n --argjson taken "$taken" --argjson built "$AIF_TUI_BUILT" \
+      --argjson blocked "$AIF_TUI_BLOCKED" --argjson stopped "$AIF_TUI_STOPPED" \
+      --argjson env "$env" --argjson ctrl_c "$AIF_WORK_LOOP_CTRL_C" \
+      --arg killed "$AIF_WORK_LOOP_KILLED" --argjson hup "${AIF_WORK_LOOP_HUP:-0}" \
+      --arg why "$why" --argjson results "${results:-[]}" \
+      '{ taken: $taken, built: $built, blocked: $blocked, stopped: $stopped, env: $env,
+         ctrl_c: $ctrl_c, killed: (if $killed == "" then null else $killed end),
+         hup: $hup, why: $why, results: $results }' >"$file.tmp" &&
+      mv "$file.tmp" "$file"
+  } 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$file.tmp" 2>/dev/null
+  aif_warn "could not write $file — the lines above are the summary"
+}
+
 # _aif_work_loop_event <tone> <text> — one thing that happened: into the loop's
 # own log, and onto the dashboard, newest first — or, with no dashboard, said.
 _aif_work_loop_event() {
@@ -2306,7 +2438,9 @@ _aif_work_loop_event() {
   printf '%s %s\n' "$at" "$2" >>"$AIF_WORK_LOOP_LOGDIR/loop.log" 2>/dev/null || true
   if [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ]; then
     AIF_TUI_EVENTS="$(printf '%s|%s|%s\n%s\n' "$1" "$at" "$2" "$AIF_TUI_EVENTS" | sed -n '1,3p')"
-  else
+  elif [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ]; then
+    # Not once the terminal has closed: stderr is loop.log from then on, and
+    # the line is there already, with its time.
     _aif_work_say "loop" "$2"
   fi
 }
@@ -2494,12 +2628,20 @@ _aif_work_loop_key() {
   return 0
 }
 
-# _aif_work_loop_signal <EXIT|INT|TERM> — the loop's handler, and what Ctrl-C
-# means to a loop: the first takes no new card and lets the runs in flight
-# finish; the second stops them, each settling its card as stopped by Ctrl-C.
-# A TERM stops them at once. It records and forwards, and returns — the loop
-# goes on from where the signal found it, waits for the runs, and says how
-# each ended.
+# _aif_work_loop_signal <EXIT|INT|TERM|HUP> — the loop's handler, and what
+# Ctrl-C means to a loop: the first takes no new card and lets the runs in
+# flight finish; the second stops them, each settling its card as stopped by
+# Ctrl-C. A TERM stops them at once. It records and forwards, and returns —
+# the loop goes on from where the signal found it, waits for the runs, and
+# says how each ended.
+#
+# A HUP — the terminal closed over the loop — stops them at once too, and has
+# to: each run is a process group of its own, no job of the shell that hung
+# up, so the hang-up never reaches it, and a loop that simply died of it left
+# its workers building for nobody (docs/AUTOPILOT-RESEARCH.md §6.11,
+# verification 2; docs/DEFECTS.md 14.8). They get the TERM a --stop sends —
+# the signal every station is known to die of — and the loop itself ends in
+# 129, so whoever started it can tell a closed window from a stop.
 _aif_work_loop_signal() {
   case "${1:-}" in
     INT)
@@ -2517,10 +2659,40 @@ _aif_work_loop_signal() {
       AIF_WORK_LOOP_STOP="stopped by a TERM — the runs in flight were stopped too"
       _aif_work_loop_forward TERM
       ;;
+    HUP)
+      # The terminal is gone, and the loop's stderr with it: from here every
+      # print to it fails with EIO, and errexit holds inside a trap as it does
+      # outside (bash 3.2, probed — the worker's handler guards its one print
+      # for the same reason). This handler returns and the loop goes on, so
+      # the first plain `_aif_work_say` after it — the "stopped (exit 143)"
+      # of the very runs this branch stops, or the summary line when none
+      # was running — would end the loop with the print's 1: no summary.json,
+      # and a 1 where the 129 below was promised (docs/DEFECTS.md 14.8). So
+      # the dashboard is left while its escape sequences can still be
+      # swallowed, and the loop's output goes where its events already go,
+      # its own loop.log — or nowhere, should even that fail: nothing after
+      # this can end the loop for want of a terminal, and
+      # `_aif_work_loop_tick` sleeps instead of reading keys, at once, from a
+      # tty that is no longer there.
+      _aif_work_loop_tui_stop 2>/dev/null || true
+      AIF_WORK_LOOP_TUI=0
+      exec >>"$AIF_WORK_LOOP_LOGDIR/loop.log" 2>&1 || exec >/dev/null 2>&1
+      AIF_WORK_LOOP_STOP="the terminal closed (HUP) — the runs in flight were stopped too"
+      AIF_WORK_LOOP_HUP=1
+      _aif_work_loop_forward TERM
+      ;;
     EXIT)
-      # The loop itself failing: the terminal back first, then its workers —
-      # processes of their own, which go on, each settling its own card.
+      # The loop itself failing: the terminal back first; then the summary a
+      # parent may be waiting for, unless the loop wrote it already — the
+      # counts as they stand, read from the loop's own locals, which a handler
+      # running inside its call sees (bash scopes dynamically; probed on 3.2),
+      # the reason being whatever stopped it, or that nothing had yet; then
+      # its workers — processes of their own, which go on, each settling its
+      # own card.
       _aif_work_loop_tui_stop
+      [ -z "${AIF_WORK_LOOP_LOGDIR:-}" ] || [ -f "$AIF_WORK_LOOP_LOGDIR/summary.json" ] ||
+        _aif_work_loop_summary "$AIF_WORK_LOOP_LOGDIR/summary.json" "${taken_n:-0}" "${env:-0}" \
+          "${AIF_WORK_LOOP_STOP:-${why:-the loop ended on an error before it could say why — its loop.log says where}}" "${results:-}"
       [ -z "${AIF_WORK_LOOP_RUNNING:-}" ] ||
         aif_warn "the loop ended with runs still in flight ($AIF_WORK_LOOP_RUNNING) — each settles its own card; aif work <ID> --stop ends one"
       ;;
@@ -2718,6 +2890,7 @@ aif_cmd_work() {
     exit 3
   fi
   AIF_WORK_CARD="$ticket"
+  _aif_work_claim "$root" "$ticket"
 
   _aif_work_phase worktree
   local wt fresh=0 cut_err cut_why guide_err

@@ -204,6 +204,18 @@ _aif_board_local_show_json() {
   jq '{ ticket, title, column, labels, moved_at, comments }' "$f"
 }
 
+# The column alone, from the card file: rc 1 when there is no card, 2 with the
+# reason when the file cannot be read (see aif_board_card_column).
+_aif_board_local_card_column() {
+  local f
+  f="$(_aif_board_local_card "$1" "$2")"
+  [ -f "$f" ] || return 1
+  jq -r '.column // empty' "$f" 2>/dev/null || {
+    printf 'could not read %s\n' "${f#"$(aif_main_root "$1")"/}" >&2
+    return 2
+  }
+}
+
 _aif_board_local_label() {
   local root="$1" id="$2" label="$3" f
   f="$(_aif_board_local_require "$root" "$id")"
@@ -226,18 +238,106 @@ _aif_trello_secret() { # <root> <field: secret|key_secret>
 # _aif_trello_call <root> <method> <path> [curl args…] — JSON on stdout.
 #
 # The key and token travel in the Authorization header, not the query string,
-# so they are in no URL, no shell history and no log line. -f turns an HTTP
-# error into a non-zero exit; the caller decides what that means.
+# so they are in no URL, no shell history and no log line — and the one file
+# this writes is curl's dump of the RESPONSE headers, which carry neither. -f
+# turns an HTTP error into a non-zero exit; the caller decides what that means.
+#
+# Timeouts, because the call had none: a connection the API held open hung the
+# worker that held a card In Progress, or the loop's poll, for as long as the
+# socket lived (docs/DEFECTS.md 13.8). Ten seconds to connect and a minute for
+# the whole exchange is room for a 76 KiB description on a slow link.
+#
+# A retry, for what a second attempt can fix and nothing else: a 429, the 5xx
+# a gateway or an overloaded API answers, and curl's own could-not-connect (7),
+# timed-out (28), empty-reply (52) and network (56). Only for GET and PUT —
+# both say the same thing twice. A POST does not: a comment whose first attempt
+# landed and whose answer was lost would be posted twice, and the comment is
+# the card's record; a label or a card, twice (13.8; docs/AUTOPILOT-RESEARCH.md
+# §6.11, verification 6). Between attempts: Retry-After when the server names
+# a wait of up to a minute, else the attempt's number of AIF_TRELLO_RETRY_SLEEP.
+# That list is a string, not an array, because it comes in from the
+# environment, which carries no arrays — and because an empty array is an error
+# under set -u on bash 3.2. The final failure prints curl's last message, as
+# one attempt did, and returns its rc, so every caller's `|| aif_die "… $out"`
+# reads as before.
 _aif_trello_call() {
   local root="$1" method="$2" path="$3" key token base
   shift 3
   key="$(_aif_trello_secret "$root" key_secret)" || return 3
   token="$(_aif_trello_secret "$root" secret)" || return 3
   base="${AIF_TRELLO_API:-$AIF_TRELLO_API_DEFAULT}"
-  curl -sS -f -X "$method" "$base$path" \
-    -H "Authorization: OAuth oauth_consumer_key=\"$key\", oauth_token=\"$token\"" \
-    -H "Accept: application/json" \
-    "$@" 2>&1
+  local tries="${AIF_TRELLO_RETRIES:-3}" attempt=1 hdr out rc
+  case "$method" in
+    GET | PUT) ;;
+    *) tries=1 ;;
+  esac
+  case "$tries" in
+    '' | *[!0-9]* | 0) tries=1 ;;
+  esac
+  # The header dump exists for Retry-After, which only a retry reads: a POST,
+  # or a single attempt, writes none and leaves nothing behind to remove.
+  hdr=""
+  [ "$tries" -le 1 ] || hdr="$(mktemp "${TMPDIR:-/tmp}/aif-trello-XXXXXX")"
+  while :; do
+    rc=0
+    out="$(curl -sS -f -X "$method" "$base$path" \
+      --connect-timeout 10 --max-time 60 ${hdr:+-D "$hdr"} \
+      -H "Authorization: OAuth oauth_consumer_key=\"$key\", oauth_token=\"$token\"" \
+      -H "Accept: application/json" \
+      "$@" 2>&1)" || rc=$?
+    [ "$rc" -ne 0 ] || break
+    [ "$attempt" -lt "$tries" ] || break
+    _aif_trello_retryable "$rc" "$out" || break
+    sleep "$(_aif_trello_retry_wait "$hdr" "$attempt")" 2>/dev/null || sleep 1
+    attempt=$((attempt + 1))
+  done
+  [ -z "$hdr" ] || rm -f "$hdr"
+  printf '%s' "$out"
+  return "$rc"
+}
+
+# _aif_trello_retryable <curl rc> <curl's message> — rc 0 when another attempt
+# makes sense. The HTTP code is read out of curl's own line — `curl: (22) The
+# requested URL returned error: 503` — because -f discards the body, and -w
+# would write the code into the JSON the caller parses. Every other failure
+# (a 401, a 404, a 400 for a malformed comment) says the same thing twice
+# (docs/DEFECTS.md 13.8).
+_aif_trello_retryable() {
+  local rc="$1" code
+  case "$rc" in
+    7 | 28 | 52 | 56) return 0 ;;
+    22) ;;
+    *) return 1 ;;
+  esac
+  code="$(printf '%s\n' "$2" | sed -n 's/.*returned error: \([0-9][0-9][0-9]\).*/\1/p' | sed -n 1p)"
+  case "$code" in
+    429 | 500 | 502 | 503 | 504) return 0 ;;
+  esac
+  return 1
+}
+
+# _aif_trello_retry_wait <header dump> <attempt> — the seconds to sleep before
+# the next attempt: Retry-After when the server sent one of up to 60 whole
+# seconds (a date, or an hour, is not waited on — the list is), else the
+# attempt's number of AIF_TRELLO_RETRY_SLEEP, and its last number past its end.
+# Every pipeline here exits 0 on its own: a `grep` with no match would end the
+# caller under set -e (docs/DEFECTS.md 13.8).
+_aif_trello_retry_wait() {
+  local hdr="$1" attempt="$2" after wait
+  after="$(sed -n 's/^[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr]:[[:space:]]*//p' "$hdr" 2>/dev/null | tr -d '\r ' | sed -n '$p')"
+  # One or two digits only: a wider number is past the minute anyway, and a
+  # string wider than the shell's integer makes `[` fail rather than compare.
+  case "$after" in
+    [0-9] | [0-9][0-9]) [ "$after" -gt 60 ] || {
+      printf '%s' "$after"
+      return 0
+    } ;;
+  esac
+  wait="$(printf '%s\n' "${AIF_TRELLO_RETRY_SLEEP:-1 3 7}" | awk -v n="$attempt" 'NF { print (n <= NF) ? $n : $NF }')"
+  case "$wait" in
+    '' | *[!0-9.]*) wait=1 ;;
+  esac
+  printf '%s' "$wait"
 }
 
 _aif_trello_board() {
@@ -481,18 +581,44 @@ _aif_trello_status_json() {
     | sort_by(.column, .pos)'
 }
 
+# A read of the comments that failed used to become `comments: []` with rc 0 —
+# the JSON of a card nobody has commented on. The first line of the newest
+# comment is what every routing decision downstream reads (aif_board_last_line,
+# the project manager, the release sweep), so a board that could not be asked
+# looked exactly like a card with nothing to say, and was routed as one
+# (docs/AUTOPILOT-RESEARCH.md §6.11, verification 3; docs/DEFECTS.md 14.7). Now
+# it dies with the reason, after the call's own retries.
 _aif_trello_show_json() {
   local root="$1" id="$2" card cid comments col
   card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
   comments="$(_aif_trello_call "$root" GET "/cards/$cid/actions" -G \
-    --data-urlencode "filter=commentCard" --data-urlencode "limit=20")" || comments="[]"
+    --data-urlencode "filter=commentCard" --data-urlencode "limit=20")" ||
+    aif_die "Trello: could not read the comments of $id — $(printf '%s' "$comments" | sed -n 1p)"
   printf '%s' "$card" | jq --arg col "${col:-other}" --argjson c "$comments" '
     { ticket: (.name | split(" ")[0]), title: (.name | sub("^[^ ]+ *[—:-]+ *"; "")),
       column: $col, url: .shortUrl, description: .desc,
       comments: [ $c[] | { at: .date, by: (.memberCreator.username // .memberCreator.fullName // "?"),
                            text: .data.text } ] | reverse }'
+}
+
+# The column alone, from one listing of the board's cards — the call
+# `_aif_trello_call` retries — and never from the actions call. The listing
+# helper dies when the board does not answer, in this substitution's subshell
+# with its reason on stderr, and returns 1 with nothing said when there is no
+# such card; the two are told apart by whether it said anything (see
+# aif_board_card_column).
+_aif_trello_card_column() {
+  local root="$1" id="$2" card col esc
+  card="$(_aif_trello_find_card "$root" "$id" 2>&1)" || {
+    [ -n "$card" ] || return 1
+    esc="$(printf '\033')"
+    printf '%s\n' "$card" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
+    return 2
+  }
+  col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
+  printf '%s\n' "${col:-other}"
 }
 
 _aif_trello_label() {
@@ -528,6 +654,25 @@ aif_board_status_json() { "_aif_board_$(aif_board_kind "$1")_status_json" "$1"; 
 aif_board_show_json() { "_aif_board_$(aif_board_kind "$1")_show_json" "$1" "$2"; }
 aif_board_label() { "_aif_board_$(aif_board_kind "$1")_label" "$1" "$2" "$3"; }
 
+# aif_board_card_column <root> <ID> — the card's canonical column and nothing
+# else, on either backend. Prints it. rc 0 printed · 1 no such card · 2 the
+# board could not be read, the reason on stderr as one bare line, the way
+# aif_board_last_line gives it.
+#
+# `show` reads the card with its comments, and since 14.7 dies when the
+# comments cannot be read. Two callers only ever wanted the column — the land,
+# asking whether the card is in Review (`_aif_land_column`, lib/cmd_land.sh),
+# and `aif work <ID> --stop`, settling the card of a worker that is gone
+# (lib/cmd_work.sh) — and both read it out of `show` under `2>/dev/null … ||
+# true`, so a comments read that failed for good handed them an empty column:
+# the land refused it as "no card on the board", and the stop read it as an
+# unknown column, removed the lock and left the card In Progress for the next
+# `aif work` to take as fresh. So the column has a read of its own that never
+# asks for the comments: on Trello one listing of the board's cards, on the
+# local board the card file — and a board that cannot answer is rc 2, said,
+# not an empty answer (docs/DEFECTS.md 14.7, 13.8).
+aif_board_card_column() { "_aif_board_$(aif_board_kind "$1")_card_column" "$1" "$2"; }
+
 # The trello functions are named _aif_trello_*; alias them under the interface's
 # naming so the dispatch above is one line per operation.
 _aif_board_trello_next_ready() { _aif_trello_next_ready "$@"; }
@@ -539,6 +684,80 @@ _aif_board_trello_create() { _aif_trello_create "$@"; }
 _aif_board_trello_status_json() { _aif_trello_status_json "$@"; }
 _aif_board_trello_show_json() { _aif_trello_show_json "$@"; }
 _aif_board_trello_label() { _aif_trello_label "$@"; }
+_aif_board_trello_card_column() { _aif_trello_card_column "$@"; }
+
+# ---------------------------------------------------------------------------
+# the heads — the first lines aif and the roles write on a card
+# ---------------------------------------------------------------------------
+
+# AIF_BOARD_HEADS — every first line aif or a role writes on a card, as one
+# extended regex, in ONE place: a head is how the project manager, `aif board
+# release` and whatever supervises a board route a card without reading its
+# comments as prose, so a new head goes here before anything routes on it.
+# Who writes each, and where:
+#
+#   blocked: ticket | run | environment | stopped — <why>
+#               the worker, `_aif_work_block` in lib/cmd_work.sh — every way a
+#               taken card leaves it short of Review, `aif work --stop` included
+#   sync: <headline>
+#               `_aif_land_requeue` in lib/cmd_land.sh — the land sending the
+#               card back to the worker to be brought onto the branch it lands on
+#   rework: <words>  ·  cancelled: <why>
+#               the project manager (sets/claude/skills/aif-pjm/SKILL.md), from
+#               a reviewer's wrong, a demo not as expected, a `blocked: ticket`
+#               or the human's own words; cancelled when nothing will merge
+#   wrong: <the first thing>  ·  cancel: <why>
+#               the reviewer (sets/claude/skills/aif-review/SKILL.md)
+#   land: <headline>
+#               `_aif_land_fail` in lib/cmd_land.sh — a land undone after its merge
+#   demo: as expected | not as expected — <…>
+#               the product partner (sets/claude/skills/aif-po/SKILL.md)
+#   released by aif land <ID>: …  ·  released by aif board release: …
+#               `_aif_land_release` in lib/cmd_land.sh; `aif_release_sweep` in
+#               lib/release.sh — a Backlog card whose dependencies are Done
+#   taken: <host> pid <pid> at <time> — aif work
+#               the worker's claim when it takes a card (lib/cmd_work.sh), so a
+#               second machine on one board can tell a live worker from a
+#               hand-drag (docs/DEFECTS.md 14.4); a claim, never a reason to route
+#   # <ID> — built | stopped
+#               the worker's run report (lib/cmd_work.sh, the note it posts on
+#               the card it moves to Review or leaves)
+#   # <ID> — landed | not landed
+#               the land's note in lib/cmd_land.sh (`not landed` is the head
+#               `land:` replaced; older cards still carry it)
+#
+# A reply a person writes under one of these is not a head, and is left out
+# on purpose: see aif_board_last_line.
+AIF_BOARD_HEADS='^(blocked: (ticket|run|environment|stopped) — |sync: |rework: |cancelled: |cancel: |wrong: |land: |demo: (as expected|not as expected)|released by aif |taken: |# [A-Za-z0-9-]+ — (built|stopped|landed|not landed))'
+
+# aif_board_last_line <root> <ID> — the first line of the NEWEST comment whose
+# first line matches AIF_BOARD_HEADS, on either backend. Prints it.
+# rc 0 found · 1 no such comment · 2 the card could not be read, the reason on
+# stderr as one bare line (no `error:`, no colour — a caller that captures
+# `2>&1` gets just the why).
+#
+# The newest comment is the last on both backends — the local card appends,
+# and the Trello adapter reverses the API's newest-first list — so they are
+# walked newest first and the first match wins. A comment that matches no head
+# is stepped over, not returned: a person's reply under aif's `blocked:` line
+# is not the head, it is an answer to it — the "unblocked" signal of the
+# research (docs/AUTOPILOT-RESEARCH.md §6.11, verification 3), for the human
+# half to read; what bash routes on stays the last thing aif or a role said.
+# Hence the closed set: the newest comment of any shape would make a question
+# typed on the card the ticket's state.
+aif_board_last_line() {
+  local root="$1" id="$2" json line esc
+  json="$(aif_board_show_json "$root" "$id" 2>&1)" || {
+    esc="$(printf '\033')"
+    printf '%s\n' "$json" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
+    return 2
+  }
+  line="$(printf '%s' "$json" | jq -r --arg re "$AIF_BOARD_HEADS" '
+    [ (.comments // []) | reverse[] | (.text // "") | split("\n")[0] | select(test($re)) ] | .[0] // empty' 2>/dev/null)" ||
+    return 2
+  [ -n "$line" ] || return 1
+  printf '%s\n' "$line"
+}
 
 # aif_board_check <root> — is the board reachable, as configured? Prints one
 # line per fact on stdout; rc 0 usable, 1 not.

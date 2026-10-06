@@ -114,12 +114,18 @@ Ask for one word and take it:
      manager routes them (`/aif-pjm`): rework for the analyst, a `request:` line to the
      product partner first. Say so, and that the human can still land it over the
      demo in their own terminal: `aif land <ID>`.
-- **wrong** — write the rework comment in the reviewer's own words, one line per thing
-  that is wrong, criteria-shaped where they can be ("AC-002 passes but the export
-  still includes deleted users"). Show it, take an edit, then post it with
+- **wrong** — write the rework comment in the reviewer's own words. Its **first line**
+  is `wrong: <the first thing that is wrong, in one line>`; then one line per further
+  thing, criteria-shaped where they can be ("AC-002 passes but the export still
+  includes deleted users"). Show it, take an edit, then post it with
   `aif board comment <ID> <file>` and stop. The project manager routes it
   (`/aif-pjm`): to Backlog with `rework:`, and the analyst reworks the criteria.
-- **cancel** — the same, as a comment saying why; the project manager cancels it.
+- **cancel** — the same, its first line `cancel: <why, in one line>`; the project
+  manager cancels it.
+
+The fixed first line is what lets bash (`aif board head`) and the project manager
+route the comment without reading it as prose; without it, the reviewer's verdict
+is any comment a person left on the card.
 
 End with the plain paths: the card, the branch, the comments posted, what landed or
 why not, and the command the human runs next, if there is one.

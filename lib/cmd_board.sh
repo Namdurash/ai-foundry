@@ -17,7 +17,15 @@ usage: aif board <operation> [args]
                              an existing card's text is brought up to date
   status [--json]            every card, by column
   show <ID> [--json]         one card, with its comments
+  head <ID>                  the first line of the newest comment aif or a role
+                             wrote: blocked:, sync:, rework:, land:, …
   label <ID> <label>         add a label (created on the board if new)
+  release [--dry-run]        move the Backlog cards whose every dependency is
+                             Done and landed to the bottom of Ready; --dry-run
+                             says which would move, and what the rest wait on.
+                             A card with any head on it (rework:, blocked:, a
+                             report…) or labelled parked / retired-direction
+                             (AIF_RELEASE_HOLD_LABELS) is held
   check                      is the board reachable, as configured?
   init local | init trello --board <id or url> [--create-lists]
                              write the board block in .aif/project.json
@@ -114,9 +122,40 @@ aif_cmd_board() {
             (.comments[] | "  " + .at + "  " + .by + ":", (.text | split("\n") | map("    " + .) | join("\n")), "") end)'
       fi
       ;;
+    head)
+      # The routable line, for a shell: the project manager's and a
+      # supervisor's `case` reads this, never the comments as prose. The
+      # exit code is the function's — 1 prints nothing, so `head="$(aif
+      # board head X)" || …` is the whole test; 2 is the board, not the card.
+      [ -n "${1:-}" ] || aif_die "usage: aif board head <ID>"
+      local line rc=0
+      line="$(aif_board_last_line "$root" "$1")" || rc=$?
+      case "$rc" in
+        0) printf '%s\n' "$line" ;;
+        1) exit 1 ;;
+        *)
+          aif_err "could not read $1's comments"
+          exit 2
+          ;;
+      esac
+      ;;
     label)
       [ -n "${1:-}" ] && [ -n "${2:-}" ] || aif_die "usage: aif board label <ID> <label>"
       aif_board_label "$root" "$1" "$2"
+      ;;
+    release)
+      # The Backlog sweep (lib/release.sh), for a human — after a merge by
+      # hand, or to see what waits on what. `aif land` releases on its own;
+      # this is for the cards it could not have known about.
+      local dry=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --dry-run) dry=1 ;;
+          *) aif_die "unknown option: $1 (aif board release [--dry-run])" ;;
+        esac
+        shift
+      done
+      aif_release_sweep "$root" "aif board release" "$dry"
       ;;
     check)
       local out rc=0

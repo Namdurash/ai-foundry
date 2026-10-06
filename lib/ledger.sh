@@ -102,6 +102,10 @@ aif_ledger_append() {
     trap '[ -z "$_AIF_LEDGER_TMP" ] || rm -f "$_AIF_LEDGER_TMP"; [ -z "$_AIF_LEDGER_LOCK" ] || rm -rf "$_AIF_LEDGER_LOCK"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    # And the hang-up a closed terminal sends to the worker's whole group: left
+    # to its default it kills the subshell without the EXIT trap, lock and
+    # half-written file in place (docs/DEFECTS.md 14.8).
+    trap 'exit 129' HUP
     _aif_ledger_append "$1" "$2"
   ) || true
   return 0

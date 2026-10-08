@@ -34,16 +34,46 @@ line between two commands, runs the next, and reads the outcome off the file:
 gone, every fault was served and the adapter came back for the rest; still
 there, it did not — which is what a POST the adapter must not retry leaves
 behind. The mock's own /_state, /_fail and /_desc routes are never faulted.
+
+Time. Every card's `dateLastActivity` and every comment's `date` is one fixed
+moment, 2026-09-17T00:00:00.000Z, so that what check-board asserts never
+depends on the clock. With MOCK_REAL_TIME=1 in the environment they are the
+real UTC time instead, in Trello's own shape (ISO, milliseconds, `Z`): a
+comment gets the time it was posted, and a card the time of its last change
+— created, moved or otherwise updated, commented, labelled — as Trello moves
+`dateLastActivity` on any activity, not only on a move. That is for a reader
+that keys on those times, as a shift does (it reads a card again only when its
+column or its last activity changed, and asks whether a head is newer than the
+shift); a check that wants it starts its own mock with the variable set.
 """
 import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 STATE = {"lists": {}, "cards": {}, "comments": {}, "labels": {}, "seq": 0, "log": []}
 BOARD = "b1"
+REAL_TIME = os.environ.get("MOCK_REAL_TIME") == "1"
+FIXED_TIME = "2026-09-17T00:00:00.000Z"
+
+
+def stamp():
+    """Now, as Trello writes a time (see the module's docstring) — or the
+    fixed moment, unless MOCK_REAL_TIME=1."""
+    if not REAL_TIME:
+        return FIXED_TIME
+    t = datetime.now(timezone.utc)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+
+
+def touch(card):
+    """A change to the card is activity on it: its dateLastActivity moves,
+    with MOCK_REAL_TIME=1 only — without it every time stays fixed."""
+    if REAL_TIME and card is not None:
+        card["dateLastActivity"] = stamp()
 
 
 def new_id(prefix):
@@ -179,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE["cards"][cid] = {"id": cid, "name": p.get("name", ""), "desc": p.get("desc", ""),
                                    "idList": p.get("idList", ""), "pos": self._pos(p.get("pos", "bottom"), p.get("idList", "")),
                                    "idLabels": [], "shortUrl": f"https://trello.com/c/{cid}",
-                                   "dateLastActivity": "2026-09-17T00:00:00.000Z"}
+                                   "dateLastActivity": stamp()}
             return self._send(200, self._card(STATE["cards"][cid]))
         if path == "/1/labels" and method == "POST":
             lid = new_id("lb")
@@ -196,8 +226,9 @@ class Handler(BaseHTTPRequestHandler):
             if not 1 <= len(text.encode("utf-16-le")) // 2 <= 16384:
                 return self._send(400, {"error": "invalid value for text"})
             STATE["comments"].setdefault(m.group(1), []).append(
-                {"id": new_id("a"), "date": "2026-09-17T00:00:00.000Z", "data": {"text": p.get("text", "")},
+                {"id": new_id("a"), "date": stamp(), "data": {"text": p.get("text", "")},
                  "memberCreator": {"username": "mock", "fullName": "Mock User"}})
+            touch(STATE["cards"].get(m.group(1)))
             return self._send(200, STATE["comments"][m.group(1)][-1])
         m = re.match(r"^/1/cards/([^/]+)/actions$", path)
         if m and method == "GET":
@@ -209,6 +240,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"error": "no card"})
             if p.get("value") not in c["idLabels"]:
                 c["idLabels"].append(p.get("value"))
+                touch(c)
             return self._send(200, c["idLabels"])
         m = re.match(r"^/1/cards/([^/]+)$", path)
         if m:
@@ -225,6 +257,7 @@ class Handler(BaseHTTPRequestHandler):
                         c[k] = p[k]
                 if "pos" in p:
                     c["pos"] = self._pos(p["pos"], c["idList"])
+                touch(c)
                 return self._send(200, self._card(c))
         return self._send(404, {"error": f"no route for {method} {path}"})
 

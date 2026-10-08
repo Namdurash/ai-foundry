@@ -424,13 +424,17 @@ EOF
     # the metering hook to read — session-local, and meaningless to anyone else),
     # .aif/worktrees/ (where `aif work` checks a ticket out to build it), and
     # .aif/board/ (the local board's cards — coordination state for this
-    # machine, not the record of what was built, which stays in tasks/).
+    # machine, not the record of what was built, which stays in tasks/), and
+    # .aif/start.local (a developer's own shift defaults — models, how long the
+    # control point waits — as personal as the profile beside it). A project
+    # set up before a line was added gets it on its next `aif init`
+    # (docs/DEFECTS.md 15.2).
     # One call, because a second aif_block_inject would replace the block rather
     # than extend it.
     aif_block_inject "$root/.gitignore" \
       "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
-      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s\n# worker checkouts — one per ticket, disposable (aif work)\n%s\n# the local board — this machine'"'"'s, not the team'"'"'s (aif board)\n%s' \
-        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/" ".aif/worktrees/" ".aif/board/")"
+      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s\n# worker checkouts — one per ticket, disposable (aif work)\n%s\n# the local board — this machine'"'"'s, not the team'"'"'s (aif board)\n%s\n# per-developer shift defaults (aif start)\n%s' \
+        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/" ".aif/worktrees/" ".aif/board/" "$AIF_START_STATE")"
 
     printf '%s\n' "$profile" | aif_write_file "$root/$AIF_PROFILE_STATE"
     # Ours, so the ledger owns it too, even though no set ships it.

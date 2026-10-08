@@ -100,6 +100,23 @@ aif_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# aif_host_short — this machine's name, as aif writes it wherever a claim says
+# where: the worker's `taken:` comment, the loop's and the shift's locks, what
+# the shift reads off a card to tell its own claims from another machine's.
+#
+# One spelling everywhere, because they are compared — the claim exists to be
+# read by another process deciding whose card it is (docs/DEFECTS.md 14.4) —
+# and on a Mac `hostname` says `name.local` where `hostname -s` says `name`: a
+# claim written with one and read with the other is another machine's.
+# `hostname -s` with its fallbacks, whitespace taken out; `?` when there is
+# nothing to say.
+aif_host_short() {
+  local h
+  h="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-?}")"
+  h="$(printf '%s' "$h" | tr -d '[:space:]')"
+  printf '%s' "${h:-?}"
+}
+
 # aif_meta_json <file> — the JSON out of the FIRST aif:meta HTML comment.
 #
 # Only the first: a station prompt legitimately contains an example aif:meta

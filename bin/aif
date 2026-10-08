@@ -62,6 +62,7 @@ usage: aif <command> [options]
 commands:
   work          Build the next Ready ticket (or a named one) headless — no questions asked
   land          The yes after review: merge the branch, suite on the result, card to Done, next slice released
+  start         The shift: review, analyst and owner sessions one at a time, the board moved by fixed rules
   board         The board: next-ready, move, comment, create, status, show, head, release, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
   init          Install a foundry set into this project
@@ -170,6 +171,40 @@ main() {
       # shellcheck source=lib/cmd_land.sh
       . "$AIF_ROOT/lib/cmd_land.sh"
       aif_cmd_land ${1+"$@"}
+      ;;
+    start)
+      # The shift runs the worker's own readers (its status, its locks, its
+      # preflight), the sweep, and the requests; a land and a loop it starts
+      # are processes of their own (bin/aif again), so cmd_land is not here.
+      # shellcheck source=lib/ledger.sh
+      . "$AIF_ROOT/lib/ledger.sh"
+      # shellcheck source=lib/gates.sh
+      . "$AIF_ROOT/lib/gates.sh"
+      # shellcheck source=lib/cmd_amend.sh
+      . "$AIF_ROOT/lib/cmd_amend.sh"
+      # shellcheck source=lib/cmd_gate.sh
+      . "$AIF_ROOT/lib/cmd_gate.sh"
+      # shellcheck source=lib/cmd_meter.sh
+      . "$AIF_ROOT/lib/cmd_meter.sh"
+      # shellcheck source=lib/secret.sh
+      . "$AIF_ROOT/lib/secret.sh"
+      # shellcheck source=lib/board.sh
+      . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/run.sh
+      . "$AIF_ROOT/lib/run.sh"
+      # shellcheck source=lib/tui.sh
+      . "$AIF_ROOT/lib/tui.sh"
+      # shellcheck source=lib/integrate.sh
+      . "$AIF_ROOT/lib/integrate.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
+      # shellcheck source=lib/release.sh
+      . "$AIF_ROOT/lib/release.sh"
+      # shellcheck source=lib/requests.sh
+      . "$AIF_ROOT/lib/requests.sh"
+      # shellcheck source=lib/cmd_start.sh
+      . "$AIF_ROOT/lib/cmd_start.sh"
+      aif_cmd_start ${1+"$@"}
       ;;
     board)
       # shellcheck source=lib/ledger.sh

@@ -17,8 +17,11 @@ usage: aif board <operation> [args]
                              an existing card's text is brought up to date
   status [--json]            every card, by column
   show <ID> [--json]         one card, with its comments
-  head <ID>                  the first line of the newest comment aif or a role
-                             wrote: blocked:, sync:, rework:, land:, …
+  head <ID> [--json]         the first line of the newest comment aif or a role
+                             wrote: blocked:, sync:, rework:, land:, …;
+                             --json adds its time, its other lines, how many
+                             comments came after it, and every head on the
+                             card with its time
   label <ID> <label>         add a label (created on the board if new)
   release [--dry-run]        move the Backlog cards whose every dependency is
                              Done and landed to the bottom of Ready; --dry-run
@@ -127,14 +130,38 @@ aif_cmd_board() {
       # supervisor's `case` reads this, never the comments as prose. The
       # exit code is the function's — 1 prints nothing, so `head="$(aif
       # board head X)" || …` is the whole test; 2 is the board, not the card.
-      [ -n "${1:-}" ] || aif_die "usage: aif board head <ID>"
+      #
+      # --json is the same read with what a supervisor routes on besides the
+      # line (aif_board_head_json): its time, the comments after it, every
+      # head on the card. The exit codes are the same; on 1 the object is still
+      # printed, because "no head, and a person wrote twice" is an answer.
+      local id="" json=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --json) json=1 ;;
+          -*) aif_die "unknown option: $1 (aif board head <ID> [--json])" ;;
+          *)
+            [ -z "$id" ] || aif_die "usage: aif board head <ID> [--json]"
+            id="$1"
+            ;;
+        esac
+        shift
+      done
+      [ -n "$id" ] || aif_die "usage: aif board head <ID> [--json]"
       local line rc=0
-      line="$(aif_board_last_line "$root" "$1")" || rc=$?
+      if [ "$json" -eq 1 ]; then
+        line="$(aif_board_head_json "$root" "$id")" || rc=$?
+      else
+        line="$(aif_board_last_line "$root" "$id")" || rc=$?
+      fi
       case "$rc" in
         0) printf '%s\n' "$line" ;;
-        1) exit 1 ;;
+        1)
+          [ "$json" -eq 0 ] || printf '%s\n' "$line"
+          exit 1
+          ;;
         *)
-          aif_err "could not read $1's comments"
+          aif_err "could not read $id's comments"
           exit 2
           ;;
       esac

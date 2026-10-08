@@ -183,3 +183,47 @@ EOF
     fi
   fi
 }
+
+# aif_profile_maps_model <model> — will the exported profile send this model
+# where it can be answered? rc 0 yes · 1 it names an alias the profile leaves
+# untranslated. Call it after aif_profile_export_env; it reads only what that
+# exported.
+#
+# An alias (`opus`, `sonnet`, `haiku`) is the CLI's word, turned into a model
+# id by the CLI itself — or, under a profile that routes to another endpoint
+# (ANTHROPIC_BASE_URL set), by the profile's ANTHROPIC_DEFAULT_<ALIAS>_MODEL.
+# One the profile does not map is sent as it is to an endpoint that never
+# heard of it, and fails there, after a session was opened for a person,
+# instead of here (docs/DEFECTS.md 14.6: `fable` under glm). So: no base URL —
+# every alias is the CLI's and passes; with one, `opus`/`sonnet`/`haiku` pass
+# when their variable is set, `opusplan` (opus to plan, sonnet to build) when
+# both are, `fable` never (no profile variable routes it yet), `default` only
+# when ANTHROPIC_MODEL says what it is. A `[…]` suffix (`opus[1m]`, the
+# long-context variant) is the same alias. Anything else is a full model id,
+# the caller's own choice, and passes; so does an empty model — no `--model`
+# at all.
+aif_profile_maps_model() {
+  local m="$1"
+  case "$m" in
+    *\]) m="${m%\[*}" ;;
+  esac
+  [ -n "${ANTHROPIC_BASE_URL:-}" ] || return 0
+  case "$m" in
+    opus | sonnet | haiku) _aif_profile_alias_mapped "$m" ;;
+    opusplan) _aif_profile_alias_mapped opus && _aif_profile_alias_mapped sonnet ;;
+    fable) return 1 ;;
+    default) [ -n "${ANTHROPIC_MODEL:-}" ] ;;
+    *) return 0 ;;
+  esac
+}
+
+# _aif_profile_alias_mapped <opus|sonnet|haiku> — is its variable set? A
+# `case`, because bash 3.2 has no `${v^^}` to build the name with.
+_aif_profile_alias_mapped() {
+  case "$1" in
+    opus) [ -n "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] ;;
+    sonnet) [ -n "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ] ;;
+    haiku) [ -n "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ] ;;
+    *) return 1 ;;
+  esac
+}

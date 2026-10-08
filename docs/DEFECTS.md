@@ -1,7 +1,7 @@
 # Defects — the one log
 
-Every defect found in aif, from the review of 0.5.0 to the research for the
-autopilot mode after 0.15.0. One file, two halves: an **open** defect is written in
+Every defect found in aif, from the review of 0.5.0 to building the autopilot
+mode's shift after 0.16.0. One file, two halves: an **open** defect is written in
 full — how it was established (probed, read, observed or reported), the
 observation quoted, what a fix has to decide — because an open entry is a
 work order; a **closed** one is a line — what went wrong, how it was
@@ -90,6 +90,25 @@ What was tried and does not fix it: replacing the tick's `sleep 1` with a
 wait the shell does itself — `read -t 1` on a pipe nobody writes — which on
 bash 3.2 behaved worse (the loop's own interrupt went unhandled every time,
 and the stop reached the worker by a route not understood). Left as it was.
+
+#### Progress
+
+On `main` after 0.16.0, the half of the second direction that needs no
+signal: a loop can be stopped without catching anything. `aif work --loop
+--drain` (no new card; the runs in flight finish) and `aif work --loop
+--stop` (the runs in flight stopped too, as a second Ctrl-C would) leave a
+file in the loop's lock, `drain` or `stop`, naming who asked — and the loop
+reads it at the top of every iteration with builtins only (`[ -f … ]`,
+`read <file`), so there is no fork and no new window for the race. `--stop`
+writes the same name into each running ticket's run lock before it forwards
+the TERM, so every card says who stopped it — a person's stop, which `aif
+start` never retries — then waits up to 90 s for the loop to end and prints
+its summary's why (`_aif_work_loop_tell`, lib/cmd_work.sh; scenario 50).
+That is how a person in another terminal ends a loop; ending `aif start`
+does not — a loop in another terminal runs on, and the shift's summary says
+so with `aif work --loop --drain`. The race itself is unchanged: a second
+Ctrl-C typed on the tick can still be lost, and the harness's workaround
+below stays.
 
 #### Directions
 
@@ -226,21 +245,36 @@ board says it (up to 60 s) and else the next of `AIF_TRELLO_RETRY_SLEEP`
 (1, 3, 7) — a POST stays one attempt, because a comment posted twice is the
 card's record twice; and `show` dies with the reason when the comments read
 fails, where it answered `[]` (14.7). `scripts/check-board.sh` holds each
-through the mock's fault file (`_aif_trello_call`, lib/board.sh). Still
-open: the lookup that asks for one card instead of listing the board (every
-move and comment still lists it, and the claim of 14.4 is one more round
-trip per take); the loop's reading of exit 3 — stop only when the preflight
-fails again; and a runner that produced no envelope — the network, a CLI
-that could not start — which the paragraph above has as the environment and
-the code settles as `blocked: run` with "the environment, not the ticket"
-in its why (research §6.11, verification 6), so the loop counts it toward
-two in a row and never as the machine.
+through the mock's fault file (`_aif_trello_call`, lib/board.sh).
+
+On `main` after 0.16.0, the loop's half: a worker that could not start —
+exit 3, or exit 1 in its claim, worktree or intake, which its handler labels
+`blocked: environment` — has the machine asked again before it stops
+anything. The loop runs its own preflight in a subshell, without the suite
+probe (`AIF_WORK_LOOP=1`), under the profile it resolved to; it goes on
+while that passes, and takes no new card when it fails, or at the third such
+worker in a row. Those workers do not count toward two in a row, which reads
+the cards. So a machine that cannot run anything costs at most three cards
+in Needs Human, and only for trouble the preflight cannot see; and a loop
+whose every card met the environment, never three in a row, ends on an empty
+Ready with rc 1, `env` 0 and `rechecks` in its summary (the reaper in
+`_aif_work_loop`, lib/cmd_work.sh; scenarios 51 and 40d — the third in a
+row, a re-check that fails, an exit-1 environment failure counted toward the
+three, and under `--idle` the card taken again once the machine passes).
+
+Still open: the lookup that asks for one card instead of listing the board
+(every move and comment still lists it, and the claim of 14.4 is one more
+round trip per take); and a runner that produced no envelope — the network,
+a CLI that could not start — which 13.7 has as the environment and the
+code settles as `blocked: run` with "the environment,
+not the ticket" in its why (research §6.11, verification 6), so the loop
+counts it toward two in a row and never asks the machine.
 
 #### Directions
 
 - The lookup asks for one card, not the board.
-- The loop stops on exit 3 only when the preflight fails again; two in a row
-  counts `blocked: run` and `blocked: ticket`, not `blocked: environment`.
+- A runner that produced no envelope settled as `blocked: environment`, so
+  the loop asks the machine again instead of reading it as the card.
 
 ### 13.9 A red test or check on the base stops every ticket, and a flaky test is a verdict — read
 
@@ -343,12 +377,43 @@ process has the worktree as its working directory; and whether a takeover
 first does what `--stop` does, a TERM to the group and a wait for it, before
 it builds.
 
+#### Progress
+
+On `main` after 0.16.0, the reader and the shift's half.
+`aif work --status <ID> [--json]` (`_aif_work_status_json`, lib/cmd_work.sh)
+lists what a dead worker left running, as `lock.orphans`: by process group
+when the lock's pid is gone — the loop starts each worker as a group leader,
+the station stays in that group, and a group's id is not handed out again
+while it has a member — and in every case by the station prompt's opening,
+`Ticket <ID>. `, in a command line; a pid alive under another command is
+someone else's now, and its group is never listed. `aif start` reads it:
+a card In Progress whose worker is gone mid-run is offered as a requeue
+(R3b), which TERMs each process listed — the whole group when it is the dead
+worker's, else the process alone — waits up to 30 s, and puts the card at
+the top of Ready only once nothing is left; a station still running is
+named, and the card stays. Scenario 52 and `check-start.sh` (layer C, a
+worker killed outright) hold it.
+
+Still open: the station's pgid in the lock; the takeover, which still looks
+at nothing but the lock — the requeue leaves the dead lock for the next
+worker to take over (14.5), and `aif work <ID>` run by hand on such a card
+still dispatches into the tree an orphan may be editing; a leftover with no
+prompt in its command line — `prepare`'s install, a gate's suite run — of a
+worker a script started without job control, whose group is its parent's,
+not its own: neither reading finds it (read); and no row tells the group
+TERM from a TERM per listed pid — every orphan the harness makes is listed
+by its own pid, so a requeue that signalled each pid alone passed
+`check-start.sh` (probed, by a mutation). A station of another clone
+building the same id is 15.4.
+
 #### Directions
 
 - The station's pgid in the lock beside the worker's pid, written as a
   dispatch starts and cleared as it ends.
 - No takeover while a process has the worktree as cwd; name it instead.
 - A `--stop`-style TERM to the recorded group first, then the takeover.
+- A `check-start.sh` row whose station has a child the listing does not
+  name, so the group TERM is held apart from a TERM per pid.
 
 ### 14.2 `_aif_work_block` moves the card to Needs Human even when its comment was not posted — read
 
@@ -403,6 +468,22 @@ ends the loop before its end — an errexit in the body, a print that failed —
 with the counts as they stood, so a parent polling for the file never waits
 for nothing. The exit ladder is unchanged.
 
+On `main` after 0.16.0 the file says more, and its first reader reads it.
+`summary.json` gains `idle` (the loop waited for Ready to fill), `rechecks`
+(how often a worker that could not start had the machine asked again —
+13.8) and `held` (the cards an idle loop took and that still sit in Ready);
+the loop lock's `owner.json` names the log directory as soon as there is
+one, so `aif work --loop --stop` and a shift find the summary of a loop they
+did not start. `aif start`, running the loop in its own terminal, decides
+what came of it from that file and never from the rc alone
+(`_aif_start_run_build`, lib/cmd_start.sh): no summary is a loop that never
+started — another holds the checkout, and the shift waits for it, or it died
+in its preflight, and the build is held; a why that opens `two runs in a
+row`, `stopped by` or `drained by`, or rc 1 or 143, holds the build until
+the person says `b`; rc 3 with a summary is the environment, which the
+loop's own preflight has already looked at again, and ends the shift with
+3; 130 pauses it.
+
 What a fix has to decide: whether the codes are made distinct — Ready
 drained, stopped with cards left, nothing taken — or every caller reads the
 file and the rc is only how the process ended, which is what a supervisor
@@ -434,7 +515,13 @@ host, the pid the lock records, the time — a claim, listed in
 `AIF_BOARD_HEADS` and routed on by nobody; the report or the `blocked:` line
 after it is the newer head (`_aif_work_claim`, lib/cmd_work.sh). A claim the
 board refused is a warning, not a stop. Scenario 48 and `check-board.sh`
-hold it. Nothing yet reads a claim before a take.
+hold it. Nothing yet reads a claim before a take. On `main` after 0.16.0
+`aif start` reads one before it acts on a card In Progress: on a Trello
+board the card is this shift's to report, requeue or settle only when its
+newest `taken:` names this host (`aif_host_short`, the claim's own name);
+another host's claim is a line, "built there; nothing to do here", and a
+card with no claim is a line too (lib/start.jq; the Trello row of
+`check-start.sh`).
 
 What a fix has to decide: whether a take reads the card's head first and
 skips a card another host claimed within a run's wall clock; and whether a
@@ -447,7 +534,7 @@ whose worker died (14.1) ages out.
   younger than the wall clock — skipped, and said.
 - An owner and a heartbeat on the card, for a board two machines share.
 
-### 14.5 A dead lock is taken over by `rm -rf` then `mkdir`, and liveness matches `*aif*` on the pid's command line — read
+### 14.5 A dead lock is taken over by `rm -rf` then `mkdir`, and liveness matches `*aif*` on the pid's command line — read; the command match is on `main`
 
 `_aif_work_lock` (lib/cmd_work.sh), finding the lock held, asks
 `_aif_work_lock_live` — `kill -0` on the recorded pid, then `ps -o command=`
@@ -469,10 +556,27 @@ directory gone and its own `mkdir` decides; a liveness test that matches the
 command, `aif work`, not the word; and a takeover count in `run.json` that a
 resume leaves alone, with a cap.
 
+#### Progress
+
+On `main` after 0.16.0, the second direction: liveness matches the command,
+not the word. `_aif_work_lock_live_as <lock> <glob>` (lib/cmd_work.sh)
+matches the pid's command line against a pattern for each lock — the run
+lock `*aif work*`, the loop lock `*aif work*--loop*`, the shift lock `*aif
+start*` — so a pid since reused by a `claude '/aif-review …'` session, or by
+a shift, no longer reads as a live worker (an unquoted pattern in `case`
+honours the escaped space on bash 3.2). Every lock fixture in the harness
+uses a dead pid.
+
+Still open: the takeover, now three times over — the loop lock
+(`.aif/state/loop/`) and the shift lock (`.aif/state/shift/`) take a dead
+lock over the run lock's way, `rm -rf` then `mkdir`, with the same window;
+a reused pid that runs any `aif work`, a loop included, still reads as a
+live worker of the run lock; and the takeover counter.
+
 #### Directions
 
-- Rename the dead lock aside, compare its pid, then `mkdir`.
-- Match `aif work` on the command line, not `*aif*`.
+- Rename the dead lock aside, compare its pid, then `mkdir` — one helper for
+  the three locks.
 - A takeover counter in `run.json` that a resume does not reset, and a cap
   on it.
 
@@ -493,11 +597,312 @@ before a station is dispatched, and names the ones it does; or whether the
 routing list gains the variable for it — once the CLI's name for that slot
 is known — and every profile that maps the other three maps this one.
 
+#### Progress
+
+On `main` after 0.16.0, the shift's half: `aif start` refuses, with exit 1
+before anything is opened, a role's model the profile it loaded does not
+map, and names where the model came from (the flag, `.aif/start.local`, the
+default) and the aliases the profile does map (`aif_profile_maps_model`,
+lib/profile.sh). Under a profile with a base URL, `opus`, `sonnet` and
+`haiku` pass only when their `ANTHROPIC_DEFAULT_*_MODEL` is set, `opusplan`
+when both of its are, `fable` never, `default` only when `ANTHROPIC_MODEL`
+is set; a full model id and no model at all pass. `check-start.sh` holds it
+under a profile that routes the three and not fable. Still open: the
+worker, which still sends a station an alias its profile does not map; and
+`default` under a routing profile, refused unless `ANTHROPIC_MODEL` is set,
+though what the CLI's own default resolves to there was never probed —
+while no model at all, which is the same default, passes (read).
+
 #### Directions
 
-- Refuse an alias the loaded profile does not map, with the ones it does.
+- Refuse an alias the loaded profile does not map, with the ones it does —
+  the worker as the shift does, before the first dispatch.
 - Or the fable slot in `AIF_ROUTING_VARS` and in `glm.profile`, once the CLI
   names it.
+
+### 15.1 One Ctrl-C in a review session while `aif land` runs sends the land TERM, then SIGKILL about 1.4 s later — probed; the undo under it read
+
+Found 2026-10-06 probing what a shift's sessions do to what they start
+(docs/FINDINGS.md #28). A command a session runs through its Bash tool runs
+in a session of its own, with no terminal; one Ctrl-C typed in claude sends
+TERM to that command's whole process group within about 20 ms, and SIGKILL
+1.3–1.5 s later to whatever is still alive (a stand-in that trapped every
+signal, and a grandchild "gate" under it, logged the TERM and were gone
+before their next line). `/aif-review` runs `aif land <ID>` exactly that way
+when the demo says *as expected*. The land's stop handler,
+`_aif_land_stopped` (lib/cmd_land.sh), ignores INT, TERM and HUP and then
+undoes — `git reset --hard` to the commit before the merge, then
+`_aif_land_restore_aside`, which puts the ticket's own untracked files back
+from `.aif/tmp/land-<ID>-<when>/` — and ignoring TERM does nothing against
+the SIGKILL that follows. A reset over a merge that touched many files, an
+install `--prepare` had started, a slow disk: the undo may be cut in half,
+the checkout left between the merge and the commit before it, or the
+analyst's untracked ticket left aside. What a SIGKILL there leaves was not
+probed. A closed window, the other way out, does not reach the land at all:
+it runs to its verdict unwatched, the shift ends with 129, and the next
+shift reads the card as the land left it.
+
+What a fix has to decide: whether the undo is kept small and fast enough to
+finish inside the grace — measured on a real merge — or survives being cut:
+a marker naming the commit before the merge, written before the merge and
+removed after the verdict, that the next `aif land` (or `aif doctor`) finds
+and finishes; or whether a land the review starts runs outside the tool's
+process group, so a Ctrl-C in the session does not reach it — and then
+cannot stop it either, which a person may mean.
+
+#### Directions
+
+- Measure the undo on `opes`: the reset and the restore after a merge of a
+  built ticket, timed.
+- A marker for a land in flight, found and finished by the next land.
+- A scenario: a land TERMed and then killed 1.4 s later mid-undo.
+
+### 15.2 `.aif/start.local` is not ignored in a project set up before the shift, until its next `aif init` — read
+
+`aif init` writes one managed block in `.gitignore` (lib/cmd_init.sh), and
+the line `.aif/start.local` — a developer's own shift defaults, models and
+waits — joined it with the shift. Nothing else rewrites the block: not
+`brew upgrade`, not `aif project upgrade`. So in a project initialised
+before, the file is untracked and not ignored — `git status` shows it, and
+a `git add -A` commits one developer's choices into the team's repository;
+the land's clean-tree check reads tracked files only, so nothing stops it.
+The shift says so once in its header, when the file exists and `git
+check-ignore` does not ignore it, and names `aif init`.
+
+What a fix has to decide: whether `aif project upgrade` or `aif doctor`
+names a managed block that is missing lines, with the command that adds
+them — writing the developer's `.gitignore` unasked is the invasive kind of
+action, opt-in.
+
+#### Directions
+
+- `aif doctor` lists the managed block's missing lines and names `aif init`.
+
+### 15.3 A card an idle loop holds stays in Ready, and a shift beside it waits for it for good — read
+
+Under `--idle` the loop remembers what it took and forgets a card only once
+it has left Ready, or after a passing re-check of the machine (13.8). A card
+whose run ended with the card still in Ready — a worker that stopped
+before its claim, with exit 1 and no `blocked:` line — is held: skipped,
+and never taken again by that loop. The loop then says `Ready is empty — idle`,
+with the held cards only in a `held:` suffix and on the dashboard's idle
+line; and nothing outside the process can know, because the loop lock's
+`owner.json` carries no held list and `summary.json`'s `held` is written
+when the loop ends. A shift in the other terminal reads a live loop
+elsewhere and Ready ≥ 1 as work in flight (lib/start.jq, the wait) and
+waits — a new look every `POLL` — until the person presses `q`.
+
+What a fix has to decide: whether the loop publishes what it holds, in
+`owner.json`, rewritten as it changes, and the shift's wait leaves those
+cards out and lists them with what would move them; or whether a card the
+loop will not take again leaves Ready with a line that says why; and the
+idle event's words while Ready holds only cards the loop will not take.
+
+#### Directions
+
+- `held` in `owner.json`, read by the shift's facts: the wait excludes the
+  held cards, and each is a line.
+- The idle line says "Ready holds only cards this loop will not take again".
+
+### 15.4 A station of another clone building the same ticket reads as this clone's orphan — read
+
+`aif work --status <ID>` lists, as a dead worker's leftovers, every process
+whose command line holds `Ticket <ID>. ` — the station prompt's opening —
+whatever its group (`_aif_work_status_orphans`, lib/cmd_work.sh); it looks
+only when this clone's run lock for the ticket is held and dead. A second
+clone of the same project on this machine — a developer's own two checkouts,
+a CI job's — building the same id runs a station whose argv carries the same
+text. That station is listed as this clone's orphan, and `aif start`'s
+requeue (R3b) TERMs it by pid, stopping a live build in the other clone,
+then sees it gone and puts this clone's card back in Ready.
+
+What a fix has to decide: how a process is tied to this clone — its working
+directory under this clone's `.aif/worktrees/<ID>` (`lsof -d cwd`, not
+probed on macOS), or the station's group recorded in the lock as it starts
+(14.1's first direction), which would leave the prompt match a fallback.
+
+#### Directions
+
+- The station's pgid in the run lock (14.1); the prompt match kept only for
+  a process whose working directory is this clone's worktree — probed first.
+
+### 15.5 A request's progress is read from the tickets that name it, and old tickets name none — probed on a copy of `opes`
+
+`aif_requests_json` (lib/requests.sh) derives a request's state from the
+tickets whose meta has a `request` naming it, and falls back to the first
+line of its `## Status`, a cache, when none does — with `next_slice` 1
+whatever that line says: the `- slice N → <ID>` list under it is not
+parsed. Tickets cut before the shift carry no `request` in their meta. On a
+copy of `opes` — four requests, 24 tickets, none naming a request — all four
+requests came out `effective: not cut`, so under its threshold the shift
+would offer each again — the two with `## Slices` to the analyst, the two
+old-format ones to the owner (R20) — a request whose first slice landed
+among them (research §2.3); and a request whose cache says `cut in part` is
+offered from slice 1. And the scan knows indented fences only: a fence
+at column 0 holding a `## ` line or a `1. ` line reads it as a heading or a
+slice (read).
+
+What a fix has to decide: where an old ticket's request comes from — the
+status list parsed as a second source under the tickets, a one-time
+backfill of `request` and `slice` into old tickets' meta (tracked files: the
+analyst's, with a person's yes), or the analyst asked once by the shift; and
+fences at column 0 in the scan.
+
+#### Directions
+
+- Parse `- slice N → <ID>` under `## Status`; the tickets still win.
+- Column-0 fences toggled in the awk scan, with rows in `check-start.sh`.
+- Try `aif start --dry-run` on `opes` before its first shift, and read the
+  analyst's list.
+
+### 15.6 On Trello the shift reads the newest 20 comments, on another clock, at six requests a session — read
+
+- `show` on Trello asks for the newest 20 comments (lib/board.sh), so a
+  card's head, its `after` count and its list of heads are read over those:
+  a card with more than 20 comments after its last first line aif knows
+  reads as a card with no head, and R17's count of bounces sees no further
+  back than the window.
+- R16 retries a `blocked: environment` posted during the shift: the head's
+  time is Trello's clock, the shift's start this machine's. A skew of a few
+  seconds misjudges a block posted in the shift's first seconds — retried as
+  new, or listed as old.
+- A session's two snapshots read the board's cards and the card's head:
+  about six requests per session, beside the facts of every tick and the
+  loop's workers, all on one token's rate limit (13.8).
+
+What a fix has to decide: a head read that asks Trello for aif's own lines
+rather than the newest 20; a margin on R16's comparison, or the shift's
+start taken from the board's clock; and whether a session's snapshot reuses
+the tick's facts.
+
+#### Directions
+
+- One at a time, measured on a Trello board with a long-commented card.
+
+### 15.7 An idle loop that takes a card twice writes the second worker's log over the first — read
+
+Each worker's output goes to `<logdir>/<ID>.log`, opened with `>`
+(`_aif_work_loop`, lib/cmd_work.sh). Under `--idle` one loop can take the
+same card twice — a land's `sync:`, a shift's retry, a person's move back
+to Ready — and the second worker's log replaces the first's. The first
+run's report stays on its branch; what its worker said — why it stopped,
+the lines before a refusal — is gone, and `summary.json` has two results
+rows for one file.
+
+What a fix has to decide: a log per take (`<ID>.<n>.log`, the results row
+naming it) or one file appended with a line between runs.
+
+#### Directions
+
+- A log per take, named in its results row.
+
+### 15.8 In this terminal, a held build with nothing else left ends the shift, though its line says `b` — read
+
+With the loop in the shift's own terminal (no `--no-build`), a loop that
+ended on two runs in a row, a drain, a stop, or rc 1 or 143 holds the build
+(R13): no new build until the person presses `b` at the control point. But
+the oracle (lib/start.jq) offers that hold as a line only; with no unit, no
+move and nothing in flight, it ends the shift — "nothing left for the
+shift" — with Ready still holding cards, and the `b` the line names is
+never offered.
+
+What a fix has to decide: whether a held build with Ready ≥ 1 is a unit —
+"build again", default skip, its key `b` — or a pause, instead of an end;
+and what the summary names for it after the shift (`aif work --loop`).
+
+#### Directions
+
+- A unit for the held build in mode here; the end only with Ready empty.
+
+### 15.9 Smaller seams found building the shift — read unless said
+
+- The facts read a card's ready gate from `aif _ready <ID>`'s rc — 0 ready,
+  1 not, 3 the environment — and a gate not installed dies with `aif_die`,
+  1, read as "not ready": no pull is offered, and nothing says why.
+- A card whose head cannot be read is `unread` on every tick, and an unread
+  card is work in flight: the shift waits on it until `q`, with no cap, its
+  line the only word of why.
+- `ticket_re` is matched by jq's regex engine in the facts and by `grep -E`
+  in `_aif_start_loose` (lib/cmd_start.sh), as the code before it splits
+  them: a pattern the two read differently drops a card or a loose ticket.
+- A session that changed only another card — a review that posted on a
+  different card — reads as "changed nothing", and the shift pauses where it
+  could go on: the snapshot is the unit's own, by design (probed).
+- A move the shift never tried — the shift ended first — that carries a
+  comment other than `rework:` or `cancelled:` (a report, a `blocked:`
+  line, a release) is left in the summary with `aif start` as its command,
+  not the comment and the move that would make it. A move it tried and the
+  board refused is a line of its own (lib/start.jq `as_line`): its note
+  carries the comment it kept and the two commands that finish it, and its
+  command is never the bare move where that would lose what the shift held
+  back — a refused requeue names `aif work --status`, a `rework:` or a
+  `cancelled:` the project manager.
+- On Trello a Ready card's `moved_at` is its last activity, which a comment
+  moves too: the build in the shift's own terminal (R12, keyed on each
+  card's entry into Ready) is offered again after a comment on a card the
+  loop left in Ready — a loop started again, its preflight with it, that
+  takes nothing new.
+- `aif work --status` with no id lists run locks, worktrees and `aif/*`
+  branches; a `--no-worktree` build, whose one trace is `tasks/<ID>/run.json`
+  in the checkout, is not among them. A lock with no `phase` file is said to
+  have died "during its claim".
+- A Ctrl-C that lands while the loop reads Ready ends it with `env` 1 in its
+  summary beside rc 130: the interrupted read is taken for the board's
+  failure. The shift reads the 130 and pauses; another reader of `env` would
+  be misled.
+- `aif work --loop --stop` against a loop still in its preflight is read
+  only once the preflight ends; a long suite probe makes it answer "still
+  running after 90 s", rc 1, though the loop stops at its first iteration.
+- The session opener with no terminal returns 1 and prints "Device not
+  configured" (probed). The shift checks the terminal just before it opens a
+  session, so only a terminal lost in between, with no hang-up, would read
+  as claude failing — exit 1, not 129.
+- The harness's key seam (`AIF_START_KEYS`) is taken one key per tick of a
+  wait, so a row that waits sizes its run of `_` for a wait of unknown
+  length — too short ends the shift at `q`, never hangs (read and run); and
+  what is left of it is inherited by the land, the loop and the sessions the
+  shift runs, where it means nothing.
+
+What a fix has to decide: each its own; none of them stops a shift on a
+local board.
+
+#### Directions
+
+- One at a time, each with its row in `check-start.sh` or `check-work.sh`,
+  as a shift's use meets it.
+
+### 15.12 On Trello the shift cannot tell a build of a card's earlier text from a build of its current one — read
+
+`aif work --status` says whether the ticket changed since the build by
+comparing the run record's `ticket_sha256` with the checkout's
+`tasks/<ID>/ticket.md` (`_aif_work_status_json`, lib/cmd_work.sh) — the
+ticket on the local board. On Trello the card's description is the ticket,
+each run pulls it into its worktree and hashes that, and the checkout's file
+is the analyst's older copy: a card a person fixed in the browser before
+its build was read as built from "the ticket before its rework" — no review
+offered, `aif work <ID>` resuming at done round after round, an In Progress
+card moved to Needs Human with a false `blocked:` line (probed against the
+stand-in Trello). The review's fix leaves the comparison out on Trello, so
+the other half is open: a description changed AFTER the build reads as
+built, the shift offers its review and its land, and nothing says the build
+is of the earlier text until the next `aif work <ID>` pulls the card and
+restarts the run. The reader is offline by design; the card's text is a
+board read.
+
+What a fix has to decide: whether the shift's one status read a tick asks
+Trello for `desc` too (lib/board.sh asks for name, list, pos, activity and
+labels — a board of long tickets makes it a large answer) and the facts hash
+each Review and In Progress card's description as the pull writes it,
+against its run's `ticket_sha256`, routing a mismatch to R8 ("the card
+changed after this build — aif work <ID>"); or whether `aif land` refuses a
+build whose ticket sha is not the card's — the land reads the board already.
+
+#### Directions
+
+- The card's description hashed in the facts on Trello, CR stripped as the
+  pull strips it; R7 and R6 only for a build of the card as it is.
+- A row in `check-board.sh`: the description edited after the build, and
+  the shift offers no review.
 
 ---
 
@@ -625,16 +1030,38 @@ sessions one after another and run the loop between them — read and probed
 every place such a supervisor would lean on, and the unhappy paths gave way
 on each (docs/AUTOPILOT-RESEARCH.md §6.11; FINDINGS #27). Twelve entries:
 14.7–14.12 on `main` after 0.15.0, held by scenarios 25, 48 and 49,
-`check-board.sh` and `check-set.sh`; 14.1–14.6 open above, 14.3 and 14.4 in
-part.
+`check-board.sh` and `check-set.sh`; 14.1–14.6 open above, 14.1 and
+14.3–14.6 in part — 14.3 and 14.4 since 0.15.0, all five moved on by the
+shift's work (log 15).
 
 - **14.7** Trello's `show` hid a failed comments read as `[]` with rc 0 — read (research §6.11, verification 3). A card whose comments the API would not give looked like a card with no comment, and every reading of a first line downstream — the project manager's, a sweep's — would have read "nothing here". The adapter dies with the reason (`Trello: could not read the comments of <ID> — …`); `aif board head` exits 2 for it, apart from the 1 of a card with no head; `check-board.sh` asserts it under three 500s on the actions call, through the mock's fault file. The two readers that only ever wanted a card's column — the land's "is it in Review" and `--stop`'s "is the gone worker's card still In Progress" — read it out of `show` under `2>/dev/null … || true`, so the loud failure reached them as an empty column: the land refused a landable card as "no card on the board", and the stop removed the lock under an In Progress card, left for the next `aif work` to take as fresh. Both read it through `aif_board_card_column` now — one listing of the cards, no comments asked — and a board that cannot say is the land's exit 3 and a stop that keeps the lock; `check-board.sh` holds each under a fault on the comments GET alone (`actions?`, the query string telling it from the comment's POST). On `main` after 0.15.0.
-- **14.8** Nothing in aif handled HUP — read (research §6.11, verifications 2, 5 and 6). A closed window hung up on the worker's whole group: the station died of it and the card stayed In Progress; a land between its merge and its verdict died with the merge in place and nobody told. `aif_trap_arm` traps HUP beside EXIT, INT and TERM; the worker settles its card as `blocked: stopped — by a hang-up — the terminal closed — during <stage>` and exits 129, the loop stops its runs and exits 129 with `hup` in its summary — its own lines going to its loop.log from the hang-up on, because the terminal they went to is gone, a print to it fails with EIO, and errexit holds inside a trap (bash 3.2, probed): a loop that forwarded the TERM and went on to say "stopped (exit 143)" died of the saying, at 1, with no summary — the land undoes its merge and leaves the card in Review, and the ledger's own trap covers it. On `main` after 0.15.0; scenario 48, the worker's group hung up on while its plan station runs, and the loop on a pty whose master closes over it.
+- **14.8** Nothing in aif handled HUP — read (research §6.11, verifications 2, 5 and 6). A closed window hung up on the worker's whole group: the station died of it and the card stayed In Progress; a land between its merge and its verdict died with the merge in place and nobody told. `aif_trap_arm` traps HUP beside EXIT, INT and TERM; the worker settles its card as `blocked: stopped — by a hang-up — the terminal closed — during <stage>` and exits 129, the loop stops its runs and exits 129 with `hup` in its summary — its own lines going to its loop.log from the hang-up on, because the terminal they went to is gone, a print to it fails with EIO, and errexit holds inside a trap (bash 3.2, probed): a loop that forwarded the TERM and went on to say "stopped (exit 143)" died of the saying, at 1, with no summary — the land undoes its merge and leaves the card in Review, and the ledger's own trap covers it. On `main` after 0.15.0; scenario 48, the worker's group hung up on while its plan station runs, and the loop on a pty whose master closes over it — under `--no-tui`: the dashboard's path, the default on a terminal, still ended 1 with no summary and its lock left, until 15.10.
 - **14.9** A failed land's comment had no routable first line — read (research §4.5). The note opened with `# <ID> — not landed`, a title no reader of first lines knew, so a card in Needs Human over an undone merge was the one the project manager could not route. The first line is `land: <headline>` — the suite red on the result, a merge git refused, `prepare` failing or moving a tracked file — and the note's last paragraph names the command that lands it once resolved; `AIF_BOARD_HEADS` lists it and the pjm skill routes on it. On `main` after 0.15.0; scenario 25.
 - **14.10** The reviewer's `wrong` and `cancel` comments had no fixed first line — read. The verdict was prose in the reviewer's words, and the project manager — or anything in bash — had to read the whole comment to know it was one. The review skill and command write `wrong: <the first thing wrong>` and `cancel: <why>` as the first line, one line per further thing under it; the pjm routes on them, and still on a human's own words. On `main` after 0.15.0; a project gets it when `aif init` refreshes its set.
 - **14.11** A role's `model:` frontmatter would silently override the user's `--model` — probed (FINDINGS #27: `model: haiku` in a skill or a command answered from haiku under `--model sonnet`; only `inherit` lets the flag through; a skill beats a command of the same name). `check-set.sh` refuses a `model:` line other than `inherit` on every human role, `skills/aif-*/SKILL.md` and `commands/*.md`; the stations under `agents/` keep theirs, which is the tier's. On `main` after 0.15.0.
 - **14.12** A dependent was released by the land of the ticket it names, and by nothing else — read (research §4.4; §6.11, verification 4). `_aif_land_release` takes the cards that name the ticket it just landed, so a slice cut after its dependency landed, a dependency merged by hand, or a land whose move on the board failed left a card in Backlog that nothing would release; and the Done column alone is not a landed ticket — the project manager's cancel puts a card there too. `aif board release [--dry-run]` (lib/release.sh) is the pass: every Backlog card with a `depends_on`, moved to the bottom of Ready under a `released by aif board release:` comment when each dependency is Done and `aif: land <dep> — ` is a commit on the main checkout's branch; held under a `rework:`, `blocked:` or `cancelled:` head, or a `parked` / `retired-direction` label (`AIF_RELEASE_HOLD_LABELS`); a Done dependency without a land commit named as a merge by hand, with the move that releases its dependent on purpose; loud when the board cannot be read. The land's own release is unchanged. On `main` after 0.15.0; scenario 49.
 - *(14.1–14.6 are open, above.)*
+
+### Log 15 — 0.16.0, building the shift (2026-10-06/07)
+
+`aif start` — the shift: review, analyst and owner sessions opened one at a
+time in a person's terminal, the board moved by fixed rules on fixed first
+lines — and the loop beside it in another terminal (`aif work --loop
+--idle`, `--drain`, `--stop`, the loop lock, `aif work --status`), built to
+docs/AUTOPILOT-PHASE1.md. What gave way was found by the probes of
+docs/FINDINGS.md #28, by three critics of the spec reading it against the
+code, and by the implementers of each part, reading and running what they
+built. Nothing in this log closed with it; the work it did on older
+entries is Progress under 11.1, 13.8, 14.1 and 14.3–14.6. A review of the
+built shift (2026-10-07: reviewers, then adversarial verifiers) confirmed
+twenty findings in it, fixed on `main` before the release — each behaviour
+with its row in `check-start.sh`, `check-work.sh` or `check-board.sh`, the
+rest in the README and the usage; the two in code released before the shift
+are 15.10 and 15.11, and what the fixes leave open is 15.12.
+
+- **15.10** The loop's dashboard ended a closed window with 1, no `summary.json` and its lock left — probed (a pty, the dashboard on: 5 of 5 idle, 6 of 6 with a card held at plan; every card settled). bash runs a trap inside the redirections of the builtin it interrupts, and the dashboard spends its seconds in `read … </dev/tty 2>/dev/null`: the HUP handler's `exec >>loop.log 2>&1` was undone for fd 2 when the read put back its own, the next print hit the dead terminal (EIO, errexit, 1), and the bytes it could not write leaked from stdio's buffer into every `$(…)` after it — the summary's results, the lock's pid read against `$$` (docs/FINDINGS.md #28). The tick makes the redirection again once the read is done with its own, and the EXIT branch throws away what a failed print left before it captures anything (`_aif_work_loop_to_log`, lib/cmd_work.sh). 14.8's row ran `--no-tui`; a row of scenario 48 closes the master over the dashboard. Since 0.15.0; on `main` after 0.16.0.
+- **15.11** A drain, a stop or a TERM that came while the loop read Ready was followed by one card more — probed (the read held open by a FIFO among the board's files). The drain had answered "takes no new card"; the TERM stopped every run and then started one no signal reached, which built on after its loop was gone. The stop and the files are looked at again, with builtins, before a card is taken, and a run started as a signal lands is sent it (lib/cmd_work.sh `_aif_work_loop`). The TERM half since before 0.15.0, the drain's since `--drain`; on `main` after 0.16.0; scenario 50.
+- *(15.1–15.9 and 15.12 are open, above.)*
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

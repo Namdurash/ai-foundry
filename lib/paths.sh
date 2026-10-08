@@ -7,10 +7,17 @@
 # Claude Code's, and gitignored: the set is a shared team asset, the model choice
 # is per-developer.
 #
-# Read by cmd_init and cmd_start, which a linter reading this file alone cannot
-# see.
+# Read by cmd_init, cmd_work and cmd_start, which a linter reading this file
+# alone cannot see.
 # shellcheck disable=SC2034
 AIF_PROFILE_STATE=".aif/profile.local"
+
+# Where a developer keeps the defaults of their shift (`aif start`): the models
+# per role, how many at once, how long the control point waits. Per-developer
+# like the profile, so beside it and gitignored with it — read by cmd_start,
+# ignored by the block cmd_init writes.
+# shellcheck disable=SC2034
+AIF_START_STATE=".aif/start.local"
 
 # Where a ticket's artifacts live, relative to the project root.
 #
@@ -106,6 +113,24 @@ aif_current_ticket_file() {
 # stock macOS does not have — the ledger's lock is made the same way.
 aif_run_lock_dir() {
   printf '%s/.aif/state/runs/%s' "$(aif_main_root "$1")" "$2"
+}
+
+# aif_loop_lock_dir <root> — the directory whose existence says an `aif work
+# --loop` is draining this checkout's Ready column.
+#
+# One loop per checkout: two would race each other for the top of Ready, and
+# whatever one of them was asked — a --drain, a --stop — the other would not
+# hear. Beside the run locks and for the same reasons (in the main checkout,
+# gitignored, a directory because mkdir is atomic), and it is also how a shift
+# in another terminal (`aif start`) learns that the building is done there.
+aif_loop_lock_dir() {
+  printf '%s/.aif/state/loop' "$(aif_main_root "$1")"
+}
+
+# aif_shift_lock_dir <root> — the same for `aif start`: one shift per checkout,
+# because two would offer the same card's review twice and move it once each.
+aif_shift_lock_dir() {
+  printf '%s/.aif/state/shift' "$(aif_main_root "$1")"
 }
 
 # aif_station_file <root> <station> — the file declaring a pipeline station.

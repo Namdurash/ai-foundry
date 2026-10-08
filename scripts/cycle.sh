@@ -105,6 +105,8 @@ sets/claude/skills/aif-pjm/SKILL.md|rework:|the project manager routes a review 
 sets/claude/skills/aif-pjm/SKILL.md|cancelled:|…or cancels the card to Done
 sets/claude/skills/aif-pjm/SKILL.md|`aif work` takes the top card|the worker consumes the top of Ready
 lib/cmd_work.sh|--loop|aif work --loop drains Ready
+lib/cmd_work.sh|--idle|aif work --loop --idle waits for Ready to fill instead of ending
+lib/cmd_start.sh|aif_runner_claude_session|aif start opens one interactive session per unit of work, in the foreground
 lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
 lib/release.sh|aif_release_sweep|aif board release moves the Backlog cards whose dependencies are Done and landed

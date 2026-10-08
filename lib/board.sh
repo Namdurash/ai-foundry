@@ -746,17 +746,70 @@ AIF_BOARD_HEADS='^(blocked: (ticket|run|environment|stopped) — |sync: |rework:
 # Hence the closed set: the newest comment of any shape would make a question
 # typed on the card the ticket's state.
 aif_board_last_line() {
-  local root="$1" id="$2" json line esc
-  json="$(aif_board_show_json "$root" "$id" 2>&1)" || {
-    esc="$(printf '\033')"
-    printf '%s\n' "$json" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
-    return 2
-  }
+  local root="$1" id="$2" json line
+  json="$(_aif_board_show_or_why "$root" "$id")" || return 2
   line="$(printf '%s' "$json" | jq -r --arg re "$AIF_BOARD_HEADS" '
     [ (.comments // []) | reverse[] | (.text // "") | split("\n")[0] | select(test($re)) ] | .[0] // empty' 2>/dev/null)" ||
     return 2
   [ -n "$line" ] || return 1
   printf '%s\n' "$line"
+}
+
+# _aif_board_show_or_why <root> <ID> — the card's show JSON on stdout; or rc 2
+# and the reason on stderr as one bare line — no `error:`, no colour — which
+# is what both head readers (aif_board_last_line, aif_board_head_json)
+# promise their callers.
+_aif_board_show_or_why() {
+  local json esc
+  json="$(aif_board_show_json "$1" "$2" 2>&1)" || {
+    esc="$(printf '\033')"
+    printf '%s\n' "$json" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
+    return 2
+  }
+  printf '%s\n' "$json"
+}
+
+# aif_board_head_json <root> <ID> — the head as a supervisor needs it, not
+# only its line: rc 0 a head · 1 no head · 2 the card could not be read (the
+# reason bare on stderr, as aif_board_last_line). On 0 and 1 it prints one
+# compact object:
+#
+#   { line, at, body, after, heads: [ { line, at } ] }
+#
+# `line` is aif_board_last_line's (null when there is none); `at` its time,
+# ISO UTC to the second on both backends (Trello's milliseconds taken off, so
+# a time from one compares with a time from the other and with `date -u`);
+# `body` the head comment's other lines; `after` how many comments came after
+# it — a person's words under aif's line, the "answered" of
+# docs/AUTOPILOT-RESEARCH.md §6.11 (with no head: every comment); `heads`
+# every head on the card with its time, oldest first, which is what a reader
+# needs to count blocks in a row or find the newest `taken:` — the line alone
+# says only what happened last.
+#
+# On Trello the comments are the newest 20 (`_aif_trello_show_json` asks for
+# no more): a head under twenty replies is not seen, and `heads` holds only
+# what those 20 do.
+aif_board_head_json() {
+  local root="$1" id="$2" json out
+  json="$(_aif_board_show_or_why "$root" "$id")" || return 2
+  out="$(printf '%s' "$json" | jq -c --arg re "$AIF_BOARD_HEADS" '
+    (.comments // []) as $c
+    | [ range(0; $c | length) | select((($c[.].text // "") | split("\n")[0]) | test($re)) ] as $ix
+    | ($ix | last) as $i
+    | { line: (if $i == null then null else ($c[$i].text | split("\n")[0]) end),
+        at: (if $i == null then null else (($c[$i].at // "") | sub("\\.[0-9]+Z$"; "Z")) end),
+        body: (if $i == null then null else ($c[$i].text | split("\n")[1:] | join("\n")) end),
+        after: (if $i == null then ($c | length) else (($c | length) - $i - 1) end),
+        heads: [ $ix[] | { line: ($c[.].text | split("\n")[0]),
+                           at: (($c[.].at // "") | sub("\\.[0-9]+Z$"; "Z")) } ] }' 2>/dev/null)" || {
+    printf '%s\n' "the card's comments did not read as JSON" >&2
+    return 2
+  }
+  printf '%s\n' "$out"
+  # The object is built with `line` first, so a missing head is its opening.
+  case "$out" in
+    '{"line":null,'*) return 1 ;;
+  esac
 }
 
 # aif_board_check <root> — is the board reachable, as configured? Prints one

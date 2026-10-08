@@ -16,15 +16,18 @@
 #   2  the local board: create/move/next-ready/comment/show/label/status, and a
 #      move made from inside a worktree lands on the developer's board; head
 #      is the first line of the newest comment aif or a role wrote — under a
-#      person's reply — and nothing, exit 1, on a card with only theirs
+#      person's reply — and nothing, exit 1, on a card with only theirs; head
+#      --json is that line with its time, the comments after it and every
+#      head, printed on exit 1 too
 #   3  trello: init maps the columns it can and creates the rest only when
 #      told; check refuses a missing token loudly; create writes the ticket as
 #      the card's description and pull reads it back byte for byte; a card the
 #      analyst did not write is refused at pull; comment, label, status, show,
-#      head; a comment is held to Trello's 16384 characters counted as Trello
-#      counts them — a Ukrainian one that fits by characters is posted whole, a
-#      longer one is cut on a letter, saying where the whole text is
-#      (DEFECTS.md 10.1); through the mock's fault file, a comments read that
+#      head, head --json with Trello's milliseconds taken off; a comment is
+#      held to Trello's 16384 characters counted as Trello counts them — a
+#      Ukrainian one that fits by characters is posted whole, a longer one is
+#      cut on a letter, saying where the whole text is (DEFECTS.md 10.1);
+#      through the mock's fault file, a comments read that
 #      fails three times is a loud failure, not a card with no comment (14.7),
 #      a 429 or a 5xx on a GET is retried and the answer is as before, and a
 #      503 on a comment's POST is one attempt (13.8); a card's column is read
@@ -232,14 +235,40 @@ eq "and show prints it" "$("$AIF" board show AIF-1 | grep -c 'must be signed')" 
 rc=0
 "$AIF" board head AIF-1 >"$OUT/head-local1.out" 2>&1 || rc=$?
 eq "head on a card with only a person's comment: nothing, exit 1" "$rc,$(wc -c <"$OUT/head-local1.out" | tr -d ' ')" "1,0"
+# The same read as JSON (aif_board_head_json), for a supervisor: besides the
+# line, its time, its other lines, how many comments came after it — a
+# person's answer under aif's line — and every head with its time. With no
+# head it is still printed: no line, and the comments a person wrote counted.
+hj() { # <ID> — `aif board head <ID> --json` into $OUT/hj.out (stderr hj.err), its exit code in hj_rc
+  hj_rc=0
+  "$AIF" board head "$1" --json >"$OUT/hj.out" 2>"$OUT/hj.err" || hj_rc=$?
+}
+hj AIF-1
+eq "head --json on a card with only a person's comment: exit 1, no line, the comment counted after" \
+  "$hj_rc,$(jq -c '[.line, .after, (.heads | length)]' "$OUT/hj.out")" "1,[null,1,0]"
 printf '%s\n\n%s\n' "blocked: ticket — not ready — the ready gate's questions are below, for the analyst" "- Q-001 signed? (default: no)" >"$OUT/blocked.md"
 "$AIF" board comment AIF-1 "$OUT/blocked.md" >/dev/null
 printf 'yes, signed — I will move it back to Ready\n' >"$OUT/reply.md"
 "$AIF" board comment AIF-1 "$OUT/reply.md" >/dev/null
 eq "head is the blocked: line, under the person's reply" "$("$AIF" board head AIF-1)" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+hj AIF-1
+eq "head --json: the same line, with its time, its other lines, and the person's reply counted after it" \
+  "$hj_rc|$(jq -r '.line' "$OUT/hj.out")|$(jq -r '[(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")), (.body | contains("Q-001")), .after, (.heads | length)] | map(tostring) | join(",")' "$OUT/hj.out")" \
+  "0|$("$AIF" board head AIF-1)|true,true,1,1"
 rc=0
 "$AIF" board head AIF-9 >/dev/null 2>"$OUT/head-local9.err" || rc=$?
 eq "head on a card that is not there: exit 2, the board's problem, named" "$rc,$(grep -c "could not read AIF-9's comments" "$OUT/head-local9.err")" "2,1"
+hj AIF-9
+eq "head --json on a card that is not there: exit 2, nothing on stdout, the reason on stderr" \
+  "$hj_rc,$(wc -c <"$OUT/hj.out" | tr -d ' '),$(grep -c "could not read AIF-9's comments" "$OUT/hj.err")" "2,0,1"
+printf 'blocked: run — wall clock: 120 min\n' >"$OUT/head-a.md"
+printf 'released by aif board release: every dependency is Done and landed\n' >"$OUT/head-b.md"
+"$AIF" board comment AIF-2 "$OUT/head-a.md" >/dev/null
+"$AIF" board comment AIF-2 "$OUT/head-b.md" >/dev/null
+hj AIF-2
+eq "two heads: both listed, oldest first, each with its time; the newest is the line, nothing after it" \
+  "$hj_rc,$(jq -r '[(.heads | length), (.heads[0].line | startswith("blocked: run")), ([.heads[].at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")] | all), (.line == .heads[1].line), .after] | map(tostring) | join(",")' "$OUT/hj.out")" \
+  "0,2,true,true,true,0"
 "$AIF" board label AIF-1 blocked >/dev/null
 eq "a label is on the card" "$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-1") | .labels[0]')" "blocked"
 eq "status renders every card" "$("$AIF" board status | grep -cE '^  (ready|backlog) ')" "2"
@@ -316,9 +345,15 @@ eq "show lists it" "$("$AIF" board show AIF-1 --json | jq -r '.comments[0].text'
 rc=0
 "$AIF" board head AIF-1 >"$OUT/head-mock1.out" 2>&1 || rc=$?
 eq "trello: head on a card with only a person's comment: nothing, exit 1" "$rc,$(wc -c <"$OUT/head-mock1.out" | tr -d ' ')" "1,0"
+hj AIF-1
+eq "trello: head --json with only a person's comment: exit 1, no line, the comment counted after" \
+  "$hj_rc,$(jq -c '[.line, .after, (.heads | length)]' "$OUT/hj.out")" "1,[null,1,0]"
 "$AIF" board comment AIF-1 "$OUT/blocked.md" >/dev/null
 "$AIF" board comment AIF-1 "$OUT/reply.md" >/dev/null
 eq "trello: head is the blocked: line, under the person's reply" "$("$AIF" board head AIF-1)" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+hj AIF-1
+eq "trello: head --json: the same line, the person's reply counted after it" \
+  "$hj_rc|$(jq -r '.line' "$OUT/hj.out")|$(jq -r '.after' "$OUT/hj.out")" "0|$("$AIF" board head AIF-1)|1"
 
 # A comment in Ukrainian, two bytes a letter (docs/DEFECTS.md 10.1). The cut
 # counted bytes: anything over 16000 was cut at byte 15800 — through a letter,
@@ -366,6 +401,15 @@ ticket_for AIF-2
 "$AIF" board create tasks/AIF-2/ticket.md --column ready >/dev/null
 "$AIF" board move AIF-2 ready --top >/dev/null
 eq "--top on trello, and next-ready follows" "$("$AIF" board next-ready)" "AIF-2"
+# Trello stamps a time to the millisecond (the mock: 2026-09-17T00:00:00.000Z);
+# the head's time drops them, so it compares with a local board's and with
+# `date -u`.
+"$AIF" board comment AIF-2 "$OUT/head-a.md" >/dev/null
+"$AIF" board comment AIF-2 "$OUT/head-b.md" >/dev/null
+hj AIF-2
+eq "trello: two heads, oldest first, each with its time to the second; the newest is the line" \
+  "$hj_rc,$(jq -r '[(.heads | length), (.heads[0].line | startswith("blocked: run")), ([.heads[].at] | unique | join(" ")), .at, (.line == .heads[1].line)] | map(tostring) | join(",")' "$OUT/hj.out")" \
+  "0,2,true,2026-09-17T00:00:00Z,2026-09-17T00:00:00Z,true"
 curl -s -X POST "$AIF_TRELLO_API/cards" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
   --data-urlencode "idList=$(jq -r '.board.lists.ready' .aif/project.json)" \
   --data-urlencode "name=AIF-9 — written by hand" --data-urlencode "desc=just a sentence" >/dev/null
@@ -597,6 +641,28 @@ rc=0
 eq "land while the comments GET fails: landed from the card's column, the comments never asked for" \
   "$rc,$(column_of AIF-8),$(($(actions_gets) - before)),$(cat "$FAULT" 2>/dev/null),$(git log --format=%s -1 | grep -c '^aif: land AIF-8 — ')" "0,done,0,500 3 actions?,1"
 rm -f "$FAULT"
+
+# On Trello the card's description IS the ticket: a person who fixes a
+# criterion on the card in the browser before its build gets a build of the
+# new text — and `aif work --status` compared the run with the checkout's
+# older tasks/<ID>/ticket.md and called it "of the ticket before its
+# rework", which a shift reads as no review to offer and an In Progress card
+# to send to a human. The checkout's copy says nothing on Trello.
+fresh_project "$SANDBOX/p3d"
+"$AIF" board init trello --board b1 >/dev/null 2>&1
+ticket_for AIF-11
+git add -A && git commit -qm "one to fix on the card" >/dev/null
+"$AIF" board create tasks/AIF-11/ticket.md --column ready >/dev/null
+cid="$(mock | jq -r '.cards[] | select(.name | startswith("AIF-11 ")) | .id')"
+mock | jq -j --arg c "$cid" '.cards[] | select(.id == $c) | .desc' >"$OUT/desc11.md"
+printf '\nA sentence a person added on the card.\n' >>"$OUT/desc11.md"
+curl -s -X PUT "$AIF_TRELLO_API/cards/$cid" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+  --data-urlencode "desc@$OUT/desc11.md" >/dev/null
+rc=0
+"$AIF" work AIF-11 >"$OUT/work-edited.out" 2>&1 || rc=$?
+eq "a card a person edited before its build: built from the card, and --status says built, the ticket not changed" \
+  "$rc,$(column_of AIF-11),$(git show aif/AIF-11:tasks/AIF-11/ticket.md | grep -c 'A sentence a person added on the card'),$("$AIF" work --status AIF-11 --json | jq -r '[.class, .run.ticket_changed] | map(tostring) | join(",")')" \
+  "0,review,1,built,false"
 
 fresh_project "$SANDBOX/p5"
 unset AIF_TRELLO_API

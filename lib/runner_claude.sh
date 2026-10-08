@@ -8,12 +8,14 @@
 # lib/runner_codex.sh implementing the same handful of functions, and no command
 # module changes.
 #
-# It shrank when the stations became subagents. `_station` and `_converse` are
-# gone with the bash orchestrator that called them: a station is now dispatched
-# inside the session by the runner's own agent mechanism, so aif no longer needs
-# a way to spawn one. What is left is what aif still does itself — open a
-# session (`_start`) and run an eval (`_eval`) — plus reading the envelope those
-# produce.
+# What is here is what aif does with claude itself: dispatch one headless
+# station for `aif work` (`_station`), run an eval (`_eval`), ask whether the
+# runner answers at all and whether the guard hook denies (`_probe`,
+# `_guard_probe`), open one interactive session in the foreground for a shift
+# (`_session`, `aif start`) — plus reading the envelope the headless ones
+# produce. `_start`, which handed the terminal over by exec'ing claude and had
+# no caller left, gave way to `_session`, which hands it over and takes it
+# back.
 #
 # Sourced by bin/aif; not meant to be executed directly.
 
@@ -25,27 +27,50 @@ aif_runner_claude_version() {
   claude --version 2>/dev/null | head -1 | tr -d '\r\n'
 }
 
-# aif_runner_claude_start <headless> <task>
+# aif_runner_claude_session <cwd> <prompt> <model> <name> <session-id>
 #
-# Hands the terminal over to claude. The caller has already exported the
-# profile's environment, so the child inherits the right routing.
+# One interactive claude session in the foreground, for a person, and back:
+# the shift (`aif start`) opens one per unit of work — `/aif-review <ID>`,
+# `/aif-ba …` — and reads the board when it ends. Returns claude's exit code,
+# which says how claude was stopped, not what the person meant: `/exit`, two
+# Ctrl-C and a closed window are all 0; a HUP, a TERM and a kill -9 are 129,
+# 143 and 137 (docs/FINDINGS.md #28). The caller has exported the profile's
+# environment, so `--model opus` is whatever the profile maps opus to; an
+# empty model leaves the flag off — the CLI's own default.
 #
-# exec, not a plain call: the wrapper has nothing left to do, and replacing it
-# means signals, job control and the TTY all reach claude directly rather than
-# through a bash process that would swallow them.
-aif_runner_claude_start() {
-  local headless="$1" task="$2"
-
-  if [ "$headless" -eq 1 ]; then
-    [ -n "$task" ] || aif_die "--headless needs a task"
-    exec claude -p "$task"
+# `--session-id` is a fresh uuid the caller made: the transcript is then
+# `claude --resume <uuid>` for the person afterwards, where claude's own exit
+# hint resumes by `--name`, which fails once two sessions share one; and a
+# uuid already used is refused (#28).
+#
+# Job control around the one child (`set -m`, `set +m` on the line after):
+# under it a foreground child gets the terminal, so the person's Ctrl-C
+# reaches claude and not the shift, and the terminal comes back to the shift
+# when it ends (#27; and #28: `( cd … && exec claude … )` under `set -m`
+# behaves as the bare call); left on, the shift's next non-interactive
+# command would take the terminal (#24). A subshell, so the `cd` is the
+# session's own.
+#
+# `/dev/tty` on all three of claude's descriptors, not the caller's: claude
+# with a stdin that is not a terminal was never probed (#28), and a caller
+# inside a `while … done <<EOF` loop — the way this codebase iterates — would
+# hand it the here-doc. The test seam (AIF_START_SESSION_CMD, a script run
+# with the same five arguments) sits inside the same `set -m` bracket, so a
+# harness exercises the real job control, and keeps the caller's descriptors,
+# so a harness with no terminal can run it.
+aif_runner_claude_session() {
+  local rc=0 m
+  m=()
+  [ -z "$3" ] || m=(--model "$3")
+  set -m
+  if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
+    (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5") || rc=$?
+  else
+    (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" --session-id "$5" \
+      </dev/tty >/dev/tty 2>/dev/tty) || rc=$?
   fi
-
-  if [ -n "$task" ]; then
-    exec claude "$task"
-  fi
-
-  exec claude
+  set +m
+  return "$rc"
 }
 
 # aif_runner_claude_eval <workdir> <prompt> <max_turns> <budget_usd> <out> <err>

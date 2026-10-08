@@ -127,14 +127,21 @@ closing over it, the card saying so. The offline walk of the whole thing is
 
 **The queue drains, and the yes is one command.** `aif work --loop` builds the cards
 in Ready, two at a time (`--parallel N`; one with `--no-worktree`), each in a worktree
-of its own, until the column is empty (`--max-tickets N` to stop sooner). Workers
+of its own, until the column is empty (`--max-tickets N` to stop sooner) — or, with
+`--idle`, does not end there: it looks at Ready again every 30 seconds and takes
+what comes, a card that came back included. One loop per checkout: a second is
+refused by the loop lock (`.aif/state/loop/`) before it probes anything. Workers
 start one after another, each once the last one's worktree is ready, so installs do
-not run side by side and a machine that cannot run the suite costs one card, not
-two. It takes no new card when a run cannot start, or after two that did not build,
-because two cards in Needs Human usually mean the problem is not the cards. Ctrl-C
-takes no new card and lets the runs in flight finish; Ctrl-C again stops them, each
-card saying so. A `--stop` on one run is not held against the cards, and its slot
-takes the next. Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — or under
+not run side by side. A run that cannot start — the environment, not the card — has
+the machine checked again: the loop goes on while its preflight passes, and takes
+no new card when that fails or at the third such run in a row, so a machine that
+cannot run anything costs at most three cards. It takes no new card after two that
+did not build, because two cards in Needs Human usually mean the problem is not the
+cards. Ctrl-C takes no new card and lets the runs in flight finish; Ctrl-C again
+stops them, each card saying so — and from any terminal, `aif work --loop --drain`
+does the first and `aif work --loop --stop` the second, each card saying who. A
+`--stop` on one run is not held against the cards, and its slot takes the next.
+Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — or under
 `AIF_WORK_LOOP_LOGDIR`, when it names a directory — and `summary.json` beside the
 logs says how the loop ended: what it took, built, blocked and stopped, and why it
 took no more; the exit code says how the process ended, not what Ready still holds,
@@ -175,6 +182,69 @@ its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, 
 terminal closing over it, an error on the way — undoes its own merge and leaves the
 card in Review, since a stop decides nothing; an install `--prepare` had started is
 named, with its command, not run again.
+
+**The shift: your half of the board, one session at a time.** The loop builds;
+everything around it — the review, the analyst on what came back, the product
+partner — is a session with you. `aif start` opens them for you, one after
+another, in your terminal, while the loop builds in another:
+
+```sh
+aif start --dry-run          # what the shift would do now — touches nothing
+aif start --no-build         # here: the reviews, the analyst, the owner
+aif work --loop --idle       # …and in a second terminal: the builds
+```
+
+Either may start first: while Ready holds cards and no loop runs, the shift
+waits for one, naming the command. Ending the shift leaves the loop running —
+`aif work --loop --drain` ends the night.
+
+Review comes first: each built card opens as `/aif-review <ID>` in claude, and
+the next is offered once that session ends. Then the analyst, on what came back
+— a rework, a `blocked: ticket`, a request with slices left to cut while the
+build has fewer than three rounds ahead of it — and the owner when a request
+needs cutting into slices first (`--po` opens `/aif-po` when nothing else is
+left). The board moves on its own only on fixed first lines: `wrong:` goes back
+to Backlog as `rework:` for the analyst, `cancel:` to Done, a slice whose
+dependencies have landed to Ready, and a `blocked: environment` posted during
+the shift back to Ready once the preflight passes again — on a shared Trello
+board only a block this machine's worker posted. It also finishes, without
+asking, what a worker on this machine left half-done: a built run's report and
+its move to Review, a stopped run's `blocked:` line and its move to Needs Human,
+a `rework:`, `cancelled:` or landed card's lost move. Everything else is a line
+with the command that would do it; a stopped run is never put back in Ready
+behind your back (`--retry-runs` retries one an instrument stopped, once a
+shift). Each unit waits at a control point — `next: review AIF-61 — built,
+branch aif/AIF-61 — Enter: open · s: skip · p: pause · q: end the shift (10)` —
+and after the countdown acts on its own where acting is safe — a review opens; a
+card whose worker died has what it left running sent a TERM and goes to the top
+of Ready; a demo `not as expected` goes back to Backlog as `rework:` — and
+leaves what is not: a land, a pull from Backlog, a person's answer under a
+block. Any other key pauses, so a countdown never acts after a keypress, and
+keys typed on a Ukrainian or Russian layout count as the Latin ones in their
+place. A session that changed nothing — on its card, the board's cards,
+`requests/` or `tasks/` — pauses the shift instead of opening the next one: an
+absent person, a double Ctrl-C and a usage limit all end a session the same way
+(`docs/FINDINGS.md` #28). While the loop in the other terminal builds and
+nothing is yours, the shift waits, looking again every 30 seconds. Ctrl-C inside
+a session is the session's; between them it ends the shift. Ctrl-Z does nothing
+inside a shift: a session it suspends is continued within a second (`/exit` ends
+a session). The end says what was done, what is left with the command for each,
+and `claude --resume <uuid>` for every session it opened — by uuid, because
+claude's own hint resumes by name and two reviews of one card share it.
+
+The analyst and the owner run on `opus` and the reviewer and the project manager
+on claude's own default, unless `--model-ba`, `--model-po`, `--model-review`,
+`--model-pjm` or `--model` say otherwise; an alias your profile does not route is
+refused before anything opens. Your own defaults go in `.aif/start.local`
+(`MODEL_BA=opus`, `PARALLEL=3`, `WAIT=20`, …; gitignored by `aif init`). Without
+`--no-build` the loop runs in the shift's own terminal when Ready holds cards,
+and is held — not restarted — when it stops on two runs that did not build.
+`aif work --status [<ID>]` says what this machine knows of a run, offline: its
+lock and whether its worker is alive, what a worker killed outright left running,
+its worktree, branch and record. The shift reads it, and a card whose worker is
+gone mid-run goes back to the top of Ready on the countdown, after the shift
+sends a TERM to what it left running — and stays put, with `aif work --status`
+as its line, if any of it outlives 30 seconds.
 
 A worktree reads everything about aif — the stations, the gates, the hooks, the
 fragments, the guide, `project.json` — from its own branch, and `aif init`
@@ -638,9 +708,11 @@ the gates rather than remembered.
 | `aif project upgrade` | bring forward what aif changed its mind about — the failure classes, a type-check's phases, the caps, the runner — and leave your own fields alone |
 | `aif project guide` | write `.aif/guide/tests.md` from what the repository declares, for the plan and tests stations; regenerates its block in place, keeps what you wrote |
 | `aif work [ticket]` | build the top of Ready (or a named ticket) headless on its own branch, no questions; one worker per ticket on this machine; `--clean` removes the worktree, `--stop` ends the run building it, from any terminal |
-| `aif work --loop [--parallel N] [--max-tickets N] [--no-tui]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree, on a dashboard where there is a terminal; takes no new card on an empty column, a run that cannot start, two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight |
+| `aif work --loop [--parallel N] [--max-tickets N] [--idle] [--no-tui]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree, on a dashboard where there is a terminal; one loop per checkout; takes no new card on an empty column (`--idle`: looks again every 30 s instead), runs that cannot start on a machine whose preflight then fails (or three in a row), two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight; from any terminal, `--loop --drain` takes no new card and `--loop --stop` stops the runs too |
+| `aif work --status [<ID>] [--json]` | what this machine knows of a run, offline: its lock and whether the worker is alive, what a dead worker left running, its worktree, branch, run record and report — one line, or the object a supervisor reads |
+| `aif start [--no-build] [--dry-run] [--model-ba M] …` | the shift: review, analyst and owner sessions one at a time in this terminal, the board moved by fixed rules on fixed first lines and the rest listed with its command; a control point per unit, a pause after a session that changed nothing, a summary with `claude --resume <uuid>` for each; `--no-build` beside `aif work --loop --idle` in another terminal |
 | `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
-| `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `head` (the first line aif or a role wrote last), `label`, `check`, `release [--dry-run]` (the Backlog cards whose every dependency is Done and landed, to the bottom of Ready), `init` |
+| `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `head [--json]` (the first line aif or a role wrote last — with `--json`, its time, what came after it and every head before), `label`, `check`, `release [--dry-run]` (the Backlog cards whose every dependency is Done and landed, to the bottom of Ready), `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
 | `aif cost [ticket]` | what the pipeline spent, per station, from the ledger |
@@ -1396,6 +1468,7 @@ Never `git tag` a release by hand.
 - [x] `aif work --loop`, `aif land`, `/aif-review` — the queue drains, the yes is one command, the review has a brief
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [x] The demo — on the reviewer's land, the product partner holds the build to its request before `aif land` runs
+- [x] `aif start` — the shift: your sessions one at a time, by fixed rules, beside `aif work --loop --idle` in another terminal
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

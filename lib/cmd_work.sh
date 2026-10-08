@@ -4721,6 +4721,13 @@ aif_cmd_work() {
       rm -f "$cut_err"
       _aif_work_refuse "$root" "$ticket" "could not check out a worktree for $ticket${cut_why:+: $cut_why}"
     fi
+    # What the helper said on the way to a worktree is said here too, not only
+    # on a failure: git's own output is silenced in it, so the lines are aif's —
+    # above all that it added .aif/worktrees/ to the .gitignore block, which
+    # leaves the developer's .gitignore modified (docs/DEFECTS.md 15.14).
+    while IFS= read -r cut_why; do
+      [ -z "$cut_why" ] || _aif_work_say "worktree" "$cut_why"
+    done <"$cut_err"
     rm -f "$cut_err"
     [ "$fresh" -eq 0 ] || _aif_work_say "worktree" "cut ${wt#"$root"/} on aif/$ticket"
     # Before the probe and before anything reads the branch's copy of the set:

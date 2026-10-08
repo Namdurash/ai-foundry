@@ -172,6 +172,10 @@
 #  58  a Ctrl-C during the Ready read is not the board; aif work --loop
 #      --stop reaches a loop still in its preflight; a loop that is not idle
 #      asks the machine again before one failed Ready read ends it 3
+#  59  a .gitignore block written by an older aif, without the worktrees line:
+#      the worker adds that line to the block and says so, and every line the
+#      block held stays; a block with no end line is left alone; no block at
+#      all gets one, the developer's own lines kept
 #  68  a blocked: line the board refused, kept on this machine, is posted by
 #      the next worker run before it takes a card — over its run's own claim
 #      only; a card whose head moved on, or in Review, has its stale file
@@ -5193,6 +5197,51 @@ eq "while the tests station runs: the lock names the claim's comment and keeps i
 eq "built: the claim edited in place at every dispatch — still its comment, no comment added — the report the head, the lock gone" \
   "$rc|$(col AIF-690)|$("$AIF" board show AIF-690 --json | jq -r --arg c "$cid69" '[(.comments | length), ([.comments[] | select(.id == $c)][0] | (.edited_at != null), (.text | split("\n")[0] | test(" · alive at [0-9T:Z-]+$")))] | map(tostring) | join(",")')|$("$AIF" board head AIF-690)|$(test -d .aif/state/runs/AIF-690 && echo held || echo gone)" \
   "0|review|2,true,true|# AIF-690 — built|gone"
+
+# ====== 59. the worktrees line joins the .gitignore block, the rest kept ======
+# docs/DEFECTS.md 15.14. Before it cuts a worktree the worker makes sure
+# .aif/worktrees/ is ignored, and it did that by handing the one line to
+# aif_block_inject, which rewrites everything between the markers: a block
+# written before the worker existed, or edited by hand, came out ignoring
+# nothing but the worktrees — .aif/profile.local, .aif/state/ and the rest
+# showed in `git status`, one `git add -A` from a commit. The line now joins
+# the block; a block with no end line is not touched (aif_block_inject would
+# have read the rest of the file as the block and dropped it).
+printf '\n59. the worktrees line joins the .gitignore block, and the block keeps what it held\n'
+fresh_project "$SANDBOX/p59"
+ticket_for AIF-590
+awk -v b='# aif:begin' '
+  index($0, b) { print; print "# per-developer model choice; the shared set is committed"; print ".aif/profile.local"; print "# gate scratch"; print ".aif/tmp/"; print "# session-local pointer for the metering hook"; print ".aif/state/"; print "# the local board"; print ".aif/board/"; skip = 1; next }
+  /^# aif:end/ { skip = 0 }
+  !skip        { print }
+' .gitignore >"$OUT/gi59" && cat "$OUT/gi59" >.gitignore
+printf 'node_modules/\n' >>.gitignore
+git add -A && git commit -qm "a block from before the worker" >/dev/null
+"$AIF" board create tasks/AIF-590/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-590 >"$OUT/run59.out" 2>&1 || rc=$?
+eq "the run builds, and says it added the worktrees line to the block" \
+  "$rc,$(col AIF-590),$(grep -c 'worktree  added .aif/worktrees/ to the block aif manages in .gitignore' "$OUT/run59.out")" "0,review,1"
+eq "…every line the block held is still in it, the worktrees line with them, the developer's own line kept" \
+  "$(awk '/^# aif:begin/{i=1;next} /^# aif:end/{i=0} i && !/^#/' .gitignore | sort | paste -sd' ' -)|$(grep -cx 'node_modules/' .gitignore)" \
+  ".aif/board/ .aif/profile.local .aif/state/ .aif/tmp/ .aif/worktrees/|1"
+eq "…and git status shows none of them (the profile, the state, the worktree)" \
+  "$(git status --porcelain --untracked-files=all | grep -c '\.aif/\(profile\.local\|state/\|worktrees/\|board/\)')" "0"
+gi59() { # <dir> — run aif_gitignore_ensure for the worktrees line there; prints rc and what it said
+  /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/merge.sh"; aif_gitignore_ensure "$2" ".aif/worktrees/" "worker checkouts" 2>&1; printf "rc=%s" "$?"' _ "$ROOT" "$1"
+}
+mkdir -p "$SANDBOX/p59b" "$SANDBOX/p59c"
+printf 'mine/\n# aif:begin — managed by ai-foundry; edits inside are overwritten\n.aif/tmp/\nafter-the-marker/\n' >"$SANDBOX/p59b/.gitignore"
+said59b="$(gi59 "$SANDBOX/p59b")"
+eq "a block with no end line: not rewritten, the line to add named, every line kept" \
+  "$(printf '%s' "$said59b" | grep -c 'has no end line'),$(printf '%s' "$said59b" | tail -c 4),$(wc -l <"$SANDBOX/p59b/.gitignore" | tr -d ' '),$(grep -cx 'after-the-marker/' "$SANDBOX/p59b/.gitignore")" \
+  "1,rc=0,4,1"
+printf 'mine/\n' >"$SANDBOX/p59c/.gitignore"
+gi59 "$SANDBOX/p59c" >/dev/null
+eq "no block at all: one is appended with the line, the developer's own line first" \
+  "$(sed -n 1p "$SANDBOX/p59c/.gitignore")|$(grep -cx '.aif/worktrees/' "$SANDBOX/p59c/.gitignore")|$(grep -c '^# aif:end' "$SANDBOX/p59c/.gitignore")" \
+  "mine/|1|1"
+cd "$SANDBOX" || exit 1
 
 # ----------------------------------------------------------------------------
 printf '\n'

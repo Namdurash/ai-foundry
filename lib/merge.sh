@@ -180,17 +180,53 @@ aif_json_unmerge() {
   mv "$tmp" "$target"
 }
 
-# aif_gitignore_ensure <root> <pattern> <why>
+# aif_gitignore_ensure <root> <pattern> <why> — the pattern ignored: when no
+# line of <root>/.gitignore says it already, it joins the block aif manages
+# there, under a line that says why, and says so on stderr (stdout is a
+# caller's: `_aif_work_worktree` prints its path there).
+#
+# It JOINS the block, it does not replace it. The block holds every path aif
+# keeps out of git (aif_gitignore_block, lib/paths.sh), and handing this one
+# line to aif_block_inject — which rewrites everything between the markers —
+# left a block written by an older aif, or edited by hand, ignoring nothing
+# else: .aif/profile.local, .aif/state/, .aif/board/ showed in `git status`,
+# one `git add -A` from being committed (docs/DEFECTS.md 15.14, probed). The
+# block is aif's — its marker says edits inside are overwritten — so a line
+# joins it without asking; the developer's own lines around it are never
+# touched. A begin marker with no end is left alone, with the line to add by
+# hand: aif_block_inject would read everything after it as the block and drop
+# it.
 aif_gitignore_ensure() {
   local root="$1" pattern="$2" why="$3"
-  local file="$root/.gitignore"
+  local file="$root/.gitignore" tmp
 
   if [ -f "$file" ] && grep -qxF "$pattern" "$file"; then
     return 0
   fi
 
-  aif_block_inject "$file" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
-    "$(printf '# %s\n%s' "$why" "$pattern")"
+  if [ -f "$file" ] && grep -qF "$AIF_MARK_BEGIN_HASH" "$file"; then
+    if ! grep -qxF "$AIF_MARK_END_HASH" "$file"; then
+      aif_warn "the block aif manages in .gitignore has no end line ($AIF_MARK_END_HASH) — not rewritten; add $pattern to .gitignore by hand"
+      return 0
+    fi
+    tmp="$(aif_tmpfile "$file")"
+    # The lines arrive through the environment, as aif_block_inject's payload
+    # does: an awk -v assignment would read a backslash in them as an escape.
+    if AIF_GI_LINES="$(printf '# %s\n%s' "$why" "$pattern")" awk -v b="$AIF_MARK_BEGIN_HASH" -v e="$AIF_MARK_END_HASH" '
+      index($0, b)          { inside = 1 }
+      inside && $0 == e     { print ENVIRON["AIF_GI_LINES"]; inside = 0 }
+                            { print }
+    ' "$file" >"$tmp"; then
+      mv "$tmp" "$file"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    aif_block_inject "$file" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
+      "$(printf '# %s\n%s' "$why" "$pattern")"
+  fi
+  printf 'added %s to the block aif manages in .gitignore — %s\n' "$pattern" "$why" >&2
 }
 
 # aif_hooks_merge <target> <fragment-json> — register the set's hooks, event

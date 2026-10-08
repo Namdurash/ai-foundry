@@ -45,6 +45,35 @@ comment gets the time it was posted, and a card the time of its last change
 that keys on those times, as a shift does (it reads a card again only when its
 column or its last activity changed, and asks whether a head is newer than the
 shift); a check that wants it starts its own mock with the variable set.
+MOCK_SKEW_SECS=<n> (with MOCK_REAL_TIME=1) puts the mock's clock n seconds
+off this machine's — Trello's clock is not the Mac's, and a reader that
+compares the two has to allow for it (docs/DEFECTS.md 15.6).
+
+The request log. Every request is logged twice in /_state: `log` as
+`<METHOD> <path>` (what the checks count calls by), and `qlog` with the query
+string too (`before=`, `fields=` — what a check reads a page or a lookup by).
+GET /_mark/<name> is logged and answered 200 with nothing else: a check's own
+marker in the log, between two requests it wants to tell apart (a session's
+start and end). POST /_plant/<card id> (`text`, `date`) puts a comment on the
+card dated when the check says: another machine's claim posted hours ago,
+which no request of the real API can make.
+
+What the adapter reads one card by (docs/DEFECTS.md 13.8, 15.6, 14.4): GET
+/cards/<id>; a card's `closed` (archived — PUT closed=true), which every
+listing leaves out as Trello's does; a comments read honouring `limit`
+(default 50, as Trello's) and `before=<action id>` (only the comments posted
+before it), newest first; and PUT /actions/<id>/text, a comment edited in
+place — its text, and `data.dateLastEdited`. The edit is not activity on the
+card here: whether Trello moves a card's `dateLastActivity` for an edited
+comment is not known, so a reader must not count on it.
+
+Another machine's claim, for the race two workers can run on one card
+(docs/DEFECTS.md 14.4): when MOCK_INJECT_FILE names a file that exists, it
+holds one JSON object `{ "when": "before"|"after", "match": "<prefix>",
+"text": "<comment>" }`; the next comment POSTed whose text starts with the
+prefix gets that comment posted beside it — just before it, as if another
+machine had claimed the card a moment sooner, or just after — and the file
+is removed.
 """
 import json
 import os
@@ -54,19 +83,42 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
-STATE = {"lists": {}, "cards": {}, "comments": {}, "labels": {}, "seq": 0, "log": []}
+STATE = {"lists": {}, "cards": {}, "comments": {}, "labels": {}, "seq": 0, "log": [], "qlog": []}
 BOARD = "b1"
 REAL_TIME = os.environ.get("MOCK_REAL_TIME") == "1"
 FIXED_TIME = "2026-09-17T00:00:00.000Z"
+try:
+    SKEW = float(os.environ.get("MOCK_SKEW_SECS") or 0)
+except ValueError:
+    SKEW = 0.0
 
 
 def stamp():
     """Now, as Trello writes a time (see the module's docstring) — or the
-    fixed moment, unless MOCK_REAL_TIME=1."""
+    fixed moment, unless MOCK_REAL_TIME=1; MOCK_SKEW_SECS off this clock."""
     if not REAL_TIME:
         return FIXED_TIME
-    t = datetime.now(timezone.utc)
+    t = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + SKEW, timezone.utc)
     return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
+
+
+def injected(card_id, text):
+    """The comment MOCK_INJECT_FILE asks to post beside this one, and where
+    (see the module's docstring): (when, comment) or (None, None). One-shot:
+    the file is removed once it has been served."""
+    name = os.environ.get("MOCK_INJECT_FILE")
+    if not name or not os.path.exists(name):
+        return None, None
+    try:
+        spec = json.load(open(name))
+    except (OSError, ValueError):
+        return None, None
+    if not text.startswith(spec.get("match", "")):
+        return None, None
+    os.remove(name)
+    return spec.get("when", "before"), {
+        "id": new_id("a"), "date": stamp(), "data": {"text": spec.get("text", "")},
+        "memberCreator": {"username": "other", "fullName": "Another Machine"}}
 
 
 def touch(card):
@@ -160,8 +212,23 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self, method):
         path = urlparse(self.path).path
         STATE["log"].append(f"{method} {path}")
+        STATE["qlog"].append(f"{method} {self.path}")
         if path == "/_state":
             return self._send(200, STATE)
+        if path.startswith("/_mark/"):
+            return self._send(200, {"mark": path[len("/_mark/"):]})
+        m = re.match(r"^/_plant/([^/]+)$", path)
+        if m and method == "POST":
+            # A comment posted at a time of the check's choosing — another
+            # machine's claim from hours ago, as that machine posted it then.
+            p = self._params()
+            STATE["comments"].setdefault(m.group(1), []).append(
+                {"id": new_id("a"), "date": p.get("date") or stamp(), "data": {"text": p.get("text", "")},
+                 "memberCreator": {"username": p.get("who") or "other", "fullName": "Another Machine"}})
+            card = STATE["cards"].get(m.group(1))
+            if REAL_TIME and card is not None:
+                card["dateLastActivity"] = STATE["comments"][m.group(1)][-1]["date"]
+            return self._send(200, STATE["comments"][m.group(1)][-1])
         if path in ("/_fail/comments/on", "/_fail/comments/off"):
             STATE["fail_comments"] = path.endswith("/on")
             return self._send(200, {"fail_comments": STATE["fail_comments"]})
@@ -179,7 +246,8 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/1/boards/([^/]+)/cards$", path)
         if m and method == "GET":
             return self._send(200, [self._card(c) for c in STATE["cards"].values()
-                                    if STATE["lists"].get(c["idList"], {}).get("idBoard") == m.group(1)])
+                                    if not c.get("closed")
+                                    and STATE["lists"].get(c["idList"], {}).get("idBoard") == m.group(1)])
         m = re.match(r"^/1/boards/([^/]+)/labels$", path)
         if m and method == "GET":
             return self._send(200, list(STATE["labels"].values()))
@@ -193,7 +261,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, STATE["lists"][lid])
         m = re.match(r"^/1/lists/([^/]+)/cards$", path)
         if m and method == "GET":
-            return self._send(200, sorted([self._card(c) for c in STATE["cards"].values() if c["idList"] == m.group(1)],
+            return self._send(200, sorted([self._card(c) for c in STATE["cards"].values()
+                                           if c["idList"] == m.group(1) and not c.get("closed")],
                                           key=lambda c: c["pos"]))
         m = re.match(r"^/1/lists/([^/]+)$", path)
         if m and method == "GET":
@@ -209,7 +278,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE["cards"][cid] = {"id": cid, "name": p.get("name", ""), "desc": p.get("desc", ""),
                                    "idList": p.get("idList", ""), "pos": self._pos(p.get("pos", "bottom"), p.get("idList", "")),
                                    "idLabels": [], "shortUrl": f"https://trello.com/c/{cid}",
-                                   "dateLastActivity": stamp()}
+                                   "closed": False, "dateLastActivity": stamp()}
             return self._send(200, self._card(STATE["cards"][cid]))
         if path == "/1/labels" and method == "POST":
             lid = new_id("lb")
@@ -225,14 +294,42 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid value for text"})
             if not 1 <= len(text.encode("utf-16-le")) // 2 <= 16384:
                 return self._send(400, {"error": "invalid value for text"})
-            STATE["comments"].setdefault(m.group(1), []).append(
-                {"id": new_id("a"), "date": stamp(), "data": {"text": p.get("text", "")},
-                 "memberCreator": {"username": "mock", "fullName": "Mock User"}})
+            when, other = injected(m.group(1), p.get("text", ""))
+            if when == "before":
+                STATE["comments"].setdefault(m.group(1), []).append(other)
+            posted = {"id": new_id("a"), "date": stamp(), "data": {"text": p.get("text", "")},
+                      "memberCreator": {"username": "mock", "fullName": "Mock User"}}
+            STATE["comments"].setdefault(m.group(1), []).append(posted)
+            if when == "after":
+                STATE["comments"][m.group(1)].append(other)
             touch(STATE["cards"].get(m.group(1)))
-            return self._send(200, STATE["comments"][m.group(1)][-1])
+            return self._send(200, posted)
         m = re.match(r"^/1/cards/([^/]+)/actions$", path)
         if m and method == "GET":
-            return self._send(200, list(reversed(STATE["comments"].get(m.group(1), []))))
+            # Newest first, as Trello answers; `before` an action id — the
+            # comments posted before it — and `limit` (Trello's default 50).
+            have = STATE["comments"].get(m.group(1), [])
+            before = p.get("before")
+            if before:
+                ids = [a["id"] for a in have]
+                have = have[:ids.index(before)] if before in ids else []
+            try:
+                limit = int(p.get("limit") or 50)
+            except ValueError:
+                limit = 50
+            return self._send(200, list(reversed(have))[:limit])
+        m = re.match(r"^/1/actions/([^/]+)/text$", path)
+        if m and method == "PUT":
+            text = p.get("value", "")
+            if not 1 <= len(text.encode("utf-16-le")) // 2 <= 16384:
+                return self._send(400, {"error": "invalid value for value"})
+            for actions in STATE["comments"].values():
+                for a in actions:
+                    if a["id"] == m.group(1):
+                        a["data"]["text"] = text
+                        a["data"]["dateLastEdited"] = stamp()
+                        return self._send(200, a)
+            return self._send(404, {"error": "no action"})
         m = re.match(r"^/1/cards/([^/]+)/idLabels$", path)
         if m and method == "POST":
             c = STATE["cards"].get(m.group(1))
@@ -255,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ("name", "desc", "idList"):
                     if k in p:
                         c[k] = p[k]
+                if "closed" in p:
+                    c["closed"] = p["closed"] == "true"
                 if "pos" in p:
                     c["pos"] = self._pos(p["pos"], c["idList"])
                 touch(c)

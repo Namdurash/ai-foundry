@@ -88,13 +88,18 @@ _aif_start_board() {
 # stdout:
 #
 #   { now (epoch), shift_started_at (ISO UTC), host, board_kind, ticket_re,
+#     wall_clock_min (limits.run_max_minutes: how long a run can last),
+#     fresh_margin_s (AIF_START_FRESH_MARGIN_SECS, 120: what a head's time is
+#                     allowed against the shift's start, another clock's),
 #     build: { mode: "here"|"elsewhere"|"none", parallel, hold: null|"<why>",
 #              loop: { live, pid, host, idle, parallel, logdir,
 #                      held: [ { ticket, why } ] }|null },
 #     flags: { po, pjm, retry_runs }, hold_labels: [..], dirty: [ "<path>" ],
 #     cards: [ { ticket, title, column, pos, labels, moved_at, unread, unread_why,
-#                head: { line, at, body, after, heads: [ { line, at } ] }|null,
+#                head: { line, at, body, after, heads: [ { line, at } ],
+#                        card_sha256 }|null,
 #                local: <_aif_work_status_json>|null,
+#                kept_block: { path }|null,
 #                ticket_file, meta: { depends_on, request, slice }|null,
 #                deps: [ { ticket, column, landed } ], ready_gate, land_commit } ],
 #     loose_tasks: [ { ticket, stub, tracked, landed, request, slice } ],
@@ -122,9 +127,10 @@ _aif_start_board() {
 #   AIF_START_FLAG_RETRY_RUNS 1 under --retry-runs
 #   AIF_START_PARALLEL       the resolved --parallel (_aif_start_parallel)
 #
-# Three knobs of the reading itself: AIF_START_BOARD_RETRY_SECS (above),
+# The knobs of the reading itself: AIF_START_BOARD_RETRY_SECS (above),
 # AIF_RELEASE_HOLD_LABELS (the sweep's, one name for both — lib/release.sh),
-# and AIF_START_HEADS_PER_TICK (_aif_start_cards).
+# AIF_START_HEADS_PER_TICK and AIF_START_CLAIM_REREAD_MIN (_aif_start_cards),
+# and AIF_START_FRESH_MARGIN_SECS (fresh_margin_s above).
 _aif_start_facts() {
   local root="$1" tmp rc=0
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-facts-XXXXXX")" || {
@@ -181,9 +187,23 @@ _aif_start_facts_in() {
   (aif_requests_json "$root") >"$tmp/requests.json" 2>/dev/null || printf '[]\n' >"$tmp/requests.json"
   jq -e 'type == "array"' "$tmp/requests.json" >/dev/null 2>&1 || printf '[]\n' >"$tmp/requests.json"
 
+  # A run's wall clock, what a claim's silence is held against (14.4), and the
+  # margin a head's time is given against the shift's start: Trello's clock
+  # is not this machine's (15.6).
+  local wall margin
+  wall="$(jq -r '.limits.run_max_minutes // 120' "$(aif_project_config "$root")" 2>/dev/null)" || wall=120
+  case "$wall" in
+    '' | *[!0-9]* | 0) wall=120 ;;
+  esac
+  margin="${AIF_START_FRESH_MARGIN_SECS:-120}"
+  case "$margin" in
+    '' | *[!0-9]*) margin=120 ;;
+  esac
+
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   jq -n -c --argjson now "$(date +%s)" \
     --arg started "${AIF_START_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}" \
+    --argjson wall "$wall" --argjson margin "$margin" \
     --arg host "$(aif_host_short)" --arg kind "$kind" --arg re "$re" \
     --slurpfile build "$tmp/build.json" \
     --arg po "${AIF_START_FLAG_PO:-0}" --arg pjm "${AIF_START_FLAG_PJM:-1}" \
@@ -202,6 +222,7 @@ _aif_start_facts_in() {
     | ($g | map({ key: .ticket, value: .rc }) | from_entries) as $gate
     | $all[0] as $a
     | { now: $now, shift_started_at: $started, host: $host, board_kind: $kind, ticket_re: $re,
+        wall_clock_min: $wall, fresh_margin_s: $margin,
         build: $build[0],
         flags: { po: ($po == "1"), pjm: ($pjm != "0"), retry_runs: ($rr == "1") },
         hold_labels: ($holds | words),
@@ -210,6 +231,7 @@ _aif_start_facts_in() {
                  | { ticket, title, column, pos, labels: (.labels // []), moved_at: (.moved_at // null),
                      unread: ($y.unread // false), unread_why: ($y.unread_why // null),
                      head: ($y.head // null), local: ($y.local // null),
+                     kept_block: ($y.kept_block // null),
                      ticket_file: ($y.ticket_file // false), meta: ($y.meta // null),
                      deps: [ ($y.meta.depends_on // [])[] as $d
                              | { ticket: $d,
@@ -227,14 +249,26 @@ _aif_start_facts_in() {
   }
 }
 
+# _aif_start_claim_due <column> <cache file> <head JSON> <host> <minutes> — rc
+# 0 when a cached head of an In Progress card is another machine's claim and
+# the cache is older than <minutes>: read it again (_aif_start_cards says why).
+_aif_start_claim_due() {
+  [ "$1" = in_progress ] || return 1
+  [ -n "$(find "$2" -mmin +"$5" 2>/dev/null)" ] || return 1
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+  printf '%s' "$3" | jq -e --arg h "$4" \
+    '(.line // "") | startswith("taken: ") and (startswith("taken: " + $h + " ") | not)' >/dev/null 2>&1
+}
+
 # _aif_start_cards <root> <tmp> <kind> — for every card the shift considers,
 # one line of <tmp>/extras: its head, what this machine knows of its run, and
 # its ticket's meta. Heads are read in the order the shift acts on them —
 # Review, Needs Human, In Progress, Backlog, each by position — and not at all
 # for Ready (the loop's) and Done.
 #
-# A head costs two requests on Trello (the card's lookup lists the whole board
-# with descriptions, then its comments — lib/board.sh), and a shift ticks
+# A head costs two requests on Trello (the card by its id, then its comments
+# — a page more for each 20 comments read past without a head; lib/board.sh,
+# docs/DEFECTS.md 13.8, 15.6), and a shift ticks
 # beside a loop that polls the same token. So a head is read again only when
 # its card changed since the last good read — locally its column, moved_at or
 # comment count (a comment does not touch moved_at there); on Trello its
@@ -249,10 +283,28 @@ _aif_start_facts_in() {
 # line is null, so the count of a person's comments still says whether
 # anybody wrote. rc 2 is a card not read, its first line why: never an empty
 # head (research R1).
+#
+# One exception to the cache: a head that is another machine's claim is read
+# again once its cache is AIF_START_CLAIM_REREAD_MIN (10) minutes old. Its
+# worker beats by editing that comment (lib/cmd_work.sh _aif_work_heartbeat),
+# and whether an edit moves the card's last activity on Trello is not known —
+# a cache keyed on it could hold a live worker's claim at its first beat for
+# good, and the shift would call that worker gone (docs/DEFECTS.md 14.4).
+#
+# On Trello the head's card_sha256 — the card's text as the pull writes it —
+# goes to what this machine knows of the run (_aif_work_status_json), so a
+# build of the card's earlier text reads as one (docs/DEFECTS.md 15.12). And
+# a card whose blocked: line the board refused has the file it was kept in
+# named (`kept_block`), for the oracle to post it (14.2).
 _aif_start_cards() {
-  local root="$1" tmp="$2" kind="$3" main shiftdir cap reads=0 tab
-  local id col key cache hj hrc unread why loc meta tf f
+  local root="$1" tmp="$2" kind="$3" main shiftdir cap reads=0 tab host reread
+  local id col key cache cached hj hrc unread why loc meta tf f sha kept
   main="$(aif_main_root "$root")"
+  host="$(aif_host_short)"
+  reread="${AIF_START_CLAIM_REREAD_MIN:-10}"
+  case "$reread" in
+    '' | *[!0-9]*) reread=10 ;;
+  esac
   shiftdir="${AIF_START_SHIFT_DIR:-}"
   cap=0
   if [ -n "$shiftdir" ]; then
@@ -289,10 +341,16 @@ _aif_start_cards() {
           *[!A-Za-z0-9._-]*) ;;
           *) [ -z "$shiftdir" ] || cache="$shiftdir/cards/$id" ;;
         esac
+        cached=""
         if [ -n "$cache" ] && [ -f "$cache.key" ] && [ -f "$cache.head" ] &&
-          [ "$(cat "$cache.key" 2>/dev/null)" = "$key" ] &&
-          hj="$(jq -c 'objects' "$cache.head" 2>/dev/null)" && [ -n "$hj" ]; then
-          :
+          [ "$(cat "$cache.key" 2>/dev/null)" = "$key" ]; then
+          cached="$(jq -c 'objects' "$cache.head" 2>/dev/null)" || cached=""
+        fi
+        # A cached head stands, unless it is another machine's claim due to
+        # be read again (above) and this tick still has a read to spend.
+        if [ -n "$cached" ] && { { [ "$cap" -gt 0 ] && [ "$reads" -ge "$cap" ]; } ||
+          ! _aif_start_claim_due "$col" "$cache.head" "$cached" "$host" "$reread"; }; then
+          hj="$cached"
         elif [ "$cap" -gt 0 ] && [ "$reads" -ge "$cap" ]; then
           hj=null
           unread=true
@@ -318,11 +376,15 @@ _aif_start_cards() {
         ;;
     esac
     # What this machine knows of the run — In Progress (R2–R4) and Review
-    # (R7/R8) only, the two columns whose routing turns on it.
+    # (R7/R8) only, the two columns whose routing turns on it. On Trello with
+    # the card's hash from its head read, so that a card changed after its
+    # build reads as the ticket changed (docs/DEFECTS.md 15.12).
     loc=null
     case "$col" in
       in_progress | review)
-        loc="$(_aif_work_status_json "$root" "$id" 2>/dev/null </dev/null)" || loc=""
+        sha=""
+        [ "$kind" != trello ] || sha="$(printf '%s' "$hj" | jq -r '.card_sha256 // empty | strings' 2>/dev/null)" || sha=""
+        loc="$(_aif_work_status_json "$root" "$id" "$sha" 2>/dev/null </dev/null)" || loc=""
         [ -n "$loc" ] || loc=null
         ;;
     esac
@@ -333,13 +395,21 @@ _aif_start_cards() {
       tf=true
       meta="$(aif_meta_json "$f" 2>/dev/null)" || meta=""
     fi
+    # The blocked: line this machine kept when the board refused it
+    # (_aif_work_block): its path, for the oracle to post it (14.2).
+    kept=""
+    case "$id" in
+      *[!A-Za-z0-9._-]*) ;;
+      *) [ ! -f "$main/.aif/tmp/blocked-$id.md" ] || kept="$main/.aif/tmp/blocked-$id.md" ;;
+    esac
     # A meta that does not parse is no meta (as `aif rules` skips it), not a
     # tick that cannot be read.
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
     jq -cn --arg t "$id" --argjson hj "$hj" --argjson unread "$unread" --arg why "$why" \
-      --argjson loc "$loc" --argjson tf "$tf" --arg meta "$meta" '
+      --argjson loc "$loc" --argjson tf "$tf" --arg meta "$meta" --arg kept "$kept" '
       { ticket: $t, head: $hj, unread: $unread, unread_why: (if $why == "" then null else $why end),
         local: $loc, ticket_file: $tf,
+        kept_block: (if $kept == "" then null else { path: $kept } end),
         meta: ((if $meta == "" then null else (try ($meta | fromjson) catch null) end)
                | if type == "object" then
                    { depends_on: (if (.depends_on | type) == "array" then [ .depends_on[] | tostring ] else [] end),
@@ -1220,13 +1290,18 @@ _aif_start_move() {
       # the worker's own words when the card says only `taken:`; none when
       # it already says why.
       if [ "$where" = file ] && [ -n "$file" ]; then
+        # A card already in Needs Human (R18, docs/DEFECTS.md 14.2) needs
+        # only the line: the comment, and no move after it.
         if _aif_start_post "$root" "$id" "$file"; then
           rm -f "$file" 2>/dev/null || true
+        elif [ "$from" = "$to" ]; then
+          _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}). By hand: aif board comment $id $file"
+          ok=1
         else
           _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}); nothing moved. By hand: aif board comment $id $file && aif board move $id $to"
           ok=1
         fi
-        if [ "$ok" -eq 0 ] && ! _aif_start_mv "$root" "$id" "$to"; then
+        if [ "$ok" -eq 0 ] && [ "$from" != "$to" ] && ! _aif_start_mv "$root" "$id" "$to"; then
           _aif_start_say "board" "$id — the move to $to did not go through (${AIF_START_ERR:-the board refused it}). By hand: aif board move $id $to"
           ok=1
         fi
@@ -1276,7 +1351,12 @@ _aif_start_move() {
       fi
       ;;
   esac
-  if [ "$ok" -eq 0 ]; then
+  if [ "$ok" -eq 0 ] && [ "$from" = "$to" ]; then
+    _aif_start_out "posted on $id — $text"
+    AIF_START_MOVES="${AIF_START_MOVES}$rule $id ($to) — $text
+"
+    note="posted by the shift, the card left in $to"
+  elif [ "$ok" -eq 0 ]; then
     _aif_start_out "moved $id → $to — $text"
     AIF_START_MOVES="${AIF_START_MOVES}$rule $id → $to — $text
 "
@@ -1365,11 +1445,34 @@ _aif_start_uuid() {
 # operations-4). So: the unit's own card — its column and its newest line;
 # the set of cards (the analyst makes some); requests/ and tasks/ — what git
 # says of them, and the content of every file it names; and HEAD (a land).
+#
+# <facts> is the tick's facts the unit was offered from. Taken <from> them
+# (`facts`, the snapshot before the session) the board part is read off them
+# — the cards the shift considers, the card's column and head as the tick read
+# them — and nothing is asked of the board; the after (`board`) reads the
+# board and keeps the same cards, the facts' ticket pattern and no list the
+# project does not map, so that the two compare. A session cost six board
+# requests, three of them the board as the tick had just read it, on the one
+# token's rate limit the loop's workers use (docs/DEFECTS.md 15.6); it costs
+# the three after. A card whose head the facts lack (not read this tick) is
+# read, as before.
 _aif_start_snapshot() {
-  local root="$1" id="$2" out="$3" main st col="-" ids hj head="" paths p
+  local root="$1" id="$2" out="$3" facts="${4:-}" from="${5:-board}" main st="" col="-" ids hj="" head="" paths p re
   main="$(aif_main_root "$root")"
-  st="$(aif_board_status_json "$root" 2>/dev/null)" || st=""
-  if [ -n "$st" ] && printf '%s' "$st" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  re="$(jq -r '.ticket_re // empty' "$facts" 2>/dev/null)" || re=""
+  [ -n "$re" ] || re="$(aif_board_ticket_re "$root" 2>/dev/null)" || re=""
+  [ -n "$re" ] || re='^[A-Z]{2,10}-[0-9]+$'
+  if [ "$from" = facts ]; then
+    st="$(jq -c '.cards | arrays' "$facts" 2>/dev/null)" || st=""
+  fi
+  if [ -z "$st" ]; then
+    from=board
+    st="$(aif_board_status_json "$root" 2>/dev/null)" || st=""
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+    st="$(printf '%s' "$st" | jq -c --arg re "$re" \
+      'arrays | [ .[] | select((.ticket // "") | test($re)) | select(.column != "other") ]' 2>/dev/null)" || st=""
+  fi
+  if [ -n "$st" ]; then
     ids="$(printf '%s' "$st" | jq -r '[ .[].ticket ] | sort | join(" ")')"
     if [ -n "$id" ]; then
       col="$(printf '%s' "$st" | jq -r --arg t "$id" 'first(.[] | select(.ticket == $t) | .column) // "-"')"
@@ -1378,7 +1481,8 @@ _aif_start_snapshot() {
     ids="(the board did not answer)"
   fi
   if [ -n "$id" ]; then
-    hj="$(aif_board_head_json "$root" "$id" 2>/dev/null)" || true
+    [ "$from" != facts ] || hj="$(printf '%s' "$st" | jq -c --arg t "$id" 'first(.[] | select(.ticket == $t) | .head | objects) // empty' 2>/dev/null)" || hj=""
+    [ -n "$hj" ] || hj="$(aif_board_head_json "$root" "$id" 2>/dev/null)" || true
     head="$(printf '%s' "$hj" | jq -r '"\(.line)|\(.at)"' 2>/dev/null)" || head=""
   fi
   paths="$(git -C "$main" status --porcelain --untracked-files=all -- requests tasks 2>/dev/null)" || paths=""
@@ -1541,7 +1645,7 @@ _aif_start_run_session() {
   fi
   b="$dir/snapshot-before"
   a="$dir/snapshot-after"
-  _aif_start_snapshot "$root" "$id" "$b"
+  _aif_start_snapshot "$root" "$id" "$b" "${AIF_START_FACTS:-}" facts
   if [ -z "${AIF_START_SESSION_CMD:-}" ] && ! _aif_start_tty_ok; then
     _aif_start_gone
   fi
@@ -1556,7 +1660,7 @@ _aif_start_run_session() {
   _aif_start_watch_on
   aif_runner_claude_session "$root" "$prompt" "$model" "$name" "$sid" || rc=$?
   _aif_start_watch_off
-  _aif_start_snapshot "$root" "$id" "$a"
+  _aif_start_snapshot "$root" "$id" "$a" "${AIF_START_FACTS:-}" board
   if cmp -s "$b" "$a"; then changed=0; fi
   col0="$(sed -n 1p "$b" 2>/dev/null)"
   col1="$(sed -n 1p "$a" 2>/dev/null)"

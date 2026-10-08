@@ -559,13 +559,20 @@ The analyst puts a ready ticket in **Ready**. `aif work` — with no argument �
 takes the card at the top and moves it to **In Progress** before anything else,
 says who took it — one `taken: <host> pid <pid> at <time>` comment, so a board two
 machines share can tell a live worker elsewhere from a card dragged there by hand —
-builds, and moves it to **Review** with the report as a comment. Every other way out
+builds, and moves it to **Review** with the report as a comment. The claim beats:
+the worker edits it to `… · alive at <time>` at every station it starts, and on
+Trello it reads a card's claim before it takes one — another machine's claim
+whose worker has said within a run's wall clock that it lives is that machine's
+card, skipped and said; two machines that take one card at once leave it to the
+earlier claim, and the later withdraws its own. Every other way out
 ends in **Needs Human** with a comment whose first line says whose problem it is —
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
 machine, nothing spent) or `blocked: stopped` (and by whom), or `land:` when `aif
 land` undid its merge, with why and the command that lands it once resolved — so a
 taken card is never left in Ready for the next run to take again, nor anywhere
-without its reason. You review beside the diff, the product partner's demo holds
+without its reason — a `blocked:` line the board refused is kept in
+`.aif/tmp/blocked-<ID>.md` and posted by the next `aif work` on this machine, or by
+`aif start`, once the board answers. You review beside the diff, the product partner's demo holds
 your *land* to the request, and the project manager routes what either of you says.
 Every transition goes through one adapter, `aif board`, in bash — a model
 "remembering" to move a card is fail-open bookkeeping, and a card that quietly
@@ -589,7 +596,10 @@ board's lists by name and prints the mapping, because a wrong mapping moves card
 to the wrong column silently. On Trello the card's description **is** the ticket
 file: the analyst writes it there, and the worker pulls it back at intake, hashes
 it, and builds exactly those bytes — the board is canonical for the text until
-intake, the repository after. `scripts/check-board.sh` drives both backends
+intake, the repository after. One card is asked for by its id — every listing of
+the board leaves the ids it saw in `.aif/state/trello-cards.json` — never found by
+listing every card with its description, and a card's head is read back past its
+newest twenty comments until there is one. `scripts/check-board.sh` drives both backends
 offline, the Trello one against a stand-in server (`scripts/mock-trello.py`).
 
 **`/aif-pjm`** is the project manager: it orders Ready, links tickets, reads the

@@ -21,7 +21,8 @@ usage: aif board <operation> [args]
                              wrote: blocked:, sync:, rework:, land:, …;
                              --json adds its time, its other lines, how many
                              comments came after it, and every head on the
-                             card with its time
+                             card with its time — on Trello, too, the sha-256
+                             of the card's text as aif work pulls it
   label <ID> <label>         add a label (created on the board if new)
   release [--dry-run]        move the Backlog cards whose every dependency is
                              Done and landed to the bottom of Ready; --dry-run

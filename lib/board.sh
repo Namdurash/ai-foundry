@@ -156,13 +156,37 @@ _aif_board_local_move() {
   printf 'moved %s → %s\n' "$id" "$col"
 }
 
+# A comment carries an id of its own — `c<n>`, one past the card's highest —
+# so that it can be edited in place, as a Trello action is by its id
+# (aif_board_comment_edit; docs/DEFECTS.md 14.4). A comment from before the
+# field has none, and is never edited. The id goes to AIF_BOARD_COMMENT_ID_TO
+# when the caller names a file for it.
 _aif_board_local_comment() {
-  local root="$1" id="$2" file="$3" f by
+  local root="$1" id="$2" file="$3" f by cid
   f="$(_aif_board_local_require "$root" "$id")"
   by="${AIF_BOARD_BY:-${USER:-aif}}"
-  jq --rawfile t "$file" --arg by "$by" --arg at "$(_aif_board_now)" \
-    '.comments += [ { at: $at, by: $by, text: $t } ]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  cid="$(jq -r '"c" + ([ (.comments // [])[] | (.id // "") | strings | ltrimstr("c") | tonumber? ] | (max // 0) + 1 | tostring)' "$f" 2>/dev/null)" || cid=""
+  [ -n "$cid" ] || cid="c1"
+  jq --rawfile t "$file" --arg by "$by" --arg at "$(_aif_board_now)" --arg cid "$cid" \
+    '.comments += [ { id: $cid, at: $at, by: $by, text: $t } ]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  [ -z "${AIF_BOARD_COMMENT_ID_TO:-}" ] || { printf '%s' "$cid" >"$AIF_BOARD_COMMENT_ID_TO"; } 2>/dev/null || true
   printf 'commented on %s (%s bytes)\n' "$id" "$(wc -c <"$file" | tr -d ' ')"
+}
+
+# _aif_board_local_comment_edit <root> <ID> <comment id> <file> — the comment
+# with that id, its text replaced and `edited_at` stamped; rc 1, said, when the
+# card holds no such comment.
+_aif_board_local_comment_edit() {
+  local root="$1" id="$2" cid="$3" file="$4" f
+  f="$(_aif_board_local_require "$root" "$id")"
+  if ! jq -e --arg cid "$cid" 'any((.comments // [])[]; .id == $cid)' "$f" >/dev/null 2>&1; then
+    aif_err "no comment $cid on $id's card"
+    return 1
+  fi
+  jq --rawfile t "$file" --arg cid "$cid" --arg at "$(_aif_board_now)" \
+    '.comments |= map(if .id == $cid then .text = $t | .edited_at = $at else . end)' "$f" >"$f.tmp" &&
+    mv "$f.tmp" "$f"
+  printf 'edited a comment on %s\n' "$id"
 }
 
 _aif_board_local_create() {
@@ -354,7 +378,75 @@ _aif_trello_column_of_list() {
     "$(aif_project_config "$1")" 2>/dev/null | sed -n 1p
 }
 
+# The card ids a listing showed, by ticket — `<main>/.aif/state/trello-cards.json`,
+# `{ "cards": { "<ID>": "<card id>" } }` — so that one card is asked for by
+# its id and not found by listing the board.
+#
+# Every move, comment, label, show, pull and column read used to list the
+# whole board with every card's description — the tickets themselves — to
+# find one card: the largest answer the API gives, once per operation, from
+# every worker, the loop, the dashboard and a shift on one token's rate limit
+# (docs/DEFECTS.md 13.8). Every listing writes the ids it saw (the status,
+# the Ready list, the next-ready read, the finder's own fallback), and the
+# finder asks `GET /cards/<id>` for a cached one. The cache is a hint, never
+# the truth: the card it names is taken only when the board says it is still
+# that ticket's, open, in one of this project's lists; anything else — a 404,
+# a card renamed, archived or moved off the board's six columns, a board
+# switched — is the listing as before, which writes the cache again. In the
+# main checkout, gitignored (.aif/state/), where every worktree and terminal
+# finds it; written whole to a temp name and moved, so a reader never sees
+# half, and a write two processes race loses an entry, never the file — a
+# lost entry is one listing more. Nothing here may stop an operation: a cache
+# that cannot be read or written is no cache.
+_aif_trello_cache_file() {
+  printf '%s/.aif/state/trello-cards.json' "$(aif_main_root "$1")"
+}
+
+# _aif_trello_cache_get <root> <ID> — the cached card id, or nothing.
+_aif_trello_cache_get() {
+  jq -r --arg t "$2" '(.cards // {})[$t] // empty | strings' "$(_aif_trello_cache_file "$1")" 2>/dev/null || true
+}
+
+# _aif_trello_cache_put <root> <listing JSON> [<ID>] — the listing's cards into
+# the cache, each under the first word of its name (the ticket, as `status`
+# reads it; a trailing colon off), the first card a ticket's when two share
+# one, as the finder takes the first. Kept beside the entries the listing did
+# not show: a Ready read sees one column. <ID>, from the finder whose cached id
+# the board no longer stood behind, is dropped when the listing — every open
+# card — has no card for it: an entry that only ever costs a request more.
+_aif_trello_cache_put() {
+  local f dir old tmp
+  f="$(_aif_trello_cache_file "$1")"
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  old="$(jq -c '(.cards // {}) | objects' "$f" 2>/dev/null)" || old=""
+  [ -n "$old" ] || old='{}'
+  tmp="$(mktemp "$dir/.trello-cards-XXXXXX" 2>/dev/null)" || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  if printf '%s' "$2" | jq -c --argjson old "$old" --arg drop "${3:-}" '
+    [ .[]? | objects | select((.id | type) == "string" and .closed != true)
+      | { key: ((.name // "") | split(" ")[0] | sub(":$"; "")), value: .id }
+      | select(.key != "") ]
+    | reduce .[] as $e ({}; if has($e.key) then . else . + { ($e.key): $e.value } end)
+    | . as $new
+    | { cards: ((if $drop != "" and ($new | has($drop) | not) then $old | del(.[$drop]) else $old end) + $new) }' \
+    >"$tmp" 2>/dev/null && mv "$tmp" "$f" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
 # _aif_trello_find_card <root> <ID> — the card JSON, or rc 1.
+#
+# One card by its id when the cache names one and the board still says it is
+# this ticket's (above, docs/DEFECTS.md 13.8): `GET /cards/<id>` with the
+# fields the listing asked for and `closed`, accepted when its name starts with
+# the ticket as the listing's test reads it, it is not archived, and its list
+# is one of the project's six — else the listing, as before, and the cache
+# written from it. Silent on that path, whatever failed: _aif_trello_card_column
+# tells "no such card" from "the board did not answer" by whether this said
+# anything.
 #
 # Captured once and tested as a variable. This used to pipe a pretty-printed jq
 # into `grep -q .` to ask "is there a card": grep left at the opening brace, jq
@@ -364,12 +456,32 @@ _aif_trello_column_of_list() {
 # worth building; `status` never asks for desc, so it went on listing a card
 # the worker then could not find (docs/DEFECTS.md 5.1, FINDINGS #19).
 _aif_trello_find_card() {
-  local root="$1" id="$2" board out card
+  local root="$1" id="$2" board out card cid lists
+  cid="$(_aif_trello_cache_get "$root" "$id")"
+  case "$cid" in
+    '' | *[!A-Za-z0-9]*) cid="" ;;
+  esac
+  if [ -n "$cid" ]; then
+    lists="$(jq -c '[ (.board.lists // {})[] | strings ]' "$(aif_project_config "$root")" 2>/dev/null)" || lists=""
+    [ -n "$lists" ] || lists='[]'
+    if out="$(_aif_trello_call "$root" GET "/cards/$cid" -G \
+      --data-urlencode "fields=name,idList,pos,desc,shortUrl,idLabels,closed")"; then
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+      card="$(printf '%s' "$out" | jq -c --arg id "$id" --argjson lists "$lists" '
+        objects | select((.name // "") | test("^" + $id + "([^A-Za-z0-9-]|$)"))
+        | select(.closed != true) | select(.idList as $l | any($lists[]; . == $l))' 2>/dev/null)" || card=""
+      if [ -n "$card" ]; then
+        printf '%s' "$card"
+        return 0
+      fi
+    fi
+  fi
   board="$(_aif_trello_board "$root")"
   [ -n "$board" ] || aif_die "project.json board.board_id is empty — run: aif board init trello"
   out="$(_aif_trello_call "$root" GET "/boards/$board/cards" -G \
     --data-urlencode "fields=name,idList,pos,desc,shortUrl,idLabels")" ||
     aif_die "Trello: could not list the board's cards — $out"
+  _aif_trello_cache_put "$root" "$out" "$id"
   card="$(printf '%s' "$out" | jq -c --arg id "$id" \
     '[ .[] | select(.name | test("^" + $id + "([^A-Za-z0-9-]|$)")) ] | .[0] // empty' 2>/dev/null)"
   [ -n "$card" ] || return 1
@@ -394,6 +506,8 @@ _aif_trello_next_ready() {
   re="$(aif_board_ticket_re "$root" | sed 's/^\^//; s/\$$//')"
   out="$(_aif_trello_call "$root" GET "/lists/$list/cards" -G --data-urlencode "fields=name,pos")" ||
     aif_die "Trello: could not read the Ready list — $out"
+  # The ids it saw, for the move that follows (docs/DEFECTS.md 13.8).
+  _aif_trello_cache_put "$root" "$out"
   printf '%s' "$out" | jq -r --arg re "$re" \
     '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[0].name // empty' |
     grep -oE "^$re" | sed -n 1p
@@ -410,6 +524,8 @@ _aif_trello_ready_list() {
   re="$(aif_board_ticket_re "$root" | sed 's/^\^//; s/\$$//')"
   out="$(_aif_trello_call "$root" GET "/lists/$list/cards" -G --data-urlencode "fields=name,pos")" ||
     aif_die "Trello: could not read the Ready list — $out"
+  # The ids it saw, for the takes that follow (docs/DEFECTS.md 13.8).
+  _aif_trello_cache_put "$root" "$out"
   printf '%s' "$out" | jq -r --arg re "$re" \
     '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[].name' |
     grep -oE "^$re" || true
@@ -515,11 +631,46 @@ _aif_trello_comment() {
     aif_die "Trello: could not comment on $id — $out"
   fi
   rm -f "$tmp"
+  # The comment's own id — its action's — for the caller that will edit it
+  # (aif_board_comment_edit): written to the file it names, never said.
+  [ -z "${AIF_BOARD_COMMENT_ID_TO:-}" ] ||
+    { printf '%s' "$out" | jq -j '.id // empty | strings' >"$AIF_BOARD_COMMENT_ID_TO"; } 2>/dev/null || true
   if [ "$fit" -eq 1 ]; then
     printf 'commented on %s (%s characters, cut to fit — the whole text is %s)\n' "$id" "$len" "${where:-in the file}"
   else
     printf 'commented on %s (%s characters)\n' "$id" "$len"
   fi
+}
+
+# _aif_trello_comment_edit <root> <ID> <action id> <file> — `PUT
+# /actions/<id>/text`: the comment's text replaced, held to the limit a
+# comment is (_aif_trello_fit). The action alone is asked for — its id is the
+# comment's, and needs no card found — so a heartbeat is one request
+# (docs/DEFECTS.md 14.4). A PUT, retried as a PUT is: the same text twice is
+# the same comment.
+_aif_trello_comment_edit() {
+  local root="$1" id="$2" aid="$3" file="$4" out tmp fit=0
+  case "$aid" in
+    '' | *[!A-Za-z0-9]*) aif_die "not a comment id: '$aid' (on $id)" ;;
+  esac
+  tmp="$(mktemp "${TMPDIR:-/tmp}/aif-comment-XXXXXX")"
+  _aif_trello_fit "$file" "$tmp" "$(printf '\n\n_(cut to fit a Trello comment)_')" >/dev/null || fit=$?
+  if [ "$fit" -eq 2 ]; then
+    rm -f "$tmp"
+    aif_die "could not read $file as text to edit a comment on $id"
+  fi
+  if ! out="$(_aif_trello_call "$root" PUT "/actions/$aid/text" --data-urlencode "value@$tmp")"; then
+    rm -f "$tmp"
+    case "$out" in
+      *"returned error: 404"*)
+        aif_err "no comment $aid on $id's card"
+        return 1
+        ;;
+    esac
+    aif_die "Trello: could not edit a comment on $id — $out"
+  fi
+  rm -f "$tmp"
+  printf 'edited a comment on %s\n' "$id"
 }
 
 # A card's description holds the same 16384 characters a comment does, counted
@@ -572,6 +723,9 @@ _aif_trello_status_json() {
   out="$(_aif_trello_call "$root" GET "/boards/$board/cards" -G \
     --data-urlencode "fields=name,idList,pos,dateLastActivity,labels")" ||
     aif_die "Trello: could not list the board's cards — $out"
+  # The ids it saw, so that what a reader of the status does to one card next
+  # asks for that card alone (docs/DEFECTS.md 13.8).
+  _aif_trello_cache_put "$root" "$out"
   printf '%s' "$out" | jq --argjson lists "$lists" '
     ($lists | to_entries | map({ key: .value, value: .key }) | from_entries) as $col
     | [ .[] | { ticket: (.name | split(" ")[0]),
@@ -588,14 +742,43 @@ _aif_trello_status_json() {
 # looked exactly like a card with nothing to say, and was routed as one
 # (docs/AUTOPILOT-RESEARCH.md §6.11, verification 3; docs/DEFECTS.md 14.7). Now
 # it dies with the reason, after the call's own retries.
+#
+# <pages> (default 1): how many pages of 20 comments it may read, newest
+# first, while none of those read has a first line aif knows
+# (AIF_BOARD_HEADS). One for `aif board show`; the head readers ask for
+# AIF_BOARD_HEAD_PAGES. A card with more than 20 comments after its last head
+# — a person's thread under a `blocked:` line — read as a card with no head at
+# all, and every routing decision on it went the wrong way (docs/DEFECTS.md
+# 15.6). Each next page is the 20 before the oldest comment read
+# (`before=<its action id>`, anchored on a comment, so one posted between two
+# pages shifts nothing); a page short of 20 is the last there is.
 _aif_trello_show_json() {
-  local root="$1" id="$2" card cid comments col
+  local root="$1" id="$2" pages="${3:-1}" card cid comments col page before n=0
   card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
-  comments="$(_aif_trello_call "$root" GET "/cards/$cid/actions" -G \
-    --data-urlencode "filter=commentCard" --data-urlencode "limit=20")" ||
-    aif_die "Trello: could not read the comments of $id — $(printf '%s' "$comments" | sed -n 1p)"
+  case "$pages" in
+    '' | *[!0-9]* | 0) pages=1 ;;
+  esac
+  comments='[]'
+  before=""
+  while :; do
+    page="$(_aif_trello_call "$root" GET "/cards/$cid/actions" -G \
+      --data-urlencode "filter=commentCard" --data-urlencode "limit=20" \
+      ${before:+--data-urlencode "before=$before"})" ||
+      aif_die "Trello: could not read the comments of $id — $(printf '%s' "$page" | sed -n 1p)"
+    comments="$(printf '%s' "$comments" | jq -c --argjson p "$page" '. + $p' 2>/dev/null)" ||
+      aif_die "Trello: the comments of $id did not read as JSON"
+    n=$((n + 1))
+    [ "$n" -lt "$pages" ] || break
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+    printf '%s' "$page" | jq -e --arg re "$AIF_BOARD_HEADS" \
+      'length >= 20 and all(.[]; ((.data.text // "") | split("\n")[0] | test($re)) | not)' >/dev/null 2>&1 || break
+    before="$(printf '%s' "$page" | jq -r 'last | .id // empty | strings' 2>/dev/null)" || before=""
+    case "$before" in
+      '' | *[!A-Za-z0-9]*) break ;;
+    esac
+  done
   printf '%s' "$card" | jq --arg col "${col:-other}" --argjson c "$comments" '
     { ticket: (.name | split(" ")[0]), title: (.name | sub("^[^ ]+ *[—:-]+ *"; "")),
       column: $col, url: .shortUrl, description: .desc,
@@ -603,11 +786,12 @@ _aif_trello_show_json() {
                            text: .data.text } ] | reverse }'
 }
 
-# The column alone, from one listing of the board's cards — the call
-# `_aif_trello_call` retries — and never from the actions call. The listing
-# helper dies when the board does not answer, in this substitution's subshell
-# with its reason on stderr, and returns 1 with nothing said when there is no
-# such card; the two are told apart by whether it said anything (see
+# The column alone, from the card's own read — by its cached id, else one
+# listing of the board's cards (_aif_trello_find_card), calls
+# `_aif_trello_call` retries — and never from the actions call. The finder
+# dies when the board does not answer, in this substitution's subshell with
+# its reason on stderr, and returns 1 with nothing said when there is no such
+# card; the two are told apart by whether it said anything (see
 # aif_board_card_column).
 _aif_trello_card_column() {
   local root="$1" id="$2" card col esc
@@ -651,8 +835,16 @@ aif_board_move() { "_aif_board_$(aif_board_kind "$1")_move" "$1" "$2" "$3" "${4:
 aif_board_comment() { "_aif_board_$(aif_board_kind "$1")_comment" "$1" "$2" "$3"; }
 aif_board_create() { "_aif_board_$(aif_board_kind "$1")_create" "$1" "$2" "$3"; }
 aif_board_status_json() { "_aif_board_$(aif_board_kind "$1")_status_json" "$1"; }
-aif_board_show_json() { "_aif_board_$(aif_board_kind "$1")_show_json" "$1" "$2"; }
+aif_board_show_json() { "_aif_board_$(aif_board_kind "$1")_show_json" "$1" "$2" "${3:-}"; }
 aif_board_label() { "_aif_board_$(aif_board_kind "$1")_label" "$1" "$2" "$3"; }
+
+# aif_board_comment_edit <root> <ID> <comment id> <file> — a comment already
+# on the card, its text replaced by the file's: the worker's claim, beating
+# while its run lives (docs/DEFECTS.md 14.4), and a claim that lost a race,
+# withdrawn. The id is what aif_board_comment wrote to AIF_BOARD_COMMENT_ID_TO
+# when it posted the comment. rc 0 · 1 no such comment (said) · a dead board
+# is aif_die, as every other operation's.
+aif_board_comment_edit() { "_aif_board_$(aif_board_kind "$1")_comment_edit" "$1" "$2" "$3" "$4"; }
 
 # aif_board_card_column <root> <ID> — the card's canonical column and nothing
 # else, on either backend. Prints it. rc 0 printed · 1 no such card · 2 the
@@ -668,9 +860,10 @@ aif_board_label() { "_aif_board_$(aif_board_kind "$1")_label" "$1" "$2" "$3"; }
 # the land refused it as "no card on the board", and the stop read it as an
 # unknown column, removed the lock and left the card In Progress for the next
 # `aif work` to take as fresh. So the column has a read of its own that never
-# asks for the comments: on Trello one listing of the board's cards, on the
-# local board the card file — and a board that cannot answer is rc 2, said,
-# not an empty answer (docs/DEFECTS.md 14.7, 13.8).
+# asks for the comments: on Trello the card's own read (by its id, else one
+# listing of the board's cards), on the local board the card file — and a
+# board that cannot answer is rc 2, said, not an empty answer
+# (docs/DEFECTS.md 14.7, 13.8).
 aif_board_card_column() { "_aif_board_$(aif_board_kind "$1")_card_column" "$1" "$2"; }
 
 # The trello functions are named _aif_trello_*; alias them under the interface's
@@ -685,6 +878,7 @@ _aif_board_trello_status_json() { _aif_trello_status_json "$@"; }
 _aif_board_trello_show_json() { _aif_trello_show_json "$@"; }
 _aif_board_trello_label() { _aif_trello_label "$@"; }
 _aif_board_trello_card_column() { _aif_trello_card_column "$@"; }
+_aif_board_trello_comment_edit() { _aif_trello_comment_edit "$@"; }
 
 # ---------------------------------------------------------------------------
 # the heads — the first lines aif and the roles write on a card
@@ -715,10 +909,13 @@ _aif_board_trello_card_column() { _aif_trello_card_column "$@"; }
 #   released by aif land <ID>: …  ·  released by aif board release: …
 #               `_aif_land_release` in lib/cmd_land.sh; `aif_release_sweep` in
 #               lib/release.sh — a Backlog card whose dependencies are Done
-#   taken: <host> pid <pid> at <time> — aif work
+#   taken: <host> pid <pid> at <time> — aif work[ · alive at <time>]
 #               the worker's claim when it takes a card (lib/cmd_work.sh), so a
 #               second machine on one board can tell a live worker from a
-#               hand-drag (docs/DEFECTS.md 14.4); a claim, never a reason to route
+#               hand-drag (docs/DEFECTS.md 14.4); a claim, never a reason to route.
+#               Edited in place while its run lives (the `· alive at` beat); a
+#               claim that lost a race to another machine's is edited to `not
+#               taken: …`, which is no head
 #   # <ID> — built | stopped
 #               the worker's run report (lib/cmd_work.sh, the note it posts on
 #               the card it moves to Review or leaves)
@@ -755,13 +952,20 @@ aif_board_last_line() {
   printf '%s\n' "$line"
 }
 
+# How many pages of 20 comments a head read may ask Trello for, newest first,
+# before it calls a card one with no head (_aif_trello_show_json;
+# docs/DEFECTS.md 15.6): a hundred comments — a thread a person could write
+# under a block — at one request a page, and the first page that holds a head
+# is the last asked for.
+AIF_BOARD_HEAD_PAGES=5
+
 # _aif_board_show_or_why <root> <ID> — the card's show JSON on stdout; or rc 2
 # and the reason on stderr as one bare line — no `error:`, no colour — which
 # is what both head readers (aif_board_last_line, aif_board_head_json)
-# promise their callers.
+# promise their callers. Read back as far as the head (AIF_BOARD_HEAD_PAGES).
 _aif_board_show_or_why() {
   local json esc
-  json="$(aif_board_show_json "$1" "$2" 2>&1)" || {
+  json="$(aif_board_show_json "$1" "$2" "$AIF_BOARD_HEAD_PAGES" 2>&1)" || {
     esc="$(printf '\033')"
     printf '%s\n' "$json" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
     return 2
@@ -786,13 +990,24 @@ _aif_board_show_or_why() {
 # needs to count blocks in a row or find the newest `taken:` — the line alone
 # says only what happened last.
 #
-# On Trello the comments are the newest 20 (`_aif_trello_show_json` asks for
-# no more): a head under twenty replies is not seen, and `heads` holds only
-# what those 20 do.
+# On Trello the comments are read back 20 at a time until a page holds a head,
+# five pages at most (AIF_BOARD_HEAD_PAGES): `heads` holds what those pages
+# do, so the newest head is found under a hundred replies, and an older one
+# only when it is among them (docs/DEFECTS.md 15.6).
+#
+# `card_sha256`, on Trello: the sha-256 of the card's description as `aif
+# work` pulls it into ticket.md (_aif_trello_pull: the same bytes, CR taken
+# out), so a reader holds the run's ticket_sha256 against the card as it is
+# now without a read of its own (docs/DEFECTS.md 15.12); null on the local
+# board, whose card holds no text.
 aif_board_head_json() {
-  local root="$1" id="$2" json out
+  local root="$1" id="$2" json out sha=""
   json="$(_aif_board_show_or_why "$root" "$id")" || return 2
-  out="$(printf '%s' "$json" | jq -c --arg re "$AIF_BOARD_HEADS" '
+  if printf '%s' "$json" | jq -e '(.description | type) == "string"' >/dev/null 2>&1; then
+    sha="$(printf '%s' "$json" | jq -j '.description' | tr -d '\r' | aif_sha256_stdin)" || sha=""
+  fi
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  out="$(printf '%s' "$json" | jq -c --arg re "$AIF_BOARD_HEADS" --arg sha "$sha" '
     (.comments // []) as $c
     | [ range(0; $c | length) | select((($c[.].text // "") | split("\n")[0]) | test($re)) ] as $ix
     | ($ix | last) as $i
@@ -801,7 +1016,8 @@ aif_board_head_json() {
         body: (if $i == null then null else ($c[$i].text | split("\n")[1:] | join("\n")) end),
         after: (if $i == null then ($c | length) else (($c | length) - $i - 1) end),
         heads: [ $ix[] | { line: ($c[.].text | split("\n")[0]),
-                           at: (($c[.].at // "") | sub("\\.[0-9]+Z$"; "Z")) } ] }' 2>/dev/null)" || {
+                           at: (($c[.].at // "") | sub("\\.[0-9]+Z$"; "Z")) } ],
+        card_sha256: (if $sha == "" then null else $sha end) }' 2>/dev/null)" || {
     printf '%s\n' "the card's comments did not read as JSON" >&2
     return 2
   }

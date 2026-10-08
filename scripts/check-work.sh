@@ -172,6 +172,13 @@
 #  58  a Ctrl-C during the Ready read is not the board; aif work --loop
 #      --stop reaches a loop still in its preflight; a loop that is not idle
 #      asks the machine again before one failed Ready read ends it 3
+#  68  a blocked: line the board refused, kept on this machine, is posted by
+#      the next worker run before it takes a card — over its run's own claim
+#      only; a card whose head moved on, or in Review, has its stale file
+#      removed; one In Progress keeps it for the shift
+#  69  the worker keeps its claim's comment id and words in its run lock and
+#      edits the claim at every dispatch — `· alive at <time>` — on the local
+#      board, no comment added
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -3795,7 +3802,7 @@ rc=0
 eq "built in a worktree, the card in Review" "$rc,$(col AIF-100)" "0,review"
 eq "two comments: the claim, then the report" "$(n_comments AIF-100)" "2"
 eq "the claim: taken on this host, a pid, a UTC time, by the worker" \
-  "$(first_line AIF-100 0 | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work$'),$(first_line AIF-100 0 | grep -c "^taken: ${host48:-?} pid "),$("$AIF" board show AIF-100 --json | jq -r '.comments[0].by')" "1,1,aif work"
+  "$(first_line AIF-100 0 | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work( · alive at [0-9T:Z-]+)?$'),$(first_line AIF-100 0 | grep -c "^taken: ${host48:-?} pid "),$("$AIF" board show AIF-100 --json | jq -r '.comments[0].by')" "1,1,aif work"
 eq "…and the report after it is still the head" "$(first_line AIF-100 1),$("$AIF" board head AIF-100)" "# AIF-100 — built,# AIF-100 — built"
 
 # The analyst adds a criterion in the checkout and commits it; the card goes
@@ -5113,6 +5120,79 @@ rm -f .aif/board/X.json
 eq "…and one that cannot be read three times in a row, the preflight passing each time: exit 3, the environment, two re-checks, the card untouched" \
   "$rc|$(col AIF-581)|$(jq -r '[.env, .rechecks, .why] | map(tostring) | join("|")' "$SANDBOX/p58-loop-d/summary.json" 2>/dev/null)" \
   "3|ready|1|2|the board's Ready column could not be read three times in a row, though the preflight passes — aif board check says why"
+
+# ====== 68. a blocked: line the board refused, posted by the next run =========
+# docs/DEFECTS.md 14.2. _aif_work_block moves the card to Needs Human even when
+# the board refused its comment — on purpose: in Ready it would be taken
+# again — and keeps the line in .aif/tmp/blocked-<ID>.md, where it stayed: the
+# card had no first line to route on until a person ran the command a
+# warning named. The next worker run on this machine posts it before it takes
+# a card: only over the run's own claim (the state a refused comment leaves);
+# a card whose head moved on since, or one in Review, has its stale file
+# removed; In Progress is the shift's to settle with the file (R3c). The
+# refusal itself is check-board's (a stand-in Trello that refuses comments);
+# here the state it leaves is set out on the local board.
+printf '\n68. the next run posts a blocked: line the board refused, and leaves the rest where it belongs\n'
+fresh_project "$SANDBOX/p68"
+for t in AIF-680 AIF-681 AIF-682 AIF-683 AIF-684; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "five for kept lines" >/dev/null
+host68="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-?}")"
+host68="$(printf '%s' "$host68" | tr -d '[:space:]')"
+kept68() { # <ID> <column> — a card in <column> under this host's claim, its blocked: line kept
+  "$AIF" board create "tasks/$1/ticket.md" --column "$2" >/dev/null
+  printf 'taken: %s pid 1 at 2026-10-07T09:00:00Z — aif work\n' "$host68" >"$OUT/claim68.md"
+  AIF_BOARD_BY="aif work" "$AIF" board comment "$1" "$OUT/claim68.md" >/dev/null
+  mkdir -p .aif/tmp
+  printf 'blocked: run — the worker exited (code 1) during plan\n\nWhat was accepted is committed on branch aif/%s.\n' "$1" >".aif/tmp/blocked-$1.md"
+}
+kept68 AIF-680 needs_human
+kept68 AIF-681 needs_human
+printf 'land: the merge conflicted\n' >"$OUT/land68.md"
+AIF_BOARD_BY="aif land" "$AIF" board comment AIF-681 "$OUT/land68.md" >/dev/null
+kept68 AIF-682 review
+kept68 AIF-683 in_progress
+"$AIF" board create tasks/AIF-684/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-684 >"$OUT/run68.out" 2>&1 || rc=$?
+eq "the next run, before its take: the kept line is the card's head, posted by the worker, the card left in Needs Human, the file gone" \
+  "$("$AIF" board head AIF-680)|$("$AIF" board show AIF-680 --json | jq -r '.comments[-1].by')|$(col AIF-680)|$(test -f .aif/tmp/blocked-AIF-680.md && echo kept || echo gone)|$(grep -c 'AIF-680 — its blocked: line, refused by the board when it was blocked, is on the card now' "$OUT/run68.out")" \
+  "blocked: run — the worker exited (code 1) during plan|aif work|needs_human|gone|1"
+eq "…a card whose head moved on since (land:): not posted, its stale file removed; one in Review: removed; one In Progress: left for the shift" \
+  "$("$AIF" board head AIF-681)|$(test -f .aif/tmp/blocked-AIF-681.md && echo kept || echo gone)|$(test -f .aif/tmp/blocked-AIF-682.md && echo kept || echo gone)|$(test -f .aif/tmp/blocked-AIF-683.md && echo kept || echo gone)|$("$AIF" board head AIF-683 | cut -c1-7)" \
+  "land: the merge conflicted|gone|gone|kept|taken: "
+eq "…and the run took its own card and built it" "$rc,$(col AIF-684)" "0,review"
+
+# ====== 69. the claim beats while its run lives ===============================
+# docs/DEFECTS.md 14.4. A claim said where a card was taken and when, and
+# nothing after: a worker that died left a claim no different from a live
+# one's, and a shift on another machine could not tell them apart. The
+# worker keeps its claim's comment id in its run lock and edits that comment
+# at the start of every dispatch — `· alive at <time>` on its first line —
+# on the local board as on Trello (the board adapter's comment edit; the
+# Trello half is check-board's). No comment is added by it: the report after
+# the claim is still the head.
+printf '\n69. the worker keeps its claim id in its lock and beats on the claim at every dispatch\n'
+fresh_project "$SANDBOX/p69"
+ticket_for AIF-690
+git add -A && git commit -qm "one to beat" >/dev/null
+"$AIF" board create tasks/AIF-690/ticket.md --column ready >/dev/null
+FAKE_SLEEP_IN="AIF-690:tests" FAKE_RELEASE="$OUT/release69" "$AIF" work AIF-690 >"$OUT/run69.out" 2>&1 &
+w69=$!
+wait_file .aif/worktrees/AIF-690/.aif/tmp/fake-running-AIF-690-tests 60
+cid69="$(cat .aif/state/runs/AIF-690/claim.id 2>/dev/null)"
+md69="$(sed -n 1p .aif/state/runs/AIF-690/claim.md 2>/dev/null)"
+during69="$("$AIF" board show AIF-690 --json | jq -r --arg c "$cid69" '[.comments[] | select(.id == $c)][0].text' | sed -n 1p)"
+: >"$OUT/release69"
+rc=0
+wait_exit "$w69" 90 || rc=$?
+eq "while the tests station runs: the lock names the claim's comment and keeps its words, and on the card its first line says the worker is alive" \
+  "$(printf '%s' "$cid69" | grep -cE '^c[0-9]+$'),$(printf '%s' "$md69" | grep -cE "^taken: ${host68:-?} pid [0-9]+ at [0-9T:Z-]+ — aif work$"),$(printf '%s' "$during69" | grep -cE "^taken: ${host68:-?} pid [0-9]+ at [0-9T:Z-]+ — aif work · alive at [0-9T:Z-]+$")" \
+  "1,1,1"
+eq "built: the claim edited in place at every dispatch — still its comment, no comment added — the report the head, the lock gone" \
+  "$rc|$(col AIF-690)|$("$AIF" board show AIF-690 --json | jq -r --arg c "$cid69" '[(.comments | length), ([.comments[] | select(.id == $c)][0] | (.edited_at != null), (.text | split("\n")[0] | test(" · alive at [0-9T:Z-]+$")))] | map(tostring) | join(",")')|$("$AIF" board head AIF-690)|$(test -d .aif/state/runs/AIF-690 && echo held || echo gone)" \
+  "0|review|2,true,true|# AIF-690 — built|gone"
 
 # ----------------------------------------------------------------------------
 printf '\n'

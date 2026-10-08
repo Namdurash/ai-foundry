@@ -79,16 +79,28 @@ def line($rule; $c; $text; $cmd):
 # the time of the head it was decided on.
 def hkey($rule): "\($rule) \(.ticket) \(.head.at | nz)";
 
+# An ISO UTC time as epoch seconds (Trello's milliseconds taken off), or null
+# for anything else — a fixture's "t1" included.
+def epoch: if type == "string" then (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null) else null end;
+
 # On a card: the NEWEST `taken:` claim among its heads — host, pid and time as
 # the worker wrote them (`taken: <host> pid <pid> at <ISO> — aif work`,
-# lib/cmd_work.sh _aif_work_claim), and the time the board gave the comment —
-# or null when no take is on it.
+# lib/cmd_work.sh _aif_work_claim), the time the board gave the comment, and
+# when its worker last said it was alive (`· alive at <ISO>`, the heartbeat
+# it edits into that first line at every dispatch, docs/DEFECTS.md 14.4) —
+# or null when no take is on it. A claim another machine withdrew after a
+# race (`not taken: …`) is no head, and so no claim.
 def claim:
   ([ (.head.heads // [])[] | select((.line // "") | startswith("taken: ")) ] | last) as $t
   | if $t == null then null
     else (($t.line | capture("^taken: (?<host>[^ ]+) pid (?<pid>[0-9]+) at (?<at>[^ ]+)"))
-          // { host: null, pid: null, at: null }) + { head_at: $t.at }
+          // { host: null, pid: null, at: null })
+         + { head_at: $t.at, alive: (($t.line | capture(" · alive at (?<a>[^ ]+)$") | .a) // null) }
     end;
+
+# On a claim: the epoch of the last time its worker said it was alive — the
+# heartbeat, else the time the claim names, else the comment's own — or null.
+def claim_life: [ (.alive | epoch), (.at | epoch), (.head_at | epoch) ] | map(select(. != null)) | max;
 
 # On a card: the first of the hold labels it carries, or null. A person put it
 # aside (lib/release.sh, AIF_RELEASE_HOLD_LABELS): it gets a line, never a move.
@@ -242,8 +254,20 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                null) ]
       # A shared board: only a card whose newest take names this machine is
       # this machine's to move (docs/DEFECTS.md 14.4; critics operations-9).
+      # Its worker beats on the claim at every dispatch; a claim silent for
+      # longer than a run can last, and ten minutes more, is a worker likely
+      # gone — said with what finds out, never a move: the run lock that
+      # knows is on that machine.
       elif $trello and $cl != null and $cl.host != $host then
-        [ line("R4"; $c; "taken by \($cl.host // "?") pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — built there; nothing to do here"; null) ]
+        ($cl | claim_life) as $life
+        | ($f.wall_clock_min // 120) as $wall
+        | if $life != null and (($f.now // null) | type) == "number" and ($f.now - $life) > ($wall + 10) * 60 then
+            [ line("R4"; $c;
+                   "taken by \($cl.host // "?") pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — its worker has said nothing for \((($f.now - $life) / 60) | floor) min, past the wall clock of a run (\($wall) min) and ten more: likely gone. On \($cl.host // "that machine"): aif work --status \($c.ticket); once nothing runs it there, back to Ready from here";
+                   "aif board move \($c.ticket) ready") ]
+          else
+            [ line("R4"; $c; "taken by \($cl.host // "?") pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — built there; nothing to do here"; null) ]
+          end
       # R4: nothing of it here — another machine, or a worker gone before it
       # wrote anything.
       elif $l.class == "none" or $l.class == "no_record" then
@@ -281,7 +305,9 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
         (if $l.class == "spec" then "ticket" else "run" end) as $kind
         | ($c.head.line // "") as $h
         | ($l.run.why_head
-           // (if $l.run.status == "built"
+           // (if $l.run.status == "built" and $trello
+               then "the build on branch aif/\($c.ticket) is of the card's text before it changed"
+               elif $l.run.status == "built"
                then "the build on branch aif/\($c.ticket) is of the ticket before its rework"
                else "the run stopped at \($l.run.stage // "its run")" end)) as $why
         | [ move("R3c"; "R3c \($c.ticket) \(($l.run.branch_finished_at // $l.run.finished_at // $l.run.started_at) | nz)";
@@ -320,6 +346,11 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
          then line("R8"; $c; "built with --no-worktree — there is no branch aif/\($c.ticket) for aif land to take"; null)
          else line("R8"; $c; "no branch aif/\($c.ticket) — nothing was built for \($c.ticket) (aif work \($c.ticket))"; "aif work \($c.ticket)") end)
       elif $l.class == "built_uncommitted" then line("R8"; $c; $l.why; "aif work \($c.ticket)")
+      # On Trello the card is the ticket, and the facts hash it as the pull
+      # writes it (docs/DEFECTS.md 15.12): a person who edited the card after
+      # its build gets no review of the build of the text before.
+      elif $l.run.ticket_changed == true and $trello then
+        line("R8"; $c; "the card changed after this build — a land would merge the build of its earlier text; aif work \($c.ticket) builds it again"; "aif work \($c.ticket)")
       elif $l.run.ticket_changed == true then
         line("R8"; $c; "the ticket changed after this build — a land would merge the build of the ticket before; aif work \($c.ticket) builds it again"; "aif work \($c.ticket)")
       elif ($l.run.branch_status // null) != "built" then
@@ -407,8 +438,18 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   # driver runs one preflight for every such card of the tick. Per card, and
   # never an end here: two cards blocked by one hiccup are two retries, and a
   # card blocked again after its retry is a line (critics operations-12).
+  #
+  # "During": the head's time is the board's clock and the shift's start this
+  # machine's, so a block posted in the shift's first seconds by a clock a
+  # little behind read as one from before the shift, never retried — or one
+  # from just before, by a clock ahead, as new. The head counts from
+  # fresh_margin_s (120) before the start (docs/DEFECTS.md 15.6): a block in
+  # the two minutes before a shift is retried once too, the cheaper mistake.
+  # A time that is not one (a fixture's) is compared as the string it is.
   def r16($c):
-    (($c.head.at // "") >= ($f.shift_started_at // "")) as $fresh
+    (($c.head.at | epoch) as $h | ($f.shift_started_at | epoch) as $s
+     | if $h != null and $s != null then $h >= $s - ($f.fresh_margin_s // 0)
+       else ($c.head.at // "") >= ($f.shift_started_at // "") end) as $fresh
     | any(($f.memory.retried_env // [])[]; . == $c.ticket) as $again
     | ($c.head.line | ltrimstr("blocked: environment — ")) as $why
     | if $fresh and ($again | not) then
@@ -483,6 +524,17 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                "aif board move \($c.ticket) ready") ]
       elif $h != null and ($h | startswith("blocked: environment — ")) then r16($c)
       elif $h != null and (($h | startswith("blocked: run — ")) or ($h | startswith("blocked: stopped — "))) then r17($c)
+      # The blocked: line the board refused, kept on this machine
+      # (lib/cmd_work.sh _aif_work_block), posted now that the board answers
+      # — a move that does not move, its comment the file: the card is where
+      # it belongs, and only its first line was missing (docs/DEFECTS.md
+      # 14.2). Only over this run's own claim, or nothing: any other head
+      # since means the card moved on, and the file is stale.
+      elif $c.kept_block != null
+           and ($h == null or (($h | startswith("taken: ")) and ($cl == null or $cl.host == $host))) then
+        [ move("R18"; "R18k \($c.ticket) \($c.head.at | nz)"; $c; "blocked"; "needs_human";
+               "its blocked: line, refused by the board when it was blocked, kept on this machine — posted now; the card stays in Needs Human")
+          + { where: "file", file: $c.kept_block.path } ]
       # R18: the rest is the human's, with the command its comment names. A
       # card here with no blocked: line is real (docs/DEFECTS.md 14.2): the
       # move went through and the comment did not.

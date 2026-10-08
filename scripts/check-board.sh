@@ -33,15 +33,24 @@
 #      503 on a comment's POST is one attempt (13.8); a card's column is read
 #      without its comments: `aif work <ID> --stop` on a worker that is gone
 #      settles its card under that same failing comments read, and keeps the
-#      lock when the board cannot be read at all
+#      lock when the board cannot be read at all; one card is asked for by its
+#      cached id — a move after a status read lists the board no more, an
+#      archived card's id is dropped (13.8) — and a head under 25 replies is
+#      found two pages back (15.6)
 #   4  doctor reports per role what is missing, and stops saying "not ready"
 #      the moment the token is set
 #   5  the worker pulls the next Ready card, moves it through In Progress to
 #      Review with the report as a comment, and to Needs Human when the ticket
-#      is not ready; when the board refuses the comment, it says the report is
-#      not on the card, and the command it prints posts it once the board
-#      answers; a land whose comments read fails lands from the card's column,
-#      and one whose board cannot say where the card is exits 3, nothing landed
+#      is not ready; its claim beats once a dispatch, edited in place; when the
+#      board refuses the comment, it says the report is not on the card, and
+#      the command it prints posts it once the board answers — and a refused
+#      blocked: line is posted by the next worker run (14.2); a land whose
+#      comments read fails lands from the card's column, and one whose board
+#      cannot say where the card is exits 3, nothing landed; two machines on
+#      one board (14.4): a card another machine's live worker claimed is
+#      skipped, a claim past a run's wall clock is not, two takes racing leave
+#      the card to the earlier claim — through the mock and for real across
+#      two checkouts — and the loop holds such a card, not the machine
 #
 # Run by `make check`. Requires git, jq, curl and python3.
 
@@ -88,6 +97,12 @@ export AIF_TRELLO_RETRY_SLEEP="0 0 0"
 # removes the file — so its absence after a command says every fault was met.
 FAULT="$SANDBOX/mock.fault"
 fault() { printf '%s\n' "$*" >"$FAULT"; }
+# Another machine's claim, posted by the mock beside the next claim this machine
+# posts — just before it, or just after: the two takes of a race on one card,
+# without a second machine (scripts/mock-trello.py, MOCK_INJECT_FILE;
+# docs/DEFECTS.md 14.4). `inject <before|after> <comment text>`.
+INJECT="$SANDBOX/mock.inject"
+inject() { jq -n --arg w "$1" --arg t "$2" '{ when: $w, match: "taken: ", text: $t }' >"$INJECT"; }
 
 MOCK_PID=""
 cleanup() { [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null; }
@@ -299,7 +314,7 @@ eq "every pos is distinct" \
 
 # =============================== 3. trello ===================================
 printf '\n3. trello, against a stand-in server\n'
-MOCK_FAULT_FILE="$FAULT" python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock.port" 2>"$OUT/mock.err" &
+MOCK_FAULT_FILE="$FAULT" MOCK_INJECT_FILE="$INJECT" python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock.port" 2>"$OUT/mock.err" &
 MOCK_PID=$!
 i=0
 while [ ! -s "$OUT/mock.port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
@@ -462,6 +477,65 @@ eq "with the whole description on it" \
 eq "show finds it" "$("$AIF" board show AIF-5 --json | jq -r .ticket)" "AIF-5"
 eq "move finds it" "$("$AIF" board move AIF-5 in_progress 2>&1)" "moved AIF-5 → in_progress"
 
+# One card by its id (docs/DEFECTS.md 13.8). Every move, comment, label and
+# head read listed the whole board — every card with its description, the
+# tickets themselves — to find the one it wanted. A listing now leaves the
+# ids it saw in .aif/state/trello-cards.json, and the card is asked for alone;
+# an id the board no longer stands behind — the card archived — is the
+# listing as before, and the cache follows it. The mock's request log counts
+# the calls: `log` by path, `qlog` with the query.
+printf '  · one card by its id, and a head under twenty-five replies\n'
+api_n() { mock | jq '[.log[] | select(test("^[A-Z]+ /1/"))] | length'; }
+lists_n() { mock | jq '[.log[] | select(. == "GET /1/boards/b1/cards")] | length'; }
+card_id() { mock | jq -r --arg n "$1 " '[.cards[] | select(.name | startswith($n)) | select(.closed != true) | .id][0] // empty'; }
+ticket_for AIF-30
+"$AIF" board create tasks/AIF-30/ticket.md >/dev/null
+"$AIF" board status --json >/dev/null
+l0="$(lists_n)"
+a0="$(api_n)"
+rc=0
+"$AIF" board move AIF-30 ready >"$OUT/move-one.out" 2>&1 || rc=$?
+eq "a move after a status read: its one card asked for by id, then the move — no listing of the board, two requests" \
+  "$rc,$(cat "$OUT/move-one.out"),$(($(lists_n) - l0)),$(($(api_n) - a0)),$(mock | jq -r --arg c "$(card_id AIF-30)" '[.qlog[] | select(startswith("GET /1/cards/" + $c + "?"))] | length > 0'),$(jq -r '.cards["AIF-30"] // "none"' .aif/state/trello-cards.json)" \
+  "0,moved AIF-30 → ready,0,2,true,$(card_id AIF-30)"
+old30="$(card_id AIF-30)"
+curl -s -X PUT "$AIF_TRELLO_API/cards/$old30" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+  --data-urlencode "closed=true" >/dev/null
+rc=0
+"$AIF" board move AIF-30 backlog >"$OUT/move-archived.out" 2>&1 || rc=$?
+eq "…the card archived since: the cached id refused, the listing asked, no card — and the id dropped from the cache" \
+  "$rc,$(grep -c 'no card named AIF-30 on the Trello board' "$OUT/move-archived.out"),$(jq -r '.cards["AIF-30"] // "none"' .aif/state/trello-cards.json)" "1,1,none"
+"$AIF" board create tasks/AIF-30/ticket.md >/dev/null
+rc=0
+"$AIF" board move AIF-30 ready >"$OUT/move-new.out" 2>&1 || rc=$?
+eq "…a new card for it: found by the listing, the archived one left alone, the cache naming the new" \
+  "$rc,$(mock | jq -r --arg c "$old30" '.cards[$c].closed'),$(jq -r '.cards["AIF-30"]' .aif/state/trello-cards.json),$("$AIF" board status --json | jq -r '.[] | select(.ticket == "AIF-30") | .column')" \
+  "0,true,$(card_id AIF-30),ready"
+"$AIF" board move AIF-30 backlog >/dev/null
+
+# A head under more than twenty comments (docs/DEFECTS.md 15.6). The comments
+# were the newest 20, and a card with a person's thread of 25 replies under
+# its blocked: line read as a card with no head — the routing went with it.
+# The head read pages back, 20 at a time, `before` the oldest it read, until
+# a page holds a head.
+ticket_for AIF-31
+"$AIF" board create tasks/AIF-31/ticket.md >/dev/null
+"$AIF" board comment AIF-31 "$OUT/blocked.md" >/dev/null
+c31="$(card_id AIF-31)"
+i=1
+while [ "$i" -le 25 ]; do
+  curl -s -X POST "$AIF_TRELLO_API/cards/$c31/actions/comments" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+    --data-urlencode "text=a person's reply number $i" >/dev/null
+  i=$((i + 1))
+done
+p0="$(mock | jq --arg c "$c31" '[.qlog[] | select(startswith("GET /1/cards/" + $c + "/actions?"))] | length')"
+hj AIF-31
+eq "a blocked: line under 25 replies: the head found, the 25 counted after it — two pages read, the second before the oldest of the first" \
+  "$hj_rc|$(jq -r '.line' "$OUT/hj.out")|$(jq -r '.after' "$OUT/hj.out")|$(mock | jq --arg c "$c31" '[.qlog[] | select(startswith("GET /1/cards/" + $c + "/actions?"))] | length - '"$p0"),$(mock | jq --arg c "$c31" '[.qlog[] | select(startswith("GET /1/cards/" + $c + "/actions?")) | select(contains("before="))] | length')" \
+  "0|blocked: ticket — not ready — the ready gate's questions are below, for the analyst|25|2,1"
+eq "…and aif board head says the same line" "$("$AIF" board head AIF-31)" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+eq "…while show still reads one page, the newest 20" "$("$AIF" board show AIF-31 --json | jq '.comments | length')" "20"
+
 # A board that misbehaves (docs/DEFECTS.md 13.8, 14.7). The adapter retries a
 # GET or a PUT on a 429 or a 5xx — at most three attempts, Retry-After or its
 # own list between them — and a POST never: a comment whose first attempt
@@ -532,7 +606,10 @@ eq "--stop on a worker that is gone while the comments GET fails: the card settl
   "0,needs_human,1,0,500 3 actions?,released"
 rm -f "$FAULT"
 stage_dead_lock AIF-1
-fault 500 3 /boards/b1/cards
+# The board cannot be read at all: the card's own read by its cached id (three
+# attempts) and the listing it falls back to (three more) — a fault on the
+# listing alone is no fault for a card read by its id (docs/DEFECTS.md 13.8).
+fault 500 6 /cards
 rc=0
 "$AIF" work AIF-1 --stop >"$OUT/stop-unread.out" 2>&1 || rc=$?
 eq "…and when the board cannot be read at all: the lock is kept, the card untouched, saying so" \
@@ -572,6 +649,14 @@ eq "the report is a comment on the card" "$(mock | jq -r '[.comments[][] | .data
 mock | jq -j '.cards[] | select(.name | startswith("AIF-1")) | .desc' >"$OUT/card-now.md"
 eq "the run built the card's current text, byte for byte" \
   "$(jq -r '.ticket_sha256' tasks/AIF-1/run.json)" "$(shasum -a 256 "$OUT/card-now.md" | cut -d' ' -f1)"
+# The claim beats while the run lives (docs/DEFECTS.md 14.4): its comment,
+# edited in place by its id at the start of every dispatch, says when the
+# worker was last alive — one PUT a dispatch, no card looked up for it.
+claim1="$(mock | jq -r --arg c "$(mock | jq -r '[.cards[] | select(.name | startswith("AIF-1 "))][0].id')" \
+  '[.comments[$c][] | select(.data.text | startswith("taken: "))] | last | .id')"
+eq "the claim beat at every dispatch: its first line says when the worker was last alive, one edit per dispatch, by the comment's id" \
+  "$(mock | jq -r --arg a "$claim1" '[.comments[][] | select(.id == $a)][0].data.text' | sed -n 1p | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work · alive at [0-9T:Z-]+$'),$(mock | jq -r --arg a "$claim1" '[.log[] | select(. == "PUT /1/actions/" + $a + "/text")] | length'),$(jq -r '.dispatches' tasks/AIF-1/run.json)" \
+  "1,$(jq -r '.dispatches' tasks/AIF-1/run.json),$(jq -r '.dispatches' tasks/AIF-1/run.json)"
 
 # A board that refuses the comment (docs/DEFECTS.md 10.1): "report posted" was
 # printed after the move, under the error that said the comment had been
@@ -608,10 +693,22 @@ rc=0
 later "$OUT/work-refused.out" || rc=$?
 eq "the command it printed posts the report once the board answers" \
   "$rc,$(posted AIF-6 | sed -n 1p)" "0,# AIF-6 — built"
+# The reason is not left on one machine's disk (docs/DEFECTS.md 14.2): the card
+# went to Needs Human with no first line to route on, its why kept in
+# .aif/tmp/blocked-AIF-7.md and posted only by a person who read the warning.
+# The next worker run on this machine, once the board answers, posts it before
+# it takes a card — comment only — and removes the file. Ready is emptied
+# first, so the run that posts it takes nothing.
+eq "the card in Needs Human with no line on it, its why kept on this machine" \
+  "$(test -f .aif/tmp/blocked-AIF-7.md && echo kept),$(column_of AIF-7),$("$AIF" board head AIF-7 >/dev/null 2>&1; echo $?)" "kept,needs_human,1"
+"$AIF" board move AIF-9 backlog >/dev/null
 rc=0
-later "$OUT/work-refused2.out" || rc=$?
-eq "…and the reason, under its blocked: line" \
-  "$rc,$(posted AIF-7 | sed -n 1p)" "0,blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+"$AIF" work --no-worktree >"$OUT/work-repost.out" 2>&1 || rc=$?
+eq "the next worker run posts the kept why before it takes a card: the blocked: line is the head, the file gone, the card where it was" \
+  "$("$AIF" board head AIF-7)|$(test -f .aif/tmp/blocked-AIF-7.md && echo kept || echo gone)|$(column_of AIF-7)|$(grep -c 'AIF-7 — its blocked: line, refused by the board when it was blocked, is on the card now' "$OUT/work-repost.out")" \
+  "blocked: ticket — not ready — the ready gate's questions are below, for the analyst|gone|needs_human|1"
+eq "…once: the command the warning printed now finds no file, and the card has the line once" \
+  "$(later "$OUT/work-refused2.out"; echo $?),$(mock | jq -r --arg c "$(mock | jq -r '[.cards[] | select(.name | startswith("AIF-7 "))][0].id')" '[.comments[$c][] | select(.data.text | startswith("blocked: "))] | length')" "1,1"
 
 # The land's read of a card's column — is it in Review? — went through
 # `show` too, and the comments read failing for good (section 3) refused a
@@ -628,7 +725,8 @@ rc=0
 "$AIF" work AIF-8 >"$OUT/work-land.out" 2>&1 || rc=$?
 eq "a build in a worktree against the mock board: in Review, on its branch" \
   "$rc,$(column_of AIF-8),$(git show-ref --verify --quiet refs/heads/aif/AIF-8 && echo branch)" "0,review,branch"
-fault 500 3 /boards/b1/cards
+# The card by its cached id and the listing after it, as above.
+fault 500 6 /cards
 rc=0
 "$AIF" land AIF-8 >"$OUT/land-unread.out" 2>&1 || rc=$?
 eq "land when the board cannot say where the card is: exit 3, said as the board's, nothing landed" \
@@ -663,6 +761,97 @@ rc=0
 eq "a card a person edited before its build: built from the card, and --status says built, the ticket not changed" \
   "$rc,$(column_of AIF-11),$(git show aif/AIF-11:tasks/AIF-11/ticket.md | grep -c 'A sentence a person added on the card'),$("$AIF" work --status AIF-11 --json | jq -r '[.class, .run.ticket_changed] | map(tostring) | join(",")')" \
   "0,review,1,built,false"
+
+# Two machines on one board (docs/DEFECTS.md 14.4). A take was a read of
+# Ready and a move with no compare-and-set: two machines that read the same
+# card both moved it and both built it, and once it was In Progress a live
+# worker elsewhere looked like a card a person had dragged there. Now a worker
+# reads the card's newest head before it takes it — another machine's claim
+# whose worker has said within a run's wall clock that it lives is that
+# machine's, skipped and said — and after its own claim it reads the heads
+# again: the earlier of two live claims builds, the later withdraws its claim
+# and takes nothing. The other machine is the mock (its comments, posted as
+# that machine's worker would) and, for the race run for real, a second
+# checkout whose `hostname -s` is another's.
+printf '  · two machines on one board: a live claim skipped, a stale one taken, the race either way\n'
+fresh_project "$SANDBOX/p3e"
+"$AIF" board init trello --board b1 >/dev/null 2>&1
+for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46; do ticket_for "$t"; done
+git add -A && git commit -qm "seven for two machines" >/dev/null
+for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46; do "$AIF" board create "tasks/$t/ticket.md" >/dev/null; done
+# The second checkout, before this one builds anything: the same project and
+# board, its own .aif/state, and a `hostname` that says another machine's name.
+cp -R "$SANDBOX/p3e/." "$SANDBOX/p3f/"
+rm -rf "$SANDBOX/p3f/.aif/state"
+mkdir -p "$SANDBOX/hostb"
+printf '#!/bin/sh\necho hostb\n' >"$SANDBOX/hostb/hostname"
+chmod +x "$SANDBOX/hostb/hostname"
+iso_ago() { python3 -c 'import sys, datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
+claim_by() { # <ID> <host> <seconds ago> — that machine's claim, in its worker's words, posted then
+  local at
+  at="$(iso_ago "$3")"
+  curl -s -X POST "http://127.0.0.1:$PORT/_plant/$(card_id "$1")" \
+    --data-urlencode "text=taken: $2 pid 4242 at $at — aif work" --data-urlencode "date=${at%Z}.000Z" >/dev/null
+}
+claims_on() { # <ID> — the first lines of its claims, one per line, oldest first
+  mock | jq -r --arg n "$1 " '[.cards[] | select(.name | startswith($n))][0].id as $c
+    | .comments[$c][]? | .data.text | split("\n")[0] | select(startswith("taken: ") or startswith("not taken: "))'
+}
+"$AIF" board move AIF-40 ready >/dev/null
+"$AIF" board move AIF-40 in_progress >/dev/null
+claim_by AIF-40 hostb 120
+# A person drags it back to Ready while hostb's worker runs.
+"$AIF" board move AIF-40 ready >/dev/null
+rc=0
+"$AIF" work AIF-40 >"$OUT/take-claimed.out" 2>&1 || rc=$?
+eq "a card another machine claimed two minutes ago: skipped, exit 3, said — the card untouched, no claim of this machine on it" \
+  "$rc,$(grep -c '^error: AIF-40 is taken on hostb (pid 4242, its worker last said it was alive 2 min ago' "$OUT/take-claimed.out"),$(column_of AIF-40),$(claims_on AIF-40 | wc -l | tr -d ' ')" \
+  "3,1,ready,1"
+claim_by AIF-41 hostb 10800
+"$AIF" board move AIF-41 ready >/dev/null
+rc=0
+"$AIF" work AIF-41 >"$OUT/take-stale.out" 2>&1 || rc=$?
+eq "a card whose claim is three hours old — past a run's wall clock, its worker gone: taken and built, this machine's claim after it" \
+  "$rc,$(column_of AIF-41),$(claims_on AIF-41 | sed -n 2p | grep -c "^taken: $(hostname -s) pid ")" "0,review,1"
+"$AIF" board move AIF-42 ready >/dev/null
+inject before "taken: hostb pid 4343 at $(iso_ago 0) — aif work"
+rc=0
+"$AIF" work AIF-42 >"$OUT/take-lost.out" 2>&1 || rc=$?
+eq "two takes racing, the other machine's claim first: this one loses — exit 3, said, its claim withdrawn, nothing built, the card left In Progress to the winner" \
+  "$rc|$(grep -c '^error: AIF-42 is taken on hostb (pid 4343) — skipped: another machine.s worker has it. It claimed the card a moment before' "$OUT/take-lost.out")|$(claims_on AIF-42 | sed -n 1p | grep -c '^taken: hostb pid 4343 ')|$(claims_on AIF-42 | sed -n 2p | grep -cE "^not taken: $(hostname -s) pid [0-9]+ at [0-9T:Z-]+ — aif work · hostb \(pid 4343\) claimed this card first$")|$(column_of AIF-42)|$(test -d .aif/worktrees/AIF-42 && echo worktree || echo none)|$("$AIF" board head AIF-42 | sed 's/ at .*//')" \
+  "3|1|1|1|in_progress|none|taken: hostb pid 4343"
+"$AIF" board move AIF-43 ready >/dev/null
+inject after "taken: hostb pid 4444 at $(iso_ago 0) — aif work"
+rc=0
+"$AIF" work AIF-43 >"$OUT/take-won.out" 2>&1 || rc=$?
+eq "…the race the other way, this machine's claim first: it builds, the other's claim after it" \
+  "$rc,$(column_of AIF-43),$(claims_on AIF-43 | sed -n 1p | grep -c "^taken: $(hostname -s) pid "),$(claims_on AIF-43 | sed -n 2p | grep -c '^taken: hostb pid 4444')" "0,review,1,1"
+# The loop holds a card another machine has, and is not the worse for it:
+# not the environment, no re-check, the next card built.
+"$AIF" board move AIF-40 backlog >/dev/null
+"$AIF" board move AIF-44 ready >/dev/null
+claim_by AIF-44 hostb 60
+"$AIF" board move AIF-45 ready >/dev/null
+rc=0
+AIF_WORK_LOOP_LOGDIR="$SANDBOX/p3e-loop" "$AIF" work --loop --no-tui --parallel 1 >"$OUT/loop-claimed.out" 2>&1 || rc=$?
+eq "a loop over a card another machine has and one it can take: the first held, not the machine — env 0, no re-check — the second built" \
+  "$rc|$(jq -r '[.env, .rechecks, (.held | join(" ")), ([.results[] | .ticket + ": " + .what] | join("; "))] | map(tostring) | join("|")' "$SANDBOX/p3e-loop/summary.json" 2>/dev/null)|$(column_of AIF-44),$(column_of AIF-45)" \
+  "1|0|0|AIF-44|AIF-44: not taken (exit 3) — another machine's worker has it; AIF-45: built → Review|ready,review"
+# The race run for real: this checkout and the second, on the same card at
+# the same moment. Whichever way the board orders them, one builds and the
+# other takes nothing and says so.
+"$AIF" board move AIF-46 ready >/dev/null
+"$AIF" work AIF-46 >"$OUT/race-a.out" 2>&1 &
+pa=$!
+(cd "$SANDBOX/p3f" && PATH="$SANDBOX/hostb:$PATH" "$AIF" work AIF-46) >"$OUT/race-b.out" 2>&1 &
+pb=$!
+ra=0
+wait "$pa" || ra=$?
+rb=0
+wait "$pb" || rb=$?
+eq "two machines take one card at once: one builds it, the other takes nothing and says the card is the other's — one live claim on the card" \
+  "$(printf '%s\n%s\n' "$ra" "$rb" | sort | tr '\n' ','),$(cat "$OUT/race-a.out" "$OUT/race-b.out" | grep -c '^error: AIF-46 is taken on '),$(column_of AIF-46),$(claims_on AIF-46 | grep -c '^taken: ')" \
+  "0,3,,1,review,1"
 
 fresh_project "$SANDBOX/p5"
 unset AIF_TRELLO_API

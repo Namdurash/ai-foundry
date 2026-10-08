@@ -126,8 +126,11 @@ on the kind:
   It is for the human; say what the comment names, and do not move it.
 
 A `taken: <host> pid <pid> at <time> — aif work` line is the worker's claim on the card
-when it took it — which machine, which process, when — and never a reason to route: the
-report or the `blocked:` line after it is what says how the run ended.
+when it took it — which machine, which process, when; `· alive at <time>` after it is the
+last time its worker said it was alive — and never a reason to route: the report or the
+`blocked:` line after it is what says how the run ended. A `not taken: …` line is a
+claim withdrawn by a worker that lost the card to another machine's earlier claim:
+nothing to route either.
 
 A comment with no `blocked:` line is from before the worker wrote one: read it, and
 route a ticket problem as rework and anything else to the human, as above.

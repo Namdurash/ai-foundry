@@ -18,9 +18,18 @@
 #   - every amendment carries a reason and lands in a committed file a reviewer
 #     reads, next to the plan it widens;
 #   - it is capped (limits.plan_amendments_max). Past the cap the honest answer
-#     is that the plan was wrong, and the ticket goes back to planning;
+#     is that the plan was wrong: the refusal names the bounded way back — a
+#     replan, written in the implementer's note;
 #   - scope prints the amendments in its verdict, so a widened manifest is never
-#     a silent one.
+#     a silent one — a file an amendment created marked (new).
+#
+# An amendment may create a file, beside the plan's own (docs/DEFECTS.md
+# 13.10): a CSS module or a type file next to the component the plan creates
+# is ordinary, and a new file used to be a replan — one per ticket — for a
+# line. What a new path may be is decided by place and name, not extension:
+# in a directory that holds a files.create or files.change path, never the
+# root; not a dotfile; not a test; not a manifest or a lockfile; not the
+# pipeline's or CI's. Recorded as `kind: "create"`; the cap counts both kinds.
 
 AIF_AMEND_FILE="plan-amendments.json"
 
@@ -61,11 +70,16 @@ aif_cmd_amend_plan() {
   # The paths an amendment may never reach. These are not "the plan did not
   # foresee it" cases, they are cases where the answer is a different station or
   # no station at all — so widening the manifest is the wrong move by definition.
+  # CI and the ignore rules change only when the PLAN names them, the rule a
+  # lockfile keeps (the gates' AIF_G_PLANNED_ONLY; docs/DEFECTS.md 13.10).
   case "$path" in
-    tasks/* | .aif/* | .claude/* | .github/*)
+    tasks/* | .aif/* | .claude/* | project.json)
       aif_die "refusing to amend for '$path': that is the pipeline's own machinery, not implementation. No implementation may edit it, whatever the plan says."
       ;;
-    tests/* | test/* | */tests/* | */test/* | *_test.* | *test_*.py | *.test.* | *.spec.*)
+    .github/* | .gitlab-ci* | .gitignore)
+      aif_die "refusing to amend for '$path': CI and the ignore rules change only when the plan names them — a ticket that needs one is re-planned with it in the manifest; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+      ;;
+    tests/* | test/* | __tests__/* | */tests/* | */test/* | */__tests__/* | *_test.* | *test_*.py | *.test.* | *.spec.*)
       aif_die "refusing to amend for '$path': the tests are frozen by verify-red. If a test is wrong, stop and report it — the ticket returns to have its tests or spec revised."
       ;;
     # A lockfile moves only with its manifest, and only when the PLAN named
@@ -88,11 +102,45 @@ aif_cmd_amend_plan() {
     aif_die "'$path' is already in the plan's manifest — nothing to amend"
   fi
 
-  # A path that does not exist is a plan for an imagined repository, which is the
-  # same defect the plan gate catches for files.change. Creating NEW files is what
-  # files.create is for and belongs in the plan, not here.
-  [ -e "$root/$path" ] ||
-    aif_die "'$path' does not exist. An amendment widens the manifest to a file the implementation must EDIT; a file that has to be created belongs in the plan's files.create, which means re-planning."
+  # A path that does not exist is a file to CREATE, and that is the plan's
+  # files.create — unless it sits beside the plan's own files and is ordinary
+  # code: a module the component needs, a style or type file next to it
+  # (docs/DEFECTS.md 13.10). Decided by place and name, never extension; what
+  # is refused is said, with the way through.
+  local kind=change dir base_name roots
+  if [ ! -e "$root/$path" ]; then
+    kind=create
+    dir="$(dirname "$path")"
+    base_name="${path##*/}"
+    case "/$path" in
+      */.*)
+        aif_die "refusing to create '$path' by amendment: a dotfile (or one under a dot-directory) is configuration, not code beside the plan's — it belongs in the plan's files.create; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+        ;;
+    esac
+    if [ "$dir" = "." ]; then
+      aif_die "refusing to create '$path' by amendment: a new file at the root of the repository is not one beside the plan's — it belongs in the plan's files.create; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+    fi
+    roots="$(jq -r '.test.roots[]?' "$project" 2>/dev/null)"
+    while IFS= read -r r; do
+      r="${r%/}"
+      [ -n "$r" ] || continue
+      case "$path" in
+        "$r"/*) aif_die "refusing to amend for '$path': it is under the test root $r, and the tests are frozen by verify-red." ;;
+      esac
+    done <<EOF
+$roots
+EOF
+    case "$base_name" in
+      package.json | pyproject.toml | Cargo.toml | go.mod)
+        aif_die "refusing to create '$path' by amendment: a dependency manifest is the plan's decision, with its lockfile — say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+        ;;
+    esac
+    if ! printf '%s' "$plan_meta" | jq -e --arg d "$dir" '
+        ((.files.create // []) + (.files.change // []))
+        | map(if test("/") then sub("/[^/]*$"; "") else "." end) | index($d) != null' >/dev/null 2>&1; then
+      aif_die "refusing to create '$path' by amendment: $dir/ holds none of the plan's files.create or files.change — a new file goes beside the files the plan names, or into the plan itself; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+    fi
+  fi
 
   # Start fresh whenever the binding does not match: an amendments file left over
   # from a previous plan is not this plan's, and carrying it forward would let a
@@ -107,14 +155,16 @@ aif_cmd_amend_plan() {
   count="$(jq '.amendments | length' "$f")"
   if [ "$count" -ge "$cap" ]; then
     aif_err "the plan has already been amended $count time(s), and the cap is $cap."
-    aif_die "Past this the plan is not being widened, it is being replaced — and that is a planning decision, not an implementation one. Stop and report what the plan got wrong."
+    # The bounded way back named, not "stop": a replan, which the worker reads
+    # from the note and runs once per ticket (docs/DEFECTS.md 13.10).
+    aif_die "Past this the plan is not being widened, it is being replaced — a planning decision, not an implementation one. Write it in your note: { \"replan\": \"<what the plan got wrong>\" } in tasks/$ticket/implement.note.json, and finish; the worker hands it to the plan station."
   fi
 
-  jq --arg p "$path" --arg w "$why" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '.amendments += [ { path: $p, why: $w, at: $at } ]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  jq --arg p "$path" --arg w "$why" --arg k "$kind" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.amendments += [ { path: $p, why: $w, kind: $k, at: $at } ]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
 
-  printf '%samended%s the manifest: %s\n  %s\n' \
-    "$AIF_C_YELLOW" "$AIF_C_RESET" "$path" "$why"
+  printf '%samended%s the manifest: %s%s\n  %s\n' \
+    "$AIF_C_YELLOW" "$AIF_C_RESET" "$path" "$([ "$kind" = create ] && printf ' (new — write it)')" "$why"
   printf '  %s%s of %s used. It is recorded and a reviewer will see it next to the plan.%s\n' \
     "$AIF_C_DIM" "$((count + 1))" "$cap" "$AIF_C_RESET"
 }

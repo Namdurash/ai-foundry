@@ -265,6 +265,54 @@ g "plain session writes a test"            '{"tool_input":{"file_path":"tests/t.
 g "plain session writes a plan"            '{"tool_input":{"file_path":"tasks/T-1/plan.md"}}' allow ""
 g "plain session edits a gate"             '{"tool_input":{"file_path":".aif/gates/green.sh"}}' allow ""
 
+printf '\nguard hook: what the plan declares, and the pipeline closed to every station\n'
+# docs/DEFECTS.md 13.10. The tests station could write only what is named like
+# a test, so a manual mock or a test util the plan declared in files.tests was
+# refused; the worker exports AIF_TICKET beside AIF_STATION now, and the guard
+# reads that plan. And .aif/, .claude/ and tasks/ — how a ticket is judged and
+# recorded — are closed to every station's Write, each station's own file
+# under tasks/ aside: only scope held them, and only against the implement
+# station. Asked from a project reached through a symlink, as a temporary
+# directory on macOS is (/var → /private/var): a declared path spelled through
+# the physical one is the project's too. A row per station's own outputs.
+GP="$(mktemp -d "${TMPDIR:-/tmp}/aif-guard-XXXXXX")"
+GP="$(cd "$GP" && pwd -P)"
+mkdir -p "$GP/proj/tasks/T-1"
+printf '<!-- aif:meta\n{ "files": { "tests": ["__tests__/a.test.ts", "__mocks__/api.ts", "test-utils/render.tsx"] } }\n-->\n# T-1 — plan\n' \
+  >"$GP/proj/tasks/T-1/plan.md"
+ln -s "$GP/proj" "$GP/link"
+gt() { # <label> <path> <deny|allow> <station> [<ticket>, T-1 unless given]
+  local got=allow
+  (cd "$GP/link" && printf '{"tool_input":{"file_path":"%s"}}' "$2" |
+    env "AIF_STATION=$4" "AIF_TICKET=${5-T-1}" /bin/bash "$ROOT/sets/claude/hooks/guard.sh" 2>&1) |
+    grep -q '"deny"' && got=deny
+  if [ "$got" = "$3" ]; then ok "$1 → $got"; else bad "$1 → $got (wanted $3)"; fi
+}
+gt "tests writes a manual mock the plan declares"    __mocks__/api.ts allow tests
+gt "tests writes a test util the plan declares"      test-utils/render.tsx allow tests
+gt "tests writes under __tests__/, undeclared"       __tests__/b.ts allow tests
+gt "tests writes a declared test"                    __tests__/a.test.ts allow tests
+gt "tests writes its note"                           tasks/T-1/tests.note.json allow tests
+gt "tests writes source"                             src/api.ts deny tests
+gt "tests writes a mock the plan does not declare"   __mocks__/other.ts deny tests
+gt "tests writes a declared mock, through the physical path" "$GP/proj/__mocks__/api.ts" allow tests
+gt "tests writes a gate"                             .aif/gates/green.sh deny tests
+gt "implement writes source"                         src/api.ts allow implement
+gt "implement writes its note"                       tasks/T-1/implement.note.json allow implement
+gt "implement writes a mock the plan declares"       __mocks__/api.ts deny implement
+gt "implement writes .claude/settings.json"          .claude/settings.json deny implement
+gt "implement writes .aif/project.json"              .aif/project.json deny implement
+gt "plan writes its own plan"                        tasks/T-1/plan.md allow plan
+gt "plan writes a skeleton"                          src/new/module.ts allow plan
+gt "plan writes .aif/project.json"                   .aif/project.json deny plan
+gt "plan writes .claude/agents/aif-tests.md"         .claude/agents/aif-tests.md deny plan
+gt "plan writes another ticket's plan"               tasks/T-2/plan.md deny plan
+gt "plan writes a test util the plan declares"       test-utils/render.tsx deny plan
+gt "no ticket: tests writes that mock — named like no test, refused" __mocks__/api.ts deny tests ""
+gt "no ticket: tests writes a test"                  tests/t.py allow tests ""
+gt "no ticket: implement writes source"              src/api.ts allow implement ""
+rm -rf "${GP:?}"
+
 printf '\nevery runner template has its stack fragment, and the other way round\n'
 # A runner the set knows is two files: project.templates/<r>.json, which
 # `aif project init` copies, and stacks/<r>.md, which the worker appends to

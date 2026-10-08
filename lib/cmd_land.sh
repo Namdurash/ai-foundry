@@ -33,7 +33,10 @@
 #   verdict     the worker's own when it judged this very tree (run.json's
 #               `judged`, with this checkout's test command and checks); else
 #               the suite and the green-phase checks, there (_aif_land_judge).
-#               A red sends the card back to the worker the same way
+#               A red sends the card back to the worker the same way — but not
+#               a test or a check red on the target before this ticket, nor a
+#               test that passes on a re-run: those are let through and named
+#               on the landing note, by the gates' own rule (13.9)
 #   land        the developer's branch fast-forwarded to the merge, and nothing
 #               else of theirs touched: their uncommitted work on files the
 #               land does not change stays as it is
@@ -152,6 +155,9 @@ AIF_LAND_STOPPING=0
 # of them, and where to; how many were not the bytes the branch carries (an
 # empty ledger is not counted — it held nothing).
 AIF_LAND_OWN=""
+# The copy of the target the verdict measures a failure on, while it exists
+# (_aif_land_judge, _aif_land_copy_at): removed by any stop (_aif_land_unwind).
+AIF_LAND_COPY=""
 AIF_LAND_ASIDE=""
 AIF_LAND_ASIDE_DIR=""
 AIF_LAND_ASIDE_DIFF=0
@@ -173,6 +179,10 @@ _aif_land_unlock() {
 # run twice; nothing in it may stop it, since it runs in the handler too.
 _aif_land_unwind() {
   _aif_land_restore_aside
+  # The verdict's copy of the target, when a stop came while it was measured
+  # there (_aif_land_judge).
+  [ -z "${AIF_LAND_COPY:-}" ] || rm -rf "${AIF_LAND_COPY:?}" 2>/dev/null || true
+  AIF_LAND_COPY=""
   if [ -n "$AIF_LAND_WT" ] && [ -n "$AIF_LAND_BRANCH" ]; then
     aif_land_worktree_back "$AIF_LAND_WT" "$AIF_LAND_BRANCH" "$AIF_LAND_INSTALLED" || AIF_LAND_BACK_FAILED=1
     AIF_LAND_WT=""
@@ -491,13 +501,13 @@ _aif_land_worker_verdict() {
   printf '%s' "$j"
 }
 
-# _aif_land_judge <wt> <project> <out> <target> <branch> — the verdict on the
-# land's merge, in the worktree where it was made: the suite, then — once the
-# suite is green, as green.sh orders them — every check whose phase holds
-# "green", the rest of the Definition of Done. The land used to run the suite
-# alone (docs/DEFECTS.md 13.5): two tickets that merged clean and type-checked
-# apart could leave `tsc` red on the target, and every ticket after them
-# stopped at the plan's contract check.
+# _aif_land_judge <wt> <project> <out> <target> <branch> <target-sha> — the
+# verdict on the land's merge, in the worktree where it was made: the suite,
+# then — once the suite is green, as green.sh orders them — every check whose
+# phase holds "green", the rest of the Definition of Done. The land used to run
+# the suite alone (docs/DEFECTS.md 13.5): two tickets that merged clean and
+# type-checked apart could leave `tsc` red on the target, and every ticket
+# after them stopped at the plan's contract check.
 #
 # The checks are run the way the gates' aif_g_checks_run runs them
 # (sets/claude/gates/_lib.sh): from the root, stdin from /dev/null, required
@@ -509,21 +519,36 @@ _aif_land_worker_verdict() {
 # the headline of a red or a norun and <out> what it quotes. What a red is
 # made of is kept apart from the judging: AIF_LAND_FAILING the failing tests'
 # ids, one a line; AIF_LAND_CHECKS_RED the required checks that failed,
-# `<name>\t<exit>` a line. The judging is the one block at the end — where a
-# failure the target already had before this ticket would be told apart
-# (docs/DEFECTS.md 13.9).
+# `<name>\t<exit>` a line. The judging is the one block at the end.
+#
+# And by the rule the worker's gates judge by (docs/DEFECTS.md 13.9): a
+# failure is first told apart from what is not this ticket's. A failing test
+# is run once more — the whole suite, the same tree — and one that passes then
+# is flaky; one that fails again is looked for on the target as the land found
+# it, <target-sha>, in a copy of the worktree put back there (the worker's
+# _aif_work_copy_at, its dependencies linked): red there too, it is the
+# target's, red before this ticket. A required check failing there too, with
+# no line new on the merge (_aif_land_new_lines), is the target's as well.
+# Each is let through and named — AIF_LAND_LET, on the landing note — and the
+# rest judged as ever. With the target red, a land that undid on any red sent
+# the card back to a worker that lets the same red through: a loop. And a
+# flaky test sent a judged land back for nothing.
 _aif_land_judge() {
-  local wt="$1" project="$2" out="$3" target="$4" branch="$5"
+  local wt="$1" project="$2" out="$3" target="$4" branch="$5" pre="${6:-}"
   local test_cmd report_path junit suite_rc=0 report=0 failures=0 tab name required cmd rc first="" first_rc=0
+  local reported=0 again still flaky="" before="" copy="" at_pre="" pre_say pre_rc checks_let=""
   AIF_LAND_VERDICT=""
   AIF_LAND_WHY=""
   AIF_LAND_FAILING=""
   AIF_LAND_CHECKS_RED=""
   AIF_LAND_CHECKS_RAN=0
+  AIF_LAND_LET=""
   tab="$(printf '\t')"
   test_cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
   report_path="$(jq -r '.test.report.path // empty' "$project" 2>/dev/null)"
   junit="$(dirname "$(aif_gate_path "$AIF_LAND_ROOT" ready)")/junit.py"
+  pre_say="$target"
+  [ -z "$pre" ] || pre_say="$target at ${pre:0:7}"
 
   # 1. the suite. Exit code first; then the report the gates read, because a
   #    runner that exits 0 with failures in the report exists (the offline
@@ -535,12 +560,45 @@ _aif_land_judge() {
   if [ "$report" -eq 1 ] && [ -f "$junit" ] && aif_have python3; then
     AIF_LAND_FAILING="$(python3 "$junit" "$wt/$report_path" 2>/dev/null |
       jq -r '.[] | select(.status == "failure" or .status == "error") | .id' 2>/dev/null)" || AIF_LAND_FAILING=""
-    failures="$(printf '%s' "$AIF_LAND_FAILING" | grep -c . || true)"
+    reported="$(printf '%s' "$AIF_LAND_FAILING" | grep -c . || true)"
   fi
 
+  # 1b. what is not this ticket's: once more, then the target as it was.
+  if [ -n "$AIF_LAND_FAILING" ]; then
+    rm -f "${wt:?}/${report_path:?}"
+    (cd "$wt" && eval "$test_cmd") </dev/null >"$out.again" 2>&1 || true
+    again=""
+    [ ! -f "$wt/$report_path" ] ||
+      again="$(python3 "$junit" "$wt/$report_path" 2>/dev/null |
+        jq -r '.[] | select(.status == "failure" or .status == "error") | .id' 2>/dev/null)" || again=""
+    if [ -f "$wt/$report_path" ]; then
+      still="$(printf '%s\n' "$AIF_LAND_FAILING" | _aif_land_both "$again")" || still=""
+      flaky="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$still" awk '
+        BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
+        NF && !($0 in w)')" || flaky=""
+      AIF_LAND_FAILING="$still"
+    fi
+    if [ -n "$AIF_LAND_FAILING" ] && [ -n "$pre" ] && _aif_land_copy_at "$wt" "$pre"; then
+      copy="$AIF_LAND_COPY"
+      rm -f "${copy:?}/${report_path:?}"
+      mkdir -p "$copy/$(dirname "$report_path")"
+      (cd "$copy" && eval "$test_cmd") </dev/null >"$out.pre" 2>&1 || true
+      if [ -f "$copy/$report_path" ]; then
+        at_pre="$(python3 "$junit" "$copy/$report_path" 2>/dev/null |
+          jq -r '.[] | select(.status == "failure" or .status == "error") | .id' 2>/dev/null)" || at_pre=""
+        before="$(printf '%s\n' "$AIF_LAND_FAILING" | _aif_land_both "$at_pre")" || before=""
+        AIF_LAND_FAILING="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$before" awk '
+          BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
+          NF && !($0 in w)')" || AIF_LAND_FAILING=""
+      fi
+    fi
+  fi
+  failures="$(printf '%s' "$AIF_LAND_FAILING" | grep -c . || true)"
+
   # 2. the checks bound to "green", once the suite is: there is no point
-  #    type-checking code whose tests do not pass.
-  if [ "$suite_rc" -eq 0 ] && [ "${failures:-0}" -eq 0 ]; then
+  #    type-checking code whose tests do not pass. A suite whose every failure
+  #    was let through is green for this.
+  if { [ "$suite_rc" -eq 0 ] || [ "${reported:-0}" -gt 0 ]; } && [ "${failures:-0}" -eq 0 ]; then
     while IFS="$tab" read -r name required; do
       [ -n "$name" ] || continue
       cmd="$(jq -r --arg n "$name" '[ .checks[]? | select(.name == $n) | .command ] | .[0] // empty' "$project")"
@@ -551,6 +609,20 @@ _aif_land_judge() {
       (cd "$wt" && eval "$cmd") </dev/null >"$out.check" 2>&1 || rc=$?
       [ "$rc" -ne 0 ] || continue
       if [ "$required" = "true" ]; then
+        # On the target as it was: failing there too, with nothing new here,
+        # it is the target's (docs/DEFECTS.md 13.9).
+        if [ -n "$pre" ] && { [ -n "$copy" ] || { _aif_land_copy_at "$wt" "$pre" && copy="$AIF_LAND_COPY"; }; }; then
+          pre_rc=0
+          (cd "$copy" && eval "$cmd") </dev/null >"$out.precheck" 2>&1 || pre_rc=$?
+          if [ "$pre_rc" -ne 0 ] && [ -z "$(_aif_land_new_lines "$out.check" "$wt" "$out.precheck" "$copy")" ]; then
+            checks_let="$checks_let, $name"
+            continue
+          fi
+          if [ "$pre_rc" -ne 0 ]; then
+            _aif_land_new_lines "$out.check" "$wt" "$out.precheck" "$copy" >"$out.new"
+            cp "$out.new" "$out.check" 2>/dev/null || true
+          fi
+        fi
         AIF_LAND_CHECKS_RED="$AIF_LAND_CHECKS_RED$name$tab$rc
 "
         if [ -z "$first" ]; then
@@ -565,12 +637,20 @@ _aif_land_judge() {
 $(jq -r '.checks[]? | select((.phase // []) | index("green")) | [ .name, (if .required == false then "false" else "true" end) ] | @tsv' "$project" 2>/dev/null)
 EOF
   fi
+  [ -z "$copy" ] || rm -rf "${copy:?}"
+  AIF_LAND_COPY=""
+
+  # What was let through, said on the landing note and here.
+  [ -z "$before" ] || AIF_LAND_LET="$AIF_LAND_LET; red on $pre_say before this ticket: $(printf '%s\n' "$before" | grep -v '^$' | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$flaky" ] || AIF_LAND_LET="$AIF_LAND_LET; flaky — failed once, passed on a re-run: $(printf '%s\n' "$flaky" | grep -v '^$' | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$checks_let" ] || AIF_LAND_LET="$AIF_LAND_LET; failing the same way on $pre_say before this ticket: check ${checks_let#, }"
+  AIF_LAND_LET="${AIF_LAND_LET#; }"
 
   # 3. the verdict — judged here, and only here.
   if [ "$suite_rc" -ne 0 ] && [ -n "$report_path" ] && [ "$report" -eq 0 ]; then
     AIF_LAND_VERDICT=norun
     AIF_LAND_WHY="the suite could not run in ${wt#"$AIF_LAND_ROOT"/} (exit $suite_rc, and no report at $report_path) — nothing landed"
-  elif [ "$suite_rc" -ne 0 ] || [ "${failures:-0}" -gt 0 ]; then
+  elif [ "${failures:-0}" -gt 0 ] || { [ "$suite_rc" -ne 0 ] && [ "${reported:-0}" -eq 0 ]; }; then
     AIF_LAND_VERDICT=red
     AIF_LAND_WHY="the suite is red on $target with $branch merged (exit $suite_rc, $failures failing)"
   elif [ -n "$AIF_LAND_CHECKS_RED" ]; then
@@ -580,7 +660,74 @@ EOF
   else
     AIF_LAND_VERDICT=green
   fi
-  rm -f "$out.check" "$out.first"
+  rm -f "$out.check" "$out.first" "$out.again" "$out.pre" "$out.precheck" "$out.new"
+}
+
+# _aif_land_copy_at <wt> <sha> — a copy of the worktree as it stood at <sha>,
+# in AIF_LAND_COPY (the worker's _aif_work_copy_at, dependencies linked); rc 1
+# when it could not be made, said.
+_aif_land_copy_at() {
+  AIF_LAND_COPY=""
+  local c
+  c="$(mktemp -d "${TMPDIR:-/tmp}/aif-land-pre-XXXXXX")" || return 1
+  c="$(cd "$c" && pwd -P)" || return 1
+  if ! _aif_work_copy_at "$1" "$2" "$c"; then
+    rm -rf "${c:?}"
+    aif_warn "the target could not be copied to tell a failure it already had from one this ticket brings — $AIF_WORK_COPY_WHY; judged as it is"
+    return 1
+  fi
+  AIF_LAND_COPY="$c"
+}
+
+# _aif_land_new_lines <now> <now-root> <base-out> <base-root> — the lines of
+# <now> in excess of <base-out>: a multiset, positions, durations and counts
+# folded, each root's spellings read as one. The gates' aif_g_new_lines
+# (sets/claude/gates/_lib.sh), which lib/ cannot source: the awk is the same,
+# and scripts/check-work.sh holds the two to one answer.
+_aif_land_new_lines() {
+  local n1="$2" n2 b1="${4:-}" b2=""
+  n2="$(cd "$n1" 2>/dev/null && pwd -P)" || n2="$n1"
+  if [ -n "$b1" ]; then
+    b2="$(cd "$b1" 2>/dev/null && pwd -P)" || b2="$b1"
+  fi
+  AIF_G_N1="$n1" AIF_G_N2="$n2" AIF_G_B1="$b1" AIF_G_B2="$b2" awk -v bf="$3" '
+    function repl(s, from, to,   out, i) {
+      if (from == "") return s
+      out = ""
+      while ((i = index(s, from)) > 0) {
+        out = out substr(s, 1, i - 1) to
+        s = substr(s, i + length(from))
+      }
+      return out s
+    }
+    function roots(s, a, b,   t) {
+      if (length(b) > length(a)) { t = a; a = b; b = t }
+      return repl(repl(s, a, "<root>"), b, "<root>")
+    }
+    function clean(s) { sub(/\r$/, "", s); gsub(/\033\[[0-9;]*m/, "", s); return s }
+    function norm(s) {
+      sub(/^[ \t]*[0-9]+:[0-9]+/, "#:#", s)
+      gsub(/\([0-9]+,[0-9]+\)/, "(#,#)", s)
+      gsub(/:[0-9]+/, ":#", s)
+      gsub(/[0-9]+(\.[0-9]+)? ?(ms|seconds|secs|sec|s)([^A-Za-z0-9]|$)/, "#", s)
+      gsub(/[0-9]+ (errors|error|problems|problem|warnings|warning|files|file)/, "# n", s)
+      return s
+    }
+    BEGIN {
+      while ((getline line < bf) > 0) {
+        line = clean(line)
+        if (line !~ /[^ \t]/) continue
+        seen[norm(roots(line, ENVIRON["AIF_G_B1"], ENVIRON["AIF_G_B2"]))]++
+      }
+    }
+    { line = clean($0) }
+    line !~ /[^ \t]/ { next }
+    {
+      k = norm(roots(line, ENVIRON["AIF_G_N1"], ENVIRON["AIF_G_N2"]))
+      if (seen[k] > 0) seen[k]--
+      else print line
+    }
+  ' "$1"
 }
 
 # _aif_land_section <root> <target> <pre> <merge> <marker> <out> — the one step
@@ -1456,7 +1603,7 @@ aif_cmd_land() {
     _aif_land_say "suite" "$suite: the merge is that tree"
   else
     _aif_land_say "suite" "$test_cmd — in $rel"
-    _aif_land_judge "$wt" "$project" "$out" "$target" "$branch"
+    _aif_land_judge "$wt" "$project" "$out" "$target" "$branch" "$pre"
     case "$AIF_LAND_VERDICT" in
       green) ;;
       red) _aif_land_requeue "$root" "$ticket" "$AIF_LAND_WHY" "$out" "$target" ;;
@@ -1465,7 +1612,14 @@ aif_cmd_land() {
     suite="green ($test_cmd"
     [ "$AIF_LAND_CHECKS_RAN" -eq 0 ] || suite="$suite, and $AIF_LAND_CHECKS_RAN check(s)"
     suite="$suite) — in $rel"
-    _aif_land_say "suite" "green"
+    # What the verdict let through — the target's own red, a flaky test — is
+    # said on the landing note, where the reviewer reads (docs/DEFECTS.md 13.9).
+    [ -z "$AIF_LAND_LET" ] || suite="$suite — let through, $AIF_LAND_LET"
+    if [ -n "$AIF_LAND_LET" ]; then
+      _aif_land_say "suite" "green — let through, $AIF_LAND_LET"
+    else
+      _aif_land_say "suite" "green"
+    fi
   fi
 
   # What the land moves that an install here would follow: said, and with

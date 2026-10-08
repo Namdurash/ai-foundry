@@ -30,10 +30,10 @@
 #      worktree, the checkout fast-forwarded, Done, the worktree and branch
 #      gone, the ticket that depended on it released; a red suite or a
 #      conflict lands nothing and sends the card back to the worker, saying why
-#  20  verify-red measures a failing pre-existing test against the tree the
-#      tests station started from: red there is the repo's (a stop, named);
-#      green there is the new tests' interaction (admitted, recorded, and
-#      green stops if the implementation does not reach it)
+#  20  verify-red measures a failing pre-existing test on the tree before the
+#      ticket: green there is the new tests' interaction (admitted, recorded,
+#      and green stops if the implementation does not reach it); red there is
+#      the repository's, let through (scenario 71)
 #  21  a check's complaint carries its first lines; at red, legitimate_at_red
 #      sends a mistyped test back before the freeze; at green, a failure in a
 #      frozen test that recurs without the implementation stops the run
@@ -214,6 +214,33 @@
 #  69  the worker keeps its claim's comment id and words in its run lock and
 #      edits the claim at every dispatch — `· alive at <time>` — on the local
 #      board, no comment added
+#  70  a rule that replaces another ticket's: the plan declares that ticket's
+#      test file — a plan that does not is rejected naming it — the replaced
+#      test goes, one left in is rejected, and every other test of the file
+#      stands: pre-existing to green, off the checklist, counted standing
+#  71  a test red before the ticket is let through and named, by verify-red,
+#      green and the land, in the lock and on the report; another one the
+#      implementation breaks is rejected alone; the target red after the
+#      build lands, and a worker brought onto a red target builds
+#  72  a check failing the same way before the ticket is let through at
+#      contract, red and green, named; the lines new with the ticket judged
+#      alone; one whose new line names none of the test files still stops
+#  73  a pre-existing test that fails once is run once more: flaky, let
+#      through and named by the gates and by the land
+#  74  the gates' copies link the ignored dependencies — a force-added one
+#      copied — skip a socket, and stop on a file they cannot read; the
+#      worker's and the land's twins agree with the gates'
+#  75  files.delete: a planned deletion passes scope, one not made is the
+#      work not done, an unplanned one is refused once; the plan gate holds
+#      what may be deleted
+#  76  an amendment creates a file beside the plan's, refuses one elsewhere,
+#      at the root or a dotfile, names the replan at the cap; scope counts
+#      the new file
+#  77  CI and .gitignore move when the plan names them — scope says what is
+#      ignored from now on — never by amendment; .aif/ and .claude/ never
+#  78  the worker exports AIF_TICKET to the guard beside AIF_STATION
+#  79  a card whose land runs in this checkout is held by the loop: not the
+#      machine, nothing asked again; the land goes on to land it
 #  80  the runner's usage limit pauses a run: the same attempt dispatched again
 #      once it resets, uncounted, the wait outside the wall clock, the claim
 #      beating meanwhile, the wait in the run's record and in its report
@@ -234,6 +261,10 @@
 #  87  a station's model the profile does not map is refused before the claim,
 #      naming it and what the profile maps; default passes where opus and
 #      sonnet are both mapped
+#
+# And at the end, over the whole run: every write a stub station made was
+# asked of the project's guard first, as a real station's Write is — none
+# refused (docs/DEFECTS.md 13.10).
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -456,7 +487,18 @@ SUITE
 # FAKE_TESTS_REHOME has a retried tests station move every test into
 # tests/t1.py and leave the other declared files in place as helpers. Each
 # dispatch's prompt is kept as .aif/tmp/fake-prompt-<station>-<n>, so a
-# scenario can read what a retry was told.
+# scenario can read what a retry was told. For docs/DEFECTS.md 12.3, 13.9 and
+# 13.10: the plan stub declares every tests/t*.py naming a criterion this
+# ticket's rules replace (FAKE_PLAN_IGNORE_CHANGES a plan that does not), the
+# tests stub removes those tests from the files it did not write
+# (FAKE_KEEP_REPLACED one that leaves them), FAKE_KEEP_WORDS has the
+# implementation keep every word a test in the tree asserts, FAKE_FLAKE_PRE
+# names the stations that leave .aif/tmp/flake-t0 behind, FAKE_DELETE has the
+# plan delete a file and the implementation remove it (FAKE_DELETE_SKIP not;
+# FAKE_DELETE_EXTRA one more, unplanned), FAKE_AMEND_NEW has the
+# implementation amend in a new file beside the plan's and write it. Every
+# write the stub makes as a station is asked of the project's guard first, as
+# a real station's Write is, and logged to FAKE_GUARD_LOG.
 cat >"$SANDBOX/fake-station.sh" <<'FAKE'
 #!/bin/bash
 set -u
@@ -479,6 +521,23 @@ cp "$4" "$wt/.aif/tmp/fake-sys-$station-$n" 2>/dev/null
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
+# The ticket the worker named for the guard, beside the station
+# (docs/DEFECTS.md 13.10): the hook reads the plan's files.tests through it.
+printf '%s' "${AIF_TICKET:-}" >"$wt/.aif/tmp/fake-ticket-$station-$n"
+# w <path> — the project's guard asked about a write to <path>, as a real
+# station's Write would ask it: from the station's working directory, with
+# the AIF_STATION and AIF_TICKET the worker exported, the path absolute. What
+# it said goes to FAKE_GUARD_LOG — a stub that writes where the guard refuses
+# a real station hides a guard too strict for a real one (docs/DEFECTS.md
+# 13.10); the end of the run reads the log. The write is made either way: a
+# stub's own misbehaviours are asked about by none of these.
+w() {
+  [ -n "${FAKE_GUARD_LOG:-}" ] && [ -x "$wt/.aif/hooks/guard.sh" ] || return 0
+  local said
+  said="$(cd "$wt" && jq -nc --arg p "$1" '{tool_name:"Write",tool_input:{file_path:$p}}' | ./.aif/hooks/guard.sh 2>/dev/null)"
+  case "$said" in *'"deny"'*) said=deny ;; *) said=allow ;; esac
+  printf '%s %s %s %s\n' "${AIF_STATION:-?}" "$ticket" "$said" "${1#"$wt"/}" >>"$FAKE_GUARD_LOG"
+}
 # FAKE_SLEEP_IN="<ticket>:<station> …" holds those dispatches open — for
 # FAKE_SLEEP_SECS (37), or until the file FAKE_RELEASE appears — a station
 # still running, for a stop or a second worker to land in. Each says when it
@@ -603,6 +662,7 @@ if [ "$station" = implement ]; then
         for f in "$wt"/src/*.py; do
           [ -f "$f" ] || continue
           grep -qE '^(<<<<<<<|>>>>>>>) ' "$f" || continue
+          w "$f"
           awk -v kt="$kt" '/^<<<<<<< /{m=1; next} /^\|\|\|\|\|\|\| /{m=2; next} /^=======$/{m=3; next} /^>>>>>>> /{m=0; next}
             m == 0 || m == 1 || (m == 3 && kt == 1) { print }' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
         done
@@ -611,7 +671,7 @@ if [ "$station" = implement ]; then
             [ -f "$t" ] || continue
             sed -n 's/.*asserts \([a-z0-9]*\).*/\1/p' "$t" | while IFS= read -r w; do
               [ -n "$w" ] && [ "$w" != feat ] || continue
-              grep -q "$w" "$wt/src/app.py" 2>/dev/null || printf '# %s\n' "$w" >>"$wt/src/app.py"
+              grep -q "$w" "$wt/src/app.py" 2>/dev/null || { w "$wt/src/app.py"; printf '# %s\n' "$w" >>"$wt/src/app.py"; }
             done
           done
         fi
@@ -620,6 +680,26 @@ if [ "$station" = implement ]; then
       ;;
   esac
 fi
+
+# The criteria this ticket's rules replace — `<OLD> AC-nnn` a line, from
+# rules[].changes: an `<OLD> R-n` is every criterion of tasks/<OLD> that names
+# R-n (docs/DEFECTS.md 12.2, 12.3) — and the whole-word pattern a jest title
+# or a pytest name carries one by.
+replaced_markers() {
+  sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/ticket.md" | sed '1d;$d' |
+    jq -r '.rules[]?.changes[]? // empty' 2>/dev/null | while read -r old item; do
+      case "$item" in
+        AC-*) printf '%s %s\n' "$old" "$item" ;;
+        R-*)
+          sed -n '/^<!-- aif:meta$/,/^-->$/p' "$wt/tasks/$old/ticket.md" 2>/dev/null | sed '1d;$d' |
+            jq -r --arg r "$item" '.acceptance[]? | select(.rule == $r) | .id' 2>/dev/null | sed "s/^/$old /"
+          ;;
+      esac
+    done
+}
+marker_re() {
+  printf '(^|[^a-z0-9])%s([^0-9]|$)' "$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]\{1,\}/[^a-z0-9]+/g')"
+}
 
 case "$station" in
   plan)
@@ -637,6 +717,7 @@ case "$station" in
     create='[]'
     if [ "${FAKE_CREATE:-0}" = 1 ]; then
       create='["src/feat.py"]'
+      w "$wt/src/feat.py"
       printf 'def feat():\n    raise NotImplementedError("aif: not implemented: feat")\n' >"$wt/src/feat.py"
     fi
     cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" --argjson cr "$create" \
@@ -645,15 +726,36 @@ case "$station" in
     # something else (a spec stop).
     verdicts="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --arg v "${FAKE_VERDICT:-buildable}" \
       'map({ key: ., value: (if . == "AC-001" and $v != "buildable" then { verdict: $v, because: "src/app.py:2 — the harness says so" } else { verdict: "buildable" } end) }) | from_entries')"
+    # A rule that replaces another ticket's: every tests/t*.py naming a
+    # replaced criterion is declared, and a decision says the tests station
+    # removes those tests (docs/DEFECTS.md 12.3) — FAKE_PLAN_IGNORE_CHANGES a
+    # plan that left them out.
+    extra_decision=""
+    if [ "${FAKE_PLAN_IGNORE_CHANGES:-0}" != 1 ]; then
+      older="$(replaced_markers | while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        grep -l -i -E "$(marker_re "$m")" "$wt"/tests/t*.py 2>/dev/null | sed "s|^$wt/||"
+      done | sort -u)"
+      if [ -n "$older" ]; then
+        tests_json="$(printf '%s\n%s\n' "$(printf '%s' "$tests_json" | jq -r '.[]')" "$older" | grep -v '^$' | awk '!s[$0]++' | jq -R . | jq -sc .)"
+        extra_decision=',
+    { "id": "D-002", "statement": "Remove the older tests of the rule this ticket replaces.",
+      "because": "R-1 changes the older rule, and green holds the whole suite", "serves": ["R-1"] }'
+      fi
+    fi
+    # FAKE_DELETE=<path>: the plan deletes that file (docs/DEFECTS.md 13.10).
+    delete_json='[]'
+    [ -z "${FAKE_DELETE:-}" ] || delete_json="$(jq -cn --arg d "$FAKE_DELETE" '[$d]')"
+    w "$work/plan.md"
     cat >"$work/plan.md" <<PLAN
 <!-- aif:meta
 { "schema": 3, "ticket": "$ticket", "risk": "low",
-  "files": { "create": $create, "change": $change, "tests": $tests_json },
+  "files": { "create": $create, "change": $change, "tests": $tests_json, "delete": $delete_json },
   "no_skeleton": [],
   "verdicts": $verdicts,
   "decisions": [
     { "id": "D-001", "statement": "Write the markers from the app module.",
-      "because": "every criterion is about the app's own output", "serves": [] } ],
+      "because": "every criterion is about the app's own output", "serves": [] }$extra_decision ],
   "ac_coverage": $cov,
   "uncovered": [],
   "external": [] }
@@ -664,6 +766,7 @@ PLAN
   tests)
     for i in $nums; do
       [ -n "$i" ] || continue
+      w "$wt/tests/t$i.py"
       if [ "${FAKE_TESTS_BAD_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then
         # No criterion id and no literal: verify-red rejects on coverage,
         # BEFORE it has written the lock file its verdict would bind to.
@@ -705,11 +808,32 @@ PLAN
         printf '# %s asserts %s — expects %s%s\n' "$marker" "$word" "$exp" "$suffix" >"$wt/tests/t$i.py"
       fi
     done
+    # The older ticket's tests in a declared file, for a rule this ticket
+    # replaces: the lines naming a replaced criterion removed, every other
+    # left as it is (docs/DEFECTS.md 12.3) — FAKE_KEEP_REPLACED a station
+    # that left them.
+    if [ "${FAKE_KEEP_REPLACED:-0}" != 1 ]; then
+      mine=" $(for i in $nums; do printf 'tests/t%s.py ' "$i"; done)"
+      sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/plan.md" | sed '1d;$d' | jq -r '.files.tests[]? // empty' 2>/dev/null |
+        while IFS= read -r f; do
+          case "$mine" in *" $f "*) continue ;; esac
+          [ -f "$wt/$f" ] || continue
+          replaced_markers | while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            grep -q -i -E "$(marker_re "$m")" "$wt/$f" || continue
+            w "$wt/$f"
+            grep -v -i -E "$(marker_re "$m")" "$wt/$f" >"$wt/$f.tmp"
+            mv "$wt/$f.tmp" "$wt/$f"
+          done
+        done
+    fi
     # The station's note: what it cannot write a red test for.
     if [ "${FAKE_TESTS_NOTE_UNF:-0}" = 1 ]; then
+      w "$work/tests.note.json"
       printf '{ "unfalsifiable": [{ "id": "AC-001", "because": "no literal observation decides it" }] }\n' >"$work/tests.note.json"
     fi
     if [ "${FAKE_TESTS_NOTE_BUILT:-0}" = 1 ]; then
+      w "$work/tests.note.json"
       printf '{ "already_built": ["AC-001"] }\n' >"$work/tests.note.json"
     fi
     # A tests station that edits the contract it was handed.
@@ -721,7 +845,9 @@ PLAN
       # collects: every test moves into the first file, which it collects.
       for i in $nums; do
         [ -n "$i" ] && [ "$i" != 1 ] || continue
+        w "$wt/tests/t1.py"
         cat "$wt/tests/t$i.py" >>"$wt/tests/t1.py"
+        w "$wt/tests/t$i.py"
         printf '# a helper: no test in here\n' >"$wt/tests/t$i.py"
       done
     fi
@@ -730,11 +856,14 @@ PLAN
     # The implementer's note: a replan (the contract cannot hold it), or a
     # claim that a frozen test is wrong.
     if [ "${FAKE_REPLAN:-0}" = 1 ] || { [ "${FAKE_REPLAN_FIRST:-0}" = 1 ] && [ "$n" = 1 ]; }; then
+      w "$work/implement.note.json"
       printf '{ "replan": "the contract cannot hold the behaviour: users() has nowhere to put the marker" }\n' >"$work/implement.note.json"
     fi
     if [ "${FAKE_IMPL_CLAIMS:-0}" = 1 ]; then
+      w "$work/implement.note.json"
       printf '{ "tests_wrong": [{ "test": "AC-001", "because": "it asserts the wrong literal" }] }\n' >"$work/implement.note.json"
     fi
+    w "$wt/src/app.py"
     if [ "${FAKE_STALL:-0}" = 1 ]; then
       printf 'def users():\n    return []  # wrong\n' >"$wt/src/app.py"
     else
@@ -743,7 +872,33 @@ PLAN
       [ "${FAKE_IMPL_BADTYPE_FIRST:-0}" = 1 ] && [ "$retry" = 0 ] && body="$body BADTYPE"
       printf 'def users():\n    return []  #%s\n' "$body" >"$wt/src/app.py"
       # The skeleton, filled: the marker's throw replaced by the behaviour.
-      [ "${FAKE_CREATE:-0}" != 1 ] || printf 'def feat():\n    return 7\n' >"$wt/src/feat.py"
+      if [ "${FAKE_CREATE:-0}" = 1 ]; then
+        w "$wt/src/feat.py"
+        printf 'def feat():\n    return 7\n' >"$wt/src/feat.py"
+      fi
+    fi
+    # FAKE_KEEP_WORDS: the implementation keeps every word a test still in
+    # the tree asserts — the older ticket's standing tests included
+    # (docs/DEFECTS.md 12.3), the MERGE branch's loop above.
+    if [ "${FAKE_KEEP_WORDS:-0}" = 1 ]; then
+      for t in "$wt"/tests/t*.py; do
+        [ -f "$t" ] || continue
+        sed -n 's/.*asserts \([a-z0-9]*\).*/\1/p' "$t" | while IFS= read -r kw; do
+          [ -n "$kw" ] && [ "$kw" != feat ] || continue
+          grep -q "$kw" "$wt/src/app.py" 2>/dev/null || printf '# %s\n' "$kw" >>"$wt/src/app.py"
+        done
+      done
+    fi
+    # The plan's deletion made (FAKE_DELETE), or not (FAKE_DELETE_SKIP); and
+    # one it did not name (FAKE_DELETE_EXTRA) — docs/DEFECTS.md 13.10.
+    if [ -n "${FAKE_DELETE:-}" ] && [ "${FAKE_DELETE_SKIP:-0}" != 1 ]; then rm -f "$wt/$FAKE_DELETE"; fi
+    [ -z "${FAKE_DELETE_EXTRA:-}" ] || rm -f "$wt/$FAKE_DELETE_EXTRA"
+    # FAKE_AMEND_NEW=<path>: a file the plan did not foresee, beside its own,
+    # amended in before it is written — kind create (docs/DEFECTS.md 13.10).
+    if [ -n "${FAKE_AMEND_NEW:-}" ]; then
+      aif _amend-plan "$ticket" "$FAKE_AMEND_NEW" "the module the export needs, beside it" >/dev/null 2>&1 || true
+      w "$wt/$FAKE_AMEND_NEW"
+      printf 'def helper():\n    return 1\n' >"$wt/$FAKE_AMEND_NEW"
     fi
     # A large change (FAKE_BIGDIFF=N): N more lines in a planned file — past the
     # 400-line cap scope no longer holds a change to.
@@ -755,11 +910,16 @@ PLAN
       done >>"$wt/src/app.py"
     fi
     if [ "${FAKE_DRIFT:-0}" = 1 ]; then
+      w "$wt/deps/drift"
       mkdir -p "$wt/deps" && : >"$wt/deps/drift"
     fi
     if [ "${FAKE_DEPS:-0}" = 1 ]; then
+      w "$wt/package.json"
       printf '{ "dependencies": { "dep-a": "1", "dep-new": "2" } }\n' >"$wt/package.json"
-      [ "$retry" = 0 ] || cp "$wt/package.json" "$wt/package-lock.json"
+      if [ "$retry" != 0 ]; then
+        w "$wt/package-lock.json"
+        cp "$wt/package.json" "$wt/package-lock.json"
+      fi
     fi
     if [ "${FAKE_COMMIT:-0}" = 1 ]; then
       git -C "$wt" add src >/dev/null 2>&1
@@ -768,6 +928,12 @@ PLAN
     ;;
 esac
 
+# FAKE_FLAKE_PRE="<station> …": the station leaves .aif/tmp/flake-t0 behind,
+# and a suite under t0_red_when on it fails t0 once, then passes — a flaky
+# pre-existing test (docs/DEFECTS.md 13.9).
+case " ${FAKE_FLAKE_PRE:-} " in
+  *" $station "*) : >"$wt/.aif/tmp/flake-t0" ;;
+esac
 [ -z "${FAKE_TIMELINE:-}" ] || printf 'end %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
 cost=0.01
 [ "${FAKE_ZERO_COST:-0}" = 1 ] && cost=0
@@ -779,6 +945,8 @@ jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "
 FAKE
 chmod +x "$SANDBOX/fake-station.sh"
 export AIF_WORK_STATION_CMD="$SANDBOX/fake-station.sh"
+export FAKE_GUARD_LOG="$SANDBOX/guard.log"
+: >"$FAKE_GUARD_LOG"
 
 ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
   # ticket, one question decided by default, one recorded gap.
@@ -818,6 +986,36 @@ copy_project() {
   for t in "$@"; do
     git worktree repair ".aif/worktrees/$t" >/dev/null 2>&1 || true
   done
+}
+
+# t0_red_when <shell condition> — the pre-existing t0 fails whenever it holds,
+# evaluated in the tree the suite runs in. Once a project: it rewrites the
+# line that emits t0.
+t0_red_when() {
+  local tmp
+  tmp="$(mktemp)"
+  awk -v cond="$1" '
+    /^body="\$\(row t0 tests\/t0.py 1\)/ {
+      print "g0=1; if " cond "; then g0=0; fi"
+      sub(/row t0 tests\/t0.py 1/, "row t0 tests/t0.py \"$g0\"")
+    }
+    { print }' .aif/suite.sh >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
+}
+
+# pre_test_when <n> <shell condition> — one more pre-existing test, tests/t<n>.py
+# (its id t<n>), green unless the condition holds; gone with its file. The
+# target growing a test that passes there and fails with a branch merged —
+# a red the merge makes, not one the target had (docs/DEFECTS.md 13.9).
+pre_test_when() {
+  local tmp
+  printf '# a pre-existing test, t%s\n' "$1" >"tests/t$1.py"
+  tmp="$(mktemp)"
+  awk -v n="$1" -v cond="$2" '
+    { print }
+    /^body=/ && !done {
+      print "if [ -f tests/t" n ".py ]; then g" n "=1; if " cond "; then g" n "=0; fi; body=\"$body$(row t" n " tests/t" n ".py \"$g" n "\")\"; fi"
+      done = 1
+    }' .aif/suite.sh >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
 }
 
 # =============================== 1. built ====================================
@@ -1438,12 +1636,14 @@ eq "nothing merged" "$(git rev-parse HEAD)" "$head_before"
 "$AIF" board move AIF-17 review >/dev/null
 
 # a red suite on the RESULT undoes the merge: main grew a test after the
-# build, and the branch does not satisfy it. AIF-16's and AIF-17's tests both
-# live in tests/t1.py and each carries its own ticket's marker, so main holds
-# AIF-16's; it adopts AIF-17's first, so that this step is about the red suite
-# and not about a conflict — which is the step after.
+# build, green on main and red with the branch merged — red because of the
+# merge, not one main had already, which a land lets through (docs/DEFECTS.md
+# 13.9; scenario 71). AIF-16's and AIF-17's tests both live in tests/t1.py and
+# each carries its own ticket's marker, so main holds AIF-16's; it adopts
+# AIF-17's first, so that this step is about the red suite and not about a
+# conflict — which is the step after.
 git show aif/AIF-17:tests/t1.py >tests/t1.py
-printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
+pre_test_when 2 '[ -f tasks/AIF-17/report.md ]'
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -1480,20 +1680,8 @@ eq "with the reason, naming the file" "$("$AIF" board show AIF-17 --json | jq -r
 # that runs tsc over the whole tree, and what turned it red was a new test
 # importing a module the plan had not created yet — as a red-first test in a
 # typed project must. Two tickets in a row stopped there on false advice
-# (docs/DEFECTS.md 6.1). The stub below makes the pre-existing t0 fail under a
-# condition each case sets.
-#
-# t0_red_when <shell condition> — the pre-existing t0 fails whenever it holds.
-t0_red_when() {
-  local tmp
-  tmp="$(mktemp)"
-  awk -v cond="$1" '
-    /^body="\$\(row t0 tests\/t0.py 1\)/ {
-      print "g0=1; if " cond "; then g0=0; fi"
-      sub(/row t0 tests\/t0.py 1/, "row t0 tests/t0.py \"$g0\"")
-    }
-    { print }' .aif/suite.sh >"$tmp" && mv "$tmp" .aif/suite.sh && chmod +x .aif/suite.sh
-}
+# (docs/DEFECTS.md 6.1). The stub makes the pre-existing t0 fail under a
+# condition each case sets (t0_red_when, beside fresh_project).
 printf '\n20. a pre-existing test the new test files turn red is told apart from a red repo\n'
 fresh_project "$SANDBOX/p20"
 t0_red_when '[ -f tests/t1.py ] && ! grep -q impl1 src/app.py 2>/dev/null'
@@ -1509,27 +1697,8 @@ eq "the lock names it" "$(jq -c '.red_with_tests' tasks/AIF-20/tests.lock.json)"
 eq "and green passed once the code existed" \
   "$(jq -r '[.entries[] | select(.gate == "green")] | last | .result' .aif/state/ledgers/AIF-20.json)" "pass"
 
-# A repository already red: still a stop — but naming the test, and saying it
-# was measured without this ticket's files. In a worktree, as the worker runs
-# by default: every absolute path there runs through .aif/worktrees/, and the
-# probe used to read the red test's own stack trace as the runner collecting
-# the worker's checkouts, and refuse the run.
-fresh_project "$SANDBOX/p20b"
-t0_red_when 'true'
-ticket_for AIF-20
-git add -A && git commit -qm "ticket 20b" >/dev/null
-rc=0
-"$AIF" work AIF-20 >"$OUT/run20b.out" 2>&1 || rc=$?
-w20=.aif/worktrees/AIF-20/tasks/AIF-20
-eq "red before the new tests existed: stopped" "$rc" "1"
-eq "…and not refused as a runner collecting the worker's checkouts" \
-  "$(grep -c 'it collects .aif/worktrees/ too' "$OUT/run20b.out")" "0"
-eq "verify-red could not render a verdict" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result' .aif/state/ledgers/AIF-20.json)" "error"
-eq "and it names the test, on the line the ledger keeps" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-20.json |
-     grep -c 'red without this ticket.s test files too (1 failing: tests.t0::t0)')" "1"
-eq "nothing was frozen" "$(test -f "$w20/tests.lock.json" && echo yes || echo no)" "no"
+# A repository already red is no longer a stop: it is let through, named —
+# scenario 71, where this case went (docs/DEFECTS.md 13.9).
 
 # Red with the new tests and NOT cleared by the implementation — a test that
 # the new files break whatever the code does. Admitted at the freeze; green
@@ -1636,21 +1805,10 @@ eq "legitimate_at_red on a check not bound to red is refused" \
      /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/project.sh"; aif_project_validate "$2"' \
        _ "$ROOT" "$OUT/bad21.json" 2>&1 | grep -c 'only the red phase reads it')" "1"
 
-# A red check that fails and names none of the test files cannot be read as
-# the tests' — and read as "expected" it would be a check that never fails.
-typed "$SANDBOX/p21d" '[{ "name": "legacy", "phase": ["red"], "required": true,
-  "command": "echo \"src/legacy.py(3,1): error TS1005: ; expected.\"; exit 2",
-  "legitimate_at_red": ["error TS2307"] }]'
-ticket_for AIF-21
-git add -A && git commit -qm "ticket 21d" >/dev/null
-rc=0
-"$AIF" work AIF-21 --no-worktree >"$OUT/run21d.out" 2>&1 || rc=$?
-eq "a red check failing outside the tests: stopped" "$rc" "1"
-eq "verify-red could not render a verdict, and said where it failed" \
-  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' .aif/state/ledgers/AIF-21.json |
-     grep -c '^error: .*fails somewhere other than this ticket.s test files')" "1"
-eq "the tests station was not sent round again for it" \
-  "$(jq '[.entries[] | select(.station == "tests")] | length' .aif/state/ledgers/AIF-21.json)" "1"
+# A red check that fails and names none of the test files, failing the same
+# way before this ticket, is the repository's and let through; one whose lines
+# are new with it is still a stop — scenario 72, where this case went
+# (docs/DEFECTS.md 13.9).
 
 # Green only: the mistyped mock is frozen. The typecheck fails in the frozen
 # test, fails the same way without the implementation, and the run stops at
@@ -1920,11 +2078,12 @@ eq "…saying so" "$(grep -c 'names no "prepare"' "$OUT/land25c.out")" "1"
 eq "…before anything moved" "$(git rev-parse HEAD),$(col AIF-25)" "$head_before,review"
 git checkout -q -- .aif/project.json
 
-# --prepare, and red anyway: main grew a test after the build. Judged in the
-# worktree, where the branch's dependencies are installed — only the new test
-# fails, not t0 — nothing installed anywhere, and the card goes back to the
-# worker.
-printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
+# --prepare, and red anyway: main grew a test after the build, green on main
+# and red with the branch merged (a red main had already is let through,
+# 13.9). Judged in the worktree, where the branch's dependencies are installed
+# — only the new test fails, not t0 — nothing installed anywhere, and the card
+# goes back to the worker.
+pre_test_when 2 '[ -f tasks/AIF-25/report.md ]'
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -2221,8 +2380,9 @@ eq "TERM during the suite: exit 143, the merge undone, still in Review" \
 eq "…said" "$(grep -c 'terminated — nothing landed' "$OUT/land27d.out")" "1"
 
 # a verdict is not a stop: a red land puts back what it touched itself, and
-# its own exit 1 does not come back through the handler as a second put-back
-printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
+# its own exit 1 does not come back through the handler as a second put-back.
+# main grew a test green there and red with the branch merged (13.9).
+pre_test_when 2 '[ -f tasks/AIF-27/report.md ]'
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
@@ -5838,6 +5998,506 @@ eq "the branch moved during the land: exit 1, the card in Review, main at that c
 eq "…said, and the worktree back on its branch" \
   "$(grep -c 'moved while the land ran' "$OUT/land67.out"),$(git -C .aif/worktrees/AIF-185 symbolic-ref --short HEAD 2>/dev/null)" "1,aif/AIF-185"
 
+# ====== 70. a rule that replaces another's: its test goes, the rest stand =====
+# A rule with `changes` has the plan declare the older ticket's test file, so
+# the tests station can remove the tests of the rule it replaces — and every
+# other test in that file, untouched and green, read as this run's: green at
+# freeze, out of covering, back on the closing checklist as a doubt; and green
+# held it as a test this ticket froze (docs/DEFECTS.md 12.3). AIF-69 owns two
+# rules, its tests in tests/t3.py and its words in src/app.py; AIF-70's R-1
+# changes AIF-69's R-1. The stubs learn `changes`: the plan declares
+# tests/t3.py, the tests station strips AIF-69 AC-001 from it.
+printf '\n70. a rule that replaces another ticket'"'"'s: its tests go, the rest of the file stands\n'
+setup70() { # <dir> — AIF-69 built, its tests in tests/t3.py; AIF-70 changes its R-1
+  fresh_project "$1"
+  delta_ticket AIF-69 "стара норма" \
+    '[{ "id": "R-1", "text": "Перша норма" }, { "id": "R-2", "text": "Друга норма" }]' \
+    "[$(ex AC-001 R-1 'перша норма дорівнює' on), $(ex AC-002 R-2 'друга норма дорівнює' on)]"
+  printf '# AIF-69 AC-001 asserts old1 — expects on\n# AIF-69 AC-002 asserts old2 — expects on\n' >tests/t3.py
+  printf 'def users():\n    return []  # old1 old2\n' >src/app.py
+  delta_ticket AIF-70 "нова перша норма" \
+    '[{ "id": "R-1", "text": "Перша норма, інакше", "changes": ["AIF-69 R-1"] }]' \
+    "[$(ex AC-001 R-1 'перша норма дорівнює' impl1)]"
+  git add -A && git commit -qm "AIF-69 built, its tests in t3; AIF-70 changes its R-1" >/dev/null
+}
+setup70 "$SANDBOX/p70"
+rc=0
+FAKE_KEEP_WORDS=1 "$AIF" work AIF-70 --no-worktree >"$OUT/run70.out" 2>&1 || rc=$?
+eq "a ticket whose rule replaces AIF-69's R-1: built, the plan declaring AIF-69's test file" \
+  "$rc,$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-70/plan.md | sed '1d;$d' | jq -c '.files.tests')" '0,["tests/t1.py","tests/t3.py"]'
+eq "…the replaced test removed from it, the other left as it was" \
+  "$(grep -c 'AIF-69 AC-001' tests/t3.py),$(grep -c 'AIF-69 AC-002 asserts old2' tests/t3.py)" "0,1"
+eq "the older test left standing — not green at freeze, not covering" \
+  "$(jq -c '[.standing, .green_at_freeze, .covering]' tasks/AIF-70/tests.lock.json)" \
+  '[["tests.t3::AIF-69 AC-002 t3"],[],["tests.t1::AIF-70 AC-001 t1"]]'
+eq "…frozen as a pre-existing test, passing" \
+  "$(jq -r '.suite_at_freeze["tests.t3::AIF-69 AC-002 t3"]' tasks/AIF-70/tests.lock.json)" "pass"
+eq "…off the closing checklist, and counted standing in the report" \
+  "$(grep -c '^- \[ \] \*\*tests .*AIF-69 AC-002' tasks/AIF-70/report.md),$(grep -c '^- tests: 2 declared file(s), 2 collected; 1 red at the freeze, 0 green at the freeze, 1 standing$' tasks/AIF-70/report.md)" "0,1"
+eq "…and verify-red said so on the line the ledger keeps" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-70.json | grep -c '; 1 older test(s) in the declared files left standing')" "1"
+
+# The implementation drops the word AIF-69's other rule still needs: a
+# standing test is pre-existing, and green says this change broke it — where
+# it used to say "a test this ticket froze".
+setup70 "$SANDBOX/p70b"
+rc=0
+"$AIF" work AIF-70 --no-worktree >"$OUT/run70b.out" 2>&1 || rc=$?
+eq "an implementation that breaks a standing test: rejected, as this change breaking it — not as a test this ticket froze" \
+  "$rc,$(grep -c 'tests.t3::AIF-69 AC-002 t3 (failure) — the pre-existing suite broke: it passes with the implementation reverted, so this change broke it' .aif/tmp/fake-prompt-implement-2 2>/dev/null),$(grep -c 'a test this ticket froze' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  "1,1,0"
+
+# A tests station that leaves the replaced test in: it asserts what this
+# ticket ends, and verify-red refuses it — it used to be built over.
+setup70 "$SANDBOX/p70c"
+rc=0
+FAKE_KEEP_WORDS=1 FAKE_KEEP_REPLACED=1 "$AIF" work AIF-70 --no-worktree >"$OUT/run70c.out" 2>&1 || rc=$?
+eq "a replaced test left in a declared file: verify-red rejects it, naming the criterion and the rule — not built" \
+  "$rc,$(grep -c 'tests.t3::AIF-69 AC-001 t3 carries AIF-69 AC-001, a criterion this ticket.s R-1 replaces (changes AIF-69 R-1)' .aif/tmp/fake-prompt-tests-2 2>/dev/null)" "1,1"
+
+# A plan that leaves the older ticket's test file out: the plan gate finds it
+# by name, and rejects the plan.
+setup70 "$SANDBOX/p70d"
+rc=0
+FAKE_KEEP_WORDS=1 FAKE_PLAN_IGNORE_CHANGES=1 "$AIF" work AIF-70 --no-worktree >"$OUT/run70d.out" 2>&1 || rc=$?
+eq "a plan that does not declare the replaced criterion's test file: rejected, naming the file — not built" \
+  "$rc,$(grep -c '"tests/t3.py" holds a test of AIF-69 AC-001, which R-1 replaces (changes AIF-69 R-1)' .aif/tmp/fake-prompt-plan-2 2>/dev/null)" "1,1"
+
+# ====== 71. a test red before this ticket is let through, named ===============
+# One red test on the branch every ticket starts from stopped every ticket
+# after it at verify-red — "the pre-existing suite is red without this
+# ticket's test files too", exit 3 — and none of them could clear it
+# (docs/DEFECTS.md 13.9). Measured on the tree before the ticket, a test red
+# there is the repository's: let through by verify-red and green alike, in
+# the lock as red_at_base, on the report; the ticket answers for what it
+# adds. In a worktree, as the worker runs by default: every absolute path
+# there runs through .aif/worktrees/, and the probe used to read the red
+# test's own stack trace as the runner collecting the worker's checkouts.
+printf '\n71. a test red before this ticket: let through and named, by the worker and the land\n'
+fresh_project "$SANDBOX/p71"
+t0_red_when 'true'
+ticket_for AIF-71
+git add -A && git commit -qm "ticket 71, a repository red at t0" >/dev/null
+rc=0
+"$AIF" work AIF-71 >"$OUT/run71a.out" 2>&1 || rc=$?
+w71=.aif/worktrees/AIF-71/tasks/AIF-71
+eq "a repository red at a test the ticket never touched: built" "$rc" "0"
+eq "…and not refused as a runner collecting the worker's checkouts" \
+  "$(grep -c 'it collects .aif/worktrees/ too' "$OUT/run71a.out")" "0"
+eq "the lock names it as red before this ticket" "$(jq -c '.red_at_base' "$w71/tests.lock.json")" '["tests.t0::t0"]'
+eq "…verify-red and green both say so on the line the ledger keeps" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-71.json | grep -c 'let through, 1 red before this ticket: tests.t0::t0'),$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-71.json | grep -c 'let through, 1 red before this ticket: tests.t0::t0')" \
+  "1,1"
+# shellcheck disable=SC2016  # the backticks are the report's markdown
+eq "…and the report has it, once, with both gates" \
+  "$(grep -c '^## Let through — red before this ticket, or flaky$' "$w71/report.md"),$(grep -c '^- `tests.t0::t0` — red before this ticket (green, verify-red)$' "$w71/report.md")" "1,1"
+
+# Red before this ticket, and another pre-existing test the implementation
+# breaks: the first is let through, the second is the implementation's —
+# rejected for it alone.
+fresh_project "$SANDBOX/p71b"
+t0_red_when 'true'
+pre_test_when 8 'grep -q impl1 src/app.py'
+ticket_for AIF-71
+git add -A && git commit -qm "ticket 71b, red at t0, and a t8 the implementation breaks" >/dev/null
+rc=0
+"$AIF" work AIF-71 --no-worktree >"$OUT/run71b.out" 2>&1 || rc=$?
+eq "a test red before, and one the implementation breaks: rejected for the second alone — not built" \
+  "$rc,$(grep -c 'tests.t8::t8 (failure) — the pre-existing suite broke: it passes with the implementation reverted, so this change broke it' .aif/tmp/fake-prompt-implement-2 2>/dev/null),$(grep -c 'tests.t0::t0' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  "1,1,0"
+
+# The target red after the build, at a test the ticket never touched: the land
+# runs the suite in the ticket's worktree, finds t0 red, runs it once more,
+# and finds it red on the target as the land found it — the target's. Landed,
+# naming it. It used to undo and send the card back to a worker that would let
+# the same red through: a loop.
+fresh_project "$SANDBOX/p71c"
+ticket_for AIF-72
+git add -A && git commit -qm "ticket 71c" >/dev/null
+"$AIF" board create tasks/AIF-72/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-72 >"$OUT/run71c.out" 2>&1 || rc=$?
+eq "built, in Review" "$rc,$(col AIF-72)" "0,review"
+t0_red_when '[ -f MAINRED ]'
+: >MAINRED
+git add -A && git commit -qm "main went red at t0, after the build" >/dev/null
+rc=0
+"$AIF" land AIF-72 >"$OUT/land71c.out" 2>&1 || rc=$?
+eq "the target red at a test the ticket never touched: landed, in Done" \
+  "$rc,$(col AIF-72),$(git log --format=%s -1)" "0,done,aif: land AIF-72 — one-command user export"
+eq "…naming the test as red on the target before this ticket, here and on the card" \
+  "$(grep -c '^suite: .* — let through, red on [^ ]* at [0-9a-f]* before this ticket: tests.t0::t0$' "$OUT/land71c.out"),$("$AIF" board show AIF-72 --json | jq -r '.comments[-1].text' | grep -c 'let through, red on [^ ]* at [0-9a-f]* before this ticket: tests.t0::t0')" \
+  "1,1"
+
+# The target red and moved on the ticket's own line: the land sends the card
+# back for the conflict, and the worker brings the branch onto the target. Its
+# green, on the merged tree, finds t0 red — the target's, measured there, at
+# the commit it was brought onto. Built, back in Review, and landed.
+fresh_project "$SANDBOX/p71d"
+ticket_for AIF-73
+git add -A && git commit -qm "ticket 71d" >/dev/null
+"$AIF" board create tasks/AIF-73/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-73 >"$OUT/run71d.out" 2>&1 || rc=$?
+t0_red_when '[ -f MAINRED ]'
+: >MAINRED
+printf 'def users():\n    return []  # main moved on\n' >src/app.py
+git add -A && git commit -qm "main went red at t0, and moved the same line" >/dev/null
+rc=0
+"$AIF" land AIF-73 >"$OUT/land71d.out" 2>&1 || rc=$?
+eq "a conflict in code: back to the worker" "$rc,$(col AIF-73)" "1,ready"
+rc=0
+"$AIF" work AIF-73 >"$OUT/run71d2.out" 2>&1 || rc=$?
+eq "the worker brings it onto the red target: built, in Review, green naming t0 as red on the target" \
+  "$rc,$(col AIF-73),$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-73.json | grep -c 'let through, 1 red before this ticket: tests.t0::t0')" \
+  "0,review,1"
+eq "…the ledger's let-through row at the commit it was brought onto" \
+  "$(jq -r --arg m "$(git rev-parse HEAD)" '[.entries[] | select(.event == "let-through" and .test == "tests.t0::t0" and .base == $m)] | length > 0' .aif/state/ledgers/AIF-73.json)" "true"
+rc=0
+"$AIF" land AIF-73 >"$OUT/land71d2.out" 2>&1 || rc=$?
+eq "…and it lands" "$rc,$(col AIF-73)" "0,done"
+
+# ====== 72. a check failing before this ticket is let through, named ==========
+# A required check failing outside the ticket's files rejected every plan at
+# contract, stopped verify-red at red and rejected the implement station at
+# green — one type error landed on main stopped every ticket after it
+# (docs/DEFECTS.md 13.9). Run on the tree before the ticket too, a check that
+# fails the same way there, with nothing new, is the repository's.
+printf '\n72. a check failing the same way before this ticket: let through, and the new lines judged alone\n'
+typed "$SANDBOX/p72" '[{ "name": "legacy", "phase": ["contract", "red", "green"], "required": true,
+  "command": "echo \"src/legacy.py(3,1): error TS1005: ; expected.\"; exit 2" }]'
+ticket_for AIF-74
+git add -A && git commit -qm "ticket 72, a check red on the repository" >/dev/null
+rc=0
+"$AIF" work AIF-74 --no-worktree >"$OUT/run72.out" 2>&1 || rc=$?
+eq "a check bound to every phase, red before the ticket: built" "$rc" "0"
+eq "…its row let through in every phase it ran in" \
+  "$(jq -r '[.entries[] | select(.event == "check" and .check == "legacy") | .phase + ":" + .result] | unique | join(",")' .aif/state/ledgers/AIF-74.json)" \
+  "contract:at_base,green:at_base,red:at_base"
+# shellcheck disable=SC2016  # the backticks are the report's markdown
+eq "…named on each gate's line, and on the report" \
+  "$(jq -r '[.entries[] | select(.gate == "plan" or .gate == "verify-red" or .gate == "green") | .reason] | map(select(test("failing the same way before this ticket: check legacy"))) | length' .aif/state/ledgers/AIF-74.json),$(grep -c '^- check `legacy` — fails the same way before this ticket, and nothing new with it (contract, green, red)$' tasks/AIF-74/report.md)" \
+  "3,1"
+
+# The same red, and a type error the first implementation adds: rejected for
+# the new line alone, and the retry is not told about the repository's.
+typed "$SANDBOX/p72b" '[{ "name": "legacy", "phase": ["green"], "required": true,
+  "command": "echo \"src/legacy.py(3,1): error TS1005: ; expected.\"; grep -q BADTYPE src/app.py && echo \"src/app.py(2,12): error TS2345: Argument of type string is not assignable.\"; exit 2" }]'
+ticket_for AIF-74
+git add -A && git commit -qm "ticket 72b" >/dev/null
+rc=0
+FAKE_IMPL_BADTYPE_FIRST=1 "$AIF" work AIF-74 --no-worktree >"$OUT/run72b.out" 2>&1 || rc=$?
+eq "a type error the implementation adds to a check red before it: rejected once, then built" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-74.json)" "0,fail,pass"
+eq "…the retry told the new line, and not the repository's" \
+  "$(grep -c 'src/app.py(2,12): error TS2345' .aif/tmp/fake-prompt-implement-2 2>/dev/null),$(grep -c 'TS1005' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,0"
+
+# At red, a check with legitimate_at_red that fails before the ticket the same
+# way — naming none of its test files — is let through; it was the stop
+# "fails somewhere other than this ticket's test files" (scenario 21's, until
+# this). A failure whose lines are new with the ticket's files and name none
+# of them is still that stop.
+typed "$SANDBOX/p72c" '[{ "name": "legacy", "phase": ["red"], "required": true,
+  "command": "echo \"src/legacy.py(3,1): error TS1005: ; expected.\"; exit 2",
+  "legitimate_at_red": ["error TS2307"] }]'
+ticket_for AIF-74
+git add -A && git commit -qm "ticket 72c" >/dev/null
+rc=0
+"$AIF" work AIF-74 --no-worktree >"$OUT/run72c.out" 2>&1 || rc=$?
+eq "a red check failing outside the tests, the same before the ticket: built, its row let through" \
+  "$rc,$(jq -r '[.entries[] | select(.event == "check" and .phase == "red")] | last | .result' .aif/state/ledgers/AIF-74.json)" "0,at_base"
+typed "$SANDBOX/p72d" '[{ "name": "elsewhere", "phase": ["red"], "required": true,
+  "command": "if [ -f tests/t1.py ]; then echo \"src/other.py(1,1): error TS2304: Cannot find name x.\"; exit 2; fi; exit 0",
+  "legitimate_at_red": ["error TS2307"] }]'
+ticket_for AIF-74
+git add -A && git commit -qm "ticket 72d" >/dev/null
+rc=0
+"$AIF" work AIF-74 --no-worktree >"$OUT/run72d.out" 2>&1 || rc=$?
+eq "a red check whose line comes with the ticket and names none of its test files: still stopped" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' .aif/state/ledgers/AIF-74.json |
+     grep -c '^error: .*fails somewhere other than this ticket.s test files')" "1,1"
+
+# ====== 73. a flaky test is run once more before it is a verdict ==============
+# A test that failed once was never run again: failing with the implementation
+# only it was "this change broke it", the implement station rejected, and the
+# run stopped on the same complaint twice (docs/DEFECTS.md 13.9). A failure
+# that is not this ticket's own is run once more, the whole suite: one that
+# passes then is flaky, let through and named. Here t0 fails once each time a
+# station leaves .aif/tmp/flake-t0 behind.
+printf '\n73. a flaky pre-existing test: once more, then let through and named, by the gates and the land\n'
+fresh_project "$SANDBOX/p73"
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && rm -f .aif/tmp/flake-t0'
+ticket_for AIF-75
+git add -A && git commit -qm "ticket 73, a t0 that fails once" >/dev/null
+rc=0
+FAKE_FLAKE_PRE="tests implement" "$AIF" work AIF-75 --no-worktree >"$OUT/run73.out" 2>&1 || rc=$?
+eq "a test that fails once at both gates: built" "$rc" "0"
+eq "…the lock names it flaky" "$(jq -c '.flaky' tasks/AIF-75/tests.lock.json)" '["tests.t0::t0"]'
+eq "…and green says so on its line" \
+  "$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-75.json | grep -c 'let through, 1 flaky — failed once, passed on a re-run: tests.t0::t0')" "1"
+fresh_project "$SANDBOX/p73b"
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && rm -f .aif/tmp/flake-t0'
+ticket_for AIF-75
+git add -A && git commit -qm "ticket 73b" >/dev/null
+rc=0
+FAKE_FLAKE_PRE="implement" "$AIF" work AIF-75 --no-worktree >"$OUT/run73b.out" 2>&1 || rc=$?
+eq "a test that fails once with the implementation only: built — it used to be this change breaking it" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-75.json)" "0,pass"
+
+# The land judges a merge on which t0 fails once: run once more, it passes —
+# landed, naming it. A flaky test used to send a judged land back.
+fresh_project "$SANDBOX/p73c"
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && rm -f .aif/tmp/flake-t0'
+ticket_for AIF-76
+git add -A && git commit -qm "ticket 73c" >/dev/null
+"$AIF" board create tasks/AIF-76/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-76 >"$OUT/run73c.out" 2>&1 || rc=$?
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved: a note" >/dev/null
+: >.aif/worktrees/AIF-76/.aif/tmp/flake-t0
+rc=0
+"$AIF" land AIF-76 >"$OUT/land73c.out" 2>&1 || rc=$?
+eq "a test that fails once in the land's verdict: landed, naming it flaky" \
+  "$rc,$(col AIF-76),$(grep -c '^suite: .* — let through, flaky — failed once, passed on a re-run: tests.t0::t0$' "$OUT/land73c.out")" "0,done,1"
+
+# ====== 74. the gates' copies: dependencies linked, a copy cut short is a stop =
+# Every copy of the tree a gate made — verify-red's baseline, green's revert,
+# the worker's repair — copied node_modules whole with `cp -R … || true`, which
+# also hid a copy cut short (docs/DEFECTS.md 13.9). The installed dependencies
+# are linked now, git ignoring them, and a copy that cannot be made whole is
+# the gate's exit 3, saying what it could not copy.
+printf '\n74. the copies: ignored dependencies linked, a tracked one copied, a file that cannot be read a stop\n'
+fresh_project "$SANDBOX/p74"
+printf 'node_modules/\n.venv/\n.env\n*.sock\n' >>.gitignore
+mkdir -p node_modules/x packages/a/node_modules/y .venv/bin vendor/node_modules
+printf 'a\n' >node_modules/x/i.js
+printf 'b\n' >packages/a/node_modules/y/i.js
+printf 'c\n' >.venv/bin/py
+printf 'd\n' >vendor/node_modules/z.js
+t0_red_when 'true'
+ticket_for AIF-77
+git add -A >/dev/null && git add -f vendor/node_modules/z.js && git commit -qm "dependencies, one force-added; ticket 74" >/dev/null
+python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("app.sock")' 2>/dev/null
+rc=0
+c74="$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "$(git rev-parse HEAD)"' 2>"$OUT/c74.err")" || rc=$?
+what() { # <path> — link, dir or missing
+  if [ -L "$1" ]; then printf link; elif [ -d "$1" ]; then printf dir; elif [ -e "$1" ]; then printf file; else printf missing; fi
+}
+eq "the ignored node_modules at both depths and the .venv linked, the force-added one copied, the socket skipped — rc 0" \
+  "$rc,$(what "$c74/node_modules"),$(what "$c74/packages/a/node_modules"),$(what "$c74/.venv"),$(what "$c74/vendor/node_modules"),$(what "$c74/app.sock")" \
+  "0,link,link,link,dir,missing"
+[ -z "$c74" ] || rm -rf "${c74:?}"
+eq "…removing the copy leaves what it linked to" "$(cat node_modules/x/i.js 2>/dev/null)" "a"
+eq "the worker's own copy (a repair's) is made the same way, and so is the land's" \
+  "$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"
+     c="$(mktemp -d)"; _aif_work_copy_at "$PWD" "$(git rev-parse HEAD)" "$c" >/dev/null 2>&1
+     for p in node_modules packages/a/node_modules .venv vendor/node_modules; do
+       if [ -L "$c/$p" ]; then printf "link "; elif [ -d "$c/$p" ]; then printf "dir "; else printf "missing "; fi
+     done; rm -rf "$c"' _ "$ROOT")" "link link link dir "
+eq "…the two find the same dependencies — the gates' list and the worker's twin" \
+  "$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_dep_dirs "$PWD"' | sort | paste -sd'|' -),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_dep_dirs "$PWD"' _ "$ROOT" | sort | paste -sd'|' -)" \
+  ".venv|node_modules|packages/a/node_modules,.venv|node_modules|packages/a/node_modules"
+printf 'src/a.ts(12,5): error TS2554: one\nsrc/a.ts(40,5): error TS2554: one\nFound 3 errors in 2 files.\nDone in 2.31s\n' >"$OUT/nl74.now"
+printf 'src/a.ts(10,5): error TS2554: one\nFound 2 errors in 2 files.\nDone in 1.9s\n' >"$OUT/nl74.base"
+eq "…and the lines new with a ticket are read the same by the gates and the land: a second error new, a moved one not, a timing not" \
+  "$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_new_lines "$1" "$PWD" "$2" ""' _ "$OUT/nl74.now" "$OUT/nl74.base"),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; . "$1/lib/cmd_land.sh"; _aif_land_new_lines "$2" "$PWD" "$3" ""' _ "$ROOT" "$OUT/nl74.now" "$OUT/nl74.base")" \
+  "src/a.ts(40,5): error TS2554: one,src/a.ts(40,5): error TS2554: one"
+printf 'SECRET=1\n' >.env
+chmod 000 .env
+rc=0
+/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "$(git rev-parse HEAD)"' >"$OUT/c74b.out" 2>"$OUT/c74b.err" || rc=$?
+eq "an ignored file that cannot be read: the copy refused, rc 1, naming it" \
+  "$rc,$(grep -c '^could not copy .env: .*Permission denied' "$OUT/c74b.err")" "1,1"
+rc=0
+"$AIF" work AIF-77 --no-worktree >"$OUT/run74.out" 2>&1 || rc=$?
+eq "…and verify-red, which has to measure a red t0 there, stops on it: could not copy the tree" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' .aif/state/ledgers/AIF-77.json | grep -c '^error: .*could not copy the tree to measure the suite before this ticket')" "1,1"
+chmod 600 .env
+rm -f app.sock
+
+# ====== 75. a deletion the plan names ==========================================
+# A ticket that must remove a file could not pass: the plan had no list for
+# it, and scope rejected every deleted path — twice, as a file outside the
+# plan's lists and as a deletion (docs/DEFECTS.md 13.10). files.delete is that
+# list: scope passes what it names, refuses one it names that is still there,
+# and refuses every other deletion as before.
+printf '\n75. files.delete: a deletion the plan names passes scope, and one it does not make is the work not done\n'
+setup75() { # <dir>
+  fresh_project "$1"
+  printf 'def legacy():\n    return 0\n' >src/legacy.py
+  printf 'def other():\n    return 0\n' >src/other.py
+  ticket_for AIF-78
+  git add -A && git commit -qm "ticket 75, a module to remove" >/dev/null
+}
+setup75 "$SANDBOX/p75"
+rc=0
+FAKE_DELETE=src/legacy.py "$AIF" work AIF-78 --no-worktree >"$OUT/run75.out" 2>&1 || rc=$?
+eq "the plan deletes src/legacy.py and the implementation removes it: built, scope counting it, the file gone from the branch" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-78.json | grep -c '1 deletion(s)'),$(git cat-file -e HEAD:src/legacy.py 2>/dev/null && echo there || echo gone)" \
+  "0,1,gone"
+setup75 "$SANDBOX/p75b"
+rc=0
+FAKE_DELETE=src/legacy.py FAKE_DELETE_SKIP=1 "$AIF" work AIF-78 --no-worktree >"$OUT/run75b.out" 2>&1 || rc=$?
+eq "a deletion the plan names, not made: rejected — it is still there" \
+  "$rc,$(grep -c 'files.delete names src/legacy.py, and it is still there' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,1"
+setup75 "$SANDBOX/p75c"
+rc=0
+FAKE_DELETE_EXTRA=src/other.py "$AIF" work AIF-78 --no-worktree >"$OUT/run75c.out" 2>&1 || rc=$?
+eq "a deletion the plan does not name: refused, once" \
+  "$rc,$(grep -c 'src/other.py was deleted — the plan did not authorise removing it' .aif/tmp/fake-prompt-implement-2 2>/dev/null),$(grep -c 'src/other.py is not in the plan' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,1,0"
+# The plan gate holds files.delete to what may go.
+mkdir -p "$SANDBOX/p75d"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p75d/" 2>/dev/null || true
+cd "$SANDBOX/p75d" || exit 1
+plan_delete() { # <files.delete json> — AIF-1's plan, its deletions rewritten
+  local meta
+  meta="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -c --argjson d "$1" '.files.delete = $d')"
+  printf '<!-- aif:meta\n%s\n-->\n# AIF-1 — plan\n' "$meta" >tasks/AIF-1/plan.md
+}
+printf 'def old():\n    return 0\n' >src/old.py
+git add -A && git commit -qm "a module to delete" >/dev/null
+plan_delete '["src/old.py"]'
+rc=0
+pg >"$OUT/plan75.out" || rc=$?
+eq "a plan that deletes an existing module: admitted, the deletion counted" "$rc,$(grep -c '^plan: .*, 1 deletion(s)$' "$OUT/plan75.out")" "0,1"
+plan_delete '["src/nowhere.py"]'
+d1="$(pg | grep -c '"src/nowhere.py", which does not exist')"
+plan_delete '["tests/t0.py"]'
+d2="$(pg | grep -c '"tests/t0.py", a test')"
+plan_delete '["src/app.py"]'
+d3="$(pg | grep -c '"src/app.py" is in files.delete and in files.create, files.change or files.tests')"
+plan_delete '[".aif/project.json"]'
+d4="$(pg | grep -c '".aif/project.json", which no implementation may touch')"
+eq "…and refuses a path that is not there, a test, a path it also changes, the pipeline's own" "$d1,$d2,$d3,$d4" "1,1,1,1"
+
+# ====== 76. an amendment may create a file, beside the plan's ==================
+# A file the plan did not foresee could be amended in only if it existed; a new
+# one was a replan — one per ticket — for a line (docs/DEFECTS.md 13.10). An
+# amendment may create a file now, beside the plan's own, decided by place and
+# name; past the cap, the refusal names the replan.
+printf '\n76. an amendment creates a file beside the plan'"'"'s, and the cap names the replan\n'
+mkdir -p "$SANDBOX/p76"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p76/" 2>/dev/null || true
+cd "$SANDBOX/p76" || exit 1
+rc=0
+"$AIF" _amend-plan AIF-1 src/helper.py "the export needs a helper beside it" >"$OUT/amend76.out" 2>&1 || rc=$?
+eq "a new file beside a planned one: amended, recorded as created" \
+  "$rc,$(jq -r '.amendments[] | select(.path == "src/helper.py") | .kind' tasks/AIF-1/plan-amendments.json 2>/dev/null)" "0,create"
+a1="$("$AIF" _amend-plan AIF-1 lib/x.py "x" 2>&1)"
+a2="$("$AIF" _amend-plan AIF-1 newconf.js "x" 2>&1)"
+a3="$("$AIF" _amend-plan AIF-1 src/.babelrc "x" 2>&1)"
+eq "…a new file where the plan has none, at the root, or a dotfile: each refused, saying why" \
+  "$(printf '%s' "$a1" | grep -c 'lib/ holds none of the plan'),$(printf '%s' "$a2" | grep -c 'at the root of the repository'),$(printf '%s' "$a3" | grep -c 'a dotfile')" "1,1,1"
+"$AIF" _amend-plan AIF-1 src/h2.py "x" >/dev/null 2>&1
+"$AIF" _amend-plan AIF-1 src/h3.py "x" >/dev/null 2>&1
+a4="$("$AIF" _amend-plan AIF-1 src/h4.py "x" 2>&1)"
+eq "…and past the cap, the refusal names the way back: a replan, in the note" \
+  "$(printf '%s' "$a4" | grep -c '"replan"')" "1"
+fresh_project "$SANDBOX/p76b"
+ticket_for AIF-79
+git add -A && git commit -qm "ticket 76" >/dev/null
+rc=0
+FAKE_AMEND_NEW=src/helper.py "$AIF" work AIF-79 --no-worktree >"$OUT/run76.out" 2>&1 || rc=$?
+eq "an implementation that amends in a new module and writes it: built, scope passing it the first time" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "scope") | .result] | join(",")' .aif/state/ledgers/AIF-79.json)" "0,pass"
+eq "…scope passing it as amended, the new file counted on the line the ledger keeps" \
+  "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-79.json | grep -c '^scope: change confined to the plan AS AMENDED (.*, 1 amendment(s), 1 of them new)$')" "1"
+
+# ====== 77. CI and the ignore rules: the plan's to name ========================
+# The denylist held .gitignore, .github/ and .gitlab-ci* against any
+# implementation, so a ticket that needed one could not be planned
+# (docs/DEFECTS.md 13.10). They are the plan's to name now — scope passes
+# them only then, never by amendment — and .aif/, .claude/ and tasks/ stay
+# closed.
+printf '\n77. CI and the ignore rules move when the plan names them; the pipeline'"'"'s own never\n'
+mkdir -p "$SANDBOX/p77"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p77/" 2>/dev/null || true
+cd "$SANDBOX/p77" || exit 1
+plan_files '["src/app.py", ".gitignore"]'
+rc=0
+pg >"$OUT/plan77.out" || rc=$?
+eq "a plan that changes .gitignore: admitted, and said on its pass path" \
+  "$rc,$(grep -c 'CI AND IGNORE RULES, named by this plan' "$OUT/plan77.out"),$(grep -c '^    - .gitignore$' "$OUT/plan77.out")" "0,1,1"
+plan_files '["src/app.py", ".claude/settings.json"]'
+g1="$(pg | grep -c '".claude/settings.json", which no implementation may touch')"
+plan_files '["src/app.py", ".aif/project.json"]'
+g2="$(pg | grep -c '".aif/project.json", which no implementation may touch')"
+eq "…one that names .claude/ or .aif/: refused, as ever" "$g1,$g2" "1,1"
+plan_files '["src/app.py", ".gitignore"]'
+git add -A && git commit -qm "the plan names .gitignore" >/dev/null
+dispatched_now
+printf 'dist/\n' >>.gitignore
+rc=0
+sg >"$OUT/scope77.out" || rc=$?
+eq "a planned .gitignore edit: scope passes it, saying what is ignored from now on" \
+  "$rc,$(grep -c 'IGNORED FROM NOW ON' "$OUT/scope77.out"),$(grep -c '^    + dist/$' "$OUT/scope77.out")" "0,1,1"
+git checkout -q -- .gitignore
+plan_files '["src/app.py"]'
+git add -A && git commit -qm "the plan names no CI" >/dev/null
+dispatched_now
+mkdir -p .github/workflows
+printf 'on: push\n' >.github/workflows/ci.yml
+eq "a workflow the plan does not name: refused, as one that moves only when the plan names it" \
+  "$(sg | grep -c '.github/workflows/ci.yml is CI or an ignore file, and changes only when the plan names it')" "1"
+rm -rf .github
+said77="$("$AIF" _amend-plan AIF-1 .gitignore "x" 2>&1)"
+eq "…nor by an amendment" "$(printf '%s' "$said77" | grep -c 'change only when the plan names them')" "1"
+
+# ====== 78. the guard is told the ticket ======================================
+# The guard let the tests station write only what is named like a test, so a
+# manual mock or a test util the plan declared was refused (docs/DEFECTS.md
+# 13.10). The worker tells it the ticket now, beside the station, and it reads
+# the plan's files.tests (check-set.sh holds the guard's answers).
+printf '\n78. the worker tells the guard which ticket it builds\n'
+eq "every station of scenario 1 was dispatched with its ticket in AIF_TICKET" \
+  "$(cat "$SANDBOX/p1/.aif/tmp/fake-ticket-plan-1" 2>/dev/null),$(cat "$SANDBOX/p1/.aif/tmp/fake-ticket-tests-1" 2>/dev/null),$(cat "$SANDBOX/p1/.aif/tmp/fake-ticket-implement-1" 2>/dev/null)" \
+  "AIF-1,AIF-1,AIF-1"
+
+# ====== 79. a land of the card, live, is not the machine =====================
+# A worker that finds an `aif land` of its ticket running in this checkout
+# refuses before the card moves — exit 3, the land's worktree left alone
+# (docs/DEFECTS.md 15.1) — and the loop read that exit as the environment: a
+# preflight asked again, a step toward three in a row (13.8). It holds the
+# card now, as it holds a refused takeover, and goes on.
+printf '\n79. a card whose land is running: held by the loop, not the machine\n'
+fresh_project "$SANDBOX/p79"
+cat >.aif/stop-here.sh <<'STOP'
+#!/bin/bash
+[ "${STOP_IN:-}" = "$1" ] || exit 0
+touch "$STOP_MARK"
+i=0
+while [ ! -f "$STOP_GO" ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+STOP
+{
+  head -1 .aif/suite.sh
+  printf 'bash .aif/stop-here.sh suite\n'
+  tail -n +2 .aif/suite.sh
+} >"$OUT/suite79" && mv "$OUT/suite79" .aif/suite.sh && chmod +x .aif/suite.sh
+ticket_for AIF-179
+git add -A && git commit -qm "ticket 79, a suite that can be held" >/dev/null
+"$AIF" board create tasks/AIF-179/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-179 >"$OUT/run79.out" 2>&1 || rc=$?
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved: a note" >/dev/null
+STOP_MARK="$SANDBOX/p79.at"
+STOP_GO="$SANDBOX/p79.go"
+land_at AIF-179 suite "$OUT/land79.out"
+"$AIF" board move AIF-179 ready >/dev/null
+rc=0
+AIF_WORK_LOOP_LOGDIR="$SANDBOX/p79-loop" "$AIF" work --loop --parallel 1 --no-tui >"$OUT/run79loop.out" 2>&1 || rc=$?
+eq "the loop takes the card while its land runs: the worker refuses, the card held, the machine not asked again" \
+  "$(jq -r '[.env, .rechecks, (.held | join(" "))] | map(tostring) | join("|")' "$SANDBOX/p79-loop/summary.json" 2>/dev/null),$(grep -c 'AIF-179 is being landed here (aif land, pid [0-9]*); the card is held, the loop goes on' "$SANDBOX/p79-loop/loop.log" 2>/dev/null)" \
+  "0|0|AIF-179,1"
+touch "$STOP_GO"
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "…and the land goes on to land it" "$rc,$(col AIF-179)" "0,done"
+
 # ====== 80. the runner's usage limit pauses the run, outside the wall clock ===
 # docs/DEFECTS.md 13.7. A station that met the account's usage limit returned
 # an envelope with is_error, and the worker billed it to the station: the
@@ -6164,6 +6824,24 @@ eq "default — the CLI's own, which resolves to opus or sonnet: refused under a
   "$rc,$(grep -c 'aif-plan asks for default' "$OUT/run87b.out"),$(grep -c '(it maps haiku)' "$OUT/run87b.out"),$c87|$rc2,$(col AIF-870)" \
   "3,1,1,ready|0,review"
 cd "$SANDBOX" || exit 1
+
+# ====== the guard, over every station of the whole run =======================
+# Every write a stub station made in this run — the plans, the skeletons, the
+# tests, the notes, the code, the sync's settlements, in worktrees, in place
+# and in a repair's copy — was asked of the project's guard first, as a real
+# station's Write asks it, with what the worker exported (AIF_STATION,
+# AIF_TICKET). The guard closes .aif/, .claude/ and tasks/ to every station
+# but its own file there, and reads files.tests from the plan
+# (docs/DEFECTS.md 13.10): a guard that refused a station its own outputs
+# would stop every real run, and no stub writing past it would say so.
+printf '\nthe guard, asked about every write a station made in this run\n'
+eq "each station's own writes were let through — plan, tests and implement all asked, none refused" \
+  "$(awk '$1 == "plan" { p++ } $1 == "tests" { t++ } $1 == "implement" { i++ } END { print (p > 0) "," (t > 0) "," (i > 0) }' "$FAKE_GUARD_LOG"),$(awk '$3 == "deny"' "$FAKE_GUARD_LOG" | wc -l | tr -d ' ')" \
+  "1,1,1,0"
+[ "$(awk '$3 == "deny"' "$FAKE_GUARD_LOG" | wc -l | tr -d ' ')" = 0 ] ||
+  awk '$3 == "deny"' "$FAKE_GUARD_LOG" | sort | uniq -c | sed -n '1,10p' | sed 's/^/    refused: /'
+printf '  · %s writes asked: %s\n' "$(wc -l <"$FAKE_GUARD_LOG" | tr -d ' ')" \
+  "$(awk '{ n[$1]++ } END { for (k in n) printf "%s %d · ", k, n[k] }' "$FAKE_GUARD_LOG" | sed 's/ · $//')"
 
 # ----------------------------------------------------------------------------
 printf '\n'

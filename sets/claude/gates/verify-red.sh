@@ -9,11 +9,19 @@
 # oracle through and calls it a passing gate. So this gate checks the FAILURE
 # MODE, not the failure:
 #
-#   - the pre-existing suite was green before this ticket's tests existed (a
-#     repo already broken makes "red" meaningless) → exit 3 if not, naming the
-#     tests. A pre-existing test that was green WITHOUT the new test files and
-#     is red with them is a different thing, told apart by running the suite
-#     once more without them (see "Pre-existing tests" below)
+#   - a pre-existing test that fails is run once more, and then measured on
+#     the tree before this ticket (see "Pre-existing tests" below): red there
+#     is the repository's — let through, named, and this ticket answers only
+#     for what it adds; green there and red now is the new files' doing;
+#     failing once and passing once is flaky — let through, named
+#     (docs/DEFECTS.md 13.9). It used to be a stop for every ticket after one
+#     red landed on the branch they all start from
+#   - an older test in a declared file — another ticket's, left alone in a
+#     file this ticket's rule had to reach — green before this ticket is
+#     STANDING: not this ticket's test, not on its checklist, held by green
+#     as any pre-existing test (docs/DEFECTS.md 12.3). A test still carrying a
+#     criterion this ticket's rules replace is rejected: it asserts what the
+#     ticket ends
 #   - each new test is present in the report, and each failing one fails for
 #     one of two reasons: an assertion did not hold, or the skeleton threw the
 #     not-implemented marker. The plan station wrote the contract — every
@@ -109,6 +117,7 @@ ticket_id="$(printf '%s' "$spec_meta" | jq -r '.ticket // ""')"
 test_files="$(printf '%s' "$plan_meta" | jq -r '.files.tests[]? // empty')"
 create_files="$(printf '%s' "$plan_meta" | jq -r '.files.create[]? // empty')"
 change_files="$(printf '%s' "$plan_meta" | jq -r '.files.change[]? // empty')"
+delete_files="$(printf '%s' "$plan_meta" | jq -r '.files.delete[]? // empty')"
 no_skeleton="$(printf '%s' "$plan_meta" | jq -r '.no_skeleton[]? // empty')"
 
 # --- the station's note: what it could not write a red test for --------------
@@ -200,9 +209,15 @@ rm -f "$root/$report_path"
 # worker commits. Every early exit below used to leak it there (docs/DEFECTS.md (log 3)
 # #14): the removals were written on the pass paths only, and a rejection is the
 # common case. A gate is its own process, so a plain EXIT trap is the whole fix.
-# The copy the baseline runs in (below) goes the same way.
-scratch=""
-trap 'rm -f "$work/.suite.out"; [ -z "$scratch" ] || rm -rf "${scratch:?}"' EXIT
+# This gate's own scratch goes the same way — the second run's report, and the
+# one copy of the tree before this ticket it makes at most (vtmp/base).
+vtmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-red-XXXXXX")" || aif_g_error "no temporary directory for the gate"
+trap 'rm -f "$work/.suite.out"; [ -z "$vtmp" ] || rm -rf "${vtmp:?}"' EXIT
+
+# The tree before this ticket (aif_g_ticket_base): what a pre-existing failure,
+# an older test in a declared file, and a red check are measured against.
+tbase="$(aif_g_ticket_base "$work" "$root")"
+[ -e "$root/.git" ] || tbase=""
 
 suite_rc=0
 (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
@@ -256,6 +271,17 @@ green_ids=""
 green_count=0
 red_count=0
 red_with_tests=""
+# What this gate lets through, named on its first line and in the lock: a test
+# red before this ticket (the repository's), one that failed once and passed
+# on a re-run (flaky), and the older tests in the declared files that stay
+# green and are not this ticket's (standing).
+red_at_base=""
+flaky_ids=""
+standing=""
+standing_why=""
+again=""
+tab="$(printf '\t')"
+us="$(printf '\037')"
 if [ "$mode" = "per-test" ]; then
   # jq emits plain rows; classification happens in bash against the project's
   # failure-class patterns. Keeping the jq single-line and pattern-free is what
@@ -263,11 +289,83 @@ if [ "$mode" = "per-test" ]; then
   local_tf="$(printf '%s' "$test_files" | jq -R . | jq -s .)"
   broken_re="$(jq -r '.failure_classes.broken | join("|")' "$project")"
   legit_re="$(jq -r '.failure_classes.legitimate | join("|")' "$project")"
+  printf '%s' "$results" >"$vtmp/results.json"
+
+  # Every collected test, sorted once (docs/DEFECTS.md 12.3):
+  #   replaced  it carries a criterion one of this ticket's rules replaces
+  #             (aif_g_replaced_markers) — it asserts what this ticket ends
+  #   pre       outside the declared files: the rest of the suite
+  #   own       in a declared file, carrying one of this ticket's markers
+  #   foreign   in a declared file, carrying none: a test this ticket wrote
+  #             unmarked, or an older ticket's left in a file this ticket's
+  #             rule had to reach — which of the two, the tree before this
+  #             ticket says
+  # A marker is matched whole in the normalised id (aif_g_marker_in, in jq),
+  # so XAIF-69 does not carry AIF-69's.
+  mine_json="$(printf '%s' "$spec_meta" | jq -c --arg t "$ticket_id" \
+    '[ .acceptance[]?.id | ($t + " " + .) | ascii_downcase | gsub("[^a-z0-9]+"; "_") ]')"
+  repl_json="$(aif_g_replaced_markers "$work" | jq -R 'split("\t") | select(length >= 3)
+    | { raw: .[0], m: (.[0] | ascii_downcase | gsub("[^a-z0-9]+"; "_")), rule: .[1], ref: .[2] }' | jq -s -c .)"
+  kinds="$(jq -r --argjson tf "$local_tf" --argjson mine "$mine_json" --argjson repl "$repl_json" '
+    def carries($m): ("_" + (.id | ascii_downcase | gsub("[^a-z0-9]+"; "_")) + "_") | contains("_" + $m + "_");
+    .[] | . as $t
+    | ((.file // "") as $f | $tf | index($f) != null) as $declared
+    | ([ $repl[] | . as $r | select($t | carries($r.m)) ] | first) as $rp
+    | (if $rp != null then "replaced"
+       elif ($declared | not) then "pre"
+       elif ([ $mine[] | . as $m | select($t | carries($m)) ] | length) > 0 then "own"
+       else "foreign" end) as $k
+    | [ $k, (.file // ""), .id, .status, ((.message // "") | gsub("[\n\t\u001f]"; " ")),
+        (if $rp != null then $rp.raw + ", a criterion this ticket'"'"'s " + $rp.rule + " replaces (changes " + $rp.ref + ")" else "" end),
+        ($declared | tostring) ]
+    | join("\u001f")' "$vtmp/results.json")"
+
+  pre_red=""
+  foreign_rows=""
+  replaced_viol=""
+  replaced_far=""
+  while IFS="$us" read -r k f id st msg rp declared; do
+    [ -n "$k" ] || continue
+    case "$k" in
+      replaced)
+        # Enforced, not only asked for (aif-tests.md): left in, it asserts the
+        # behaviour this ticket ends, goes red once the code lands, and at
+        # green it is a pre-existing test the implementer's tests_wrong claim
+        # cannot reach — nothing could clear it.
+        if [ "$declared" = true ]; then
+          replaced_viol="$replaced_viol
+$id carries $rp: remove it, or rewrite it under $ticket_id's marker when it now proves one of this ticket's criteria"
+        else
+          replaced_far="$replaced_far
+$id (in ${f:-a file the report does not name}) carries $rp"
+        fi
+        ;;
+      pre)
+        if [ "$st" = failure ] || [ "$st" = error ]; then
+          pre_red="$pre_red$id
+"
+        fi
+        ;;
+      own) new_rows="$new_rows$f$tab$id$tab$st$tab$msg
+" ;;
+      foreign) foreign_rows="$foreign_rows$f$tab$id$tab$st$tab$msg
+" ;;
+    esac
+  done <<EOF
+$kinds
+EOF
+  if [ -n "$replaced_far" ]; then
+    printf 'ERROR  a collected test still carries a criterion this ticket'"'"'s rules replace, in a file the plan does not declare — no station here can reach it:\n' >&2
+    printf '%s\n' "$replaced_far" | sed '/^$/d; s/^/  - /' >&2
+    printf '  The plan declares every test file that names a replaced criterion (the plan gate finds\n' >&2
+    printf '  them by name in the files); a test whose name is made at run time is not found that\n' >&2
+    printf '  way. Re-plan with its file in files.tests.\n' >&2
+    exit "$AIF_G_ERROR"
+  fi
 
   # Pre-existing tests — everything outside a declared test file — that fail.
   #
-  # A repo already red makes this gate blind, so that is a stop, not a reject.
-  # But this run happens AFTER the tests station has written its files, and for
+  # This run happens AFTER the tests station has written its files, and for
   # one release every failure outside them was reported as "the pre-existing
   # suite is not green — fix the repo". A test green before the new files and
   # red with them is not the repo: on a live project it was a jest test that
@@ -276,77 +374,112 @@ if [ "$mode" = "per-test" ]; then
   # red-first test in TypeScript must. Two tickets in a row stopped here with
   # advice that was false for them (docs/DEFECTS.md 6.1).
   #
-  # So a failure outside the declared files is measured against a BASELINE:
-  # the suite once more, in a copy of the tree as it stood when the tests
-  # station was dispatched — the tree those files landed in. Only on this path,
-  # so a green suite pays nothing for it. Three answers:
-  #   red before   the repo. A stop, naming the tests.
-  #   green before the tests' interaction with the suite. Admitted, recorded in
-  #                the lock as red_with_tests and printed on the pass path:
-  #                green requires the whole suite, and it can tell a failure
-  #                the implementation clears from one it cannot reach.
+  # And one red on the branch every ticket starts from — a land can bring one
+  # (13.5) — stopped every ticket after it here, though none of them could
+  # clear it and none had made it (docs/DEFECTS.md 13.9). So a failure that is
+  # not this ticket's own is first run once more (the whole suite, the same
+  # tree): failing once and passing once is flaky, let through and named. One
+  # that fails again is measured on the tree before this ticket
+  # (aif_g_ticket_base) — the suite there, in a copy, kept under .aif/tmp/base
+  # so the station's own `aif _verify` loop pays for it once
+  # (aif_g_base_suite). Three answers:
+  #   red before   the repository's. Let through, in the lock as red_at_base,
+  #                named on the first line; this ticket answers for what it
+  #                adds, not for this.
+  #   green before the tests' interaction with the suite — or the contract's:
+  #                the tree before this ticket has no skeleton either. Admitted,
+  #                recorded in the lock as red_with_tests and printed on the
+  #                pass path: green requires the whole suite, and it can tell a
+  #                failure the implementation clears from one it cannot reach.
   #   absent       a test that exists only with this ticket's files but lives
   #                outside the declared ones — the tests' own, not the repo's.
-  pre_red="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-    '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | select(.status == "failure" or .status == "error") | .id')"
-  if [ -n "$pre_red" ]; then
-    baseline=""
-    classes=""
-    base_why=""
-    if [ -z "$base" ] || [ ! -e "$root/.git" ]; then
-      base_why="there is no commit to measure it at"
-    else
-      scratch="$(aif_g_scratch_at "$root" "$base")"
-      mkdir -p "$scratch/$(dirname "$report_path")" "$scratch/.aif/tmp"
-      rm -f "${scratch:?}/${report_path:?}"
-      (cd "$scratch" && eval "$test_cmd") >"$scratch/.aif/tmp/baseline.out" 2>&1 || true
-      if [ ! -f "$scratch/$report_path" ]; then
-        base_why="the suite wrote no report there — $(grep -v '^[[:space:]]*$' "$scratch/.aif/tmp/baseline.out" | tail -1 | cut -c1-160)"
-      else
-        baseline="$(python3 "$here/junit.py" "$scratch/$report_path" 2>/dev/null || true)"
-        [ -n "$baseline" ] || base_why="the report it wrote could not be read"
+  # The second run is the red-twice run below too: no third.
+  #
+  # Older tests in a declared file (docs/DEFECTS.md 12.3): a rule that changes
+  # another ticket's has the plan declare that ticket's test file, so the
+  # tests station can remove the tests of the rule it replaces — and every
+  # other test in the file, untouched and green, read as new: recorded green at
+  # freeze, kept out of covering, and put on the closing checklist as this
+  # run's doubt. One the tree before this ticket has, green or skipped there,
+  # is STANDING: left out of the new tests, the coverage and the checklist, and
+  # frozen as a pre-existing test, which green holds to passing. One red there
+  # and red now is red_at_base, as above. A standing test is looked for only
+  # where its file was there before this ticket.
+  foreign_red="$(printf '%s' "$foreign_rows" | awk -F'\t' '$3 == "failure" || $3 == "error" { print $2 }')"
+  if [ -n "$pre_red$foreign_red" ]; then
+    rm -f "${root:?}/${report_path:?}"
+    (cd "$root" && eval "$test_cmd") </dev/null >"$vtmp/again.out" 2>&1 || true
+    [ ! -f "$root/$report_path" ] || again="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+    if [ -n "$again" ]; then
+      printf '%s' "$again" >"$vtmp/again.json"
+      flaky_ids="$(printf '%s\n%s\n' "$pre_red" "$foreign_red" | grep -v '^$' | jq -R . | jq -s . |
+        jq -r --slurpfile a "$vtmp/again.json" '
+          ($a[0] | map({ (.id): .status }) | add // {}) as $A
+          | .[] | select(($A[.] // "") == "pass" or ($A[.] // "") == "skipped")' 2>/dev/null)" || flaky_ids=""
+      if [ -n "$flaky_ids" ]; then
+        pre_red="$(printf '%s' "$pre_red" | grep -vxF -- "$flaky_ids" || true)"
+        foreign_red="$(printf '%s' "$foreign_red" | grep -vxF -- "$flaky_ids" || true)"
       fi
     fi
-    if [ -n "$baseline" ]; then
-      printf '%s' "$baseline" >"$scratch/.aif/tmp/baseline.json"
-      classes="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-        --slurpfile before "$scratch/.aif/tmp/baseline.json" '
-        ($before[0] | map({ (.id): .status }) | add // {}) as $b
-        | .[] | select(((.file // "") as $f | $tf | index($f)) | not)
-        | select(.status == "failure" or .status == "error")
-        | ($b[.id] // "") as $s
-        | (if $s == "failure" or $s == "error" then "before" elif $s == "" then "absent" else "with" end)
-          + "\t" + .id + "\t" + (.file // "")' 2>/dev/null)" || classes=""
-      [ -n "$classes" ] || base_why="the run without them could not be compared with this one"
-    fi
-    [ -z "$scratch" ] || rm -rf "${scratch:?}"
-    scratch=""
+  fi
+  standing_cand=""
+  while IFS="$tab" read -r f id st msg; do
+    [ -n "$id" ] || continue
+    : "$msg"
+    [ "$st" = pass ] || [ "$st" = skipped ] || continue
+    [ -n "$tbase" ] || continue
+    git -C "$root" cat-file -e "$tbase:$f" 2>/dev/null || continue
+    standing_cand="$standing_cand$id
+"
+  done <<EOF
+$foreign_rows
+EOF
 
+  baseline=""
+  base_why=""
+  if [ -n "$pre_red$foreign_red$standing_cand" ]; then
+    if [ -z "$tbase" ]; then
+      base_why="there is no commit to measure it at"
+    else
+      brc=0
+      baseline="$(aif_g_base_suite "$project" "$root" "$tbase" "$vtmp/base")" || brc=$?
+      if [ "$brc" -eq 2 ]; then
+        aif_g_error "could not copy the tree to measure the suite before this ticket (at $(printf '%s' "$tbase" | cut -c1-10)): $baseline"
+      elif [ "$brc" -ne 0 ]; then
+        base_why="$baseline"
+        baseline=""
+      fi
+    fi
+  fi
+  [ -z "$baseline" ] || printf '%s' "$baseline" >"$vtmp/baseline.json"
+  # at_base <ids> — "<status at the base, or empty><TAB><id><TAB><file now>"
+  # a line, for each id.
+  at_base() {
+    printf '%s\n' "$1" | grep -v '^$' | jq -R . | jq -s . |
+      jq -r --slurpfile b "$vtmp/baseline.json" --slurpfile r "$vtmp/results.json" '
+        ($b[0] | map({ (.id): .status }) | add // {}) as $B
+        | ($r[0] | map({ (.id): (.file // "") }) | add // {}) as $F
+        | .[] | ($B[.] // "") + "\t" + . + "\t" + ($F[.] // "")' 2>/dev/null
+  }
+
+  red_before=""
+  if [ -n "$pre_red" ]; then
     # No baseline, no attribution: the stop that was always here, with names.
-    if [ -z "$classes" ]; then
+    if [ -z "$baseline" ]; then
       printf 'ERROR  the pre-existing suite is not green (%s failing: %s) — fix the repo before authoring tests; red is meaningless otherwise\n' \
         "$(printf '%s\n' "$pre_red" | grep -c .)" "$(printf '%s\n' "$pre_red" | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')" >&2
-      printf '%s\n' "$pre_red" | sed -n '1,20p' | sed 's/^/  - /' >&2
-      printf '  Whether they were red before this ticket'"'"'s test files existed could not be told: %s.\n' "$base_why" >&2
+      printf '%s\n' "$pre_red" | sed '/^$/d' | sed -n '1,20p' | sed 's/^/  - /' >&2
+      printf '  Whether they were red before this ticket could not be told: %s.\n' "${base_why:-the run there could not be read}" >&2
       exit "$AIF_G_ERROR"
     fi
+    classes="$(at_base "$pre_red" | awk -F'\t' '{
+      k = ($1 == "failure" || $1 == "error") ? "before" : ($1 == "" ? "absent" : "with")
+      print k "\t" $2 "\t" $3 }')"
     red_before="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "before" { print $2 }')"
     red_with_tests="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "with" { print $2 }')"
     absent_nofile="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "absent" && $3 == "" { print $2 }')"
     absent_elsewhere="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "absent" && $3 != "" { print $2 " (in " $3 ")" }')"
 
-    if [ -n "$red_before" ]; then
-      printf 'ERROR  the pre-existing suite is red without this ticket'"'"'s test files too (%s failing: %s) — fix the repo before authoring tests; red is meaningless otherwise\n' \
-        "$(printf '%s\n' "$red_before" | grep -c .)" "$(printf '%s\n' "$red_before" | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')" >&2
-      printf '%s\n' "$red_before" | sed -n '1,20p' | sed 's/^/  - /' >&2
-      printf '  Measured in a copy of the tree as it stood when the tests station was dispatched,\n' >&2
-      printf '  before any of this ticket'"'"'s test files existed. They are the repository'"'"'s.\n' >&2
-      if [ -n "$red_with_tests" ]; then
-        printf '  Separately, these were green there and are red with the new test files:\n' >&2
-        printf '%s\n' "$red_with_tests" | sed -n '1,20p' | sed 's/^/  - /' >&2
-      fi
-      exit "$AIF_G_ERROR"
-    fi
     if [ -n "$absent_nofile" ]; then
       printf 'ERROR  %s failing test(s) exist only with this ticket'"'"'s test files, and the report names no file for them:\n' \
         "$(printf '%s\n' "$absent_nofile" | grep -c .)" >&2
@@ -358,22 +491,58 @@ if [ "$mode" = "per-test" ]; then
     aif_g_report "$(printf '%s\n' "$absent_elsewhere" |
       sed '/^$/d; s/$/ fails, and exists only with this ticket'"'"'s test files — in a file files.tests does not declare; write the tests in the declared files/')" "tests"
   fi
+  red_at_base="$red_before"
 
-  # Each new test as "file<TAB>id<TAB>status<TAB>message". The file travels with
-  # the id because the freeze below has to prove that every test it records as
-  # covered actually resolves to a file it holds — a `covering` list of bare
-  # names that resolve to nothing is what a lock looks like when it is describing
-  # tests it does not have.
-  new_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-    '.[] | select((.file // "") as $f | $tf | index($f)) | (.file // "") + "\t" + .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " "))')"
+  # The declared files' foreign tests, by what the tree before this ticket
+  # says of each: green or skipped there and now — standing; red there and
+  # now — the repository's; anything else, this ticket's.
+  held=""
+  if [ -n "$baseline" ] && [ -n "$foreign_red$standing_cand" ]; then
+    # Split by hand: an empty status — absent before this ticket — leads the
+    # line, and a TAB in IFS is whitespace, which would shift every column
+    # after it (docs/FINDINGS.md #15).
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      bst="${line%%"$tab"*}"
+      id="${line#*"$tab"}"
+      id="${id%%"$tab"*}"
+      [ -n "$id" ] || continue
+      if printf '%s\n' "$standing_cand" | grep -qxF -- "$id"; then
+        if [ "$bst" = pass ] || [ "$bst" = skipped ]; then
+          standing="$standing$id
+"
+          held="$held$id
+"
+        fi
+      elif [ "$bst" = failure ] || [ "$bst" = error ]; then
+        red_at_base="$red_at_base
+$id"
+        held="$held$id
+"
+      fi
+    done <<EOF
+$(at_base "$(printf '%s\n%s\n' "$foreign_red" "$standing_cand")")
+EOF
+  elif [ -n "$standing_cand" ]; then
+    standing_why="$base_why"
+  fi
+  red_at_base="$(printf '%s\n' "$red_at_base" | grep -v '^$' || true)"
+  standing="$(printf '%s' "$standing" | grep -v '^$' || true)"
+  held="$(printf '%s' "$held" | grep -v '^$' || true)"
 
-  # And the rest of the suite, as it stands right now. green needs it to tell
-  # a test that was ALREADY skipped before this ticket — a platform guard, an
-  # importorskip, a slow marker — from one the implementation just silenced.
-  # Without it green can only choose between rejecting every project that has
-  # a skipped test anywhere (which it did) and ignoring a real regression.
-  suite_rows="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" \
-    '.[] | select(((.file // "") as $f | $tf | index($f)) | not) | .id + "\t" + .status')"
+  # The new tests: this ticket's own, and the foreign ones the tree before it
+  # did not settle as another's.
+  while IFS="$tab" read -r f id st msg; do
+    [ -n "$id" ] || continue
+    if [ -n "$held" ] && printf '%s\n' "$held" | grep -qxF -- "$id"; then
+      continue
+    fi
+    new_rows="$new_rows$f$tab$id$tab$st$tab$msg
+"
+  done <<EOF
+$foreign_rows
+EOF
+  new_rows="$(printf '%s' "$new_rows" | grep -v '^$' || true)"
 
   # Three kinds of outcome, and they part ways here:
   #   reject (exit 1) — a test that is not red for the right reason: skipped
@@ -382,12 +551,13 @@ if [ "$mode" = "per-test" ]; then
   #     neither an assertion nor the skeleton's marker (it calls a name the
   #     contract does not export). All three are the author's, and the author
   #     is still here: they come back to it, verbatim, with the message.
+  #     And a test still carrying a criterion this ticket replaces.
   #   green  (recorded) — passes at freeze. On a second round that is the
   #     honest test for an already-implemented criterion; see the header. It is
   #     kept, named in the lock, and kept OUT of covering.
-  reject=""
+  reject="$replaced_viol"
   green_ids=""
-  while IFS="$(printf '\t')" read -r file id status msg; do
+  while IFS="$tab" read -r file id status msg; do
     [ -n "$id" ] || continue
     : "$file"
     new_count=$((new_count + 1))
@@ -414,7 +584,7 @@ $id fails for a reason that is neither an assertion nor the missing implementati
 $new_rows
 EOF
 
-  [ "$new_count" -gt 0 ] || aif_g_reject "no new tests were collected from the declared test files"
+  [ "$new_count" -gt 0 ] || [ -n "$replaced_viol" ] || aif_g_reject "no new tests were collected from the declared test files"
 
   aif_g_report "${reject# }" "tests"
 
@@ -482,7 +652,10 @@ EOF
   return 1
 }
 if [ "$mode" = "per-test" ]; then
-  cov_files="$(printf '%s\n' "$new_rows" | cut -f1 | grep -v '^$' | sort -u)"
+  # Every declared file the runner collected a test from — a file holding only
+  # standing tests, or only tests red before this ticket, is collected too.
+  cov_files="$(jq -r --argjson tf "$local_tf" \
+    '.[] | (.file // "") | select(. as $f | $tf | index($f) != null)' "$vtmp/results.json" | sort -u)"
 else
   cov_files="$test_files"
 fi
@@ -616,8 +789,14 @@ fi
 # red IS the test's, and it comes back to the station that wrote it. A project
 # without a contract keeps `legitimate_at_red` for what the missing
 # implementation causes (docs/DEFECTS.md 6.2).
+#
+# A required check that fails is run on the tree before this ticket too
+# (aif_g_checks_run's <base>): failing the same way there, it is let through
+# and named — the repository's, which no station here can clear — and what is
+# new with this ticket is what is judged (docs/DEFECTS.md 13.9).
 mkdir -p "$root/.aif/tmp"
-check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json" "$test_files")"
+check_viol="$(aif_g_checks_run "$project" "$root" "red" "$root/.aif/tmp/checks-red.json" "$test_files" "" "$tbase" "$vtmp/base")" ||
+  exit "$AIF_G_ERROR"
 # A check that failed without naming one of the test files is not the tests
 # station's to fix, and a retry would burn an opus attempt on it — a stop.
 if [ "$(jq '[ .[]? | select(.required and .result == "unlocated") ] | length' \
@@ -626,12 +805,33 @@ if [ "$(jq '[ .[]? | select(.required and .result == "unlocated") ] | length' \
   printf '%s\n' "$check_viol" |
     sed '/^[[:space:]]*$/d; /^[[:space:]]/s/^/    /; /^[^[:space:]]/s/^/  - /' >&2
   printf '  legitimate_at_red lets through what the missing implementation causes IN the test\n' >&2
-  printf '  files, and nothing of this names one. Either the repository fails the check without\n' >&2
-  printf '  this ticket — fix it there — or the check prints paths that are not relative to the\n' >&2
-  printf '  project root, and cannot be read against the plan'"'"'s files.tests.\n' >&2
+  printf '  files, and nothing of this names one. What fails the same way before this ticket is let\n' >&2
+  printf '  through, and is not above: these lines are new with it — in the contract the plan wrote,\n' >&2
+  printf '  or printed with paths not relative to the project root, which cannot be read against the\n' >&2
+  printf '  plan'"'"'s files.tests.\n' >&2
   exit "$AIF_G_ERROR"
 fi
 aif_g_report "$check_viol" "checks"
+checks_at_base="$(jq -r '[ .[]? | select(.result == "at_base") | .name ] | join(", ")' \
+  "$root/.aif/tmp/checks-red.json" 2>/dev/null)" || checks_at_base=""
+
+# ids_say <ids> — at most three of them, and how many more.
+ids_say() {
+  local n
+  n="$(printf '%s\n' "$1" | grep -c . || true)"
+  printf '%s' "$(printf '%s\n' "$1" | grep -v '^$' | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')"
+  [ "${n:-0}" -le 3 ] || printf ' (and %s more)' "$((n - 3))"
+}
+# let_say — the first line's clause for what this gate let through, empty
+# when nothing was: the line the ledger and the report keep.
+let_say() {
+  local parts=""
+  [ -z "$red_at_base" ] || parts="$parts; $(printf '%s\n' "$red_at_base" | grep -c .) red before this ticket: $(ids_say "$red_at_base")"
+  [ -z "$flaky_ids" ] || parts="$parts; $(printf '%s\n' "$flaky_ids" | grep -c .) flaky — failed once, passed on a re-run: $(ids_say "$flaky_ids")"
+  [ -z "$checks_at_base" ] || parts="$parts; failing the same way before this ticket: check $checks_at_base"
+  [ -z "$parts" ] || printf ' — let through, %s' "${parts#; }"
+}
+standing_n="$(printf '%s' "$standing" | grep -c . || true)"
 
 # --- a dry run ends here: the verdict, and nothing frozen --------------------
 # The station called this itself. Everything above ran and every complaint
@@ -641,9 +841,12 @@ if [ "$dry" = "1" ]; then
   if [ "$mode" = "coarse" ]; then
     printf 'verify-red (dry): red, COARSE mode — %s\n' "$mode_why"
   else
-    printf 'verify-red (dry): %s new test(s) red for the right reason, all criteria covered\n' "$red_count"
+    printf 'verify-red (dry): %s new test(s) red for the right reason, all criteria covered%s\n' "$red_count" "$(let_say)"
     [ "$green_count" -eq 0 ] || printf '  ! %s new test(s) green already: %s\n' \
       "$green_count" "$(printf '%s' "$green_ids" | paste -sd, - | sed 's/,/, /g' | cut -c1-200)"
+    [ "${standing_n:-0}" -eq 0 ] || printf '  ! %s older test(s) in the declared files left standing — green before this ticket, not yours: %s\n' \
+      "$standing_n" "$(ids_say "$standing")"
+    [ -z "$standing_why" ] || printf '  ! the older tests in the declared files are read as yours: whether they were there before this ticket could not be measured (%s)\n' "$standing_why"
     [ -z "$uncollected" ] || printf '  ! the runner collected no test from: %s\n' "$uncollected"
   fi
   printf '  nothing frozen — this was aif _verify; the worker runs the gate for real when you finish\n'
@@ -656,26 +859,43 @@ fi
 # --- red twice: a test whose status moves is not red, it is random -----------
 # The suite once more, and every new test must come back as it was. A test
 # that flipped is non-deterministic — a clock, an order, a shared state — and
-# a freeze over it would be a coin the implement station is judged with.
-flaky=""
+# a freeze over it would be a coin the implement station is judged with. The
+# run that a failure not this ticket's own already asked for is this one: no
+# third. Only this ticket's new tests are held to it; a standing test that
+# flips is flaky, let through and named (docs/DEFECTS.md 13.9).
+moved=""
 if [ "$mode" = "per-test" ]; then
-  rm -f "$root/$report_path"
-  (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
-  again=""
-  [ ! -f "$root/$report_path" ] || again="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+  if [ -z "$again" ]; then
+    rm -f "${root:?}/${report_path:?}"
+    (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || true
+    [ ! -f "$root/$report_path" ] || again="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+  fi
   if [ -n "$again" ]; then
-    printf '%s' "$again" >"$work/.suite.again.json"
-    flaky="$(printf '%s' "$results" | jq -r --argjson tf "$local_tf" --slurpfile a "$work/.suite.again.json" '
-      ($a[0] | map({ (.id): .status }) | add // {}) as $b
-      | .[] | select((.file // "") as $f | $tf | index($f))
-      | select(($b[.id] // "absent") != .status)
-      | .id + " was " + .status + " then " + ($b[.id] // "absent")' 2>/dev/null)"
-    rm -f "$work/.suite.again.json"
+    printf '%s' "$again" >"$vtmp/again.json"
+    new_ids="$(printf '%s\n' "$new_rows" | cut -f2 | grep -v '^$' || true)"
+    moved="$(printf '%s\n' "$new_ids" | grep -v '^$' | jq -R . | jq -s . | jq -r \
+      --slurpfile a "$vtmp/again.json" --slurpfile r "$vtmp/results.json" '
+      ($a[0] | map({ (.id): .status }) | add // {}) as $A
+      | ($r[0] | map({ (.id): .status }) | add // {}) as $R
+      | .[] | select(($A[.] // "absent") != $R[.])
+      | . + " was " + $R[.] + " then " + ($A[.] // "absent")' 2>/dev/null)" || moved=""
+    if [ -n "$standing" ]; then
+      flips="$(printf '%s\n' "$standing" | jq -R . | jq -s . | jq -r \
+        --slurpfile a "$vtmp/again.json" --slurpfile r "$vtmp/results.json" '
+        ($a[0] | map({ (.id): .status }) | add // {}) as $A
+        | ($r[0] | map({ (.id): .status }) | add // {}) as $R
+        | .[] | select(($A[.] // "absent") != $R[.])' 2>/dev/null)" || flips=""
+      if [ -n "$flips" ]; then
+        flaky_ids="$(printf '%s\n%s\n' "$flaky_ids" "$flips" | grep -v '^$' | awk '!seen[$0]++')"
+        standing="$(printf '%s\n' "$standing" | grep -vxF -- "$flips" || true)"
+        standing_n="$(printf '%s' "$standing" | grep -c . || true)"
+      fi
+    fi
   else
     printf '  ! the second run wrote no readable report; red was observed once\n'
   fi
-  if [ -n "$flaky" ]; then
-    aif_g_report "$(printf '%s\n' "$flaky" | sed 's/$/ — a test whose verdict moves between two runs of the same tree is non-deterministic; it proves nothing about the code/')" "tests"
+  if [ -n "$moved" ]; then
+    aif_g_report "$(printf '%s\n' "$moved" | sed 's/$/ — a test whose verdict moves between two runs of the same tree is non-deterministic; it proves nothing about the code/')" "tests"
   fi
 fi
 
@@ -702,7 +922,15 @@ fi
 # reverted copy. covering is the new RED test ids, for green's revert-recheck
 # to target; a test green at freeze goes to green_at_freeze instead — reverting
 # this round's code was never going to turn it red, and demanding that would
-# accuse an honest test on a second round.
+# accuse an honest test on a second round. A path the plan deletes is in
+# impl_frozen too, as it is before the implementation removes it: green's
+# reverted copy has to hold it again (docs/DEFECTS.md 13.10).
+#
+# And what this gate let through, for green and the report: `base`, the tree
+# before this ticket the suite was measured on; `red_at_base`, the tests red
+# there and red now; `flaky`, the ones that failed once and passed on a
+# re-run; `standing`, the older tests of the declared files (docs/DEFECTS.md
+# 12.3, 13.9). Read with `// []` everywhere: a lock from before them has none.
 tests_json="$(
   {
     while IFS= read -r rootdir; do
@@ -724,6 +952,27 @@ EOF
   } | sort -u
 )"
 covering_json="$(printf '%s' "$new_rows" | awk -F'\t' '$3 != "pass" { print $2 }')"
+
+# And the rest of the suite, as it stands right now. green needs it to tell
+# a test that was ALREADY skipped before this ticket — a platform guard, an
+# importorskip, a slow marker — from one the implementation just silenced.
+# Without it green can only choose between rejecting every project that has
+# a skipped test anywhere (which it did) and ignoring a real regression.
+# The standing tests and the declared files' tests red before this ticket
+# are in it — green holds them as pre-existing — and a flaky one is in it as
+# its second run found it (docs/DEFECTS.md 12.3, 13.9).
+suite_rows=""
+if [ "$mode" = "per-test" ]; then
+  [ -n "$again" ] || printf '[]' >"$vtmp/again.json"
+  held_ids="$(printf '%s\n%s\n%s\n' "$standing" "$red_at_base" "$flaky_ids" | grep -v '^$' || true)"
+  suite_rows="$(jq -r --argjson tf "$local_tf" --arg held "$held_ids" --arg flaky "$flaky_ids" \
+    --slurpfile a "$vtmp/again.json" '
+    ($held | split("\n") | map(select(length > 0))) as $H
+    | ($flaky | split("\n") | map(select(length > 0))) as $FL
+    | ($a[0] | map({ (.id): .status }) | add // {}) as $A
+    | .[] | select((((.file // "") as $f | $tf | index($f)) == null) or (.id as $i | $H | index($i) != null))
+    | .id + "\t" + (if (.id as $i | $FL | index($i) != null) and $A[.id] != null then $A[.id] else .status end)' "$vtmp/results.json")"
+fi
 
 # --- the freeze must hold what it claims to hold ----------------------------
 # Two invariants over the set just built. Both are hard stops rather than
@@ -766,6 +1015,7 @@ impl_frozen="$(
   done <<EOF
 $change_files
 $create_files
+$delete_files
 EOF
 )"
 impl_created="$(
@@ -789,6 +1039,10 @@ jq -n \
   --argjson covering "$(printf '%s' "$covering_json" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson green "$(printf '%s' "$green_ids" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson with "$(printf '%s' "$red_with_tests" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson standing "$(printf '%s' "$standing" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson rab "$(printf '%s' "$red_at_base" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson flaky "$(printf '%s' "$flaky_ids" | jq -R . | jq -s 'map(select(length>0))')" \
+  --arg base "$tbase" \
   --argjson declared "$(printf '%s' "$test_files" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson collected "$(printf '%s' "$cov_files" | jq -R . | jq -s 'map(select(length>0))')" '
   def rows($raw): $raw | split("\n") | map(select(length>0) | split("\t"))
@@ -801,6 +1055,10 @@ jq -n \
     impl_created: $create,
     suite_at_freeze: rows($suite_raw),
     red_with_tests: $with,
+    base: (if $base == "" then null else $base end),
+    red_at_base: $rab,
+    flaky: $flaky,
+    standing: $standing,
     declared_files: $declared,
     collected_files: (if $mode == "per-test" then $collected else null end) }' >"$work/tests.lock.json"
 
@@ -823,17 +1081,39 @@ if [ "$mode" = "coarse" ]; then
 else
   with_count="$(printf '%s' "$red_with_tests" | grep -c . || true)"
   printf 'verify-red: %s new test(s) red for the right reason, twice, all criteria covered' "$red_count"
-  # On the first line, because that is the line the ledger and the report keep.
+  # On the first line, because that is the line the ledger and the report keep:
+  # what is red only with this ticket, what stays standing, what was let
+  # through (docs/DEFECTS.md 12.3, 13.9).
   [ "${with_count:-0}" -eq 0 ] ||
     printf ' — and %s pre-existing test(s) red only with them' "$with_count"
-  printf '\n'
+  [ "${standing_n:-0}" -eq 0 ] ||
+    printf '; %s older test(s) in the declared files left standing' "$standing_n"
+  printf '%s\n' "$(let_say)"
   if [ "${with_count:-0}" -gt 0 ]; then
-    printf '  ! RED WITH THE NEW TESTS — green without this ticket'"'"'s test files, red once they landed:\n'
+    printf '  ! RED WITH THIS TICKET — green before this ticket, red once its files landed:\n'
     printf '%s\n' "$red_with_tests" | sed 's/^/    - /'
-    printf '  Not the repository'"'"'s: measured against the tree the tests station started from.\n'
+    printf '  Not the repository'"'"'s: measured on the tree before this ticket (%s).\n' "$(printf '%s' "$tbase" | cut -c1-10)"
     printf '  The implementation has to clear them — green requires the whole suite, and\n'
     printf '  sends the tests back for one that fails the same way without the code.\n'
   fi
+  if [ -n "$red_at_base" ]; then
+    printf '  ! LET THROUGH — red before this ticket, on the tree it was built from (%s):\n' "$(printf '%s' "$tbase" | cut -c1-10)"
+    printf '%s\n' "$red_at_base" | sed 's/^/    - /'
+    printf '  The repository'"'"'s, not this ticket'"'"'s: no station here clears them, and green lets them\n'
+    printf '  through while they fail the way they did. In the lock as red_at_base; on the report.\n'
+  fi
+  if [ -n "$flaky_ids" ]; then
+    printf '  ! LET THROUGH — flaky: failed once, passed on a re-run of the same tree:\n'
+    printf '%s\n' "$flaky_ids" | sed 's/^/    - /'
+    printf '  In the lock as flaky; on the report.\n'
+  fi
+  if [ "${standing_n:-0}" -gt 0 ]; then
+    printf '  ! STANDING — older tests in the declared files, green before this ticket, not its own:\n'
+    printf '%s\n' "$standing" | sed 's/^/    - /'
+    printf '  Frozen as pre-existing tests: green holds them to passing. Not on the checklist.\n'
+  fi
+  [ -z "$standing_why" ] ||
+    printf '  ! the older tests in the declared files are read as this ticket'"'"'s: whether they were there before it could not be measured (%s)\n' "$standing_why"
   if [ "$green_count" -gt 0 ]; then
     # On the PASS path, always — the same rule the other gates follow for what
     # they allowed. A degradation only readable out of a lock file is silent.

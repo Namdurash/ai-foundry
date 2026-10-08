@@ -184,7 +184,10 @@ aif's own files is settled by owner, with no model: the ticket's record under
 and the analyst's uncommitted copy of the ticket is taken aside to `.aif/tmp/` instead
 of stopping the fast-forward — the land note says which. A conflict in code, or a red
 on the result — the suite or a check — lands nothing and sends the card back to the
-top of Ready with a `sync:` comment: the worker brings the branch onto yours in its
+top of Ready with a `sync:` comment — but not a test or a check red on your branch
+before this ticket, nor a test that fails once and passes on a re-run: the land runs a
+failing test once more and looks for the failure on your branch as it found it, and
+lets those through, named on the landing note, as the worker's gates do. The worker brings the branch onto yours in its
 worktree — the conflicts settled by the implement station, the merged tree judged
 again by green and scope — and the card comes back to Review, to be looked at again.
 When the station cannot settle it, or a test file is in conflict, the ticket is built
@@ -895,12 +898,19 @@ broken test used to be a `3`); every new test already green is `1` too, unless
 the station said so in its note, and then it is `2`.
 
 A `3` is not always the environment, and the gates say which it is rather than
-assuming. **`verify-red`** stops on a pre-existing test that is red *before*
-this ticket's test files exist — measured once more, only on that path, in a
-copy of the tree the tests station started from, and named. One the new files
+assuming — and what is no ticket's to fix is not a stop at all. A pre-existing
+test that fails is run once more: failing once and passing once, it is
+**flaky**, let through and named. One that fails again is measured on the tree
+*before this ticket* — a copy at the commit the ticket was cut from or last
+brought onto, its installed dependencies linked, the run kept under
+`.aif/tmp/base/` — and red there it is your repository's: let through by
+`verify-red` and `green` alike, in the lock as `red_at_base`, on the report;
+the ticket answers for what it adds. A check failing the same way there, with
+no line new, is let through the same way, at every phase. One the new files
 turned red is a different thing: it is admitted, recorded in the lock as
 `red_with_tests`, printed on the pass path, and left for `green`, which
-requires the whole suite. **`green`**, for every failure it cannot pin on the
+requires the whole suite. A copy that cannot be made whole — an unreadable
+file — is a `3`, naming it. **`green`**, for every failure it cannot pin on the
 implementation, runs the same thing again with the implementation reverted: a
 pre-existing test that passed at the freeze and fails there too moved outside
 the tracked tree — installed dependencies, most often — and that is a `3`, no
@@ -1216,11 +1226,22 @@ neighbouring module, a handler only takes effect once registered somewhere.
   `green` would then reject the implementation the amendment existed to permit.
 
 The hatch is bounded rather than trusted: it refuses test files, pipeline
-paths and lockfiles, it refuses a file that does not exist, it is capped
+paths, CI, `.gitignore` and lockfiles; a file that does not exist yet it
+accepts only beside the plan's own — in a directory holding one of its
+`files.create` or `files.change`, never the root, never a dotfile, a test or a
+manifest — and records it as created; it is capped
 (`limits.plan_amendments_max`, default 3), every entry carries a reason, and
-`scope` prints the amendments on its *pass* path — a widened manifest nobody sees
-is the same as no manifest. Past the cap the honest answer is that the plan was
-wrong, and the ticket goes back to planning.
+`scope` prints the amendments on its *pass* path, a created one marked new — a
+widened manifest nobody sees is the same as no manifest. Past the cap the
+honest answer is that the plan was wrong, and the refusal names the way back:
+a replan, written in the implementer's note.
+
+A file that must go is the plan's to name, in `files.delete`: an existing path,
+never a test, a manifest or the pipeline's own. `scope` passes the deletions the
+plan names, refuses one it names that is still there, and refuses every other.
+CI (`.github/`, `.gitlab-ci*`) and `.gitignore` move only when the plan names
+them — never by amendment — and `scope` says what a planned `.gitignore` now
+ignores, since its own diff reads the untracked files through it.
 
 ### Dependencies: the manifest and its lockfile, together
 
@@ -1314,10 +1335,17 @@ A `PreToolUse` hook bounds every writer in a run:
 
 | Writer | May write | May run | Denied |
 |---|---|---|---|
-| `aif-plan` | `plan.md`, and the contract: the skeleton files its manifest names | — | test files, the rest of the ticket's record |
-| `aif-tests` | test files, and `tasks/<ID>/tests.note.json` | `aif _verify <ID>` and nothing else | implementation, the skeleton |
-| `aif-implement` | code the plan named, and `tasks/<ID>/implement.note.json` | the suite, the package manager | test files, a commit |
+| `aif-plan` | `plan.md`, and the contract: the skeleton files its manifest names | — | test files and what `files.tests` declares, the rest of the ticket's record, `.aif/`, `.claude/` |
+| `aif-tests` | what the plan's `files.tests` declares — the tests, a manual mock, a test util, a fixture — files named like tests, and `tasks/<ID>/tests.note.json` | `aif _verify <ID>` and nothing else | implementation, the skeleton, `.aif/`, `.claude/`, the rest of `tasks/` |
+| `aif-implement` | code the plan named, and `tasks/<ID>/implement.note.json` | the suite, the package manager | test files and what `files.tests` declares, a commit, `.aif/`, `.claude/`, the rest of `tasks/` |
 | a plain `claude` session | everything, as usual | everything | nothing |
+
+The worker tells the hook which ticket it builds (`AIF_TICKET`, beside
+`AIF_STATION`), and the hook reads that plan's `files.tests`: a mock or a fixture
+the tests need is the plan's to declare, whatever its name. `.aif/`, `.claude/`
+and `tasks/` are how a ticket is judged and recorded — the gates, the project's
+config, the hooks, the stations' instructions, the tickets' records — and no
+station writes there but its own file.
 
 Each station's note is the one file under `tasks/` it may write: a structured
 way to say what its artifact cannot — "this criterion is already built", "this

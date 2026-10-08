@@ -119,7 +119,9 @@ describe('detectRecurring', () => {
   network, the clock, the device, a store — and mock them the way this project
   does: the guide names its manual mocks (`__mocks__`), setup files, factories
   and the libraries it uses for HTTP and time. A mock that does not exist in the
-  repository is a reason to look again, not to invent one.
+  repository is a reason to look again, not to invent one — and a new one, a
+  manual mock or a test util, is one the plan declares in `files.tests`: the
+  guard refuses the tests station any other file not named like a test.
 - **`jest.mock()` is hoisted above the imports** by the transform. Its factory
   may reference only variables whose names start with `mock` (and `jest`
   itself); anything else is `ReferenceError: Cannot access before

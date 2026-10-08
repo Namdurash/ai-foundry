@@ -149,7 +149,8 @@ shape, what is injected and what is imported — is decided here, once, in code.
   "files": {
     "create": ["<literal relative paths — code ones exist now, as your skeletons>"],
     "change": ["<literal relative paths that DO exist>"],
-    "tests":  ["<literal test paths — disjoint from create and change>"] },
+    "delete": ["<literal relative paths that exist and must go — may be omitted>"],
+    "tests":  ["<literal paths of the tests, and of the support files they need — a manual mock, a test util, a fixture; disjoint from create and change>"] },
   "no_skeleton": ["<create paths that are not code — may be []>"],
   "verdicts": {
     "AC-001": { "verdict": "buildable" },
@@ -186,7 +187,22 @@ Checked mechanically. Satisfy them the first time.
   its skeleton; every `no_skeleton` path does not; every `change` path exists;
   no globs, no `..`, no absolute paths. Verify with Glob before you write them.
 - **Tests are disjoint** from create and change — the test station and the
-  implement station are separate on purpose.
+  implement station are separate on purpose. `files.tests` names everything the
+  tests station writes: the tests, and the support files they need — a manual
+  mock in `__mocks__/`, a test util, a fixture outside the test directories.
+  The guard lets the tests station write exactly those (and files named like
+  tests), and holds the implement station off them.
+- **A file that must go is in `files.delete`.** A literal path that exists
+  now, disjoint from create, change and tests; never a test (the tests
+  station's), a manifest or a lockfile (dependencies move through the package
+  manager), or the pipeline's own files. scope refuses a deletion the plan does
+  not name, and one it names that is still there. `ac_coverage` may name it.
+- **What no plan may touch:** `.aif/`, `.claude/` and `tasks/` — the gates,
+  the project's config, the hooks, the stations, the tickets' records. CI
+  (`.github/`, `.gitlab-ci*`) and `.gitignore` are yours to name when the
+  ticket needs them — in create, change or delete, never in tests; a new one is
+  not code, so it goes in `no_skeleton`. scope lets them move only when the
+  plan names them.
 - **A dependency manifest comes with its lockfile.** If the implementation
   adds or changes a dependency, `files.change` names the manifest
   (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) AND the lockfile
@@ -207,7 +223,9 @@ Checked mechanically. Satisfy them the first time.
   green holds the whole suite: a plan that leaves them out cannot go green.
   Find them, put their files in `files.tests`, and say in a decision which of
   them the tests station removes or rewrites, `serves` naming the rule that
-  replaces them.
+  replaces them. The gate checks those files are declared: every test file
+  whose text names a replaced criterion's marker must be in `files.tests`.
+  The other tests in those files stay as they are, and are not this ticket's.
 - **Cover every file you create, or declare that you did not.** Any path in
   `files.create` that appears in no `ac_coverage` entry must be listed in
   `uncovered`. A file the plan orders into existence that no criterion points at

@@ -133,7 +133,10 @@ def test_opes_69_ac_003_period_starts_on_salary_day(frozen_clock):
   this project does: the guide names its `conftest.py` fixtures, factories and
   the libraries it uses (`responses`, `respx`, `freezegun`, `time-machine`,
   `factory_boy`, `pytest-httpx`). A fixture that is not in a `conftest.py` the
-  runner loads is `fixture 'x' not found` — a rejection. `monkeypatch.setattr`
+  runner loads is `fixture 'x' not found` — a rejection. A new fixture file, or
+  a helper outside the test directories, is one the plan declares in
+  `files.tests`: the guard refuses the tests station any other file not named
+  like a test. `monkeypatch.setattr`
   targets the name where it is *looked up* (the module that calls it), not
   where it is defined.
 - **A test that asserts a raise passes against the skeleton** — the skeleton

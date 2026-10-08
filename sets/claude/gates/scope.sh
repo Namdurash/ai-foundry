@@ -66,7 +66,8 @@ test_roots="$(jq -r '.test.roots[]?' "$project")"
 # Paths no implementation may touch, whatever the plan says. The list itself is
 # AIF_G_DENYLIST in _lib.sh — one list, shared with the plan gate, which refuses
 # the same paths at plan time so this gate stays the backstop rather than the
-# first place the disagreement surfaces.
+# first place the disagreement surfaces. CI and the ignore rules are off it, on
+# AIF_G_PLANNED_ONLY: they move when the plan names them, and only then.
 #
 # tasks/ is on that list and is load-bearing: it holds the ticket, the spec, the
 # plan and the ledger for every ticket including this one. An implementation
@@ -164,8 +165,13 @@ record_rel=""
 # A lockfile moves only when the PLAN named it — the plan gate made sure it
 # named the manifest beside it. Not the amendments: `aif _amend-plan` refuses
 # lockfiles, and this is the line behind that refusal, because a dependency is
-# the plan's decision and not something to widen into mid-implementation.
-planned="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []))[]')"
+# the plan's decision and not something to widen into mid-implementation. CI
+# and the ignore rules go the same way (AIF_G_PLANNED_ONLY): the plan names
+# them, or they do not move (docs/DEFECTS.md 13.10).
+planned="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.delete // []))[]? // empty' 2>/dev/null)"
+# What the plan deletes: the one way a tracked path may go (docs/DEFECTS.md
+# 13.10). Never an amendment — `aif _amend-plan` widens to files to write.
+to_delete="$(printf '%s' "$plan_meta" | jq -r '(.files.delete // [])[]? // empty' 2>/dev/null)"
 
 viol=""
 while IFS= read -r p; do
@@ -176,9 +182,16 @@ while IFS= read -r p; do
     continue
   elif from_target "$p"; then
     continue
+  elif [ ! -e "$root/$p" ] && [ ! -L "$root/$p" ]; then
+    # Gone: a deletion, judged once, below. It used to be refused twice —
+    # here as a file outside the plan's lists, and there as a deletion.
+    continue
   elif printf '%s' "$p" | grep -qE "$denylist"; then
     viol="$viol
-$p is off-limits to any implementation (pipeline, config, or CI)"
+$p is off-limits to any implementation — the pipeline's own machinery: how this ticket is judged and recorded"
+  elif printf '%s' "$p" | grep -qE "$AIF_G_PLANNED_ONLY"; then
+    printf '%s\n' "$planned" | in_set "$p" || viol="$viol
+$p is CI or an ignore file, and changes only when the plan names it — never through an amendment"
   elif printf '%s' "$p" | grep -qE "$AIF_G_LOCKFILES"; then
     printf '%s\n' "$planned" | in_set "$p" || viol="$viol
 $p is a lockfile, and the plan does not name it — a lockfile changes only when the plan names it together with its manifest"
@@ -193,15 +206,30 @@ done <<EOF
 $(printf '%s\n%s\n' "$changed" "$created" | grep -v '^$' | sort -u)
 EOF
 
-# Deletions are never in the plan (it has no delete list), so any deletion is
-# out of scope.
+# Deletions: the ones the plan's files.delete names pass, and every other is
+# out of scope, as it always was. A path the plan deletes that is still there
+# is the work not done (docs/DEFECTS.md 13.10).
+deletions=0
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   ! from_target "$p" || continue
+  if printf '%s\n' "$to_delete" | in_set "$p"; then
+    deletions=$((deletions + 1))
+    continue
+  fi
   viol="$viol
 $p was deleted — the plan did not authorise removing it"
 done <<EOF
 $deleted
+EOF
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then
+    viol="$viol
+files.delete names $p, and it is still there — delete it (rm): the plan's deletions are this station's to make"
+  fi
+done <<EOF
+$to_delete
 EOF
 
 aif_g_report "${viol# }" "scope"
@@ -217,14 +245,36 @@ aif_g_report "${viol# }" "scope"
 # changes are in the diff since the dispatch and are not this ticket's size.
 added_removed="$(git -C "$root" diff --numstat "${sync_base:-$base}" -- . ":(exclude)tasks" 2>/dev/null | awk '{a+=$1; r+=$2} END{print a+r+0}')"
 
+# The deletions the plan named, said beside the size: what went is a change
+# too (docs/DEFECTS.md 13.10).
+del_say=""
+[ "$deletions" -eq 0 ] || del_say=", $deletions deletion(s)"
 if [ -n "$amended" ]; then
   # Loudly, on the pass path. A widened manifest that only shows up when someone
-  # goes looking is the same as an unwidened one being quietly ignored.
-  printf 'scope: change confined to the plan AS AMENDED (%s lines, %s amendment(s))\n' \
-    "${added_removed:-0}" "$(printf '%s\n' "$amended" | grep -c .)"
-  jq -r '.amendments[] | "  + " + .path + ": " + .why' "$amend_file" 2>/dev/null
+  # goes looking is the same as an unwidened one being quietly ignored. A file
+  # an amendment created is marked (new) (lib/cmd_amend.sh).
+  new_files="$(jq '[ .amendments[]? | select((.kind // "") == "create") ] | length' "$amend_file" 2>/dev/null)" || new_files=0
+  new_say=""
+  [ "${new_files:-0}" -eq 0 ] || new_say=", $new_files of them new"
+  printf 'scope: change confined to the plan AS AMENDED (%s lines%s, %s amendment(s)%s)\n' \
+    "${added_removed:-0}" "$del_say" "$(printf '%s\n' "$amended" | grep -c .)" "$new_say"
+  jq -r '.amendments[] | "  + " + .path + (if (.kind // "") == "create" then " (new)" else "" end) + ": " + .why' "$amend_file" 2>/dev/null
 else
-  printf 'scope: change confined to the plan (%s lines)\n' "${added_removed:-0}"
+  printf 'scope: change confined to the plan (%s lines%s)\n' "${added_removed:-0}" "$del_say"
+fi
+# A planned .gitignore that moved hides what it now ignores from this very
+# gate: the untracked files above are read through it (--exclude-standard). So
+# what it adds is said, on the pass path, for the reviewer to see what left
+# the diff with it (docs/DEFECTS.md 13.10).
+ignored_now=""
+if printf '%s\n' "$changed" | in_set ".gitignore"; then
+  ignored_now="$(git -C "$root" diff "$base" -- .gitignore 2>/dev/null | sed -n 's/^+\([^+].*\)$/\1/p' | grep -v '^[[:space:]]*\(#\|$\)' || true)"
+elif printf '%s\n' "$created" | in_set ".gitignore"; then
+  ignored_now="$(grep -v '^[[:space:]]*\(#\|$\)' "$root/.gitignore" 2>/dev/null || true)"
+fi
+if [ -n "$ignored_now" ]; then
+  printf '  IGNORED FROM NOW ON — .gitignore gained these; a file they match is not in the diff above:\n'
+  printf '%s\n' "$ignored_now" | sed 's/^/    + /'
 fi
 # On the pass path, always: a station that commits is doing the worker's job,
 # and a reviewer reading the branch will meet its commit without this note.

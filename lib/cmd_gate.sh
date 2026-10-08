@@ -254,9 +254,26 @@ _aif_gate_record_meter() {
 # record written during the implement station does not appear in scope's diff as
 # the implementation editing the pipeline's own machinery. Consumed and removed
 # here, so a later station cannot re-record a run that already happened.
+#
+# The contract phase's too: the plan gate runs the checks bound to it and left
+# their record unread, so a check it let through as failing before this ticket
+# was in no row (docs/DEFECTS.md 13.9). And what green let through of the
+# suite — a test red before this ticket, or flaky — one `let-through` row each
+# (.aif/tmp/letthrough-green.json), which the report's own section reads.
 _aif_gate_record_checks() {
-  local root="$1" work="$2" file phase
-  for phase in red green; do
+  local root="$1" work="$2" file phase entry
+  file="$root/.aif/tmp/letthrough-green.json"
+  if [ -f "$file" ]; then
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      aif_ledger_append "$work" "$entry"
+    done <<EOF
+$(jq -c '.[]? | { event: "let-through", phase: (.phase // "green"), test: .test,
+                  kind: (.kind // null), why: (.why // ""), base: (.base // null) }' "$file" 2>/dev/null)
+EOF
+    rm -f "$file"
+  fi
+  for phase in contract red green; do
     file="$root/.aif/tmp/checks-$phase.json"
     [ -f "$file" ] || continue
     while IFS= read -r entry; do

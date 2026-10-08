@@ -38,6 +38,16 @@
 # same gate that admitted the original (docs/REBUILD-4.md §2.3). The one
 # attribution that stays a stop is a dependency that moved outside the tracked
 # tree: no station's edit reaches that.
+#
+# And what is no station's to answer for is let through, and named on the
+# first line and in the ledger (docs/DEFECTS.md 13.9): a failing test that is
+# not this ticket's own is run once more before anything is attributed —
+# failing once and passing once is flaky — and one red before this ticket
+# (verify-red measured it so, or the tree before this ticket says so when the
+# branch was since brought onto a moved target) is the repository's; a check
+# failing the same way before this ticket, with nothing new, is too. One red
+# on the branch every ticket starts from used to reject every implementation
+# after it, for files it may not touch.
 
 set -uo pipefail
 
@@ -167,6 +177,9 @@ scratch=""
 gtmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-green-XXXXXX")"
 trap 'rm -f "$work/.suite.out"; [ -z "$scratch" ] || rm -rf "${scratch:?}"; [ -z "$gtmp" ] || rm -rf "${gtmp:?}"' EXIT
 tab="$(printf '\t')"
+# What a pass let through is written below for the ledger; an earlier run's
+# never stands for this one's.
+rm -f "$root/.aif/tmp/letthrough-green.json"
 
 suite_rc=0
 (cd "$root" && eval "$test_cmd") >"$work/.suite.out" 2>&1 || suite_rc=$?
@@ -217,9 +230,12 @@ revert_tree() {
   local rel want not_restored=""
   [ -z "$scratch" ] || return 0
   base="$(aif_g_dispatch_base "$work" "$root")"
-  scratch="$(aif_g_scratch_at "$root" "$base")"
+  # A copy cut short is another tree, and a verdict read there is not this
+  # one's: an unreadable file used to be left out in silence (cp -R … || true)
+  # and the run went on (docs/DEFECTS.md 13.9).
+  scratch="$(aif_g_scratch_at "$root" "$base" 2>"$gtmp/copy.err")" || scratch=""
   [ -n "$scratch" ] && [ -d "$scratch" ] ||
-    aif_g_error "could not copy the tree to revert the implementation in"
+    aif_g_error "could not copy the tree to revert the implementation in: $(sed -n '1,3p' "$gtmp/copy.err" 2>/dev/null | paste -sd ';' -)"
   jq -r '.impl_created[]?' "$lock" | while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     rm -f "${scratch:?}/${rel:?}"
@@ -357,6 +373,81 @@ if aif_g_have python3; then
     mine_fail="$(kind_n mine)"
     pre_fail="$(kind_n pre)"
     post_fail="$(kind_n post)"
+
+    # What this ticket does not answer for, told apart before anything is
+    # attributed (docs/DEFECTS.md 13.9). A failing test that is not one of
+    # this ticket's own — pre or unknown — and only then:
+    #   once more   the whole suite, the same tree, test.command: failing once
+    #               and passing or skipped once is FLAKY — let through, named.
+    #               Not this ticket's own tests: they were red twice at the
+    #               freeze, and a re-run on every unfinished implementation
+    #               would add a suite to the commonest rejection
+    #   before      one that fails again and was red before this ticket — the
+    #               lock's red_at_base, when the base it was measured on is
+    #               still this run's (no sync since, or a sync onto that very
+    #               commit) — is the repository's: let through, named. When
+    #               the branch was brought onto a moved target since (13.4),
+    #               or the lock is older than the field, the suite is measured
+    #               on the tree before this ticket now (aif_g_base_suite).
+    # Everything else goes on to the attribution below, as it always did.
+    let_rows=""
+    unknown_fail="$(kind_n unknown)"
+    if [ $((pre_fail + unknown_fail)) -gt 0 ]; then
+      rm -f "${root:?}/${report_path:?}"
+      (cd "$root" && eval "$test_cmd") </dev/null >"$gtmp/rerun.out" 2>&1 || true
+      rerun=""
+      [ ! -f "$root/$report_path" ] || rerun="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
+      printf '%s\n' "$rows" | awk -F'\t' '$1 == "pre" || $1 == "unknown" { print $2 }' | jq -R . | jq -s . >"$gtmp/outside.json"
+      if [ -n "$rerun" ]; then
+        printf '%s' "$rerun" >"$gtmp/rerun.json"
+        let_rows="$(jq -r --slurpfile a "$gtmp/rerun.json" '
+          ($a[0] | map({ (.id): .status }) | add // {}) as $A
+          | .[] | select(($A[.] // "") == "pass" or ($A[.] // "") == "skipped")
+          | . + "\tflaky\tfailed once, passed on a re-run"' "$gtmp/outside.json" 2>/dev/null)" || let_rows=""
+      fi
+      lock_base="$(jq -r '.base // empty' "$lock" 2>/dev/null)"
+      sync_base="$(jq -r '.sync_base // empty' "$work/run.json" 2>/dev/null)"
+      measure=""
+      while IFS= read -r tid; do
+        [ -n "$tid" ] || continue
+        ! printf '%s\n' "$let_rows" | cut -f1 | grep -qxF -- "$tid" || continue
+        if [ -n "$lock_base" ] && { [ -z "$sync_base" ] || [ "$sync_base" = "$lock_base" ]; }; then
+          if jq -e --arg i "$tid" '(.red_at_base // []) | index($i) != null' "$lock" >/dev/null 2>&1; then
+            let_rows="$let_rows
+$tid${tab}before${tab}red before this ticket (at $(printf '%s' "$lock_base" | cut -c1-10), measured at the freeze)"
+          fi
+        else
+          measure="$measure$tid
+"
+        fi
+      done <<EOF
+$(jq -r '.[]' "$gtmp/outside.json")
+EOF
+      if [ -n "$measure" ] && [ -e "$root/.git" ]; then
+        tb="$(aif_g_ticket_base "$work" "$root")"
+        brc=0
+        bj="$(aif_g_base_suite "$project" "$root" "$tb" "$gtmp/base")" || brc=$?
+        [ "$brc" -ne 2 ] ||
+          aif_g_error "could not copy the tree to measure the suite before this ticket (at $(printf '%s' "$tb" | cut -c1-10)): $bj"
+        if [ "$brc" -eq 0 ]; then
+          printf '%s' "$bj" >"$gtmp/base.json"
+          let_rows="$let_rows
+$(printf '%s' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile b "$gtmp/base.json" --arg at "$(printf '%s' "$tb" | cut -c1-10)" '
+            ($b[0] | map({ (.id): .status }) | add // {}) as $B
+            | .[] | select(($B[.] // "") == "failure" or ($B[.] // "") == "error")
+            | . + "\tbefore\tred before this ticket (at " + $at + ")"' 2>/dev/null)"
+        fi
+      fi
+      let_rows="$(printf '%s\n' "$let_rows" | grep -v '^[[:space:]]*$' || true)"
+      if [ -n "$let_rows" ]; then
+        rows="$(printf '%s\n' "$rows" | AIF_G_LET="$(printf '%s\n' "$let_rows" | cut -f1)" awk -F'\t' '
+          BEGIN { n = split(ENVIRON["AIF_G_LET"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") L[a[i]] = 1 }
+          !(($1 == "pre" || $1 == "unknown") && ($2 in L))')"
+        mine_fail="$(kind_n mine)"
+        pre_fail="$(kind_n pre)"
+        post_fail="$(kind_n post)"
+      fi
+    fi
 
     # The pre-existing failures, attributed. Each is run against the tree
     # without the implementation, and the answer decides who it belongs to:
@@ -619,41 +710,82 @@ rm -f "$work/.suite.out"
 # and scope would reject a correct implementation for the bookkeeping of the gate
 # that admitted it. `aif _gate` folds the record into the ledger afterwards.
 #
-# A failing check is attributed the way a failing pre-existing test is. If its
-# failure names a frozen test file, the same check runs once more in the tree
-# without the implementation, and when every line of it recurs there the
-# implementation added none of it — the error is in the oracle, which the
-# implement station may not edit. That is a stop, not a retry: on a live ticket
-# a mock typed `Mock<Category, []>` against a field declared
-# `Mock<Category | null, [string]>` failed the project's typecheck inside a
-# frozen test, and three attempts at the implementation could not touch it
-# (docs/DEFECTS.md 6.2). A line that appears only with the implementation is
-# the implementation's to fix — a signature a test calls in a way the new code
-# does not accept — and that stays a rejection, with the check's own words.
+# A failing check is attributed the way a failing pre-existing test is: the
+# same check runs once more in the tree without the implementation, and what
+# its failure is made of decides whose it is (aif_g_new_lines, a multiset of
+# lines read the same way in both trees):
+#   new lines with the implementation  the implementation's to fix — a
+#       signature a test calls in a way the new code does not accept — a
+#       rejection carrying those lines alone, and how many fail without it
+#   all of it recurs, in frozen test files  the oracle's: the implement
+#       station may not edit them. On a live ticket a mock typed
+#       `Mock<Category, []>` against a field declared
+#       `Mock<Category | null, [string]>` failed the project's typecheck inside
+#       a frozen test, and three attempts at the implementation could not
+#       touch it (docs/DEFECTS.md 6.2) — a REPAIR for the tests station
+#   all of it recurs, elsewhere  measured on the tree before this ticket
+#       (aif_g_base_check): failing the same way there, with nothing new, it
+#       is the repository's — let through, named, "at_base" in the record
+#       (docs/DEFECTS.md 13.9); anything else is a rejection, as ever
+# Every failed check is run without the implementation now; only the ones in
+# frozen files were, and a check red on the branch every ticket starts from
+# rejected every implementation with its whole output.
 mkdir -p "$root/.aif/tmp" "$gtmp/checks"
-check_viol="$(aif_g_checks_run "$project" "$root" "green" "$root/.aif/tmp/checks-green.json" "" "$gtmp/checks")"
+check_viol="$(aif_g_checks_run "$project" "$root" "green" "$root/.aif/tmp/checks-green.json" "" "$gtmp/checks")" ||
+  exit "$AIF_G_ERROR"
+checks_at_base=""
 if [ -n "$check_viol" ]; then
   unreached=""
+  held="$check_viol"
   if [ -f "$gtmp/checks/failed.tsv" ] && [ -e "$root/.git" ]; then
+    held=""
+    tb=""
     jq -r '.tests | keys[]' "$lock" >"$gtmp/checks/frozen.txt"
     while IFS="$tab" read -r idx name; do
       [ -n "$idx" ] || continue
-      # Compared normalised — root spellings, colour, CRs — and shown as the
-      # tool printed them.
-      named="$(aif_g_located "$gtmp/checks/$idx.out" "$gtmp/checks/frozen.txt")"
-      [ -n "$named" ] || continue
-      aif_g_lines "$gtmp/checks/$idx.out" "$root" >"$gtmp/checks/$idx.here"
+      crc="$(jq -r --arg n "$name" '[ .[]? | select(.name == $n) | .exit ] | .[0] // "?"' "$root/.aif/tmp/checks-green.json" 2>/dev/null)"
+      as_was="check \"$name\" failed (exit $crc) — its output begins:
+$(aif_g_excerpt "$gtmp/checks/$idx.out")"
       cmd="$(jq -r --arg n "$name" '[ .checks[]? | select(.name == $n) | .command ] | .[0] // empty' "$project")"
-      [ -n "$cmd" ] || continue
+      if [ -z "$cmd" ]; then
+        held="$held
+$as_was"
+        continue
+      fi
       revert_tree
       (cd "$scratch" && eval "$cmd") </dev/null >"$gtmp/checks/$idx.rev" 2>&1 || true
-      aif_g_lines "$gtmp/checks/$idx.rev" "$scratch" >"$gtmp/checks/$idx.there"
-      added="$(awk 'NR == FNR { seen[$0] = 1; next } !seen[$0]' \
-        "$gtmp/checks/$idx.there" "$gtmp/checks/$idx.here")"
-      [ -z "$added" ] || continue
-      unreached="$unreached
+      # Compared normalised — root spellings, colour, CRs, positions — and
+      # shown as the tool printed them.
+      added="$(aif_g_new_lines "$gtmp/checks/$idx.out" "$root" "$gtmp/checks/$idx.rev" "$scratch")"
+      if [ -n "$added" ]; then
+        all="$(grep -c '[^[:space:]]' "$gtmp/checks/$idx.out" || true)"
+        newn="$(printf '%s\n' "$added" | grep -c . || true)"
+        held="$held
+check \"$name\" fails with the implementation (exit $crc) — new with it:
+$(printf '%s\n' "$added" | sed -n '1,15p' | cut -c1-240 | sed 's/^/    /')"
+        [ $((all - newn)) -le 0 ] || held="$held
+    ($((all - newn)) line(s) of it fail the same way with the implementation reverted, and are not counted here)"
+        continue
+      fi
+      named="$(aif_g_located "$gtmp/checks/$idx.out" "$gtmp/checks/frozen.txt")"
+      if [ -n "$named" ]; then
+        unreached="$unreached
 check \"$name\" fails in frozen test files, and every line of the failure recurs with the implementation reverted:
 $(printf '%s\n' "$named" | sed -n '1,12p' | cut -c1-240 | sed 's/^/    /')"
+        continue
+      fi
+      [ -n "$tb" ] || tb="$(aif_g_ticket_base "$work" "$root")"
+      brc=0
+      brow="$(aif_g_base_check "$project" "$root" "$tb" "$name" "$gtmp/base")" || brc=$?
+      [ "$brc" -ne 2 ] ||
+        aif_g_error "could not copy the tree to run check \"$name\" before this ticket (at $(printf '%s' "$tb" | cut -c1-10)): $brow"
+      if [ "$brc" -eq 0 ] && [ "${brow%%"$tab"*}" != "0" ] &&
+        [ -z "$(aif_g_new_lines "$gtmp/checks/$idx.out" "$root" "${brow#*"$tab"}")" ]; then
+        checks_at_base="$checks_at_base, $name"
+        continue
+      fi
+      held="$held
+$as_was"
     done <"$gtmp/checks/failed.tsv"
   fi
   if [ -n "$unreached" ]; then
@@ -668,10 +800,31 @@ $(printf '%s\n' "$named" | sed -n '1,12p' | cut -c1-240 | sed 's/^/    /')"
       printf '  (%s check(s) failed in all; each is in the ledger by name.)\n' "$other" >&2
     exit "$AIF_G_REPAIR"
   fi
-  aif_g_report "$check_viol" "checks"
+  aif_g_report "$(printf '%s\n' "$held" | sed '/^[[:space:]]*$/d')" "checks"
+  checks_at_base="${checks_at_base#, }"
+  # What was let through is said in the record the ledger folds, as the red
+  # and contract phases' own (aif_g_checks_run) are.
+  if [ -n "$checks_at_base" ]; then
+    jq --arg names "$checks_at_base" --arg at "$(printf '%s' "$tb" | cut -c1-10)" '
+      ($names | split(", ")) as $N
+      | map(if (.name as $n | $N | index($n)) != null
+            then .result = "at_base" | .tail = ("exit " + (.exit | tostring) + ", the same before this ticket (at " + $at + "), and nothing new with the implementation — let through")
+            else . end)' "$root/.aif/tmp/checks-green.json" >"$gtmp/checks-green.json" 2>/dev/null &&
+      cp "$gtmp/checks-green.json" "$root/.aif/tmp/checks-green.json"
+  fi
 fi
 
-checks_ran="$(jq 'length' "$root/.aif/tmp/checks-green.json" 2>/dev/null || echo 0)"
+checks_ran="$(jq '[ .[]? | select(.result != "at_base") ] | length' "$root/.aif/tmp/checks-green.json" 2>/dev/null || echo 0)"
+
+# What this gate let through, for `aif _gate` to fold into the ledger — the
+# tests, one row each (docs/DEFECTS.md 13.9); the checks are in their record.
+# On the pass path only: a rejection is judged again, and says it again.
+if [ -n "${let_rows:-}" ]; then
+  printf '%s\n' "$let_rows" | jq -R -s --arg base "$(aif_g_ticket_base "$work" "$root")" '
+    split("\n") | map(select(length > 0) | split("\t")
+      | { phase: "green", test: .[0], kind: .[1], why: .[2],
+          base: (if .[1] == "before" then $base else null end) })' >"$root/.aif/tmp/letthrough-green.json" 2>/dev/null || true
+fi
 
 if [ "$recheck_ok" -eq 0 ]; then
   printf 'green: suite passes (revert-recheck NOT done — %s)' "$recheck_why"
@@ -688,4 +841,19 @@ fi
 if [ "${checks_ran:-0}" -gt 0 ]; then
   printf ', %s check(s) green' "$checks_ran"
 fi
+# And what it let through, on the same line: the one the ledger and the
+# report keep (docs/DEFECTS.md 13.9).
+let_parts=""
+let_before="$(printf '%s\n' "${let_rows:-}" | awk -F'\t' '$2 == "before" { print $1 }')"
+let_flaky="$(printf '%s\n' "${let_rows:-}" | awk -F'\t' '$2 == "flaky" { print $1 }')"
+say_ids() {
+  local n
+  n="$(printf '%s\n' "$1" | grep -c . || true)"
+  printf '%s' "$(printf '%s\n' "$1" | grep -v '^$' | sed -n '1,3p' | paste -sd, - | sed 's/,/, /g')"
+  [ "${n:-0}" -le 3 ] || printf ' (and %s more)' "$((n - 3))"
+}
+[ -z "$let_before" ] || let_parts="$let_parts; $(printf '%s\n' "$let_before" | grep -c .) red before this ticket: $(say_ids "$let_before")"
+[ -z "$let_flaky" ] || let_parts="$let_parts; $(printf '%s\n' "$let_flaky" | grep -c .) flaky — failed once, passed on a re-run: $(say_ids "$let_flaky")"
+[ -z "$checks_at_base" ] || let_parts="$let_parts; failing the same way before this ticket: check $checks_at_base"
+[ -z "$let_parts" ] || printf ' — let through, %s' "${let_parts#; }"
 printf '\n'

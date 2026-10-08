@@ -2633,9 +2633,12 @@ $complaint"
       ;;
   esac
 
-  # The guard hook reads this: a station may write only what its station owns
-  # (sets/claude/hooks/guard.sh).
+  # The guard hook reads these: a station may write only what its station
+  # owns, and the ticket names the plan whose files.tests says what a test is
+  # — a manual mock or a fixture the plan declares included (sets/claude/
+  # hooks/guard.sh; docs/DEFECTS.md 13.10).
   export AIF_STATION="$station"
+  export AIF_TICKET="$ticket"
 
   # A pause the runner's limit holds this station's model under — met by any
   # worker of this checkout (_aif_work_pause_write) — is waited out before
@@ -2818,7 +2821,7 @@ EOF
   done
   rm -f "$stream" "$facts"
   export PATH="$path_was"
-  unset AIF_STATION
+  unset AIF_STATION AIF_TICKET
   rm -f "$sys"
   if [ "$ret" -ne 0 ]; then
     if [ "$ret" -eq 3 ]; then
@@ -2914,42 +2917,121 @@ _aif_work_guard_probed() {
   [ "$(cat "$marker" 2>/dev/null)" = "$want" ]
 }
 
-# _aif_work_copy_at <wt> <base> — a throwaway copy of the worktree as it stood
-# at <base>, echoed: every path changed since that commit put back, every path
-# added since it removed, what git ignores copied as it is. The same copy the
-# gates' aif_g_scratch_at makes (which lib/ cannot source), for the same two
-# reasons: a suite runs against installed dependencies, and git is never run
-# inside the copy — a copy of a linked worktree carries its .git FILE, and git
-# run there writes the real worktree's index (docs/FINDINGS.md #20).
+# _aif_work_copy_at <wt> <base> <copy> — <copy>, an empty directory, made a copy
+# of the worktree as it stood at <base>: every path changed since that commit
+# put back, every path added since it removed, what git ignores copied as it
+# is — but the installed dependencies, linked. The same copy the gates'
+# aif_g_scratch_at makes (which lib/ cannot source), for the same reasons: a
+# suite runs against installed dependencies, a node_modules copied once per
+# repair beside every other worker's is most of a JavaScript tree
+# (docs/DEFECTS.md 13.9), and git is never run inside the copy — a copy of a
+# linked worktree carries its .git FILE, and git run there writes the real
+# worktree's index (docs/FINDINGS.md #20). AIF_G_COPY_DEPS=1 copies the
+# dependencies as before, as it does for the gates: a package that finds the
+# project from its own location reads the real tree through a link (#36).
+#
+# rc 0 · 1 the copy could not be made whole, AIF_WORK_COPY_WHY says why — an
+# unreadable file used to be left out in silence (cp -R … || true), and the
+# repaired tests were judged in another tree.
 _aif_work_copy_at() {
-  local wt="$1" base="$2" copy p q
-  copy="$(mktemp -d "${TMPDIR:-/tmp}/aif-repair-XXXXXX")" || return 1
-  copy="$(cd "$copy" && pwd -P)" || return 1
-  for p in "$wt"/* "$wt"/.[!.]* "$wt"/..?*; do
-    [ -e "$p" ] || [ -L "$p" ] || continue
-    if [ "$p" = "$wt/.aif" ] && [ -d "$p/worktrees" ]; then
-      mkdir -p "$copy/.aif"
-      for q in "$p"/* "$p"/.[!.]* "$p"/..?*; do
-        [ -e "$q" ] || [ -L "$q" ] || continue
-        [ "$q" = "$p/worktrees" ] || cp -R "$q" "$copy/.aif/" 2>/dev/null || true
-      done
-    else
-      cp -R "$p" "$copy/" 2>/dev/null || true
-    fi
-  done
-  {
+  local wt="$1" base="$2" copy="$3" links="" walk p changed
+  AIF_WORK_COPY_WHY=""
+  [ "${AIF_G_COPY_DEPS:-0}" = 1 ] || links="$(_aif_work_dep_dirs "$wt")"
+  walk="$links"
+  [ ! -d "$wt/.aif/worktrees" ] || walk="$walk
+.aif/worktrees"
+  _aif_work_copy_into "$wt" "$copy" "" "$links" "$walk" || return 1
+  changed="$({
     git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
     git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
-  } | sort -u | while IFS= read -r p; do
+  } | sort -u)"
+  while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if git -C "$wt" cat-file -e "$base:$p" 2>/dev/null; then
-      mkdir -p "$copy/$(dirname "$p")"
-      git -C "$wt" show "$base:$p" >"$copy/$p" 2>/dev/null || true
-    else
-      rm -f "${copy:?}/${p:?}"
+    _aif_work_under "$p" "$links" && continue
+    rm -rf "${copy:?}/${p:?}" 2>/dev/null || true
+    git -C "$wt" cat-file -e "$base:$p" 2>/dev/null || continue
+    if ! mkdir -p "$copy/$(dirname "$p")" 2>/dev/null || ! git -C "$wt" show "$base:$p" >"$copy/$p" 2>/dev/null; then
+      AIF_WORK_COPY_WHY="could not put $p back as it was at ${base:0:10}"
+      return 1
+    fi
+  done <<EOF
+$changed
+EOF
+  return 0
+}
+
+# _aif_work_dep_dirs <wt> — the installed dependencies a copy links: every
+# node_modules (the first one down each branch), .venv or venv at the root,
+# each while git ignores it. The gates' aif_g_dep_dirs, kept equal by
+# scripts/check-work.sh.
+_aif_work_dep_dirs() {
+  local root="$1" p
+  {
+    find "$root" \( -path "$root/.git" -o -path "$root/.aif/worktrees" \) -prune -o \
+      -type d -name node_modules -print -prune 2>/dev/null
+    for p in .venv venv; do
+      if [ -d "$root/$p" ] && [ ! -L "$root/$p" ]; then printf '%s\n' "$root/$p"; fi
+    done
+  } | while IFS= read -r p; do
+    p="${p#"$root"/}"
+    [ -z "$p" ] || [ "$p" = "$root" ] || printf '%s\n' "$p"
+  done | git -C "$root" check-ignore --stdin 2>/dev/null || true
+}
+
+# _aif_work_under <path> <dirs> — rc 0 when <path> is one of <dirs> or under one.
+_aif_work_under() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$1" in
+      "$d" | "$d"/*) return 0 ;;
+    esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# _aif_work_copy_into <src> <dst> <rel> <links> <walk> — the gates'
+# _aif_g_copy_into: a directory in <links> linked, one with something of
+# <walk> below it entered, .aif/worktrees left behind, every other entry
+# `cp -R`, checked. rc 1 with AIF_WORK_COPY_WHY.
+_aif_work_copy_into() {
+  local src="$1" dst="$2" rel="$3" links="$4" walk="$5" p r d err
+  for p in "$src${rel:+/$rel}"/* "$src${rel:+/$rel}"/.[!.]* "$src${rel:+/$rel}"/..?*; do
+    [ -e "$p" ] || [ -L "$p" ] || continue
+    r="${p#"$src"/}"
+    [ "$r" != ".aif/worktrees" ] || continue
+    case "
+$links
+" in
+      *"
+$r
+"*)
+        ln -s "$p" "$dst/$r" 2>/dev/null || {
+          AIF_WORK_COPY_WHY="could not link $r into the copy"
+          return 1
+        }
+        continue
+        ;;
+    esac
+    case "
+$walk" in
+      *"
+$r/"*)
+        mkdir -p "$dst/$r" || return 1
+        _aif_work_copy_into "$src" "$dst" "$r" "$links" "$walk" || return 1
+        continue
+        ;;
+    esac
+    d="$dst"
+    case "$r" in */*) d="$dst/${r%/*}" ;; esac
+    if ! err="$(cp -R "$p" "$d/" 2>&1)"; then
+      AIF_WORK_COPY_WHY="could not copy $r: $(printf '%s' "$err" | grep -v 'is a socket (not copied)' | sed -n '1,4p' | paste -sd ';' -)"
+      return 1
     fi
   done
-  printf '%s' "$copy"
+  return 0
 }
 
 # _aif_work_restore_since <wt> <base> <keep-ere> — put every path the worktree
@@ -3016,10 +3098,15 @@ $complaint"
   tests_base="$(aif_run_get "$work" '.tests_base')"
   [ -n "$tests_base" ] || tests_base="$base"
   _aif_work_say "repair" "$repairs/$max — the tests station, in a copy without the implementation"
-  copy="$(_aif_work_copy_at "$wt" "$base")" || {
-    AIF_WORK_REPAIR_WHY="could not copy the tree to repair the tests in"
+  if ! copy="$(mktemp -d "${TMPDIR:-/tmp}/aif-repair-XXXXXX")" || ! copy="$(cd "$copy" && pwd -P)"; then
+    AIF_WORK_REPAIR_WHY="could not make a directory to repair the tests in"
     return 1
-  }
+  fi
+  if ! _aif_work_copy_at "$wt" "$base" "$copy"; then
+    rm -rf "${copy:?}"
+    AIF_WORK_REPAIR_WHY="could not copy the tree to repair the tests in: $AIF_WORK_COPY_WHY"
+    return 1
+  fi
   cwork="$(aif_task_dir "$copy" "$ticket")"
   rm -f "$cwork/implement.note.json"
   # The baseline the gate measures against in the copy: the tree the tests
@@ -3689,12 +3776,45 @@ _aif_work_report() {
         + (if .collected_files == null then "collected not known (coarse)" else ((.collected_files | length | tostring) + " collected") end)
         + "; " + ((.covering // []) | length | tostring) + " red at the freeze, "
         + ((.green_at_freeze // []) | length | tostring) + " green at the freeze"
-        + (if ((.red_with_tests // []) | length) > 0 then ", " + ((.red_with_tests | length) | tostring) + " pre-existing red with them" else "" end)' \
+        + (if ((.red_with_tests // []) | length) > 0 then ", " + ((.red_with_tests | length) | tostring) + " pre-existing red with them" else "" end)
+        + (if ((.standing // []) | length) > 0 then ", " + ((.standing | length) | tostring) + " standing" else "" end)' \
         "$work/tests.lock.json" 2>/dev/null
     else
       printf -- '- tests: nothing frozen\n'
     fi
     jq -r '"- loops: " + ((.repairs // 0) | tostring) + " repair(s) of the oracle, " + ((.replans // 0) | tostring) + " replan(s)"' "$run" 2>/dev/null
+
+    # What the gates let through — a test or a check red before this ticket,
+    # on the tree it was built from, or a test that failed once and passed on
+    # a re-run: not this ticket's to answer for, and no longer a stop for it,
+    # so it is said where the reviewer reads (docs/DEFECTS.md 13.9). From the
+    # lock (verify-red), the ledger's let-through rows (green) and its check
+    # rows let through; once each, with every phase that let it through.
+    local let_lines lg="/dev/null" lk="/dev/null"
+    [ ! -f "$ledger" ] || lg="$ledger"
+    [ ! -f "$work/tests.lock.json" ] || lk="$work/tests.lock.json"
+    let_lines="$(jq -rn --slurpfile lk "$lk" --slurpfile lg "$lg" '
+      ($lk[0] // {}) as $L
+      | [ (($L.red_at_base // [])[] | { what: ("`" + . + "`"), kind: "before", phase: "verify-red" }),
+          (($L.flaky // [])[] | { what: ("`" + . + "`"), kind: "flaky", phase: "verify-red" }),
+          (($lg[0].entries // [])[] | select(.event == "let-through")
+            | { what: ("`" + (.test // "?") + "`"), kind: (.kind // "before"), phase: (.phase // "green") }),
+          (($lg[0].entries // [])[] | select(.event == "check" and .result == "at_base")
+            | { what: ("check `" + (.check // "?") + "`"), kind: "check", phase: (.phase // "?") }) ]
+      | group_by([.what, .kind])
+      | map({ what: .[0].what, kind: .[0].kind, phases: (map(.phase) | unique) })
+      | .[] | "- " + .what + " — "
+        + (if .kind == "flaky" then "flaky: failed once, passed on a re-run of the same tree"
+           elif .kind == "check" then "fails the same way before this ticket, and nothing new with it"
+           else "red before this ticket" end)
+        + " (" + (.phases | join(", ")) + ")"' 2>/dev/null)" || let_lines=""
+    if [ -n "$let_lines" ]; then
+      printf '\n## Let through — red before this ticket, or flaky\n\n'
+      printf 'Not this ticket'"'"'s to answer for, and not held against it: red on the tree it was\n'
+      printf 'built from, before any of its work — measured there — or failed once and passed on a\n'
+      printf 're-run of the same tree. Each is still that way where it lands; look at it there.\n\n'
+      printf '%s\n' "$let_lines"
+    fi
 
     # A station can end with a runner error and still be admitted: the gate
     # judges the artifacts, not the exit code. That is the intended behaviour
@@ -3887,7 +4007,7 @@ _aif_work_loop() {
   local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0
   local now n list pick id pid rc entry left what kind mins results="" slot st i
   local poll idling=0 unread=0 read_ok env_in_a_row=0 rechecks=0 envhit rc2
-  local who drained=0 abs log held_by why_now err rl unread_n=0 taken_on
+  local who drained=0 abs log held_by why_now err rl unread_n=0 taken_on land_pid
 
   set --
   [ -z "$profile" ] || set -- "$@" --profile "$profile"
@@ -4072,6 +4192,10 @@ EOF
           # (_aif_work_claim_check, _aif_work_claim_race): that machine's, and
           # nothing about this one (docs/DEFECTS.md 14.4).
           taken_on="$(sed -n "s/.* is taken on \(.*\) — skipped: another machine's worker has it\..*/\1/p" "$logdir/$log" 2>/dev/null | tail -1)" || taken_on=""
+          # And a card an `aif land` of it holds in this checkout: the land's
+          # until it ends, and nothing about the machine — its fixed line read
+          # back the same way (docs/DEFECTS.md 15.1, 13.8).
+          land_pid="$(sed -n 's/.*aif land [^ ]* runs in this checkout right now (pid \([0-9]*\)).*/\1/p' "$logdir/$log" 2>/dev/null | tail -1)" || land_pid=""
           if [ -n "$held_by" ]; then
             what="not taken over (exit 3) — what its last run started still runs"
             why_now="its last worker is gone, and what it started still runs: $held_by — aif work --status $id says what"
@@ -4082,6 +4206,11 @@ EOF
             why_now="taken on $taken_on — another machine's worker has it"
             AIF_LS_RESULT[slot]=held
             _aif_work_loop_event yellow "$id is taken on another machine — $taken_on; the card is held, the loop goes on"
+          elif [ -n "$land_pid" ]; then
+            what="not taken (exit 3) — aif land $id runs on it here"
+            why_now="aif land $id runs in this checkout (pid $land_pid) — its worktree is the land's until it ends"
+            AIF_LS_RESULT[slot]=held
+            _aif_work_loop_event yellow "$id is being landed here (aif land, pid $land_pid); the card is held, the loop goes on"
           else
             what="could not start (exit 3)"
             why_now="its worker could not start (exit 3)${err:+: $err}"

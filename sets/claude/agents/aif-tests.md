@@ -66,10 +66,12 @@ the guide is stale — say so in your closing message.
    block), `tasks/<TICKET>/plan.md` (the manifest, the decisions, the verdicts),
    the skeletons, and `.aif/project.json` (how the suite is run, and which
    failures count as red).
-2. Write the test files named in the plan's `files.tests`. Write nothing else —
-   in particular, do not create or modify any file in the plan's `files.create`
-   or `files.change`. The skeleton is the plan's; the behaviour is the implement
-   station's.
+2. Write the files named in the plan's `files.tests` — the tests, and the
+   support files the plan declared for them: a manual mock, a test util, a
+   fixture. Write exactly those. In particular, do not create or modify any
+   file in the plan's `files.create` or `files.change`. The skeleton is the
+   plan's; the behaviour is the implement station's. A mock or a fixture the
+   plan did not declare is refused (a file named like a test aside).
 3. **Run `aif _verify <TICKET>`.** It is the verify-red gate over the files you
    wrote, as the worker will run it when you finish, and it freezes nothing:
    it runs the suite, classifies every new test, checks every criterion's
@@ -113,7 +115,10 @@ the guide is stale — say so in your closing message.
   ticket's own marker when it now proves one of this ticket's criteria — never
   keep the old name on a new assertion, and never leave one asserting the old
   behaviour: it would fail once the implementation lands, and green holds the
-  whole suite. Every other test in those files stays exactly as it is.
+  whole suite. verify-red rejects a collected test still carrying a replaced
+  criterion. Every other test in those files stays exactly as it is: the gate
+  reads those as standing — present and green at the ticket's base — not
+  yours, and not on the checklist.
 
 ## What you may run, and what the gate decides
 
@@ -133,9 +138,15 @@ decides what happens next:
   file, a non-deterministic test, every new test already green: you are
   dispatched again with the gate's complaints verbatim, a limited number of
   times. They are the output you would have read — fix exactly what they name.
-- **A stop is the ticket's, or the environment's.** A repository red before
-  your files existed, a suite that writes no report — nothing you write
-  changes those, and the run goes to a human.
+- **What is not yours is let through, and named.** A test or a check red
+  before this ticket — on the tree it was built from — is the repository's:
+  verify-red lets it through, names it on its first line, and you answer for
+  what you add, not for that. A pre-existing test that fails once and passes
+  on a re-run is flaky, and let through the same way; one of yours that flips
+  between two runs comes back to you.
+- **A stop is the ticket's, or the environment's.** A suite that writes no
+  report, a tree that cannot be copied to measure what was there before —
+  nothing you write changes those, and the run goes to a human.
 
 ## What you cannot test, said in the note
 

@@ -109,7 +109,10 @@ Ask for one word and take it:
      slice. The human's own uncommitted work stays as it is, unless the land changes
      those very files. A verdict can take minutes: run it in the background if your
      commands time out sooner, and wait for it. Then say what it said — landed, and
-     what it released; refused, and why, with nothing touched and the card still in
+     what it released, and what it let through when it says so: a test or a check
+     red on the checkout's branch before this ticket, or a test that failed once and
+     passed on a re-run, named on its suite line — the branch's, not this build's;
+     refused, and why, with nothing touched and the card still in
      Review; sent back to the worker, when the branch conflicts with the checkout's or
      is red on it — the suite, or a check — the card at the top of Ready with a
      `sync:` comment, to come back to Review brought onto it, to be looked at again;

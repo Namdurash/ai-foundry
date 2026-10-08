@@ -3,7 +3,10 @@
 # PreToolUse guard. Denies a writer from writing where it must not:
 #
 #   - the implement station may not touch tests, the test station may not touch
-#     implementation.
+#     implementation — a test being what the plan's files.tests declares, or
+#     what is named like one;
+#   - no station writes .aif/, .claude/ or tasks/, its own file there aside:
+#     they are how a ticket is judged and recorded (docs/DEFECTS.md 13.10).
 #
 # Which station is running arrives by one of two routes, and both are live:
 #
@@ -119,18 +122,52 @@ fi
 path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] || exit 0
 
-# Normalise to a repo-relative path when the tool passed an absolute one.
+# Normalise to a repo-relative path when the tool passed an absolute one —
+# spelled through $PWD, or through the physical path: on macOS a project
+# under /var or /tmp is /private/var or /private/tmp to every tool that
+# resolves it, and a station's declared file written that way read as no
+# path of the project's at all (docs/DEFECTS.md 13.10).
 rel="$path"
+here_p="$(pwd -P 2>/dev/null)" || here_p="$PWD"
 case "$path" in
   "$PWD"/*) rel="${path#"$PWD"/}" ;;
+  "$here_p"/*) rel="${path#"$here_p"/}" ;;
 esac
 
+# A test by its name or its place. `__tests__/` is jest's own root — the jest
+# template's (docs/DEFECTS.md 13.10). The gates' aif_g_test_path is the same
+# rule; this copy is the hook's, which cannot source the gates.
 is_test() {
   case "$1" in
-    tests/* | test/* | */tests/* | */test/*) return 0 ;;
+    tests/* | test/* | __tests__/* | */tests/* | */test/* | */__tests__/*) return 0 ;;
     *_test.* | *test_*.py | *.test.* | *.spec.*) return 0 ;;
   esac
   return 1
+}
+
+# The ticket being built, and what its plan declares as tests — files.tests:
+# the tests, and the support files they need — a manual mock, a test util, a
+# fixture — whatever their names. `aif work` exports AIF_TICKET beside
+# AIF_STATION; the plan is read from the project the station runs in, the
+# first aif:meta block, as the gates read it (the awk is _lib.sh's aif_g_meta,
+# copied: hooks cannot source the gates). With no ticket, or no plan yet, a
+# test is what its name says, as before (docs/DEFECTS.md 13.10).
+ticket="${AIF_TICKET:-}"
+case "$ticket" in
+  *[!A-Za-z0-9_.-]* | .*) ticket="" ;;
+esac
+declared=""
+if [ -n "$ticket" ] && [ -f "$PWD/tasks/$ticket/plan.md" ]; then
+  declared="$(awk '
+    { sub(/\r$/, "") }
+    /^<!-- aif:meta$/ && !seen { inblock = 1; seen = 1; next }
+    inblock && /^-->$/         { inblock = 0; next }
+    inblock                    { print }
+  ' "$PWD/tasks/$ticket/plan.md" | jq -r '.files.tests[]? // empty' 2>/dev/null)"
+fi
+is_declared() {
+  [ -n "$declared" ] || return 1
+  printf '%s\n' "$declared" | grep -qxF -- "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -147,48 +184,77 @@ is_test() {
 # Each station's own note is the one file under tasks/ it may write: a
 # structured way to say what its artifact cannot — "this criterion is already
 # built", "this frozen test is wrong", "the contract cannot hold this" — read
-# by the gates and the worker rather than guessed from a closing message.
-is_note() { # <rel> <name>
+# by the gates and the worker rather than guessed from a closing message. The
+# plan station's is the plan itself.
+own_output() { # <rel> — rc 0 when it is this station's own file under tasks/
+  local f
+  case "$station" in
+    plan) f=plan.md ;;
+    tests) f=tests.note.json ;;
+    implement) f=implement.note.json ;;
+    *) return 1 ;;
+  esac
+  if [ -n "$ticket" ]; then
+    [ "$1" = "tasks/$ticket/$f" ]
+    return
+  fi
   case "$1" in
-    tasks/*/"$2") return 0 ;;
+    tasks/*/"$f") return 0 ;;
   esac
   return 1
 }
 
-case "$station" in
-  plan)
-    # The plan station writes the plan and the CONTRACT: the skeleton of every
-    # module the plan creates, and a new export's signature in a module it
-    # changes. Not the tests, which are the next station's, and nothing else
-    # under tasks/.
-    if is_test "$rel"; then
-      deny "the plan station writes the plan and the contract — the skeleton of what the tests will import — not the tests. The tests station writes those, against your skeleton."
-    fi
-    case "$rel" in
-      tasks/*/plan.md) ;;
-      tasks/*) deny "the plan station writes tasks/<TICKET>/plan.md and the skeleton files its manifest names; the rest of the ticket's record is not yours." ;;
-    esac
-    ;;
-  implement)
-    if is_test "$rel"; then
-      deny "the tests are frozen by verify-red. If a test is wrong, do not edit it — say so in tasks/<TICKET>/implement.note.json (tests_wrong: [{ test, because }]); the tests station reads the claim without the implementation in view."
-    fi
-    if ! is_note "$rel" implement.note.json; then
-      case "$rel" in
-        tasks/*)
+# .aif/, .claude/ and tasks/ are closed to every station's Write and Edit, its
+# own file under tasks/ aside. They hold how this ticket is judged and what it
+# did: the gates (.aif/gates), the test command, checks, failure classes and
+# caps (.aif/project.json), this guard and its registration (.aif/hooks,
+# .claude/settings.json), the stations' instructions (.claude/agents), the
+# tickets' records. A station that could edit them could change how it is
+# judged — and the plan station is judged by the plan gate alone, which reads
+# its manifest, not the tree: whatever it wrote there was committed with the
+# plan (`git add -A`). Only scope held them, and only against the implement
+# station (docs/DEFECTS.md 13.10).
+case "$rel" in
+  .aif/* | .claude/* | tasks/*)
+    if ! own_output "$rel"; then
+      case "$station" in
+        plan) deny "the plan station writes tasks/<TICKET>/plan.md and the skeleton files its manifest names. The rest of the ticket's record, and .aif/ and .claude/ — the gates, the project's config, the hooks, the stations' instructions — are how this ticket is judged and recorded, and no station writes them; a ticket that needs them changed is a question for the human (needs_decision)." ;;
+        tests) deny "the test station writes tests only — the files the plan's files.tests declares, and files named like tests — and tasks/<TICKET>/tests.note.json for what it cannot test. .aif/, .claude/ and the rest of tasks/ are how this ticket is judged and recorded; no station writes them." ;;
+        implement)
           # Including — especially — plan-amendments.json. scope exempts that one
           # file from its denylist so an amendment can be made at all, which would
           # otherwise let an implementation hand-write itself permission for
           # anything. `aif _amend-plan` is the way in: it refuses tests and
           # pipeline paths, requires a reason, and is capped.
-          deny "the ticket's own record — the ticket, the plan, the ledger, the run — is not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan. Your note is tasks/<TICKET>/implement.note.json."
-          ;;
+          deny "the ticket's own record — the ticket, the plan, the ledger, the run — and .aif/ and .claude/ — the gates, the project's config, the hooks, the stations' instructions — are not yours to edit; you write code. To widen the plan's file manifest for something it could not foresee, run: aif _amend-plan <TICKET> <path> '<why>'. It is capped and recorded, and a reviewer sees it next to the plan. If the ticket needs the pipeline itself changed, say so in your note, tasks/<TICKET>/implement.note.json." ;;
+        *) deny ".aif/, .claude/ and tasks/ are how a ticket is judged and recorded; no station writes them." ;;
       esac
     fi
     ;;
+esac
+
+case "$station" in
+  plan)
+    # The plan station writes the plan and the CONTRACT: the skeleton of every
+    # module the plan creates, and a new export's signature in a module it
+    # changes. Not the tests, which are the next station's — nor a support
+    # file its own plan declares for them.
+    if is_test "$rel" || is_declared "$rel"; then
+      deny "the plan station writes the plan and the contract — the skeleton of what the tests will import — not the tests, nor the mocks and fixtures files.tests declares for them. The tests station writes those, against your skeleton."
+    fi
+    ;;
+  implement)
+    if is_test "$rel" || is_declared "$rel"; then
+      deny "the tests are frozen by verify-red — files.tests, mocks and fixtures included. If a test is wrong, do not edit it — say so in tasks/<TICKET>/implement.note.json (tests_wrong: [{ test, because }]); the tests station reads the claim without the implementation in view."
+    fi
+    ;;
   tests)
-    if ! is_test "$rel" && ! is_note "$rel" tests.note.json; then
-      deny "the test station writes tests only — and tasks/<TICKET>/tests.note.json for what it cannot test. Implementation belongs to the implement station; the contract is the plan's. Write the failing tests against the skeleton, and let the code come later."
+    # A declared path, whatever its name — the plan's files.tests is the
+    # tests and the support files they need: a manual mock in __mocks__/, a
+    # test util, a fixture outside tests/, each refused by name before
+    # (docs/DEFECTS.md 13.10) — a test by its name, or the station's note.
+    if ! is_test "$rel" && ! is_declared "$rel" && ! own_output "$rel"; then
+      deny "the test station writes tests only — the files the plan's files.tests declares, and files named like tests — and tasks/<TICKET>/tests.note.json for what it cannot test. Implementation belongs to the implement station; the contract is the plan's. Write the failing tests against the skeleton, and let the code come later. A mock or a fixture the tests need is one the plan declares."
     fi
     ;;
 esac

@@ -36,7 +36,9 @@ that it can be.
    them pass.
 4. Replace every `throw` of the marker with the behaviour. Create nothing the
    plan did not name; change only the files the plan names in `files.create`
-   and `files.change`. Do not touch any test file. Do not touch anything else.
+   and `files.change`, and delete exactly what `files.delete` names (`rm`). Do
+   not touch any test file — nor a mock or a fixture `files.tests` declares.
+   Do not touch anything else.
 5. Run the test suite until it is green.
 
 ## The rules, which are checked mechanically
@@ -66,8 +68,17 @@ that it can be.
 
   It refuses test files and pipeline paths, it is capped, and it lands in a
   committed file a reviewer reads next to the plan. Use it for what the plan
-  could not know — not to widen your way out of a plan you disagree with. If you
-  are reaching for it a third time, the plan is wrong: say so in your note.
+  could not know — not to widen your way out of a plan you disagree with. It
+  may name a file that does not exist yet, beside the plan's own — in a
+  directory that holds one of its `files.create` or `files.change`, never the
+  root; not a dotfile, a test, a manifest or a lockfile, CI or `.gitignore` —
+  and you then write it; scope marks it new. If you are reaching for it a
+  third time, the plan is wrong: write `{ "replan": "<what it got wrong>" }` in
+  your note.
+- **What is not yours is let through.** A test or a check red before this
+  ticket — on the tree it was built from — or a pre-existing test that fails
+  once and passes on a re-run, is let through by green and named on the
+  report. Spend no attempt on it: you answer for what you add.
 - **Make the tests pass for real.** Reverting your implementation to the
   skeleton must make the covering tests fail again — that is checked. Code
   that makes a test pass without implementing the behaviour (hard-coding the

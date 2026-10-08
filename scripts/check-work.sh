@@ -145,6 +145,21 @@
 #      dead, its station still running in the group it led — a lock whose pid
 #      an unrelated program now holds, its group never listed, a build of a
 #      ticket since reworked not taken for one; every ticket with a trace here
+#  53  a dead lock is taken over by one taker: two released at once, many
+#      times over, leave exactly one holder in its own name, the run lock's
+#      and the loop's; a pid handed out again to another aif work after the
+#      lock was signed is no holder; a takeover mark held now refuses the
+#      next taker, one two minutes old is nobody's; a run's takeovers are
+#      counted in its record, a resume keeps the count, and the fourth stops
+#      the run, blocked: run
+#  54  what a dead worker left — named by the group it led, the station's own
+#      pid in the lock, this clone's worktree as a cwd — is TERMed before
+#      its lock is taken over, a child that left for / with it; a takeover
+#      with something still running there refused with exit 3, then made
+#      once it is gone; another clone's station on the same id neither listed
+#      nor stopped
+#  55  aif work --status with no id lists a --no-worktree build, and a lock
+#      with no phase says its phase is unknown
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -399,6 +414,14 @@ printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
 [ -z "${FAKE_TIMELINE:-}" ] || printf 'start %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
 for hold in ${FAKE_SLEEP_IN:-}; do
   if [ "$hold" = "$ticket:$station" ]; then
+    # What a held station leaves behind when its worker is killed outright
+    # (docs/DEFECTS.md 14.1, scenario 54): FAKE_CHILD_CD a child that left the
+    # worktree for / with no ticket in its argv — only the group names it —
+    # and FAKE_CHILD_DEAF one that ignores TERM, in the worktree. Started
+    # before the mark, so a scenario that sees the mark sees them; their
+    # output nowhere, so no capture waits on them.
+    if [ "${FAKE_CHILD_CD:-0}" = 1 ]; then (cd / && exec sleep 47.3 </dev/null >/dev/null 2>&1) & fi
+    if [ "${FAKE_CHILD_DEAF:-0}" = 1 ]; then (trap '' TERM && exec sleep 63.3 </dev/null >/dev/null 2>&1) & fi
     : >"$wt/.aif/tmp/fake-running-$ticket-$station"
     [ -z "${FAKE_MARKS:-}" ] || : >"$FAKE_MARKS/$ticket-$station"
     if [ -n "${FAKE_RELEASE:-}" ]; then
@@ -4485,6 +4508,315 @@ rc2=0
 "$AIF" work AIF-150 --json >/dev/null 2>&1 || rc2=$?
 eq "--status is refused beside --loop, and --json without --status" \
   "$rc,$(grep -c 'not with --loop' "$OUT/run52d.out"),$rc2" "1,1,1"
+
+# ====== 53. one taker wins a dead lock; a run taken over three times stops ===
+# docs/DEFECTS.md 14.5. A dead lock was taken over by `rm -rf` then `mkdir`,
+# and two runs that found it in the same instant both removed it and both
+# made it again, each believing it held the lock — the run lock, the loop's
+# and the shift's alike. Two takers here, each a bash with lib/ sourced,
+# spinning on one file and released by it at once, many times over: exactly
+# one holds the lock each time, signed in its own name, nothing set aside
+# left behind. The loop lock is raced the most (no orphans to look for); the
+# run lock, whose takeover first looks for what its dead worker left, fewer
+# times. Then the takeover count in the run record: a resume keeps it, and
+# at three the next worker stops the run instead of resuming it.
+#
+# Released at the very same instant, the two old takers removed and made the
+# lock again side by side, and one mkdir lost: the old order failed only when
+# one taker lagged the other by about one rm and one mkdir (a few ms) — its
+# look still at the dead lock, its `rm -rf` after the other's mkdir. So the
+# second taker spins a little longer each trial, 0 to about 20 ms (a bash
+# 3.2 loop step is about 2.5 µs here, probed), and the trials walk that
+# window.
+printf '\n53. one taker wins a dead lock, and a run taken over three times stops\n'
+fresh_project "$SANDBOX/p53"
+p53="$(pwd -P)"
+# race53 <loop|run> <trials> — the trials, by number, where the takers did
+# not end with exactly one holder: two winners, none, or a lock signed by
+# someone else; an aside left counts as a failure too. Empty is every trial
+# right.
+race53() {
+  local kind="$1" trials="$2" i d w ra rb pa pb won owner wrong="" racers off
+  for i in $(seq 1 "$trials"); do
+    racers=""
+    rm -rf .aif/state/loop .aif/state/runs/AIF-530 .aif/state/.loop.dead.* .aif/state/runs/.AIF-530.dead.* "$OUT"/race53.*
+    sleep 0 &
+    d=$!
+    wait "$d" 2>/dev/null
+    if [ "$kind" = loop ]; then
+      mkdir -p .aif/state/loop
+      printf '{ "pid": %s, "started_at": "2026-10-02T00:00:00Z", "logdir": null }\n' "$d" >.aif/state/loop/owner.json
+    else
+      mkdir -p .aif/state/runs/AIF-530
+      printf '{ "ticket": "AIF-530", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$d" >.aif/state/runs/AIF-530/owner.json
+    fi
+    for w in a b; do
+      off=0
+      [ "$w" = a ] || off=$(((i % 10) * 800))
+      /bin/bash -c '
+        set -uo pipefail
+        . "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"
+        : >"$2.ready.$3"
+        while [ ! -f "$2.go" ]; do :; done
+        j=0
+        while [ "$j" -lt "$6" ]; do j=$((j + 1)); done
+        rc=0
+        if [ "$4" = loop ]; then _aif_work_loop_lock "$5" 1 0 2>/dev/null || rc=$?
+        else _aif_work_lock "$5" AIF-530 2>/dev/null || rc=$?; fi
+        printf "%s %s\n" "$rc" "$$" >"$2.$3"' _ "$ROOT" "$OUT/race53" "$w" "$kind" "$p53" "$off" &
+      racers="$racers $!"
+    done
+    wait_for "$OUT/race53.ready.a"
+    wait_for "$OUT/race53.ready.b"
+    : >"$OUT/race53.go"
+    for w in $racers; do
+      wait_exit "$w" 30 || true
+    done
+    { read -r ra pa <"$OUT/race53.a"; } 2>/dev/null || ra=x
+    { read -r rb pb <"$OUT/race53.b"; } 2>/dev/null || rb=x
+    won=""
+    [ "$ra" != 0 ] || won="$won$pa"
+    [ "$rb" != 0 ] || won="$won${won:+ }$pb"
+    if [ "$kind" = loop ]; then
+      owner="$(jq -r .pid .aif/state/loop/owner.json 2>/dev/null)"
+    else
+      owner="$(jq -r .pid .aif/state/runs/AIF-530/owner.json 2>/dev/null)"
+    fi
+    if [ "$won" != "$owner" ] || [ -n "$(find .aif/state .aif/state/runs -maxdepth 1 -name '.*.dead.*' 2>/dev/null)" ]; then
+      wrong="$wrong $i"
+    fi
+  done
+  printf '%s' "${wrong# }"
+}
+eq "the loop lock: two takers released at once over a dead lock, 40 times — one holder each time, in its own name" \
+  "$(race53 loop 40)" ""
+eq "the run lock, its orphans looked for first: the same, 8 times" "$(race53 run 8)" ""
+rm -rf .aif/state/loop .aif/state/runs/AIF-530
+
+# A dead holder's pid handed out again, to another `aif work` — a loop's
+# worker on another card, most likely — which the command glob matches: it
+# started after the lock was signed, so it is not the holder.
+(exec -a "aif work AIF-999 --loop" sleep 61.3) &
+re53=$!
+mkdir -p .aif/state/runs/AIF-532 .aif/state/loop
+printf '{ "ticket": "AIF-532", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$re53" >.aif/state/runs/AIF-532/owner.json
+printf '{ "pid": %s, "started_at": "2026-10-02T00:00:00Z", "logdir": null }\n' "$re53" >.aif/state/loop/owner.json
+rc=0
+"$AIF" work --loop --drain >"$OUT/run53r.out" 2>&1 || rc=$?
+eq "a lock whose pid now runs an aif work started after the lock was signed: the run lock not live, the loop lock gone" \
+  "$("$AIF" work --status AIF-532 --json | jq -r '[.lock.live, .lock.pid_alive] | map(tostring) | join(",")'),$rc,$(grep -c "the one that held its lock (pid $re53) is gone" "$OUT/run53r.out"),$(test -d .aif/state/loop && echo held || echo removed)" \
+  "false,true,1,1,removed"
+kill "$re53" 2>/dev/null
+wait "$re53" 2>/dev/null
+rm -rf .aif/state/runs/AIF-532
+
+# The takeover's mark, `takeover` inside the dead lock: one a taker holds
+# right now refuses the next taker and leaves the dead lock as it is; one two
+# minutes old was left by a taker that died, and is nobody's.
+sleep 0 &
+d53=$!
+wait "$d53" 2>/dev/null
+mkdir -p .aif/state/loop/takeover
+printf '{ "pid": %s, "started_at": "2026-10-02T00:00:00Z", "logdir": null }\n' "$d53" >.aif/state/loop/owner.json
+loop53() { /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_loop_lock "$2" 1 0' _ "$ROOT" "$p53"; }
+rc=0
+loop53 >"$OUT/run53m.out" 2>&1 || rc=$?
+m53="$rc,$(jq -r .pid .aif/state/loop/owner.json)"
+t53=$(($(date +%s) - 180))
+touch -t "$(date -r "$t53" '+%Y%m%d%H%M.%S' 2>/dev/null || date -d "@$t53" '+%Y%m%d%H%M.%S')" .aif/state/loop/takeover
+rc=0
+loop53 >"$OUT/run53n.out" 2>&1 || rc=$?
+eq "a takeover mark held now: the next taker refused, the dead lock left; a mark two minutes old: taken over" \
+  "$m53,$rc,$(grep -c "(pid $d53) is gone; taken over" "$OUT/run53n.out"),$(test -d .aif/state/loop/takeover && echo mark || echo clean)" \
+  "1,$d53,0,1,clean"
+rm -rf .aif/state/loop
+
+ticket_for AIF-531
+git add -A && git commit -qm "one to take over" >/dev/null
+"$AIF" board create tasks/AIF-531/ticket.md --column ready >/dev/null
+# take53 <out> — a worker on AIF-531 in a group of its own, as the loop starts
+# one, held at plan, and killed outright with its whole group once its station
+# is in: what a machine that died leaves — the lock, the record at plan, the
+# card In Progress, and nothing running.
+take53() {
+  rm -f .aif/worktrees/AIF-531/.aif/tmp/fake-running-AIF-531-plan
+  set -m
+  FAKE_SLEEP_IN="AIF-531:plan" FAKE_SLEEP_SECS=45 "$AIF" work AIF-531 >"$1" 2>&1 &
+  w53=$!
+  set +m
+  wait_for .aif/worktrees/AIF-531/.aif/tmp/fake-running-AIF-531-plan
+  kill -9 -- "-$w53" 2>/dev/null
+  wait "$w53" 2>/dev/null
+}
+tk53() { jq -r '.takeovers // 0' .aif/worktrees/AIF-531/tasks/AIF-531/run.json 2>/dev/null; }
+take53 "$OUT/run53a.out"
+n1="$(tk53)"
+take53 "$OUT/run53b.out"
+n2="$(tk53)"
+take53 "$OUT/run53c.out"
+eq "three workers killed outright in turn: the second and third took the lock over and resumed, each counted" \
+  "$n1,$n2,$(tk53),$(grep -c 'is gone; taken over' "$OUT/run53b.out"),$(grep -c 'takeover 2 of the 3 a run may have' "$OUT/run53c.out")" \
+  "0,1,2,1,1"
+# A person settles it and puts it back: a resume that is no takeover keeps
+# the count.
+"$AIF" work AIF-531 --stop >/dev/null 2>&1
+"$AIF" board move AIF-531 ready >/dev/null
+take53 "$OUT/run53d.out"
+n4="$(tk53)"
+take53 "$OUT/run53e.out"
+eq "…a resume after a --stop keeps the count; the next takeover is the third" \
+  "$n4,$(grep -c 'taken over' "$OUT/run53d.out"),$(tk53)" "2,0,3"
+rc=0
+"$AIF" work AIF-531 >"$OUT/run53f.out" 2>&1 || rc=$?
+eq "a fourth takeover stops the run instead of resuming it: exit 1, the card in Needs Human saying why" \
+  "$rc,$(col AIF-531),$("$AIF" board head AIF-531 2>/dev/null)" \
+  "1,needs_human,blocked: run — taken over 3 times; its workers died the same way each time — read the run before another"
+eq "…no station dispatched, and --status reads a stopped run that was taken over three times" \
+  "$(grep -c '^station ' "$OUT/run53f.out"),$("$AIF" work --status AIF-531 --json | jq -r '[.class, .run.takeovers, .lock.held] | map(tostring) | join(",")')" \
+  "0,stopped,3,false"
+
+# ====== 54. what a dead worker left: named, stopped before a takeover ========
+# docs/DEFECTS.md 14.1 and 15.4. The run lock records the worker's group and,
+# while a station runs, the station's own pid, written by the station's
+# process as it starts. A worker killed outright leaves its station running;
+# what it left is named by that group, that pid and this clone's worktree —
+# never by the prompt alone, which a second clone building the same id
+# carries too — and a takeover TERMs it and waits before it takes the lock,
+# or refuses with exit 3 while something still runs there.
+printf '\n54. what a dead worker left is named, and stopped before its lock is taken over; another clone'"'"'s station is not\n'
+fresh_project "$SANDBOX/p54"
+p54="$(pwd -P)"
+st54() { "$AIF" work --status "$@" --json 2>/dev/null; }
+for t in AIF-540 AIF-541 AIF-542 AIF-543; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "four for orphans" >/dev/null
+for t in AIF-540 AIF-541 AIF-542; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+
+# Killed outright mid-plan, the worker alone: its station, the station's hold
+# and a child that went to / with no ticket in its argv stay behind.
+set -m
+FAKE_SLEEP_IN="AIF-540:plan" FAKE_SLEEP_SECS=44 FAKE_CHILD_CD=1 "$AIF" work AIF-540 >"$OUT/run54a.out" 2>&1 &
+w54=$!
+set +m
+wait_for .aif/worktrees/AIF-540/.aif/tmp/fake-running-AIF-540-plan
+sp54="$(cat .aif/state/runs/AIF-540/station 2>/dev/null)"
+eq "the run lock records the worker's group, and the station's pid as the station wrote it" \
+  "$(jq -r .pgid .aif/state/runs/AIF-540/owner.json),$(ps -o command= -p "$sp54" 2>/dev/null | grep -c 'fake-station.sh plan AIF-540')" "$w54,1"
+kill -9 "$w54" 2>/dev/null
+wait "$w54" 2>/dev/null
+S54="$(st54 AIF-540)"
+eq "killed outright: the lock names the group and the station; the station, its hold and the child that left for / are each named by the group" \
+  "$(printf '%s' "$S54" | jq -r --argjson p "$w54" --argjson s "${sp54:-0}" '[.lock.pgid == $p, .lock.station == $s, ([.lock.orphans[] | select(.why == "group")] | length), ([.lock.orphans[] | select(.command == "sleep 47.3" and .why == "group")] | length)] | map(tostring) | join(",")')" \
+  "true,true,3,1"
+rc=0
+"$AIF" work AIF-540 >"$OUT/run54b.out" 2>&1 || rc=$?
+eq "the next aif work TERMs the dead worker's group before it takes the lock over, then builds" \
+  "$rc,$(grep -c "AIF-540 — the worker that held it (pid $w54) is gone, and 3 process(es) it started still run — TERM" "$OUT/run54b.out"),$(grep -c 'is gone; taken over' "$OUT/run54b.out"),$(col AIF-540)" \
+  "0,1,1,review"
+eq "…the old station and the child that left the tree are gone" \
+  "$(pgrep -f 'fake-station.sh plan AIF-540' | wc -l | tr -d ' '),$(pgrep -f 'sleep 47.3' | wc -l | tr -d ' ')" "0,0"
+
+# A child that ignores TERM, in the worktree: the takeover sends its TERM,
+# waits, and refuses — exit 3, the card and the dead lock as they were.
+set -m
+FAKE_SLEEP_IN="AIF-541:plan" FAKE_SLEEP_SECS=44 FAKE_CHILD_DEAF=1 "$AIF" work AIF-541 >"$OUT/run54c.out" 2>&1 &
+w54=$!
+set +m
+wait_for .aif/worktrees/AIF-541/.aif/tmp/fake-running-AIF-541-plan
+deaf54="$(pgrep -f 'sleep 63.3' | head -1)"
+kill -9 "$w54" 2>/dev/null
+wait "$w54" 2>/dev/null
+rc=0
+AIF_WORK_TAKEOVER_WAIT=2 "$AIF" work AIF-541 >"$OUT/run54d.out" 2>&1 || rc=$?
+eq "a takeover with something still running in the tree after its TERM: refused, exit 3, naming it; the card and the dead lock untouched" \
+  "$rc,$(grep -c "what it started still runs: pid $deaf54 (sleep 63.3)" "$OUT/run54d.out"),$(col AIF-541),$(jq -r .pid .aif/state/runs/AIF-541/owner.json)" \
+  "3,1,in_progress,$w54"
+kill -9 "$deaf54" 2>/dev/null
+rc=0
+"$AIF" work AIF-541 >"$OUT/run54e.out" 2>&1 || rc=$?
+eq "…once it is gone, the takeover goes ahead and builds" "$rc,$(col AIF-541)" "0,review"
+
+# Another clone of a project on this machine building the same id: its
+# station's argv carries the same prompt, and it is not this clone's.
+fresh_project "$SANDBOX/p54b"
+ticket_for AIF-542
+git add -A && git commit -qm "the same id, another checkout" >/dev/null
+"$AIF" board create tasks/AIF-542/ticket.md --column ready >/dev/null
+FAKE_SLEEP_IN="AIF-542:plan" FAKE_RELEASE="$OUT/rel54b" "$AIF" work AIF-542 >"$OUT/run54f.out" 2>&1 &
+b54=$!
+wait_for .aif/worktrees/AIF-542/.aif/tmp/fake-running-AIF-542-plan
+bst54="$(pgrep -f 'fake-station.sh plan AIF-542' | head -1)"
+cd "$p54" || exit 1
+sleep 0 &
+dead54=$!
+wait "$dead54" 2>/dev/null
+mkdir -p .aif/state/runs/AIF-542
+printf '{ "ticket": "AIF-542", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead54" >.aif/state/runs/AIF-542/owner.json
+printf 'run\n' >.aif/state/runs/AIF-542/phase
+eq "a dead lock here, and another clone's live station for the same id: not listed as this clone's" \
+  "$(st54 AIF-542 | jq -c '[.class, .lock.orphans]'),$(kill -0 "$bst54" 2>/dev/null && echo alive)" '["interrupted",[]],alive'
+rc=0
+"$AIF" work AIF-542 >"$OUT/run54g.out" 2>&1 || rc=$?
+eq "…the takeover here builds, and the other clone's station runs on" \
+  "$rc,$(col AIF-542),$(kill -0 "$bst54" 2>/dev/null && echo alive)" "0,review,alive"
+: >"$OUT/rel54b"
+rc=0
+wait_exit "$b54" 60 || rc=$?
+eq "…and that clone's build finishes on its own" "$rc,$(cd "$SANDBOX/p54b" && col AIF-542)" "0,review"
+
+# A process in this clone's worktree that no group or station names — what a
+# gate's suite or prepare's install leaves when a script started the worker
+# without job control: named by its working directory, and the reader is
+# not, though it runs from that directory too.
+mkdir -p .aif/worktrees/AIF-543
+(cd .aif/worktrees/AIF-543 && exec sleep 52.3 >/dev/null 2>&1) &
+cwd54=$!
+sleep 0 &
+dead54=$!
+wait "$dead54" 2>/dev/null
+mkdir -p .aif/state/runs/AIF-543
+printf '{ "ticket": "AIF-543", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead54" >.aif/state/runs/AIF-543/owner.json
+eq "a process whose working directory is this clone's worktree: named by it, and the reader in that directory is not" \
+  "$( (cd .aif/worktrees/AIF-543 && "$AIF" work --status AIF-543 --json 2>/dev/null) | jq -c --argjson p "$cwd54" '[.lock.orphans[] | [(.pid == $p), .why]]')" \
+  '[[true,"cwd"]]'
+kill "$cwd54" 2>/dev/null
+wait "$cwd54" 2>/dev/null
+rm -rf .aif/worktrees/AIF-543 .aif/state/runs/AIF-543
+
+# ====== 55. --status with no id; a lock with no phase =======================
+# docs/DEFECTS.md 15.9: a --no-worktree build, whose one trace is its record
+# in the checkout, is listed with the rest — a worktree run's record a land
+# brought back is not — and a lock its worker never wrote a phase into says
+# so, instead of "during its claim".
+printf '\n55. aif work --status lists a --no-worktree build, and a lock with no phase says so\n'
+fresh_project "$SANDBOX/p55"
+ticket_for AIF-550
+git add -A && git commit -qm "one in place" >/dev/null
+"$AIF" board create tasks/AIF-550/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-550 --no-worktree >"$OUT/run55a.out" 2>&1 || rc=$?
+mkdir -p tasks/AIF-551
+jq '.ticket = "AIF-551" | .worktree = ".aif/worktrees/AIF-551"' tasks/AIF-550/run.json >tasks/AIF-551/run.json
+eq "no id: a --no-worktree build is listed, built in this checkout; a worktree run's copy here is not" \
+  "$rc,$("$AIF" work --status --json | jq -r '[.[] | .ticket + ":" + .class + ":" + (.run.where // "-")] | join(" ")')" \
+  "0,AIF-550:built:checkout"
+rm -rf tasks/AIF-551
+sleep 0 &
+dead55=$!
+wait "$dead55" 2>/dev/null
+mkdir -p .aif/state/runs/AIF-552
+printf '{ "ticket": "AIF-552", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead55" >.aif/state/runs/AIF-552/owner.json
+eq "a dead lock with no phase file: its phase unknown, not \"during its claim\"" \
+  "$("$AIF" work --status AIF-552 2>&1)" \
+  "AIF-552  interrupted — its worker (pid $dead55) is gone, its phase unknown, before its intake — no station ran; nothing of it still runs"
+printf 'worktree\n' >.aif/state/runs/AIF-552/phase
+eq "…and with one, where it died" \
+  "$("$AIF" work --status AIF-552 2>&1)" \
+  "AIF-552  interrupted — its worker (pid $dead55) is gone during its worktree, before its intake — no station ran; nothing of it still runs"
+rm -rf .aif/state/runs/AIF-552
 
 # ----------------------------------------------------------------------------
 printf '\n'

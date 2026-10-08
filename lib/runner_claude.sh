@@ -159,21 +159,31 @@ aif_runner_claude_result_cost() {
 #
 # --setting-sources project,local: the project's hooks (guard, meter) load; the
 # user's global settings do not, so a run is the same on every machine.
+#
+# <pid-file>, when given: claude's own pid is written there as it starts — a
+# `/bin/sh` writes its `$$` and execs claude in its place, so the station is
+# still this subshell's process, in the foreground and in the worker's group,
+# where a Ctrl-C and a --stop reach it (docs/FINDINGS.md #23). The run lock
+# keeps it, for a takeover to find a station whose worker died outright
+# (lib/cmd_work.sh _aif_work_dispatch; docs/DEFECTS.md 14.1).
 aif_runner_claude_station() {
   local workdir="$1" sys="$2" prompt="$3" model="$4"
-  local max_turns="$5" budget="$6" tools="$7" out="$8" err="$9"
+  local max_turns="$5" budget="$6" tools="$7" out="$8" err="$9" pidfile="${10:-}"
 
   # An empty budget is no ceiling, and the flag is then left off entirely —
   # not passed as 0, which claude would read as a ceiling of nothing. The
   # array is expanded as ${a[@]+"${a[@]}"} because bash 3.2 treats an empty
   # one as unset under set -u (docs/FINDINGS.md, bash 3.2).
-  local cap
+  local cap pre
   cap=()
   [ -z "$budget" ] || cap=(--max-budget-usd "$budget")
+  pre=()
+  # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
+  [ -z "$pidfile" ] || pre=(/bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile")
 
   (
     cd "$workdir" || exit 70
-    claude -p "$prompt" \
+    exec ${pre[@]+"${pre[@]}"} claude -p "$prompt" \
       --append-system-prompt "$(cat "$sys")" \
       --model "$model" \
       --tools "$tools" \

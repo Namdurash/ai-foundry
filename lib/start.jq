@@ -168,7 +168,9 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # put back in Ready behind anyone's back").
 
   # R3b: back to the top of Ready, where a loop resumes it. `kill` is what the
-  # dead worker left running (lib/cmd_work.sh _aif_work_status_orphans), each
+  # dead worker left running (lib/cmd_work.sh _aif_work_status_orphans: by its
+  # group, its station's pid or this clone's worktree — a station of another
+  # clone building the same id is not this card's, docs/DEFECTS.md 15.4), each
   # row flagged `group` only when its group is the dead worker's own — the
   # pgid is the lock's pid, and that pid is gone: a pid alive under another
   # command belongs to some other program, and so does its group
@@ -181,9 +183,16 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     | ($ph == "claim" or $ph == "worktree" or $ph == "intake") as $early
     | (if $early then $ph else ($k.stage // $l.run.stage // "its run") end) as $at
     | (if $k.attempt == null then "" else ", attempt \($k.attempt)" end) as $att
-    | ($stale or $l.run == null or $early or $l.run.status == "built") as $over
+    # No record: `aif work --status` always says `run`, its fields null when
+    # there is none — read as a run still going, a dead lock with no record
+    # and no phase was "gone mid-its run" and resumed "from its run".
+    | ($l.run == null or ($l.run.status // null) == null) as $norec
+    | ($stale or $norec or $early or $l.run.status == "built") as $over
+    # A lock with no phase file says nothing of where its worker died — the
+    # phase is written right after the lock is taken (docs/DEFECTS.md 15.9).
     | (if $stale or $l.run.status == "built" then "gone before its intake"
-       elif $l.run == null or $early then "gone during its \($at), before its intake"
+       elif $norec and $ph == "" then "gone, its phase unknown, before its intake"
+       elif $norec or $early then "gone during its \($ph), before its intake"
        else "gone mid-\($at)\($att)" end) as $gone
     | (if $stale or $l.run.status == "built"
        then " (the build on branch aif/\($c.ticket) is of a round before)" else "" end) as $old

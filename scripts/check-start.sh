@@ -43,7 +43,10 @@
 #      offered again for a card built, reworked and back in Ready in the
 #      same shift; the wait beside a loop in another terminal; pulls beside
 #      it, the next cards offered once the first were passed by; a worker
-#      killed outright, its station stopped and its card requeued
+#      killed outright, its station stopped and its card requeued — a child
+#      its group gains after the facts were read stopped with it (the TERM
+#      is the group's, not each pid's), and another checkout's station on
+#      the same id left running
 #   T  Trello, against scripts/mock-trello.py with the real clock: this
 #      host's claim is requeued and another host's is a line; a card's head
 #      is read again when a comment moves its last activity, and a block by
@@ -337,7 +340,15 @@ for hold in ${FAKE_SLEEP_IN:-}; do
     [ -z "${FAKE_MARKS:-}" ] || : >"$FAKE_MARKS/$ticket-$station"
     if [ -n "${FAKE_RELEASE:-}" ]; then
       i=0
+      spawned=""
       while [ ! -f "$FAKE_RELEASE" ] && [ "$i" -lt 600 ]; do
+        # FAKE_CHILD_AFTER: once that file is there, a child that leaves for
+        # / with no ticket in its argv, in this station's group — started
+        # after a shift has read what its dead worker left (layer C).
+        if [ -n "${FAKE_CHILD_AFTER:-}" ] && [ -z "$spawned" ] && [ -f "$FAKE_CHILD_AFTER" ]; then
+          spawned=1
+          (cd / && exec sleep 58.7 </dev/null >/dev/null 2>&1) &
+        fi
         sleep 0.1
         i=$((i + 1))
       done
@@ -561,6 +572,15 @@ fx "R3b: a worker gone mid-implement — requeue to the top; a group TERMed only
            "lock":{"held":true,"live":false,"pid":6000,"pid_alive":false,"phase":"run","stage":"implement","attempt":2,"started":1791300200,
                    "orphans":[{"pid":6001,"pgid":6000,"command":"claude -p Ticket AIF-6. Your working directory"},{"pid":7001,"pgid":7000,"command":"sh -c Ticket AIF-6. x"}]},
            "run":{"where":"worktree","status":"running","stage":"implement"}}}]}
+JSON
+
+# A lock its worker never wrote a phase into, and no record: where it died is
+# not known — not "during its its run" (docs/DEFECTS.md 15.9).
+fx "R3b: a lock with no phase and no record — its phase unknown, built from the start" '.units[0].rule == "R3b" and (.units[0].text | contains("pid 6100) is gone, its phase unknown, before its intake; back to the top of Ready, where a loop builds it from the start")) and (.units[0].text | contains("its its") | not)' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-61","column":"in_progress","pos":1,"head":{"line":"taken: mac pid 6100 at 2026-10-07T09:00:00Z — aif work","at":"2026-10-07T09:00:01Z","after":0,"heads":[$TK]},
+  "local":{"class":"interrupted","why":"its worker (pid 6100) is gone, its phase unknown, before its intake — no station ran",
+           "lock":{"held":true,"live":false,"pid":6100,"pid_alive":false,"phase":null,"started":1791300300,"orphans":[]},"run":{"where":null,"status":null,"stage":null}}}]}
 JSON
 
 fx "R3b on Trello, the newest taken: this host's — offered" '.units[0].rule == "R3b" and (.lines | length) == 0' <<JSON
@@ -1507,6 +1527,75 @@ run_bg "$OUT/r-shift.out" 60 env AIF_START_KEYS=. "$AIF" start --no-build || rc=
 eq "R3b: Enter — the dead worker's station stopped, the card at the top of Ready, saying why; the harness untouched" \
   "$rc,$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-2" | wc -l | tr -d ' '),$(ready_list),$(card_head AIF-2 | grep -c "^released by aif start: its worker (pid $w) was gone mid-plan"),$(kill -0 $$ && echo alive)" \
   "0,0,AIF-2 AIF-3,1,alive"
+
+# The same, with a child the dead worker's group gains after the shift has
+# read what it left: no listing names it — it went to / with no ticket in its
+# argv — and only the TERM to the whole group reaches it. A requeue that
+# signalled each listed pid alone passed every row above (a mutation,
+# docs/DEFECTS.md 14.1); here the countdown runs out (`_`, 5 s) while the
+# child is started, and the requeue must leave nothing of the group behind.
+ticket_for AIF-4
+git add -A && git commit -qm "one more for the group" >/dev/null
+card AIF-4 ready
+set -m
+FAKE_SLEEP_IN="AIF-4:plan" FAKE_RELEASE="$SANDBOX/rel-4" FAKE_CHILD_AFTER="$SANDBOX/child-4" \
+  "$AIF" work AIF-4 >"$OUT/r4-work.out" 2>&1 &
+w=$!
+set +m
+HOLDS="$HOLDS $SANDBOX/rel-4"
+wait_for .aif/worktrees/AIF-4/.aif/tmp/fake-running-AIF-4-plan
+kill -9 "$w" 2>/dev/null
+wait "$w" 2>/dev/null
+start_bg "$OUT/r4-shift.out" env AIF_START_KEYS=_ AIF_START_WAIT=5 "$AIF" start --no-build
+r4=$BG
+wait_said "$OUT/r4-shift.out" "next: requeue AIF-4 " 20
+: >"$SANDBOX/child-4"
+i=0
+while ! pgrep -f 'sleep 58.7' >/dev/null 2>&1 && [ "$i" -lt 30 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+born="$(pgrep -f 'sleep 58.7' | wc -l | tr -d ' ')"
+rc=0
+wait_exit "$r4" 60 || rc=$?
+eq "R3b: a child the group gains after the facts were read — gone with the group, the card back at the top of Ready; the harness untouched" \
+  "$born,$rc,$(pgrep -f 'sleep 58.7' | wc -l | tr -d ' '),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-4" | wc -l | tr -d ' '),$(ready_list | cut -d' ' -f1),$(kill -0 $$ && echo alive)" \
+  "1,0,0,0,AIF-4,alive"
+pkill -f 'sleep 58.7' 2>/dev/null
+
+# Another clone of a project on this machine building the same id: its
+# station carries the same prompt in its argv, and it is not this card's to
+# stop. Here the dead worker left nothing; the requeue lists nothing, TERMs
+# nothing, and the other clone's build goes on (docs/DEFECTS.md 15.4).
+fresh_project "$SANDBOX/pB2"
+ticket_for AIF-5
+git add -A && git commit -qm "the same id, another checkout" >/dev/null
+card AIF-5 ready
+start_bg "$OUT/r5-other.out" env FAKE_SLEEP_IN="AIF-5:plan" FAKE_RELEASE="$SANDBOX/rel-5" "$AIF" work AIF-5
+r5o=$BG
+HOLDS="$HOLDS $SANDBOX/rel-5"
+wait_for .aif/worktrees/AIF-5/.aif/tmp/fake-running-AIF-5-plan
+other="$(cat .aif/state/runs/AIF-5/station 2>/dev/null)"
+cd "$PB" || exit 1
+ticket_for AIF-5
+git add -A && git commit -qm "AIF-5 here too" >/dev/null
+card AIF-5 ready
+set -m
+FAKE_SLEEP_IN="AIF-5:plan" FAKE_SLEEP_SECS=42 "$AIF" work AIF-5 >"$OUT/r5-work.out" 2>&1 &
+w=$!
+set +m
+wait_for .aif/worktrees/AIF-5/.aif/tmp/fake-running-AIF-5-plan
+kill -9 -- "-$w" 2>/dev/null
+wait "$w" 2>/dev/null
+rc=0
+run_bg "$OUT/r5-shift.out" 60 env AIF_START_KEYS=. "$AIF" start --no-build || rc=$?
+eq "R3b: another clone's station on the same id is not listed, and survives the requeue" \
+  "$rc,$(grep -c 'next: requeue AIF-5 .* · [0-9]* process' "$OUT/r5-shift.out"),$(ready_list | cut -d' ' -f1),$(kill -0 "${other:-999999}" 2>/dev/null && echo alive)" \
+  "0,0,AIF-5,alive"
+: >"$SANDBOX/rel-5"
+rc=0
+wait_exit "$r5o" 60 || rc=$?
+eq "…and that clone's build finishes on its own" "$rc,$(cd "$SANDBOX/pB2" && col AIF-5)" "0,review"
 
 # =================================== T ======================================
 printf '\nT. Trello — the stand-in server, with the real clock\n'

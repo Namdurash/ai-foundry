@@ -244,7 +244,13 @@ lock and whether its worker is alive, what a worker killed outright left running
 its worktree, branch and record. The shift reads it, and a card whose worker is
 gone mid-run goes back to the top of Ready on the countdown, after the shift
 sends a TERM to what it left running — and stays put, with `aif work --status`
-as its line, if any of it outlives 30 seconds.
+as its line, if any of it outlives 30 seconds. What a dead worker left is what
+its process group, its station's pid (kept in the run lock) and this clone's
+worktree name — never a station of another checkout building the same id. The
+next `aif work` on such a card does the same before it takes the lock over,
+and refuses with exit 3, naming what still runs, rather than build beside it;
+a run taken over three times stops instead (`blocked: run`), for someone to
+read before another worker dies the same way.
 
 A worktree reads everything about aif — the stations, the gates, the hooks, the
 fragments, the guide, `project.json` — from its own branch, and `aif init`

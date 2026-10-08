@@ -50,6 +50,12 @@
 # AIF_WORK_WORKTREES lives in lib/paths.sh: `aif doctor` needs it too, to tell
 # a project whose test runner is collecting these checkouts beside the real tree.
 
+# How many times one run may be taken over from a worker that died outright —
+# each time resumed, its caps fresh — before the next worker stops instead of
+# resuming it: workers that die the same way three times are the run's
+# problem, not bad luck (docs/DEFECTS.md 14.5; _aif_work_intake).
+AIF_WORK_TAKEOVERS_MAX=3
+
 _aif_work_usage() {
   cat <<EOF
 usage: aif work [<ticket>] [options]
@@ -381,8 +387,17 @@ _aif_work_lock_pid() {
 # dead worker's lock would have held its card for the rest of the night
 # (docs/DEFECTS.md 14.5). The glob is matched unquoted — a pattern, its `\ `
 # an escaped space, which bash 3.2 honours in a pattern held in a variable.
+#
+# And not a process that started after the lock was signed: a holder signs
+# its lock once it runs, so a pid handed out again since — to another `aif
+# work`, a loop's worker on another card most likely, which the command
+# matches — is not the holder, however its command reads (docs/DEFECTS.md
+# 14.5). Its start is `ps -o etime` back from now, the kernel's own count
+# (docs/FINDINGS.md #29), against the signature's `started_at`; two seconds of
+# slack for the two clocks' whole seconds. A lock signed without the field is
+# read as before.
 _aif_work_lock_live_as() {
-  local pid cmd glob="$2"
+  local pid cmd glob="$2" signed el
   pid="$(_aif_work_lock_pid "$1")"
   if [ -z "$pid" ]; then
     [ -n "$(find "$1" -maxdepth 0 -mmin -1 2>/dev/null)" ]
@@ -393,9 +408,20 @@ _aif_work_lock_live_as() {
   cmd="$(ps -o command= -p "$pid" 2>/dev/null)" || return 1
   # shellcheck disable=SC2254  # unquoted on purpose: the glob is the pattern
   case "$cmd" in
-    $glob) return 0 ;;
+    $glob) ;;
+    *) return 1 ;;
   esac
-  return 1
+  signed="$(jq -r '(.started_at // empty) | fromdateiso8601? // empty' "$1/owner.json" 2>/dev/null)" || signed=""
+  case "$signed" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  # [[dd-]hh:]mm:ss, as BSD and procps both print it.
+  el="$(ps -o etime= -p "$pid" 2>/dev/null | awk -F '[-:]' '{ n = NF; s = $n + 60 * $(n - 1)
+      if (n >= 3) s += 3600 * $(n - 2); if (n >= 4) s += 86400 * $(n - 3); print s; exit }')" || el=""
+  case "$el" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  [ $(($(date +%s) - el)) -le $((signed + 2)) ]
 }
 
 # _aif_work_lock_live <lock-dir> — rc 0 when a worker is behind the run lock:
@@ -404,9 +430,110 @@ _aif_work_lock_live() {
   _aif_work_lock_live_as "$1" '*aif\ work*'
 }
 
+# _aif_work_lock_take <lock-dir> <glob> [<before-takeover>] — take one of the
+# three locks — a run's (aif_run_lock_dir), the loop's, the shift's — or say
+# why not. rc 0 taken: AIF_LOCK_DEAD is the gone holder's pid when the lock
+# was taken over (`?` for one it never signed), else empty · 1 held, by a live
+# holder: AIF_LOCK_HELD says by what · 2 another taker took it, or is taking
+# it over, just now · 3 <before-takeover> refused, with AIF_LOCK_HELD.
+#
+# A free lock is a mkdir, atomic on every filesystem. A held one whose holder
+# is gone (_aif_work_lock_live_as) is taken over, and that used to be two
+# steps, `rm -rf` then `mkdir`: two runs that found the same dead lock in the
+# same instant both removed it and both made it again, and the second believed
+# it held a lock the first was already working under — written down in each
+# lock's comment instead of fixed, three times over (docs/DEFECTS.md 14.5).
+# The order now makes one taker win and every other one know it lost:
+#
+#   1. the mark: `mkdir <lock>/takeover` inside the dead lock's own directory,
+#      which only one taker gets. A lock replaced meanwhile by a fresh one
+#      takes the mark into the fresh one, and step 2 lets it go again;
+#   2. under the mark, the lock read again: still signed by the pid read as
+#      gone, and still dead — else someone took it over first;
+#   3. the dead lock moved aside (`mv`, a rename, atomic), and the copy
+#      checked to be the one read as dead and to carry this taker's mark —
+#      else a --stop or a loop's tell removed it under the mark and the path
+#      held another, which is put back while the path is free;
+#   4. the `mkdir` again: a fresh taker that came in between steps 3 and 4
+#      wins it, and this one refuses — exactly one holds the lock either way;
+#   5. the copy removed.
+#
+# The move first and the check after it would move a fresh lock aside too: a
+# second taker whose look came after the first one's mkdir renames the new
+# lock and only then finds a pid that is not the dead one, and the winner
+# works on under a path that is gone — 6 or 7 of 40 races, as `rm -rf` then
+# `mkdir` lost 5 to 10; with the mark, none (docs/FINDINGS.md #29; check-work
+# scenario 53 races two takers). A taker that died holding the mark leaves it
+# in a dead lock: a mark two minutes old is nobody's (find's -mmin +1 on
+# macOS: two minutes and more, #29).
+#
+# <before-takeover> <lock-dir> <dead-pid> runs once the lock is known dead and
+# before the mark: the run lock stops what its dead worker left running there
+# (_aif_work_lock_orphans), and a takeover with something still running is no
+# takeover — the dead lock stays, and says what it left.
+_aif_work_lock_take() {
+  local lock="$1" glob="$2" hook="${3:-}" pid mark aside
+  AIF_LOCK_HELD=""
+  AIF_LOCK_DEAD=""
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null && return 0
+  if _aif_work_lock_live_as "$lock" "$glob"; then
+    AIF_LOCK_HELD="$(jq -r '"pid " + (.pid | tostring) + ", since " + .started_at' "$lock/owner.json" 2>/dev/null)" || AIF_LOCK_HELD=""
+    [ -n "$AIF_LOCK_HELD" ] || AIF_LOCK_HELD="its lock was taken a moment ago"
+    return 1
+  fi
+  # Released between the mkdir and the look, by a holder that was alive: free.
+  if [ ! -d "$lock" ]; then
+    mkdir "$lock" 2>/dev/null && return 0
+    AIF_LOCK_HELD="another took it just now"
+    return 2
+  fi
+  pid="$(_aif_work_lock_pid "$lock")" || pid=""
+  if [ -n "$hook" ] && ! "$hook" "$lock" "$pid"; then
+    return 3
+  fi
+  mark="$lock/takeover"
+  if ! mkdir "$mark" 2>/dev/null; then
+    if [ -d "$mark" ] && [ -n "$(find "$mark" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      rmdir "$mark" 2>/dev/null || true
+    fi
+    if ! mkdir "$mark" 2>/dev/null; then
+      AIF_LOCK_HELD="another is taking it over just now"
+      return 2
+    fi
+  fi
+  if [ "$(_aif_work_lock_pid "$lock")" != "$pid" ] || _aif_work_lock_live_as "$lock" "$glob"; then
+    rmdir "$mark" 2>/dev/null || true
+    AIF_LOCK_HELD="another took it just now"
+    return 2
+  fi
+  aside="$(dirname "$lock")/.${lock##*/}.dead.$$"
+  rm -rf "${aside:?}" 2>/dev/null || true
+  if ! mv "$lock" "$aside" 2>/dev/null; then
+    AIF_LOCK_HELD="another took it just now"
+    return 2
+  fi
+  if [ ! -d "$aside/takeover" ] || [ "$(_aif_work_lock_pid "$aside")" != "$pid" ]; then
+    rmdir "$aside/takeover" 2>/dev/null || true
+    [ -e "$lock" ] || mv "$aside" "$lock" 2>/dev/null || true
+    AIF_LOCK_HELD="another took it just now"
+    return 2
+  fi
+  if ! mkdir "$lock" 2>/dev/null; then
+    rm -rf "${aside:?}" 2>/dev/null || true
+    AIF_LOCK_HELD="another took it just now"
+    return 2
+  fi
+  rm -rf "${aside:?}" 2>/dev/null || true
+  AIF_LOCK_DEAD="${pid:-?}"
+  return 0
+}
+
 # _aif_work_lock <root> <ticket> — take the run lock for <ticket>, or say who
-# holds it. rc 0 taken, AIF_WORK_LOCK names it · 1 held, AIF_WORK_LOCK_HELD
-# says by what.
+# holds it. rc 0 taken, AIF_WORK_LOCK names it, and AIF_WORK_TOOK_OVER the
+# dead worker's pid when it was taken over · 1 held, AIF_WORK_LOCK_HELD says
+# by what · 3 its worker is gone and what it started still runs, named in
+# AIF_WORK_LOCK_HELD: no takeover.
 #
 # Nothing else stops a second `aif work` on the same ticket: it reuses the
 # worktree, resumes the same run record, and dispatches into the tree the
@@ -414,35 +541,110 @@ _aif_work_lock_live() {
 # moves a moment AFTER this, and on a shared board it says nothing about which
 # machine took it.
 #
-# A lock whose worker is gone is taken over. Two runs that find the same dead
-# lock in the same instant can both take it over: the remove and the mkdir are
-# two steps, and no POSIX primitive makes them one without flock. The window
-# is that instant after a crash, and it is written down rather than pretended
-# away.
+# A lock whose worker is gone is taken over (_aif_work_lock_take), once what
+# that worker left running is stopped (_aif_work_lock_orphans). The owner
+# records the worker's process group beside its pid: a station is in it, and
+# so is anything the station started that left the worktree, and a takeover
+# reads it to tell an orphan from a free tree (docs/DEFECTS.md 14.1). `ps` is
+# asked for it once, here.
 _aif_work_lock() {
-  local root="$1" ticket="$2" lock pid
+  local root="$1" ticket="$2" lock rc=0 pgid
   AIF_WORK_LOCK_HELD=""
+  AIF_WORK_TOOK_OVER=""
   lock="$(aif_run_lock_dir "$root" "$ticket")"
-  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
-  if ! mkdir "$lock" 2>/dev/null; then
-    if _aif_work_lock_live "$lock"; then
-      AIF_WORK_LOCK_HELD="$(jq -r '"pid " + (.pid | tostring) + ", since " + .started_at' "$lock/owner.json" 2>/dev/null)"
-      [ -n "$AIF_WORK_LOCK_HELD" ] || AIF_WORK_LOCK_HELD="its lock was taken a moment ago"
+  AIF_WORK_LOCKING_MAIN="$(aif_main_root "$root")"
+  AIF_WORK_LOCKING_ID="$ticket"
+  _aif_work_lock_take "$lock" '*aif\ work*' _aif_work_lock_orphans || rc=$?
+  case "$rc" in
+    0) ;;
+    3)
+      AIF_WORK_LOCK_HELD="$AIF_LOCK_HELD"
+      return 3
+      ;;
+    *)
+      AIF_WORK_LOCK_HELD="$AIF_LOCK_HELD"
       return 1
-    fi
-    pid="$(_aif_work_lock_pid "$lock")"
-    rm -rf "${lock:?}"
-    if ! mkdir "$lock" 2>/dev/null; then
-      AIF_WORK_LOCK_HELD="another run took it just now"
-      return 1
-    fi
-    _aif_work_say "lock" "$ticket — the worker that held it (pid ${pid:-?}) is gone; taken over"
+      ;;
+  esac
+  if [ -n "$AIF_LOCK_DEAD" ]; then
+    AIF_WORK_TOOK_OVER="$AIF_LOCK_DEAD"
+    _aif_work_say "lock" "$ticket — the worker that held it (pid $AIF_LOCK_DEAD) is gone; taken over"
   fi
-  jq -n --argjson pid "$$" --arg t "$ticket" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '{ ticket: $t, pid: $pid, started_at: $at }' >"$lock/owner.json.tmp" &&
+  pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')" || pgid=""
+  case "$pgid" in
+    '' | *[!0-9]*) pgid=null ;;
+  esac
+  jq -n --argjson pid "$$" --argjson pgid "$pgid" --arg t "$ticket" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{ ticket: $t, pid: $pid, pgid: $pgid, started_at: $at }' >"$lock/owner.json.tmp" &&
     mv "$lock/owner.json.tmp" "$lock/owner.json"
   AIF_WORK_LOCK="$lock"
   return 0
+}
+
+# _aif_work_lock_orphans <lock-dir> <dead-pid> — before a dead run lock is
+# taken over: what its worker left running, stopped. rc 0 nothing of it runs
+# now · 1 something still does after the wait, named in AIF_LOCK_HELD.
+#
+# A worker killed outright runs no handler, and its station goes on writing in
+# the worktree; the takeover used to look at nothing but the lock, and resumed
+# the run and dispatched a station of its own into that tree beside the orphan
+# (docs/DEFECTS.md 14.1). So what `aif work --status` lists for the dead lock
+# (_aif_work_status_orphans) is sent a TERM first — the whole group, once,
+# when the dead worker led it (pgid = its pid, and that pid gone: the group can
+# only be its own), else each process alone, never a group some other program
+# leads — and looked for again every second, up to AIF_WORK_TAKEOVER_WAIT
+# seconds (30): a process the last look missed, a child a station started
+# after it, gets its TERM on the next. Something still there at the end — a
+# shell someone has open in the worktree, a process that ignores TERM — and
+# there is no takeover: exit 3, the card untouched, the dead lock left to say
+# what it left.
+_aif_work_lock_orphans() {
+  local lock="$1" lp="$2" main="${AIF_WORK_LOCKING_MAIN:-}" id="${AIF_WORK_LOCKING_ID:-}"
+  local orph n rows pid pgid sent=" " deadline wait_s said=0 led=0 grp
+  wait_s="${AIF_WORK_TAKEOVER_WAIT:-30}"
+  case "$wait_s" in
+    '' | *[!0-9]*) wait_s=30 ;;
+  esac
+  deadline=$((SECONDS + wait_s))
+  # The dead worker led the group when the group's id is its pid — and with
+  # that pid gone, nobody else can lead it.
+  [ -z "$lp" ] || _aif_work_pid_alive "$lp" || led=1
+  while :; do
+    orph="$(_aif_work_status_orphans "$main" "$id" "$lock")" || orph='[]'
+    n="$(printf '%s' "$orph" | jq 'length' 2>/dev/null)" || n=0
+    case "$n" in
+      '' | *[!0-9]*) n=0 ;;
+    esac
+    [ "$n" -gt 0 ] || return 0
+    if [ "$said" -eq 0 ]; then
+      said=1
+      _aif_work_say "lock" "$id — the worker that held it (pid ${lp:-?}) is gone, and $n process(es) it started still run — TERM, up to ${wait_s}s, before it is taken over"
+    fi
+    # Each process once; the group once a look, whenever the look finds a
+    # member it had not seen — one a station started after the last look.
+    rows="$(printf '%s' "$orph" | jq -r '.[] | "\(.pid) \(.pgid)"' 2>/dev/null)" || rows=""
+    grp=""
+    while read -r pid pgid; do
+      [ -n "$pid" ] || continue
+      case "$sent" in
+        *" $pid "*) continue ;;
+      esac
+      sent="$sent$pid "
+      if [ "$led" -eq 1 ] && [ "$pgid" = "$lp" ]; then
+        grp="$pgid"
+      else
+        kill -TERM "$pid" 2>/dev/null || true
+      fi
+    done <<EOF
+$rows
+EOF
+    [ -z "$grp" ] || kill -TERM -- "-$grp" 2>/dev/null || true
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 1
+  done
+  AIF_LOCK_HELD="$(printf '%s' "$orph" | jq -r '[ .[] | "pid \(.pid) (\(.command | .[0:60]))" ] | join(", ")' 2>/dev/null)" || AIF_LOCK_HELD=""
+  [ -n "$AIF_LOCK_HELD" ] || AIF_LOCK_HELD="$n process(es)"
+  return 1
 }
 
 # _aif_work_unlock — release the run lock, if this process is the one holding it.
@@ -511,6 +713,17 @@ _aif_work_stop() {
       return 1
     fi
     [ "$rc" -eq 0 ] || col=""
+    # What the gone worker left running is stopped with it, as a takeover
+    # stops it (_aif_work_lock_orphans): the lock is what names it, and a
+    # lock removed over a live station let the next `aif work` take the
+    # ticket as fresh and dispatch into the tree that station still edits
+    # (docs/DEFECTS.md 14.1). Something that will not stop keeps the lock.
+    AIF_WORK_LOCKING_MAIN="$(aif_main_root "$root")"
+    AIF_WORK_LOCKING_ID="$ticket"
+    if ! _aif_work_lock_orphans "$lock" "$pid"; then
+      aif_err "the worker on $ticket (pid ${pid:-?}) is gone, and what it started still runs: $AIF_LOCK_HELD — the lock is kept and the card untouched; aif work --status $ticket lists it"
+      return 1
+    fi
     rm -rf "${lock:?}"
     if [ "$col" = "in_progress" ]; then
       _aif_work_block "$root" "$ticket" stopped \
@@ -574,39 +787,116 @@ _aif_work_pid_alive() {
   return 0
 }
 
-# _aif_work_status_orphans <ticket> <lock-pid> <by-group 0|1> — what a dead
-# worker left running, as a JSON array of { pid, pgid, command }.
+# _aif_work_status_orphans <main> <ticket> <lock-dir> — what the dead worker
+# behind <lock-dir> left running, as a JSON array of { pid, pgid, why,
+# command }, `why` the rule that named it: group, station or cwd.
 #
 # A worker killed outright — kill -9, a crash — runs no handler, and the
 # station under it goes on writing in the worktree with nobody to judge what
-# it writes; the next run takes the lock over and dispatches into the same
-# tree (docs/DEFECTS.md 14.1). The ppid walk of _aif_work_descendants finds
-# nothing of it: an orphan is the init process's child now. Two things still
-# name it. Its process group — the loop starts each worker as a group leader,
-# the station stays in that group, and a group's id is not handed out again
-# while it has a member — but only when the lock's pid is GONE: a pid alive
-# under another command belongs to some other program now, its group is that
-# program's, and a requeue that TERMed it would stop something unrelated. And
-# the station's prompt, `Ticket <ID>. `, which its argv carries (the offline
-# seam's too) — how a station is found whose worker a script started without
-# job control, in a group that is not the worker's. The table is held, then
-# matched (docs/FINDINGS.md #19); a command is cut to 200 characters, because
-# a station's argv carries its whole system prompt. Never listed: this
-# process, and the lock's own pid — a zombie, or someone else's.
+# it writes; the next run used to take the lock over and dispatch into the
+# same tree (docs/DEFECTS.md 14.1). The ppid walk of _aif_work_descendants
+# finds nothing of it: an orphan is the init process's child now. Three
+# things still name it, each tied to THIS clone:
+#
+#   group    its process group is the one the lock records (owner.json's
+#            pgid; its pid for a lock from before the field), and that
+#            group's leader is gone — a group's id is not handed out again
+#            while it has a member, so with its leader gone the group can only
+#            be the dead worker's: the loop starts each worker as a group
+#            leader, the station stays in it, and so does a child that left
+#            the worktree with no prompt in its argv. A leader alive — a pid
+#            reused by some other program, or the script that started the
+#            worker without job control — and the group is someone else's,
+#            never listed;
+#   station  the pid the station wrote into <lock>/station as it started
+#            (_aif_work_dispatch), alive and still running a station's
+#            command — its argv carries the prompt's opening, `Ticket <ID>. `;
+#   cwd      its working directory is inside this clone's worktree for the
+#            ticket (`lsof -d cwd`, about 0.6 s for every process on a Mac —
+#            probed 2026-10-07, docs/FINDINGS.md #29): what a gate's suite or
+#            prepare's install left there when the worker shared its parent's
+#            group, and a claude Bash tool's command, which leads a session of
+#            its own (#28).
+#
+# The prompt alone used to be a rule, and a second clone of the project on
+# this machine building the same id runs a station with the same argv: its
+# live build was listed as this clone's orphan, and a requeue TERMed it
+# (docs/DEFECTS.md 15.4). It counts now only for a process whose working
+# directory is this clone's — its worktree, or the checkout itself, where a
+# --no-worktree run builds. Paths are compared as `pwd -P` and lsof give them.
+#
+# Never listed: the reader itself — this process, every process above it, and
+# every process it started (the `$(…)` this runs in, the ps and the lsof) — a
+# zombie, and the lock's own pid, a zombie or someone else's. The table is
+# held, then matched (docs/FINDINGS.md #19); a command is cut to 200
+# characters, because a station's argv carries its whole system prompt.
 _aif_work_status_orphans() {
-  local rows
-  rows="$(ps -A -o pid= -o pgid= -o command= 2>/dev/null)" || rows=""
-  printf '%s\n' "$rows" | awk -v lp="$2" -v grp="$3" -v sig="Ticket $1. " -v me="$$" '
-    {
-      pid = $1; pgid = $2; cmd = $0
-      sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]*/, "", cmd)
-      if (pid == me || pid == lp) next
-      if ((grp == 1 && pgid == lp) || index(cmd, sig) > 0) {
-        gsub(/\t/, " ", cmd)
-        printf "%s\t%s\t%s\n", pid, pgid, cmd
+  local main="$1" id="$2" lock="$3" lp grp sp wt="" cwds rows lsof_bin
+  lp="$(_aif_work_lock_pid "$lock")" || lp=""
+  grp="$(jq -r '.pgid // empty' "$lock/owner.json" 2>/dev/null)" || grp=""
+  [ -n "$grp" ] || grp="$lp"
+  sp="$(sed -n 1p "$lock/station" 2>/dev/null)" || sp=""
+  case "$lp" in
+    *[!0-9]*) lp="" ;;
+  esac
+  case "$grp" in
+    *[!0-9]*) grp="" ;;
+  esac
+  case "$sp" in
+    *[!0-9]*) sp="" ;;
+  esac
+  [ ! -d "$main/$AIF_WORK_WORKTREES/$id" ] || wt="$(cd "$main/$AIF_WORK_WORKTREES/$id" 2>/dev/null && pwd -P)" || wt=""
+  # macOS keeps lsof in /usr/sbin, which a PATH set for a job may leave out;
+  # with no lsof at all the cwd rule is silent and the other two still hold.
+  cwds=""
+  lsof_bin="$(command -v lsof 2>/dev/null)" || lsof_bin=""
+  [ -n "$lsof_bin" ] || [ ! -x /usr/sbin/lsof ] || lsof_bin=/usr/sbin/lsof
+  if [ -n "$lsof_bin" ]; then
+    cwds="$("$lsof_bin" -a -d cwd -Fpn 2>/dev/null | awk '/^p/ { p = substr($0, 2) } /^n/ { print "C\t" p "\t" substr($0, 2) }')" || cwds=""
+  fi
+  rows="$(ps -A -o pid= -o ppid= -o pgid= -o stat= -o command= 2>/dev/null | awk '{ print "P\t" $0 }')" || rows=""
+  # The paths through the environment: awk's -v reads a backslash in a value
+  # as an escape.
+  printf '%s\n%s\n' "$cwds" "$rows" |
+    AIF_ORPHAN_WT="$wt" AIF_ORPHAN_MAIN="$main" awk -F '\t' -v me="$$" -v lp="$lp" -v grp="$grp" \
+    -v sp="$sp" -v sig="Ticket $id. " '
+    BEGIN { wt = ENVIRON["AIF_ORPHAN_WT"]; main = ENVIRON["AIF_ORPHAN_MAIN"] }
+    $1 == "C" { cwd[$2] = $3; next }
+    $1 == "P" {
+      line = substr($0, 3)
+      split(line, f, " ")
+      cmd = line
+      sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[0-9]+[ \t]+[^ \t]+[ \t]*/, "", cmd)
+      n++; P[n] = f[1]; PP[f[1]] = f[2]; G[f[1]] = f[3]; S[f[1]] = f[4]; C[f[1]] = cmd
+    }
+    END {
+      x = me; k = 0
+      while (x != "" && x + 0 > 1 && k < 256) { skip[x] = 1; x = PP[x]; k++ }
+      for (i = 1; i <= n; i++) {
+        p = P[i]; x = PP[p]; k = 0
+        while (x != "" && x + 0 > 1 && k < 256) {
+          if (x == me) { skip[p] = 1; break }
+          x = PP[x]; k++
+        }
+      }
+      gone = 0
+      if (grp != "") { gone = 1; if ((grp in S) && S[grp] !~ /Z/) gone = 0 }
+      for (i = 1; i <= n; i++) {
+        p = P[i]
+        if (p == "" || (p in skip) || p == lp || S[p] ~ /Z/) continue
+        c = (p in cwd) ? cwd[p] : ""
+        inwt = (wt != "" && (c == wt || index(c, wt "/") == 1))
+        why = ""
+        if (gone && G[p] == grp) why = "group"
+        else if (sp != "" && p == sp && index(C[p], sig) > 0) why = "station"
+        else if (index(C[p], sig) > 0 && (inwt || (c != "" && c == main))) why = "station"
+        else if (inwt) why = "cwd"
+        if (why == "") continue
+        cm = C[p]; gsub(/\t/, " ", cm)
+        printf "%s\t%s\t%s\t%s\n", p, G[p], why, cm
       }
     }' | jq -R -s -c '[ split("\n")[] | select(length > 0) | split("\t")
-      | { pid: (.[0] | tonumber), pgid: (.[1] | tonumber), command: ((.[2] // "") | .[0:200]) } ]'
+      | { pid: (.[0] | tonumber), pgid: (.[1] | tonumber), why: .[2], command: ((.[3] // "") | .[0:200]) } ]'
 }
 
 # _aif_work_status_json <root> <ticket> — everything this machine knows of
@@ -644,7 +934,7 @@ _aif_work_status_orphans() {
 # verdict of the round before the one now in the worktree.
 _aif_work_status_json() {
   local root="$1" id="$2" main lock wt held=false live=false pid="" alive=false
-  local owner=null livej=null phase="" stopby="" ack=false orphans='[]' grp
+  local owner=null livej=null phase="" stopby="" ack=false orphans='[]' station=""
   local wtx=false brx=false subj="" where="" rec=null brec=null report="" tsha=""
   local bfile bx=false bhead="" bmtime="" f t
   main="$(aif_main_root "$root")"
@@ -664,11 +954,15 @@ _aif_work_status_json() {
     phase="$(sed -n 1p "$lock/phase" 2>/dev/null)" || phase=""
     [ ! -f "$lock/stop" ] || stopby="$(sed -n 1p "$lock/stop" 2>/dev/null)" || stopby=""
     [ ! -f "$lock/ack" ] || ack=true
+    station="$(sed -n 1p "$lock/station" 2>/dev/null)" || station=""
+    case "$station" in
+      *[!0-9]*) station="" ;;
+    esac
     [ -z "$pid" ] || ! _aif_work_pid_alive "$pid" || alive=true
-    if [ "$live" = false ] && [ -n "$pid" ]; then
-      grp=0
-      [ "$alive" = true ] || grp=1
-      orphans="$(_aif_work_status_orphans "$id" "$pid" "$grp")" || orphans=""
+    # A dead lock, signed or not: what its worker left is named by the lock's
+    # group and station and by this clone's worktree (docs/DEFECTS.md 14.1).
+    if [ "$live" = false ]; then
+      orphans="$(_aif_work_status_orphans "$main" "$id" "$lock")" || orphans=""
       [ -n "$orphans" ] || orphans='[]'
     fi
   fi
@@ -745,7 +1039,7 @@ _aif_work_status_json() {
   jq -n -c --arg t "$id" --arg host "$(aif_host_short)" \
     --argjson held "$held" --argjson live "$live" --arg pid "$pid" --argjson alive "$alive" \
     --argjson owner "$owner" --argjson lj "$livej" --arg phase "$phase" --arg stopby "$stopby" \
-    --argjson ack "$ack" --argjson orphans "$orphans" \
+    --argjson ack "$ack" --argjson orphans "$orphans" --arg station "$station" \
     --arg wtpath "$wt" --argjson wtx "$wtx" --argjson brx "$brx" --arg subj "$subj" \
     --arg where "$where" --argjson rec "$rec" --argjson brec "$brec" --arg report "$report" --arg tsha "$tsha" \
     --arg bpath "$bfile" --argjson bx "$bx" --arg bhead "$bhead" --arg bmtime "$bmtime" '
@@ -771,10 +1065,15 @@ _aif_work_status_json() {
     | ($bmtime | num) as $mt
     | ($bx and $mt != null and $since != null and $mt >= $since) as $fresh
     | ($orphans | length) as $k
-    | ([ $orphans[] | select(.pgid == $p) ] | length) as $kg
+    | ([ $orphans[] | select(.why == "group") ] | length) as $kg
+    | ([ $orphans[] | select(.why == "station") ] | length) as $ks
+    | ([ $orphans[] | select(.why == "cwd") ] | length) as $kc
     | (if $k == 0 then "; nothing of it still runs"
        elif $kg == $k then "; \($k) \(times($k; "process"; "processes")) still in its group"
-       else "; \($k) \(times($k; "process"; "processes")) still running its station" end) as $left
+       else "; \($k) \(times($k; "process"; "processes")) still running — "
+            + ([ (if $kg > 0 then "\($kg) in its group" else empty end),
+                 (if $ks > 0 then "\($ks) running its station" else empty end),
+                 (if $kc > 0 then "\($kc) in its worktree" else empty end) ] | join(", ")) end) as $left
     | (if $p == null then "" else " (pid \($p))" end) as $pp
     | (if $live then "live"
        elif $bst == "built" and $report == ("# " + $t + " — built") and ($changed | not) then "built"
@@ -798,10 +1097,14 @@ _aif_work_status_json() {
        elif $class == "interrupted" then
          (if $p == null then "a worker took its lock and is gone without signing it"
           else "its worker\($pp) is gone" + (if $alive then " (the pid now runs another program)" else "" end) end)
-         + (if $r == null then " during its \($ph // "claim"), before its intake — no station ran"
+         # A lock with no phase file was not "during its claim" — the phase is
+         # written right after the lock, and a worker killed in between left
+         # nothing to say where it was (docs/DEFECTS.md 15.9).
+         + (if $r == null then
+              (if $ph == null then ", its phase unknown" else " during its \($ph)" end) + ", before its intake — no station ran"
             elif $st == "built" then ", and the build on branch \($b) is of the ticket before its rework"
             else " mid-\($at)\($att)" end)
-         + (if $p == null then "" else $left end)
+         + (if $p == null and $k == 0 then "" else $left end)
        elif $class == "settled_running" then
          (if $st == "built" then "the build on branch \($b) is of the ticket before its rework, and no worker is on it"
           else "its run stopped mid-\($r.stage // "run"), and its worker settled the card on the way out" end)
@@ -812,7 +1115,8 @@ _aif_work_status_json() {
          (if $wtx then "a worktree" else "branch \($b)" end) + ", but no run record — its worker stopped before its intake; nothing was spent"
        else "nothing of it on this machine" end) as $why
     | { ticket: $t, host: $host,
-        lock: { held: $held, live: $live, pid: $p, pid_alive: $alive,
+        lock: { held: $held, live: $live, pid: $p, pid_alive: $alive, pgid: ($o.pgid // null),
+                station: ($station | num),
                 started_at: ($o.started_at // null), started: ($l.started // null),
                 phase: $ph, stage: ($l.stage // null), attempt: ($l.attempt // null), last: ($l.last // null),
                 stop_requested_by: ($stopby | n), handler_ran: $ack, orphans: $orphans },
@@ -821,7 +1125,8 @@ _aif_work_status_json() {
         run: { where: $w, status: $st, stage: ($r.stage // null), started_at: ($r.started_at // null),
                finished_at: ($r.finished_at // null), why_head: ($r.why | first_line),
                ticket_sha256: ($r.ticket_sha256 // null), branch: ($r.branch // null),
-               branch_status: $bst, branch_finished_at: $bfin, ticket_changed: $changed },
+               branch_status: $bst, branch_finished_at: $bfin, ticket_changed: $changed,
+               takeovers: ($r.takeovers // 0) },
         report: { head: ($report | n) },
         blocked_file: { path: $bpath, exists: $bx, head: ($bhead | n), mtime: $mt, fresh: $fresh },
         class: $class, why: $why }' || {
@@ -848,13 +1153,28 @@ _aif_work_status() {
   fi
   main="$(aif_main_root "$root")"
   # Names a path can be built from, and nothing else: a ref aif/x/y is not a
-  # ticket of ours.
+  # ticket of ours. A --no-worktree build leaves no lock, worktree or branch
+  # once it ends — its one trace is its record in this checkout, its worktree
+  # field the checkout's own absolute path — and it was missing from this
+  # list (docs/DEFECTS.md 15.9). A record whose field is relative is a
+  # worktree run's copy a land brought back, which the reader passes by too;
+  # grep finds the candidates, so a checkout of many tickets costs one jq per
+  # --no-worktree record, not one per ticket — and finding none is no
+  # failure: under pipefail its exit 1 took every other id with it. (No
+  # comment inside the substitution: bash 3.2 reads an apostrophe in a
+  # comment there as an open quote, probed.)
   ids="$(
     {
       for t in "$main/.aif/state/runs"/* "$main/$AIF_WORK_WORKTREES"/*; do
         [ ! -d "$t" ] || printf '%s\n' "${t##*/}"
       done
       git -C "$main" for-each-ref --format='%(refname)' refs/heads/aif/ 2>/dev/null | sed 's|^refs/heads/aif/||'
+      { grep -l '"worktree": *"/' "$main/$AIF_TASKS_DIR"/*/run.json 2>/dev/null || true; } | while IFS= read -r t; do
+        if jq -e '(.worktree // "") | startswith("/")' "$t" >/dev/null 2>&1; then
+          t="${t%/run.json}"
+          printf '%s\n' "${t##*/}"
+        fi
+      done
     } | grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*$' | LC_ALL=C sort -u
   )" || ids=""
   for t in $ids; do
@@ -1281,10 +1601,27 @@ _aif_work_intake() {
     return 2
   fi
 
-  local set_version old_base old_status set_was put_back
+  local set_version old_base old_status set_was put_back takeovers=0 took=0
   set_version="$(jq -r '.set_version // empty' "$wt/.aif/manifest.json" 2>/dev/null)"
   base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
   if [ -f "$(aif_run_path "$work")" ] && aif_run_resumable "$work" "$set_version"; then
+    # A resume gives the record fresh caps, by design — and so a ticket whose
+    # every worker died the same way, killed outright and its lock taken over
+    # by the next one, was resumed for good, each worker's death unseen by the
+    # one after it (docs/DEFECTS.md 14.5). The takeovers are counted in the
+    # record, which a resume does not reset, and the cap stops the run before
+    # the next resume: rc 4, AIF_WORK_TAKEOVERS says how many.
+    if [ -n "${AIF_WORK_TOOK_OVER:-}" ]; then
+      takeovers="$(aif_run_get "$work" '.takeovers')" || takeovers=0
+      case "$takeovers" in
+        '' | *[!0-9]*) takeovers=0 ;;
+      esac
+      if [ "$takeovers" -ge "$AIF_WORK_TAKEOVERS_MAX" ]; then
+        AIF_WORK_TAKEOVERS="$takeovers"
+        return 4
+      fi
+      took=1
+    fi
     # The ticket has not moved since the last run stopped. Keep the stage; give
     # it a fresh attempt count and a fresh budget, because this is a new
     # invocation and the caps are per-invocation. NOT a fresh base: the report
@@ -1296,8 +1633,12 @@ _aif_work_intake() {
     aif_run_update "$work" \
       '.attempts = {} | .dispatches = 0 | .spent_usd = 0 | .status = "running"
        | .why = null | .finished_at = null | .started_at = $at
-       | .base = (.base // $base) | .set_version = (.set_version // $sv)' \
-      --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base" --arg sv "$set_version"
+       | .base = (.base // $base) | .set_version = (.set_version // $sv)
+       | .takeovers = ((.takeovers // 0) + $took)' \
+      --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg base "$base" --arg sv "$set_version" \
+      --argjson took "$took"
+    [ "$took" -eq 0 ] ||
+      _aif_work_say "resume" "taken over from a worker that died (pid $AIF_WORK_TOOK_OVER) — takeover $((takeovers + 1)) of the $AIF_WORK_TAKEOVERS_MAX a run may have"
     # A plan station resumed is a plan station about to read the repository,
     # and a plan that stopped — on a spec stop, mostly — left its contract on
     # the floor: skeletons and edits nothing committed. Read as the repository,
@@ -1530,13 +1871,34 @@ $complaint"
   # installed beside it.
   local path_was="$PATH"
   export PATH="$AIF_ROOT/bin:$PATH"
+  # The station's own pid, in the run lock while it runs: written by the
+  # station's process itself, a `/bin/sh` that execs the station in its place
+  # (the runner's, and the seam's here), so the station stays the worker's
+  # foreground child, in the worker's group, where a Ctrl-C and a --stop
+  # reach it as before — never a background `&`, which a non-interactive bash
+  # starts with SIGINT ignored (docs/FINDINGS.md #23; the wrapper probed in
+  # #29: the file holds the station's pid, its pgid is the worker's, a group
+  # INT and a TERM to the worker's children each ended it at once). A worker
+  # killed outright leaves the file, and the takeover reads it: the station
+  # of a worker a script started without job control is in no group of its
+  # own to find it by (docs/DEFECTS.md 14.1). Gone once the dispatch ends.
+  local pidfile=""
+  [ -z "${AIF_WORK_LOCK:-}" ] || [ ! -d "$AIF_WORK_LOCK" ] || pidfile="$AIF_WORK_LOCK/station"
   if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
-    "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
-      "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
+    if [ -n "$pidfile" ]; then
+      # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
+      /bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" \
+        "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
+        "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
+    else
+      "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
+        "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
+    fi
   else
     "aif_runner_${AIF_PROFILE_RUNNER}_station" "$wt" "$sys" "$prompt" "$model" \
-      "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
+      "$max_turns" "$budget_left" "$tools" "$out" "$err" "$pidfile" || rc=$?
   fi
+  [ -z "$pidfile" ] || rm -f "$pidfile"
   export PATH="$path_was"
   unset AIF_STATION
   rm -f "$sys"
@@ -3383,33 +3745,33 @@ _aif_work_loop_stop_runs() {
 # a second loop is refused before it probes the suite, and before the loop
 # names its log directory: a refused loop given the same AIF_WORK_LOOP_LOGDIR
 # must not remove the first one's summary.json on its way out
-# (docs/DEFECTS.md 14.3). The run lock's shape (_aif_work_lock), its takeover
-# and the race its comment writes down included; its liveness matches `aif
-# work … --loop`, not a worker and not the word (docs/DEFECTS.md 14.5).
+# (docs/DEFECTS.md 14.3). Taken the way the run lock and the shift lock are
+# (_aif_work_lock_take): a dead lock taken over by one taker only, where it
+# used to be `rm -rf` then `mkdir`, which two loops started in the same
+# instant over a dead one both passed (docs/DEFECTS.md 14.5); its liveness
+# matches `aif work … --loop`, not a worker and not the word.
 # owner.json is what a shift in another terminal reads of the loop: its pid
 # and host, since when, how many at once, whether it idles, and where its
 # logs and summary.json are — null until the loop has named the directory,
 # after its preflight.
 _aif_work_loop_lock() {
-  local root="$1" parallel="$2" idle="$3" lock pid held
+  local root="$1" parallel="$2" idle="$3" lock rc=0
   AIF_WORK_LOOP_LOCK=""
   lock="$(aif_loop_lock_dir "$root")"
-  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
-  if ! mkdir "$lock" 2>/dev/null; then
-    if _aif_work_lock_live_as "$lock" '*aif\ work*--loop*'; then
-      held="$(jq -r '"pid " + (.pid | tostring) + ", since " + .started_at' "$lock/owner.json" 2>/dev/null)" || held=""
-      [ -n "$held" ] || held="its lock was taken a moment ago"
-      aif_err "a loop is already running on this checkout ($held) — it takes the cards from Ready, and a second would race it. Stop it with Ctrl-C in its terminal, or: aif work --loop --stop"
+  _aif_work_lock_take "$lock" '*aif\ work*--loop*' || rc=$?
+  case "$rc" in
+    0) ;;
+    1)
+      aif_err "a loop is already running on this checkout ($AIF_LOCK_HELD) — it takes the cards from Ready, and a second would race it. Stop it with Ctrl-C in its terminal, or: aif work --loop --stop"
       return 1
-    fi
-    pid="$(_aif_work_lock_pid "$lock")"
-    rm -rf "${lock:?}"
-    if ! mkdir "$lock" 2>/dev/null; then
+      ;;
+    *)
       aif_err "a loop is already running on this checkout — another took its lock just now, and a second would race it"
       return 1
-    fi
-    _aif_work_say "lock" "the loop that held this checkout (pid ${pid:-?}) is gone; taken over"
-  fi
+      ;;
+  esac
+  [ -z "$AIF_LOCK_DEAD" ] ||
+    _aif_work_say "lock" "the loop that held this checkout (pid $AIF_LOCK_DEAD) is gone; taken over"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   if ! {
     jq -n --argjson pid "$$" --arg host "$(aif_host_short)" \
@@ -3739,7 +4101,14 @@ aif_cmd_work() {
   # was in this terminal. So the card is taken first, and from here every way
   # out ends with it in Review, or in Needs Human with a comment saying why —
   # a machine that cannot run the suite included (blocked: environment).
-  if ! _aif_work_lock "$root" "$ticket"; then
+  local lock_rc=0
+  _aif_work_lock "$root" "$ticket" || lock_rc=$?
+  if [ "$lock_rc" -eq 3 ]; then
+    # Never a takeover into a tree an orphan edits (docs/DEFECTS.md 14.1).
+    aif_err "$ticket's last worker is gone, and what it started still runs: $AIF_WORK_LOCK_HELD — not taken over. Nothing was spent, and its card was not touched. aif work --status $ticket lists it; once it has stopped, run this again"
+    exit 3
+  fi
+  if [ "$lock_rc" -ne 0 ]; then
     aif_err "$ticket is being built by another worker on this machine ($AIF_WORK_LOCK_HELD). Nothing was spent, and its card was not touched. To stop that run: aif work $ticket --stop"
     exit 3
   fi
@@ -3816,6 +4185,18 @@ aif_cmd_work() {
   local intake_rc=0 nr nr_why
   AIF_WORK_NOT_READY=""
   _aif_work_intake "$root" "$wt" "$ticket" || intake_rc=$?
+  if [ "$intake_rc" -eq 4 ]; then
+    # The takeover cap (docs/DEFECTS.md 14.5): the record says so too, so
+    # that `aif work --status` reads a stopped run and not one still running.
+    nr_why="taken over $AIF_WORK_TAKEOVERS times; its workers died the same way each time — read the run before another"
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+    aif_run_update "$(aif_task_dir "$wt" "$ticket")" \
+      '.status = "stopped" | .why = $why | .finished_at = $at' \
+      --arg why "$nr_why" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" || true
+    _aif_work_block "$root" "$ticket" run "$nr_why" "" || true
+    AIF_WORK_SETTLED=1
+    exit 1
+  fi
   if [ "$intake_rc" -eq 3 ]; then
     nr="$(mktemp "${TMPDIR:-/tmp}/aif-pull-XXXXXX")"
     printf '%s\n' "${AIF_WORK_NOT_READY:-the board did not answer}" | sed 's/^/    /' >"$nr"

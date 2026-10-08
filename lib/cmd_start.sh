@@ -627,30 +627,33 @@ _aif_start_say() {
 # AIF_START_LOCK names it · 1 held, said.
 #
 # One shift per checkout: two would offer the same review twice, and each
-# make the same move once. The run lock's shape (_aif_work_lock) and its
-# takeover of a holder that is gone, with the race its comment writes down;
-# its liveness matches `aif start`, never the word — a reused pid held by a
-# `claude '/aif-review …'` session is not a shift (docs/DEFECTS.md 14.5).
-# owner.json names the shift's directory before it exists: it is made only
-# once the start has passed, so that a refused start leaves none.
+# make the same move once. Taken the way the run lock and the loop lock are
+# (lib/cmd_work.sh _aif_work_lock_take): the takeover of a holder that is gone
+# by one taker only — it used to be `rm -rf` then `mkdir`, which two shifts
+# started in the same instant over a dead lock both passed (docs/DEFECTS.md
+# 14.5); its liveness matches `aif start`, never the word — a reused pid held
+# by a `claude '/aif-review …'` session is not a shift. owner.json names the
+# shift's directory before it exists: it is made only once the start has
+# passed, so that a refused start leaves none.
 _aif_start_lock() {
-  local root="$1" shiftdir="$2" mode="$3" lock pid
+  local root="$1" shiftdir="$2" mode="$3" lock rc=0
   AIF_START_LOCK=""
   lock="$(aif_shift_lock_dir "$root")"
-  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
-  if ! mkdir "$lock" 2>/dev/null; then
-    if _aif_work_lock_live_as "$lock" '*aif\ start*'; then
-      aif_err "a shift is already open on this checkout ($(_aif_start_lock_held "$lock")) — a second would offer the same units again. End that one with q or Ctrl-C in its terminal"
+  _aif_work_lock_take "$lock" '*aif\ start*' || rc=$?
+  case "$rc" in
+    0) ;;
+    1)
+      # shellcheck disable=SC2153  # set by _aif_work_lock_take, lib/cmd_work.sh
+      aif_err "a shift is already open on this checkout ($AIF_LOCK_HELD) — a second would offer the same units again. End that one with q or Ctrl-C in its terminal"
       return 1
-    fi
-    pid="$(_aif_work_lock_pid "$lock")"
-    rm -rf "${lock:?}"
-    if ! mkdir "$lock" 2>/dev/null; then
+      ;;
+    *)
       aif_err "a shift is already open on this checkout — another took its lock just now"
       return 1
-    fi
-    _aif_start_say "lock" "the shift that held this checkout (pid ${pid:-?}) is gone; taken over"
-  fi
+      ;;
+  esac
+  [ -z "$AIF_LOCK_DEAD" ] ||
+    _aif_start_say "lock" "the shift that held this checkout (pid $AIF_LOCK_DEAD) is gone; taken over"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   if ! {
     jq -n --argjson pid "$$" --arg host "$(aif_host_short)" \

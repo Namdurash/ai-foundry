@@ -112,7 +112,6 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | ($f.hold_labels // []) as $holds
 | ($f.memory.done // []) as $done
 | ($f.flags // {}) as $flags
-| ($f.dirty // []) as $dirty
 | ($f.build // {}) as $b
 | ($b.mode // "here") as $mode
 | ($b.parallel // 2) as $par
@@ -383,7 +382,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
   def r8_other($c):
     ($c.head.line // "") as $h
-    | if ($h | startswith("land: ")) then line("R8"; $c; "\($h) — the land was refused or undone"; "aif land \($c.ticket)")
+    | if ($h | startswith("land: ")) then line("R8"; $c; "\($h) — the land was refused, or landed nothing"; "aif land \($c.ticket)")
       elif $h == "# \($c.ticket) — landed" then
         line("R8"; $c; "\($h) — but no aif: land \($c.ticket) commit in this checkout; landed from another?"; null)
       elif ($h | startswith("taken: ")) then r8_built($c)
@@ -431,15 +430,17 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
       elif ($h | startswith("demo: as expected")) then
         [ unit("R6"; ($c | hkey("R6")); "land"; "land \($c.ticket) — the demo says as expected")
           + { ticket: $c.ticket, column: $c.column, default: "skip" } ]
-      # R7, and R25 as its warning: a land refuses while tracked files are
-      # uncommitted, so a review that ends in one would be refused.
+      # R7, and R25 as its warning: a land refuses while files its branch
+      # changes are uncommitted here — those, and no others (lib/cmd_land.sh;
+      # docs/DEFECTS.md 13.5) — so a review that ends in one would be refused.
       elif $h == "# \($c.ticket) — built" then
         (if $l != null and $l.class == "built" and $l.branch.exists == true and $l.lock.live != true then
            [ session("R7"; ($c | hkey("R7")); "review"; "/aif-review \($c.ticket)"; "aif review \($c.ticket)";
                      "review \($c.ticket) — built, branch aif/\($c.ticket)")
              + { ticket: $c.ticket, column: $c.column,
-                 warn: (if ($dirty | length) == 0 then null
-                        else "aif land will refuse while these are uncommitted: \($dirty | join(", ")) — commit them first" end) } ]
+                 warn: (($c.land_dirty // []) as $ld
+                        | if ($ld | length) == 0 then null
+                          else "aif land will refuse while these files it changes are uncommitted: \($ld | join(", ")) — commit or stash them first" end) } ]
          else [ r8_built($c) ] end)
       # Half-made moves, finished.
       elif ($h | startswith("rework: ")) then

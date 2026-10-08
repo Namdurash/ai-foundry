@@ -168,31 +168,38 @@ at first — and takes the verdict. On *land*, the product partner gives the dem
 before anything merges: in a fresh context it holds the build to the request it came
 from, and when it says *as expected* the review runs `aif land <ID>` itself; when it
 does not, its reasons go on the card for `/aif-pjm` to route, and you can still land
-over it in your own terminal. `aif land <ID>` is the yes: it merges the branch
-into the checkout's branch, runs the suite on the *result*, moves the card to Done,
-removes the worktree and the branch, and releases the tickets whose `depends_on`
-names it from Backlog to Ready — which is how a request's slices flow without the
-project manager touching each one. A conflict in aif's own files is settled by owner,
-with no model: the ticket's record under `tasks/<ID>/` is the branch's, the set under
-`.aif/` and `.claude/` is your checkout's, and the analyst's uncommitted copy of the
-ticket is taken aside to `.aif/tmp/` instead of stopping the merge — the land note
-says which. A conflict in code, or a red suite on the result, undoes the merge and
-sends the card back to the top of Ready with a `sync:` comment: the worker brings the
-branch onto yours in its worktree — the conflicts settled by the implement station,
-the merged tree judged again by green and scope — and the card comes back to Review,
-to be looked at again. When the station cannot settle it, or a test file is in
-conflict, the ticket is built again from your branch, automatically; the first build
-is kept under `refs/aif/archive/<ID>/<n>`. Every run does the same before it reports
-built, so what reaches Review merges clean into the branch it was cut from.
-The suite runs against what is installed in *your* checkout, so a merge that moves a
-dependency manifest or lockfile is judged against the install from before it — land
-says so, and a red gives the command that lands it installed: `--prepare` runs
-`prepare` (`npm ci`) in your checkout before the suite, and again after an undo, for
-the lockfile the undo put back. It is never run there unasked. A land stopped before
-its verdict — Ctrl-C during an install or a suite that takes minutes, a TERM, the
-terminal closing over it, an error on the way — undoes its own merge and leaves the
-card in Review, since a stop decides nothing; an install `--prepare` had started is
-named, with its command, not run again.
+over it in your own terminal. `aif land <ID>` is the yes: it merges the branch onto
+your checkout's branch in the ticket's own worktree, judges the *result* there,
+fast-forwards your branch to it, moves the card to Done, removes the worktree and the
+branch, and releases the tickets whose `depends_on` names it from Backlog to Ready —
+which is how a request's slices flow without the project manager touching each one.
+Your own uncommitted work stays as it is, staged or not, unless the land changes those
+very files: then it refuses, naming them, and touches nothing. The verdict is the
+worker's own when it judged that very tree — the target moved only in `tasks/` or
+`requests/` since, under the same test command and checks — and otherwise the suite
+and the checks bound to green run in the worktree, where the worker installed what
+the branch pins and `prepare` installs what the merge moved against it. A conflict in
+aif's own files is settled by owner, with no model: the ticket's record under
+`tasks/<ID>/` is the branch's, the set under `.aif/` and `.claude/` is your checkout's,
+and the analyst's uncommitted copy of the ticket is taken aside to `.aif/tmp/` instead
+of stopping the fast-forward — the land note says which. A conflict in code, or a red
+on the result — the suite or a check — lands nothing and sends the card back to the
+top of Ready with a `sync:` comment: the worker brings the branch onto yours in its
+worktree — the conflicts settled by the implement station, the merged tree judged
+again by green and scope — and the card comes back to Review, to be looked at again.
+When the station cannot settle it, or a test file is in conflict, the ticket is built
+again from your branch, automatically; the first build is kept under
+`refs/aif/archive/<ID>/<n>`. Every run does the same before it reports built, so what
+reaches Review merges clean into the branch it was cut from. The land's merge commit
+is the one commit of aif's that runs your git hooks — the worker's own skip them — so
+a pre-commit that refuses it is a `land:` line for you, nothing landed. Nothing is
+installed in your checkout unless you ask: `--prepare` runs `prepare` (`npm ci`) here
+after the fast-forward, when the land moved a manifest or a lockfile, and a failure
+there is said on the landed card. A land stopped before its fast-forward — Ctrl-C, a
+TERM, the terminal closing over it, an error on the way — has landed nothing and
+leaves the card in Review, since a stop decides nothing; the fast-forward itself runs
+where neither a session's Ctrl-C nor the KILL after it reaches, and a land killed
+outright is put back, or finished, by the next `aif land` (`aif doctor` names it).
 
 **The shift: your half of the board, one session at a time.** The loop builds;
 everything around it — the review, the analyst on what came back, the product
@@ -596,7 +603,8 @@ ends in **Needs Human** with a comment whose first line says whose problem it is
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
 machine, nothing spent — or, mid-run, the runner: a usage limit past what a run waits,
 a runner that never answered) or `blocked: stopped` (and by whom), or `land:` when `aif
-land` undid its merge, with why and the command that lands it once resolved — so a
+land` landed nothing — an install in the worktree that failed, your git hooks refusing
+its merge commit — with why and the command that lands it once resolved — so a
 taken card is never left in Ready for the next run to take again, nor anywhere
 without its reason — a `blocked:` line the board refused is kept in
 `.aif/tmp/blocked-<ID>.md` and posted by the next `aif work` on this machine, or by
@@ -763,7 +771,7 @@ the gates rather than remembered.
 | `aif work --loop [--parallel N] [--max-tickets N] [--idle] [--no-tui]` | drain Ready in the board's order, N cards at a time (default 2), each in its own worktree, on a dashboard where there is a terminal; one loop per checkout; takes no new card on an empty column (`--idle`: looks again every 30 s instead), runs that cannot start on a machine whose preflight then fails (or three in a row), two that did not build, or Ctrl-C — and a second Ctrl-C stops the runs in flight; from any terminal, `--loop --drain` takes no new card and `--loop --stop` stops the runs too |
 | `aif work --status [<ID>] [--json]` | what this machine knows of a run, offline: its lock and whether the worker is alive, what a dead worker left running, its worktree, branch, run record and report — one line, or the object a supervisor reads |
 | `aif start [--no-build] [--dry-run] [--model-ba M] …` | the shift: review, analyst and owner sessions one at a time in this terminal, the board moved by fixed rules on fixed first lines and the rest listed with its command; a control point per unit, a pause after a session that changed nothing, a summary with `claude --resume <uuid>` for each; `--no-build` beside `aif work --loop --idle` in another terminal |
-| `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: merge `aif/<ID>` into this branch, suite on the result, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` installs a merge's moved dependencies here first |
+| `aif land <ID> [--no-suite] [--keep] [--prepare]` | the yes after review: `aif/<ID>` merged and judged in its worktree (the worker's verdict, or the suite and the green checks there), this branch fast-forwarded to it, card to Done, worktree and branch gone, the tickets whose `depends_on` names it released to Ready; `--prepare` also installs here what the land moved |
 | `aif board …` | the board: `next-ready`, `pull`, `move`, `comment`, `create`, `status`, `show`, `head [--json]` (the first line aif or a role wrote last — with `--json`, its time, what came after it and every head before), `label`, `check`, `release [--dry-run]` (the Backlog cards whose every dependency is Done and landed, to the bottom of Ready), `init` |
 | `aif secret set\|check\|rm\|list` | a token, stored where no model sees it; nothing prints a value |
 | `aif doctor [--probe] [--json]` | what is installed, and which roles are ready here — `--json` is what `/aif-setup` reads |
@@ -1239,14 +1247,14 @@ them. The route now runs through five places:
 - **`green`**, when a pre-existing test fails, runs it again with the
   implementation reverted: one that passed at the freeze and still fails there
   moved outside the tracked tree, and the run stops instead of retrying;
-- **`aif land`** runs the suite in your checkout, against what is installed
-  there. When the merge moves a manifest or a lockfile it says so, and a red
-  says it was measured against the install from before the merge, with the
-  command that lands it installed: `aif land <ID> --prepare`, which runs
-  `prepare` in your checkout before the suite — and again if the land is
-  undone, for the lockfile the undo put back. An install that rewrites a
-  tracked file (`npm install` where `npm ci` was meant) is refused like a
-  failed one.
+- **`aif land`** judges the merge in the ticket's worktree, where the worker
+  installed what the branch pins: when the merge moves a manifest or a
+  lockfile against that, `prepare` runs there first, and an install that
+  fails, or that rewrites a tracked file (`npm install` where `npm ci` was
+  meant), lands nothing. Your checkout is never installed into unasked: what
+  the land moved is named, with the command, and `aif land <ID> --prepare`
+  runs `prepare` here after the fast-forward — a failure or a rewrite there
+  said on the landed card.
 
 ### What each station cost
 

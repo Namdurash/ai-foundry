@@ -702,6 +702,22 @@ _aif_work_lock_live() {
   _aif_work_lock_live_as "$1" '*aif\ work*'
 }
 
+# _aif_work_land_live <root> <ticket> — rc 0 when an `aif land` of <ticket>
+# runs in this checkout now, AIF_WORK_LANDING its pid: the land's lock
+# (aif_land_lock_dir) names the ticket it lands. A land borrows the ticket's
+# worktree for its verdict, so a worker on that ticket waits for it to end —
+# as the land refuses a ticket a worker is on (lib/cmd_land.sh;
+# docs/DEFECTS.md 15.1).
+_aif_work_land_live() {
+  local lock
+  AIF_WORK_LANDING=""
+  lock="$(aif_land_lock_dir "$1")"
+  [ -d "$lock" ] || return 1
+  [ "$(jq -r '.ticket // empty' "$lock/owner.json" 2>/dev/null)" = "$2" ] || return 1
+  _aif_work_lock_live_as "$lock" '*aif\ land*' || return 1
+  AIF_WORK_LANDING="$(_aif_work_lock_pid "$lock")"
+}
+
 # _aif_work_lock_take <lock-dir> <glob> [<before-takeover>] — take one of the
 # three locks — a run's (aif_run_lock_dir), the loop's, the shift's — or say
 # why not. rc 0 taken: AIF_LOCK_DEAD is the gone holder's pid when the lock
@@ -1631,11 +1647,36 @@ _aif_work_preflight() {
 # where the first stopped — the run record says where that is.
 _aif_work_worktree() {
   local root="$1" ticket="$2"
-  local wt branch
+  local wt branch on marker installed=1
   wt="$root/$AIF_WORK_WORKTREES/$ticket"
   branch="aif/$ticket"
 
   if [ -e "$wt/.git" ]; then
+    # `aif land` borrows this worktree for its verdict — detached at the
+    # target's tip, the merge made and judged there — and puts it back on
+    # aif/<ID> however it ends; one killed outright left it detached
+    # (lib/cmd_land.sh; docs/DEFECTS.md 15.1). Under a live land it is the
+    # land's. Under a dead one, or none, it goes back on its branch the way
+    # the land puts it back, and that is said: what a dead land installed
+    # there is the merge's, so the install marker goes with it unless the
+    # land's own marker says it installed nothing. A worktree on another
+    # branch is a person's doing, and not undone here.
+    on="$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null)" || on=""
+    if [ "$on" != "refs/heads/$branch" ]; then
+      [ -z "$on" ] ||
+        aif_die "${wt#"$root"/} is on ${on#refs/heads/}, not $branch — check $branch out there (git -C ${wt#"$root"/} checkout $branch), then run this again"
+      if _aif_work_land_live "$root" "$ticket"; then
+        aif_die "aif land $ticket is landing it right now (pid $AIF_WORK_LANDING) — its worktree is the land's until it ends"
+      fi
+      marker="$(aif_land_marker_file "$root")"
+      if [ "$(aif_land_marker_get "$marker" .ticket)" = "$ticket" ] &&
+        [ "$(aif_land_marker_get "$marker" .installed_in_worktree)" != true ]; then
+        installed=0
+      fi
+      aif_land_worktree_back "$wt" "$branch" "$installed" ||
+        aif_die "${wt#"$root"/} is off $branch, and it could not be put back there (git -C ${wt#"$root"/} checkout $branch)"
+      printf '%s was left detached — a land of %s that stopped; back on %s\n' "${wt#"$root"/}" "$ticket" "$branch" >&2
+    fi
     printf '%s' "$wt"
     return 0
   fi
@@ -3366,6 +3407,8 @@ $(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
     _aif_work_sync_abort "$wt" "$pre"
     return 3
   fi
+  # The merged tree, judged by green and scope above, is the one the land
+  # meets: `judged` moves to it (lib/cmd_land.sh; docs/DEFECTS.md 13.5).
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
   aif_run_update "$work" \
     '.syncs = ((.syncs // 0) + 1)
@@ -3374,7 +3417,8 @@ $(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
                    | split("\t") | { path: .[0], owner: .[1] })),
                  station: ($left | split("\n") | map(select(length > 0))),
                  attempts: ($n | tonumber),
-                 lockfiles: ($locks | split("\n") | map(select(length > 0))) }' \
+                 lockfiles: ($locks | split("\n") | map(select(length > 0))) }
+     | .judged = $post' \
     --arg t "$target" --arg name "$target_name" --arg pre "$pre" \
     --arg post "$(git -C "$wt" rev-parse HEAD)" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg settled "$AIF_INTEGRATE_SETTLED" --arg left "$left" --arg n "$n" --arg locks "$lockfiles" || true
@@ -5411,6 +5455,16 @@ aif_cmd_work() {
     aif_err "$ticket is being built by another worker on this machine ($AIF_WORK_LOCK_HELD). Nothing was spent, and its card was not touched. To stop that run: aif work $ticket --stop"
     exit 3
   fi
+  # A land of this ticket borrows its worktree for its verdict, and moves the
+  # card when it ends (lib/cmd_land.sh; docs/DEFECTS.md 15.1): a worker taking
+  # the card meanwhile would build in the land's tree. Before the card moves,
+  # with the run lock already held — the land refuses a ticket whose run lock
+  # is live, so of two that start at once one always sees the other.
+  if _aif_work_land_live "$root" "$ticket"; then
+    _aif_work_unlock
+    aif_err "aif land $ticket runs in this checkout right now (pid $AIF_WORK_LANDING) — its worktree is the land's until it ends. Nothing was spent, and its card was not touched; when the land is done, run this again"
+    exit 3
+  fi
   # The handler is armed rather than written inline so that a library taking
   # a trap of its own puts it back instead of clearing it (lib/common.sh). Its
   # subject travels in globals: on EXIT the locals may already be gone. Armed
@@ -5860,8 +5914,13 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
         prev_sha=""
         # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
         _aif_work_live '.last = $l | .last_tone = "ok"' --arg l "$stage admitted"
+        # The tree green just admitted the implementation on — the suite and
+        # the checks bound to it — sealed by the commit above: `judged`, the
+        # verdict the land takes instead of judging that same tree again
+        # (lib/cmd_land.sh _aif_land_worker_verdict; docs/DEFECTS.md 13.5).
         # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
-        aif_run_update "$work" '.stage = $n' --arg n "$(aif_run_next "$stage")"
+        aif_run_update "$work" '.stage = $n | (if $s == "implement" and $h != "" then .judged = $h else . end)' \
+          --arg n "$(aif_run_next "$stage")" --arg s "$stage" --arg h "$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null || true)"
         ;;
       1)
         # sed -n, not head: a gate's output is not bounded, and a head that

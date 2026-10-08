@@ -81,11 +81,12 @@ Ask for one word and take it:
 - **land** — the human's yes to the code. Before it lands, the product partner looks:
 
   1. **The install, asked now.** When the diff moves a dependency manifest or its
-     lockfile, ask whether to land with `--prepare`: the suite runs against what is
-     installed in the human's checkout, and `--prepare` installs the merge's
-     dependencies there first — with the project's `prepare`, in their checkout,
-     which is why it is theirs to choose. Ask before the demo, so nothing after it
-     waits on them.
+     lockfile, ask whether to land with `--prepare`. The verdict needs no install in
+     the human's checkout — the land judges the merge in the ticket's own worktree,
+     where the branch's dependencies are installed — but after the land their
+     checkout still has the old ones, and `--prepare` installs the landed lockfile
+     there too, with the project's `prepare`: in their checkout, which is why it is
+     theirs to choose. Ask before the demo, so nothing after it waits on them.
   2. **The product partner's demo, in a fresh context.** Start a subagent and give it
      the card and nothing else: "You are the product partner. Read
      `.claude/skills/aif-po/SKILL.md` and give the demo for <ID> — read only; answer
@@ -101,15 +102,22 @@ Ask for one word and take it:
      aif land <ID>        (aif land <ID> --prepare, if they chose it)
      ```
 
-     It merges the branch into the checkout's branch, runs the suite on the result,
-     moves the card to Done, removes the worktree and releases the next slice. The
-     suite can take minutes: run it in the background if your commands time out
-     sooner, and wait for it. Then say what it said — landed, and what it released;
-     refused, and why, with nothing touched and the card still in Review; sent back to
-     the worker, when the branch conflicts with the checkout's or is red on it — the
-     card at the top of Ready with a `sync:` comment, to come back to Review brought
-     onto it, to be looked at again; or undone, with the reason, and the card in Needs
-     Human. Do not run it again, and do not fix what it refused over.
+     It merges the branch onto the checkout's branch in the ticket's own worktree and
+     judges the result there — the worker's verdict when it judged that very tree,
+     else the suite and the checks bound to green — then fast-forwards the checkout's
+     branch to it, moves the card to Done, removes the worktree and releases the next
+     slice. The human's own uncommitted work stays as it is, unless the land changes
+     those very files. A verdict can take minutes: run it in the background if your
+     commands time out sooner, and wait for it. Then say what it said — landed, and
+     what it released; refused, and why, with nothing touched and the card still in
+     Review; sent back to the worker, when the branch conflicts with the checkout's or
+     is red on it — the suite, or a check — the card at the top of Ready with a
+     `sync:` comment, to come back to Review brought onto it, to be looked at again;
+     or not landed, with the reason, and the card in Needs Human: an install that
+     failed in the worktree, the project's git hooks refusing the land's merge
+     commit. Do not run it again, and do not fix what it refused over. If it was
+     stopped, nothing has landed unless it says so; the next `aif land` finishes or
+     puts back whatever a stopped one left.
   5. **Not as expected — stop there.** The reasons are on the card, and the project
      manager routes them (`/aif-pjm`): rework for the analyst, a `request:` line to the
      product partner first. Say so, and that the human can still land it over the

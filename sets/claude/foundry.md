@@ -18,8 +18,9 @@ card moves to Review with the report, or to Needs Human with the gate's
 questions; `--loop` drains the column. **Back to human time:** `/aif-review`
 prepares the review and takes your word; on *land*, `/aif-po` gives the demo —
 the build held to its request, in a fresh context — and `aif land <ID>` runs
-when it says as expected: merge, suite on the result, Done, the next slice
-released. When it does not, its reasons go on the card for `/aif-pjm`.
+when it says as expected: merged and judged in the ticket's worktree, your
+branch fast-forwarded, Done, the next slice released. When it does not, its
+reasons go on the card for `/aif-pjm`.
 
 `/aif-pjm` keeps the board honest and never starts a build; `/aif-setup` says
 which roles can run on this machine. Every transition goes through `aif board`;

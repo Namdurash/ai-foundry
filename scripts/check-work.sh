@@ -26,10 +26,10 @@
 #   6  the dispatch cap stops a station that never converges
 #  18  --loop drains Ready in the board's order, stops when it is empty, at
 #      --max-tickets, and after two runs in a row that did not build
-#  19  land: the yes after review — merge, suite on the result, Done, the
-#      worktree and branch gone, the ticket that depended on it released; a
-#      red suite or a conflict undoes the merge and sends the card back to the
-#      worker, saying why
+#  19  land: the yes after review — merged and judged in the ticket's
+#      worktree, the checkout fast-forwarded, Done, the worktree and branch
+#      gone, the ticket that depended on it released; a red suite or a
+#      conflict lands nothing and sends the card back to the worker, saying why
 #  20  verify-red measures a failing pre-existing test against the tree the
 #      tests station started from: red there is the repo's (a stop, named);
 #      green there is the new tests' interaction (admitted, recorded, and
@@ -43,18 +43,19 @@
 #      only a planned lockfile move, and no amendment reaches one
 #  24  a station that moves the dependencies has them installed again from
 #      the lock, and one that went around the lock is sent back
-#  25  land, when the merge moves the dependencies: without --prepare the
-#      suite's verdict says it ran against the install from before the merge,
-#      with the command, on a land: line the project manager routes on; with
-#      it the install is made here, and made again after an undo
+#  25  land, when the merge moves the dependencies: judged in the worktree,
+#      where they are installed, and landed; named here with the command,
+#      installed here only with --prepare, after the fast-forward — a failed
+#      install or a rewrite said on a landed card
 #  26  verify-red counts a criterion covered only by a test the runner
 #      collected: its only test in a declared file the runner never collects
 #      is sent back to the tests station, naming the file, which may stay as
 #      a helper; coarse mode, which cannot tell, reads every file and says so
-#  27  a land stopped between its merge and its verdict — Ctrl-C to its
-#      process group, an INT or a TERM to its pid, an error on the way —
-#      undoes the merge, leaves the card in Review and names an install it
-#      had started; a red land's own exit is a verdict, not a stop
+#  27  a land stopped before its fast-forward — Ctrl-C to its process group,
+#      an INT or a TERM to its pid, an error on the way — lands nothing: the
+#      worktree back on its branch, the install it had started there to be
+#      made again, the card in Review; a red land's own exit is a verdict,
+#      not a stop
 #  35  aif project guide writes the project's guide to its own tests from
 #      what the repository declares — the runner's configuration, the setup
 #      files, the manual mocks and factories, the fixtures a conftest
@@ -176,6 +177,36 @@
 #      the worker adds that line to the block and says so, and every line the
 #      block held stays; a block with no end line is left alone; no block at
 #      all gets one, the developer's own lines kept
+#  60  the land beside the developer's own work: uncommitted edits and staged
+#      files it does not touch stay as they are; an edit to a file it changes
+#      refuses it, named, nothing touched
+#  61  the dependencies are installed where the verdict is reached: a branch
+#      that moved them lands with nothing installed here, said with the
+#      command; what the target moved is installed in the worktree, an install
+#      there that rewrites a lockfile refuses the land, and a worktree the land
+#      had to cut is installed before it judges
+#  62  the verdict: the worker's stands when the target moved only in tasks/,
+#      and no suite runs; a check bound to green that is red on the result
+#      sends the card back to the worker, named
+#  63  a TERM to a land's group during its verdict, and the KILL 1.4 s after
+#      it: nothing landed, main's reflog untouched, the worktree back on its
+#      branch, no lock or marker left; a worker on the ticket while the next
+#      land runs is refused, and that land lands. Sent as its fast-forward
+#      starts, they do not reach it: main ends at the merge, and the next
+#      land finishes the bookkeeping
+#  64  a KILL alone during the verdict: main untouched, aif doctor names the
+#      land that died, aif work puts the worktree back and builds, and the
+#      next land says what it settled and lands
+#  65  what only a KILL of the fast-forward itself leaves, built by hand: a
+#      marker at landed is finished by the next land, no suite run again; one
+#      in its fast-forward with git's lock left is exit 3, naming the lock,
+#      nothing touched; without the lock, the ticket's own files come back
+#      from aside, said, and the land goes on
+#  66  the land's merge commit runs the project's hooks, in the worktree — a
+#      pre-commit's refusal is a land: line, nothing landed — while the
+#      worker's own git ran none of them
+#  67  a target that moves while the land runs: nothing landed, the card left
+#      in Review, said
 #  68  a blocked: line the board refused, kept on this machine, is posted by
 #      the next worker run before it takes a card — over its run's own claim
 #      only; a card whose head moved on, or in Review, has its stale file
@@ -773,6 +804,20 @@ ticket_for() { # <id> [open-json] — the analyst's output: criteria in the
 Support needs a one-command export: write the current user list so it can be
 pulled without touching the database.
 TICKET
+}
+
+# copy_project <from> <to> <ticket>… — a copy of a project, entered, to try a
+# land in from the same built state as another row: each ticket's worktree
+# repaired to point at the copy. A copied worktree still points at the
+# project it was copied from, and git run in it writes that one
+# (docs/FINDINGS.md #20) — which the land refuses.
+copy_project() {
+  local from="$1" to="$2" t
+  shift 2
+  rm -rf "$to" && mkdir -p "$to" && cp -R "$from/." "$to/" && cd "$to" || exit 1
+  for t in "$@"; do
+    git worktree repair ".aif/worktrees/$t" >/dev/null 2>&1 || true
+  done
 }
 
 # =============================== 1. built ====================================
@@ -1800,19 +1845,21 @@ eq "and scope let the lockfile the plan names move" \
 
 # ====== 25. land, when the merge moves the dependencies =======================
 #
-# land runs the suite on the merge in the developer's checkout, against what is
-# installed THERE — and a merge that moved package.json and its lockfile was
-# judged against the install from before it: "the suite is red", the merge
-# undone, a ticket with nothing wrong in it in Needs Human (docs/DEFECTS.md (log 6)
-# #3). Installing in someone's own checkout is theirs to allow. Without
-# --prepare a red says what it was measured against and gives the command that
-# lands it installed, and a green lands and says the install is not the
-# merge's; with it, "prepare" runs before the suite, and again after an undo,
-# for the lockfile the undo put back. The stand-in is scenario 24's npm ci,
-# which can also be offline — and then, as npm ci does, leaves no install at
-# all. t0 is red while the lockfile pins dep-new and the install lacks it: a
-# test importing a package that is not installed.
-printf '\n25. land, when the merge moves the dependencies: named, or installed when asked\n'
+# land ran the suite on the merge in the developer's checkout, against what
+# was installed THERE — and a merge that moved package.json and its lockfile
+# was judged against the install from before it: "the suite is red", the
+# merge undone, a ticket with nothing wrong in it in Needs Human
+# (docs/DEFECTS.md 6.3, 13.5). The verdict is reached in the ticket's
+# worktree now, where the worker installed what the branch pins, so the land
+# lands and says what it did not install here, with the command. Installing in
+# someone's own checkout is theirs to allow: with --prepare, "prepare" runs
+# here after the fast-forward, and a failure or a rewrite there is said on a
+# card that has landed. The stand-in is scenario 24's npm ci, which can also be
+# offline — and then, as npm ci does, leaves no install at all. t0 is red
+# while the lockfile pins dep-new and the install lacks it: a test importing a
+# package that is not installed. A land that lands runs in a copy of the
+# project, so that the next row still has the card in Review.
+printf '\n25. land, when the merge moves the dependencies: judged where they are installed, installed here when asked\n'
 fresh_project "$SANDBOX/p25"
 printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
 cp package.json package-lock.json
@@ -1849,40 +1896,18 @@ rc=0
 FAKE_DEPS=1 "$AIF" work AIF-25 >"$OUT/run25.out" 2>&1 || rc=$?
 eq "a ticket that adds a dependency through the lock: built, in Review" "$rc,$(col AIF-25)" "0,review"
 
-# without --prepare: red against the install from before the merge, and the
-# reason says so, with a command that works from Needs Human
+# without --prepare: judged in the worktree, where the branch's lockfile is
+# installed, and landed; nothing installed here, said with the command
 head_before="$(git rev-parse HEAD)"
+copy_project "$SANDBOX/p25" "$SANDBOX/p25a" AIF-25
 rc=0
 "$AIF" land AIF-25 >"$OUT/land25a.out" 2>&1 || rc=$?
-eq "red against the old install: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
-eq "it named what moved, before the suite ran" "$(grep -E '^(deps|suite) ' "$OUT/land25a.out" | head -1)" \
-  "deps      package-lock.json, package.json moved — not installed here (--prepare installs them)"
+eq "without --prepare: landed, on a verdict reached where the dependencies are installed" \
+  "$rc,$(git log --format=%s -1)" "0,aif: land AIF-25 — one-command user export"
+eq "it says what moved and was not installed here, with the command" \
+  "$(grep -c '^deps: .*not installed in this checkout.*When you need them here: bash .aif/prepare.sh' "$OUT/land25a.out")" "1"
 eq "the install here was not touched" "$(installed)" '"dep-a" '
-eq "the reason says what the suite ran against" \
-  "$(last_comment AIF-25 | grep -c 'the suite ran against the dependencies installed here before it')" "1"
-eq "…and the command that lands it installed" \
-  "$(last_comment AIF-25 | grep -c 'aif board move AIF-25 review && aif land AIF-25 --prepare')" "1"
-eq "the terminal has the command too" \
-  "$(grep -c 'aif board move AIF-25 review && aif land AIF-25 --prepare' "$OUT/land25a.out")" "1"
-eq "the card is in Needs Human" "$(col AIF-25)" "needs_human"
-eq "…under a land: head, which aif board head returns" \
-  "$(last_comment AIF-25 | sed -n 1p | grep -c '^land: the suite is red on '),$("$AIF" board head AIF-25 | grep -c '^land: ')" "1,1"
-
-# green without --prepare: in a copy of this checkout whose developer had
-# installed dep-new by hand, trying the branch. It lands, and says the install
-# here was not made from the lockfile it merged.
-mkdir -p "$SANDBOX/p25b"
-cp -R "$SANDBOX/p25/." "$SANDBOX/p25b/"
-cd "$SANDBOX/p25b" || exit 1
-"$AIF" board move AIF-25 review >/dev/null
-printf '"dep-a"\n"dep-new"\n' >deps/installed
-rc=0
-"$AIF" land AIF-25 >"$OUT/land25b.out" 2>&1 || rc=$?
-eq "green against the install from before the merge: landed" "$rc,$(col AIF-25)" "0,done"
-eq "the summary says it was not installed from the merge, and how to" \
-  "$(grep -c '^deps: .*not installed here; the suite ran against the install from before the merge. Install them: bash .aif/prepare.sh' "$OUT/land25b.out")" "1"
-eq "so does the landing note" "$(last_comment AIF-25 | grep -c '^- dependencies: .*not installed here')" "1"
-eq "and the install was left alone" "$(installed)" '"dep-a" "dep-new" '
+eq "the card is in Done" "$(col AIF-25)" "done"
 cd "$SANDBOX/p25" || exit 1
 
 # --prepare with no "prepare" to run is refused, and nothing moves
@@ -1895,53 +1920,56 @@ eq "…saying so" "$(grep -c 'names no "prepare"' "$OUT/land25c.out")" "1"
 eq "…before anything moved" "$(git rev-parse HEAD),$(col AIF-25)" "$head_before,review"
 git checkout -q -- .aif/project.json
 
-# --prepare, and red anyway: main grew a test after the build. Installed
-# before the suite — only the new test fails, not t0 — and installed again,
-# for the lockfile the undo put back.
+# --prepare, and red anyway: main grew a test after the build. Judged in the
+# worktree, where the branch's dependencies are installed — only the new test
+# fails, not t0 — nothing installed anywhere, and the card goes back to the
+# worker.
 printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
 "$AIF" land AIF-25 --prepare >"$OUT/land25d.out" 2>&1 || rc=$?
 eq "--prepare, red on the result: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
-eq "it installed, before the suite ran" "$(grep -E '^(prepare|suite) ' "$OUT/land25d.out" | head -1)" \
-  "prepare   package-lock.json, package.json moved — bash .aif/prepare.sh"
+eq "judged in the worktree, where the branch's dependencies are installed" "$(grep -E '^(prepare|suite) ' "$OUT/land25d.out" | head -1)" \
+  "suite     bash .aif/suite.sh — in .aif/worktrees/AIF-25"
 eq "…so only the new test failed" "$(grep -c '(exit 0, 1 failing)' "$OUT/land25d.out")" "1"
 eq "the undo installed again, from the lockfile it put back" "$(installed)" '"dep-a" '
-eq "…and the reason says so" \
-  "$(last_comment AIF-25 | grep -c 'installed again, from the lockfile the undo put back')" "1"
+eq "…and the reason says no install was made" \
+  "$(last_comment AIF-25 | grep -c 'installed again, from the lockfile the undo put back')" "0"
 eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
+eq "the card went back to the worker" "$(col AIF-25)" "ready"
 
-# --prepare, offline: the install fails on the result and again after the
-# undo, and leaves nothing installed. Said, with the command.
-"$AIF" board move AIF-25 review >/dev/null
-rc=0
-PREP_OFFLINE=1 "$AIF" land AIF-25 --prepare >"$OUT/land25e.out" 2>&1 || rc=$?
-eq "--prepare and the install fails: exit 1, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
-eq "the reason is prepare's, in its own words" \
-  "$(last_comment AIF-25 | grep -c 'failed on the result (exit 1)'),$(last_comment AIF-25 | grep -c 'getaddrinfo ENOTFOUND')" "1,1"
-eq "…and says the install here may not match, with the command" \
-  "$(last_comment AIF-25 | grep -c 'what is installed here may not match it. Run:')" "1"
-eq "the terminal says so too" "$(grep -c 'what is installed here may not match it' "$OUT/land25e.out")" "1"
-eq "landing it again keeps --prepare" \
-  "$(last_comment AIF-25 | grep -c 'run: aif board move AIF-25 review && aif land AIF-25 --prepare$')" "1"
-bash .aif/prepare.sh # the developer runs it, online again
-
-# --prepare, and the install rewrites the lockfile: not the install the merge
-# pinned, and it would leave the checkout dirty. Refused like a failed one —
-# and the undo's own install rewrites it too, which the undo puts back.
-"$AIF" board move AIF-25 review >/dev/null
-rc=0
-PREP_REWRITES=1 "$AIF" land AIF-25 --prepare >"$OUT/land25g.out" 2>&1 || rc=$?
-eq "--prepare and the install rewrites the lockfile: exit 1, the merge undone" \
-  "$rc,$(git rev-parse HEAD)" "1,$head_before"
-eq "…saying which file" "$(grep -c '(bash .aif/prepare.sh) rewrote package-lock.json' "$OUT/land25g.out")" "1"
-eq "the checkout is clean" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "0"
-
-# --prepare, green: landed, with what the merged lockfile pins installed here
-"$AIF" board move AIF-25 review >/dev/null
+# The rows that land run in copies of this checkout, main without the test.
 git rm -q tests/t2.py
 git commit -qm "main dropped the test" >/dev/null
+"$AIF" board move AIF-25 review >/dev/null
+
+# --prepare, offline: landed — no verdict needs an install here — and the
+# install here, after the fast-forward, fails and leaves nothing installed.
+# Said on the landed card and here, with the command.
+copy_project "$SANDBOX/p25" "$SANDBOX/p25e" AIF-25
+rc=0
+PREP_OFFLINE=1 "$AIF" land AIF-25 --prepare >"$OUT/land25e.out" 2>&1 || rc=$?
+eq "--prepare and the install here fails: landed all the same, exit 0" "$rc,$(col AIF-25)" "0,done"
+eq "the reason is prepare's, in its own words" \
+  "$(last_comment AIF-25 | grep -c 'the install here failed (exit 1)'),$(last_comment AIF-25 | grep -c 'getaddrinfo ENOTFOUND')" "1,1"
+eq "…and says the install here may not match, with the command" \
+  "$(last_comment AIF-25 | grep -c 'what is installed here may not match it')" "1"
+eq "the terminal says so too" "$(grep -c 'what is installed here may not match it' "$OUT/land25e.out")" "1"
+cd "$SANDBOX/p25" || exit 1
+
+# --prepare, and the install here rewrites the lockfile: not the install the
+# merge pinned. Landed, and the rewrite left to the developer, said.
+copy_project "$SANDBOX/p25" "$SANDBOX/p25g" AIF-25
+rc=0
+PREP_REWRITES=1 "$AIF" land AIF-25 --prepare >"$OUT/land25g.out" 2>&1 || rc=$?
+eq "--prepare and the install here rewrites the lockfile: landed, exit 0" \
+  "$rc,$(col AIF-25)" "0,done"
+eq "…saying which file" "$(grep -c 'the install here (bash .aif/prepare.sh) rewrote package-lock.json' "$OUT/land25g.out")" "1"
+eq "the rewrite is left to the developer" "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "1"
+cd "$SANDBOX/p25" || exit 1
+
+# --prepare, green: landed, with what the merged lockfile pins installed here
 rc=0
 "$AIF" land AIF-25 --prepare >"$OUT/land25f.out" 2>&1 || rc=$?
 eq "--prepare: landed" "$rc,$(col AIF-25)" "0,done"
@@ -2022,16 +2050,21 @@ eq "coarse: the same two files are red, and pass" "$rc" "0"
 eq "…saying the coverage could not see what the runner collects" \
   "$(grep -c 'coverage was read from every declared test file' "$OUT/red26c.out")" "1"
 
-# ====== 27. a land stopped before its verdict undoes itself ====================
+# ====== 27. a land stopped before its fast-forward lands nothing ==============
 #
-# land merges into the developer's checkout first, and only then installs
-# (--prepare) and runs the suite: minutes, with npm ci, which empties
-# node_modules before it fills it. A Ctrl-C there, or a supervisor's TERM, left
-# the merge commit on the branch, the card in Review, the worktree gone and
-# half an install, and nothing said so. A stop now undoes the merge and says
-# so; the card stays in Review, because a stop decides nothing; and an install
-# that had started is named with its command, not run again. The stand-ins
-# wait where the land is to be stopped (STOP_IN) until released or killed.
+# land merged into the developer's checkout first, and only then installed and
+# ran the suite: minutes, with npm ci, which empties node_modules before it
+# fills it. A Ctrl-C there, or a supervisor's TERM, left the merge commit on
+# the branch (docs/DEFECTS.md 14.8); its undo, a reset, could be cut in half by
+# the KILL that follows a review session's TERM (15.1). The merge, the install
+# and the verdict are made in the ticket's worktree now, and the developer's
+# branch moves only at the end, by a fast-forward: a stop before it lands
+# nothing — the worktree goes back on its branch, an install the land had
+# started there is to be made again, and the card stays in Review, because a
+# stop decides nothing. Main moves here after the build — a note, and a
+# manifest and its lockfile of its own — so every land judges, and installs in
+# the worktree before it does. The stand-ins wait where the land is to be
+# stopped (STOP_IN) until released or killed.
 #
 # A signal arrives two ways, and both are sent. Ctrl-C goes to the terminal's
 # whole foreground process group, so the stand-in dies with the land. A signal
@@ -2040,7 +2073,7 @@ eq "…saying the coverage could not see what the runner collects" \
 # which the stop must still beat. With no trap, that INT was not even a stop:
 # bash saw the suite exit normally, took it that the suite had handled the
 # INT, and the land went on to Done.
-printf '\n27. a land stopped between its merge and its verdict undoes itself\n'
+printf '\n27. a land stopped before its fast-forward lands nothing\n'
 fresh_project "$SANDBOX/p27"
 printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
 cp package.json package-lock.json
@@ -2088,6 +2121,13 @@ bash .aif/prepare.sh # the developer's own install
 rc=0
 FAKE_DEPS=1 "$AIF" work AIF-27 >"$OUT/run27.out" 2>&1 || rc=$?
 eq "a ticket that moves the dependencies: built, in Review" "$rc,$(col AIF-27)" "0,review"
+# Main moves on after the build, outside the ticket's record: every land below
+# judges, and installs in the worktree first — tools/ moved what it had there.
+printf 'notes\n' >NOTES.md
+mkdir -p tools
+printf '{ "dependencies": { "dep-t": "1" } }\n' >tools/package.json
+cp tools/package.json tools/package-lock.json
+git add -A && git commit -qm "main moved: a note, and the tools' dependencies" >/dev/null
 head_before="$(git rev-parse HEAD)"
 branch_sha="$(git rev-parse aif/AIF-27)"
 changed() { git status --porcelain --untracked-files=no | wc -l | tr -d ' '; }
@@ -2118,18 +2158,22 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" land AIF-27 ${1+"$@"} >"$out" 2>&1 
   done
 }
 
-# An error on the way is a stop too — here a worktree the land cannot remove,
-# which failed under set -e with the merge already made. The exit keeps its
-# own code. (Root removes a read-only directory anyway, so not as root.)
+# An error on the way is a stop too — here the ticket's own uncommitted file,
+# which the land cannot take aside to a read-only .aif/tmp/ just before its
+# fast-forward: an aif_die, through EXIT. The exit keeps its own code, and the
+# file stays where it was. (Root writes into a read-only directory anyway, so
+# not as root.)
 if [ "$(id -u)" -ne 0 ]; then
-  mkdir -p .aif/worktrees/AIF-27/build/ro && touch .aif/worktrees/AIF-27/build/ro/f
-  chmod 555 .aif/worktrees/AIF-27/build/ro
+  printf '# the analyst'"'"'s draft of the report\n' >tasks/AIF-27/report.md
+  mkdir -p .aif/tmp && chmod 555 .aif/tmp
   rc=0
   "$AIF" land AIF-27 >"$OUT/land27a.out" 2>&1 || rc=$?
-  chmod -R u+w .aif/worktrees/AIF-27
+  chmod 755 .aif/tmp
   eq "an error after the merge: its exit 1 kept, the merge undone" "$rc,$(git rev-parse HEAD)" "1,$head_before"
-  eq "…said as a stop" "$(grep -c 'stopped by the error above — the merge was undone' "$OUT/land27a.out")" "1"
+  eq "…said as a stop" "$(grep -c 'stopped by the error above — nothing landed' "$OUT/land27a.out")" "1"
   eq "…the card still in Review, the checkout clean" "$(col AIF-27),$(changed)" "review,0"
+  eq "…and the ticket's own file still in place" "$(cat tasks/AIF-27/report.md 2>/dev/null)" "# the analyst's draft of the report"
+  rm -f tasks/AIF-27/report.md
 fi
 
 # INT to the land's pid alone, during the suite: bash runs the trap once the
@@ -2141,25 +2185,29 @@ rc=0
 wait "$LAND_PID" || rc=$?
 eq "INT to the land during the suite: exit 130, the merge undone" "$rc,$(git rev-parse HEAD)" "130,$head_before"
 eq "…though the suite had come back green" \
-  "$([ -f .aif/tmp/report.xml ] && grep -c '<failure' .aif/tmp/report.xml)" "0"
+  "$([ -f .aif/worktrees/AIF-27/.aif/tmp/report.xml ] && grep -c '<failure' .aif/worktrees/AIF-27/.aif/tmp/report.xml)" "0"
 eq "…the card still in Review, the branch untouched" "$(col AIF-27),$(git rev-parse aif/AIF-27)" "review,$branch_sha"
 eq "…the checkout clean" "$(changed)" "0"
 eq "…and it said so, with the command that lands it from there" \
-  "$(grep -c 'interrupted — the merge was undone' "$OUT/land27b.out"),$(grep -c 'To land it: aif land AIF-27$' "$OUT/land27b.out")" "1,1"
+  "$(grep -c 'interrupted — nothing landed' "$OUT/land27b.out"),$(grep -c 'To land it: aif land AIF-27$' "$OUT/land27b.out")" "1,1"
 eq "…naming no install, as none had started" "$(grep -c 'may be partial' "$OUT/land27b.out")" "0"
 
-# Ctrl-C during --prepare's install, as a terminal sends it: to the whole
-# group, so the install dies with the land, its deps/ emptied and not filled
+# Ctrl-C during the install in the worktree, as a terminal sends it: to the
+# whole group, so the install dies with the land, the worktree's deps/
+# emptied and not filled — and its install marker gone with it, so the next
+# aif work installs again. The developer's own install here is untouched.
 land_bg prepare "$OUT/land27c.out" --prepare
 kill -INT -- "-$LAND_PID" 2>/dev/null
 rc=0
 wait "$LAND_PID" || rc=$?
 eq "Ctrl-C during --prepare's install: exit 130, the merge undone" "$rc,$(git rev-parse HEAD)" "130,$head_before"
 eq "…the card still in Review, the checkout clean" "$(col AIF-27),$(changed)" "review,0"
-eq "…the install run once, and not again: what it emptied stays empty" \
-  "$(grep -c prepare "$STOP_LOG" 2>/dev/null),$([ -e deps/installed ] && echo filled || echo empty)" "1,empty"
-eq "…said to be partial, with its command" \
-  "$(grep -c 'installed may be partial' "$OUT/land27c.out"),$(grep -c '^ *bash .aif/prepare.sh$' "$OUT/land27c.out")" "1,1"
+eq "…the install run once, in the worktree: the one here untouched" \
+  "$(grep -c prepare "$STOP_LOG" 2>/dev/null),$([ -e deps/installed ] && echo filled || echo empty)" "1,filled"
+eq "…the worktree there, its install marker gone, for the next run to install again" \
+  "$([ -e .aif/worktrees/AIF-27/.git ] && echo there),$([ -e .aif/worktrees/AIF-27/.aif/tmp/prepared ] && echo kept || echo gone)" "there,gone"
+eq "…nothing here to call partial" \
+  "$(grep -c 'installed may be partial' "$OUT/land27c.out"),$(grep -c '^ *bash .aif/prepare.sh$' "$OUT/land27c.out")" "0,0"
 eq "…and landing it again keeps --prepare" "$(grep -c 'To land it: aif land AIF-27 --prepare$' "$OUT/land27c.out")" "1"
 
 # a supervisor's TERM, to the land's pid: the same undo, and 143
@@ -2170,17 +2218,17 @@ rc=0
 wait "$LAND_PID" || rc=$?
 eq "TERM during the suite: exit 143, the merge undone, still in Review" \
   "$rc,$(git rev-parse HEAD),$(col AIF-27)" "143,$head_before,review"
-eq "…said" "$(grep -c 'terminated — the merge was undone' "$OUT/land27d.out")" "1"
+eq "…said" "$(grep -c 'terminated — nothing landed' "$OUT/land27d.out")" "1"
 
-# a verdict is not a stop: a red land undoes its merge itself, and its own
-# exit 1 does not come back through the handler as a second undo
+# a verdict is not a stop: a red land puts back what it touched itself, and
+# its own exit 1 does not come back through the handler as a second put-back
 printf '# MAIN-1 AC-002 asserts impl2 — expects impl2\n' >tests/t2.py
 git add -A && git commit -qm "main grew a test after the build" >/dev/null
 head_before="$(git rev-parse HEAD)"
 rc=0
 "$AIF" land AIF-27 >"$OUT/land27e.out" 2>&1 || rc=$?
-eq "red on the result: exit 1, the merge undone, Needs Human" \
-  "$rc,$(git rev-parse HEAD),$(col AIF-27)" "1,$head_before,needs_human"
+eq "red on the result: exit 1, nothing landed, back to the worker in Ready" \
+  "$rc,$(git rev-parse HEAD),$(col AIF-27)" "1,$head_before,ready"
 eq "…a verdict, not a stop" "$(grep -c 'a stop decides nothing' "$OUT/land27e.out")" "0"
 
 # and what every stop left is landable
@@ -5323,6 +5371,472 @@ gi59 "$SANDBOX/p59c" >/dev/null
 eq "no block at all: one is appended with the line, the developer's own line first" \
   "$(sed -n 1p "$SANDBOX/p59c/.gitignore")|$(grep -cx '.aif/worktrees/' "$SANDBOX/p59c/.gitignore")|$(grep -c '^# aif:end' "$SANDBOX/p59c/.gitignore")" \
   "mine/|1|1"
+
+# ====== 60. the land beside the developer's own uncommitted work ==============
+# The land merged into the developer's own checkout, and refused while anything
+# tracked was uncommitted there — the checkout where the human talks to the
+# analyst and the product partner (docs/DEFECTS.md 13.5). It merges in the
+# ticket's worktree now, and moves the checkout by a fast-forward: their work
+# on files the land does not touch stays as it is, staged or not; an edit to a
+# file it changes refuses the land, naming the file, nothing touched.
+#
+# land_built <dir> <ticket> — a project with <ticket> built in its worktree and
+# in Review, entered. Used by 60–67.
+land_built() {
+  fresh_project "$1"
+  ticket_for "$2"
+  git add -A && git commit -qm "the ticket" >/dev/null
+  "$AIF" board create "tasks/$2/ticket.md" --column ready >/dev/null
+  "$AIF" work "$2" >"$OUT/run-$2.out" 2>&1
+}
+printf '\n60. the land beside the developer'"'"'s own work: what it does not change stays, what it changes refuses\n'
+fresh_project "$SANDBOX/p60"
+printf 'notes\n' >NOTES.md
+ticket_for AIF-160
+git add -A && git commit -qm "ticket 60, and the notes" >/dev/null
+"$AIF" board create tasks/AIF-160/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-160 >"$OUT/run60.out" 2>&1 || rc=$?
+eq "built in its worktree, in Review" "$rc,$(col AIF-160)" "0,review"
+printf 'def users():\n    return []  # my own edit\n' >src/app.py
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-160 >"$OUT/land60b.out" 2>&1 || rc=$?
+eq "an uncommitted edit to a file the land changes: refused, exit 1, the card in Review, nothing moved, the edit kept" \
+  "$rc,$(col AIF-160),$(git rev-parse HEAD),$(grep -c 'my own edit' src/app.py)" "1,review,$head_before,1"
+eq "…naming the file it changes" \
+  "$(grep -c 'uncommitted changes to files this land changes' "$OUT/land60b.out"),$(grep -c '^  - src/app.py$' "$OUT/land60b.out")" "1,1"
+eq "…the worktree still on its branch" "$(git -C .aif/worktrees/AIF-160 symbolic-ref --short HEAD 2>/dev/null)" "aif/AIF-160"
+git checkout -q -- src/app.py
+printf 'more notes\n' >>NOTES.md
+printf 'extra\n' >extra.md
+git add extra.md
+rc=0
+"$AIF" land AIF-160 >"$OUT/land60a.out" 2>&1 || rc=$?
+eq "an edit to a file it does not change, and a new file staged: landed, exit 0, Done, one land commit" \
+  "$rc,$(col AIF-160),$(git log --format=%s -1),$(git log --format=%s | grep -c '^aif: land AIF-160 — ')" \
+  "0,done,aif: land AIF-160 — one-command user export,1"
+eq "…the developer's edit and staged file as they were, the implementation landed beside them" \
+  "$(git status --porcelain --untracked-files=no | sort | tr '\n' ';'),$(grep -c impl1 src/app.py)" " M NOTES.md;A  extra.md;,1"
+
+# ====== 61. the dependencies are installed where the verdict is reached =======
+# The land judged a merge that moved a lockfile against what was installed in
+# the developer's checkout from before it, went red over a package it lacked,
+# and sent a ticket with nothing wrong in it to a human (docs/DEFECTS.md 6.3,
+# 13.5). The verdict is reached in the ticket's worktree now: the worker
+# installed what the branch pins there, and the land installs again there only
+# what the target moved against it — never here, where an install is the
+# developer's to ask for. One build, four copies of it, as scenario 25's shape:
+# t0 is red while the lockfile pins dep-new and the install lacks it.
+printf '\n61. the dependencies installed where the verdict is reached, not here\n'
+fresh_project "$SANDBOX/p61"
+printf '{ "dependencies": { "dep-a": "1" } }\n' >package.json
+cp package.json package-lock.json
+printf 'deps/\n' >>.gitignore
+cat >.aif/prepare.sh <<'PREP'
+#!/bin/bash
+want="$(grep -o '"dep-[a-z]*"' package.json | sort | tr '\n' ' ')"
+have="$(grep -o '"dep-[a-z]*"' package-lock.json | sort | tr '\n' ' ')"
+if [ "$want" != "$have" ]; then
+  echo "npm error \`npm ci\` can only install packages when your package.json and package-lock.json are in sync."
+  exit 1
+fi
+rm -rf deps && mkdir -p deps
+printf '%s\n' $have >deps/installed
+# npm install in tools/, where npm ci was meant: it rewrites that lockfile
+if [ -f tools/package-lock.json ] && [ -n "${PREP_REWRITES:-}" ]; then printf '\n' >>tools/package-lock.json; fi
+PREP
+chmod +x .aif/prepare.sh
+tmp="$(mktemp)"
+jq '.prepare = "bash .aif/prepare.sh"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+t0_red_when 'grep -q dep-new package-lock.json && ! grep -q dep-new deps/installed 2>/dev/null'
+ticket_for AIF-161
+git add -A && git commit -qm "ticket 61, and a lockfile" >/dev/null
+bash .aif/prepare.sh # the developer's own install
+"$AIF" board create tasks/AIF-161/ticket.md --column ready >/dev/null
+rc=0
+FAKE_DEPS=1 "$AIF" work AIF-161 >"$OUT/run61.out" 2>&1 || rc=$?
+eq "a ticket that adds a dependency through the lock: built in its worktree, in Review" "$rc,$(col AIF-161)" "0,review"
+copy_project "$SANDBOX/p61" "$SANDBOX/p61a" AIF-161
+rc=0
+"$AIF" land AIF-161 >"$OUT/land61a.out" 2>&1 || rc=$?
+eq "the branch moved the dependencies: landed, Done, nothing installed here" \
+  "$rc,$(col AIF-161),$(installed)" '0,done,"dep-a" '
+eq "…said with the command that installs them here" \
+  "$(grep -c '^deps: .*not installed in this checkout.*When you need them here: bash .aif/prepare.sh' "$OUT/land61a.out")" "1"
+# The target moves a manifest and its lockfile of its own after the build: the
+# merge is installed in the worktree before it is judged there.
+copy_project "$SANDBOX/p61" "$SANDBOX/p61b" AIF-161
+mkdir -p tools
+printf '{ "dependencies": { "dep-t": "1" } }\n' >tools/package.json
+cp tools/package.json tools/package-lock.json
+git add -A && git commit -qm "the tools' dependencies" >/dev/null
+rc=0
+"$AIF" land AIF-161 >"$OUT/land61b.out" 2>&1 || rc=$?
+eq "what the target moved is installed in the worktree, before its verdict" \
+  "$(grep -c '^prepare   tools/package-lock.json, tools/package.json moved — bash .aif/prepare.sh, in .aif/worktrees/AIF-161$' "$OUT/land61b.out")" "1"
+eq "…landed, Done, this checkout's install and tree untouched" \
+  "$rc,$(col AIF-161),$(installed),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" '0,done,"dep-a" ,0'
+# The same, and the install there rewrites a lockfile: not what the merge
+# pins. Refused for a human; nothing landed, the worktree back on its branch.
+copy_project "$SANDBOX/p61" "$SANDBOX/p61c" AIF-161
+mkdir -p tools
+printf '{ "dependencies": { "dep-t": "1" } }\n' >tools/package.json
+cp tools/package.json tools/package-lock.json
+git add -A && git commit -qm "the tools' dependencies" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+PREP_REWRITES=1 "$AIF" land AIF-161 >"$OUT/land61c.out" 2>&1 || rc=$?
+eq "an install in the worktree that rewrites a lockfile: exit 1, Needs Human, nothing landed, this checkout clean" \
+  "$rc,$(col AIF-161),$(git rev-parse HEAD),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "1,needs_human,$head_before,0"
+eq "…on a land: line naming the file" \
+  "$(last_comment AIF-161 | sed -n 1p | grep -c '^land: .*rewrote tools/package-lock.json')" "1"
+eq "…the worktree back on its branch" "$(git -C .aif/worktrees/AIF-161 symbolic-ref --short HEAD 2>/dev/null)" "aif/AIF-161"
+# No worktree to borrow — removed by hand — and the target moved: the land
+# cuts one at the target, installs there, and judges.
+copy_project "$SANDBOX/p61" "$SANDBOX/p61d" AIF-161
+"$AIF" work AIF-161 --clean >/dev/null 2>&1
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved" >/dev/null
+rc=0
+"$AIF" land AIF-161 >"$OUT/land61d.out" 2>&1 || rc=$?
+eq "no worktree: one cut at the target for the land, installed, judged — landed, Done" \
+  "$rc,$(col AIF-161),$(grep -c '^worktree  cut .aif/worktrees/AIF-161 at .* for the land$' "$OUT/land61d.out"),$(grep -c '^prepare   bash .aif/prepare.sh, in .aif/worktrees/AIF-161$' "$OUT/land61d.out"),$(grep -c '^suite     bash .aif/suite.sh — in .aif/worktrees/AIF-161$' "$OUT/land61d.out")" \
+  "0,done,1,1,1"
+
+# ====== 62. the verdict: the worker's, or the suite and the checks, there ======
+# The land ran the suite on every merge, in the developer's checkout — minutes
+# of jest on a tree the worker had judged already — and no check at all: two
+# tickets that merged clean and type-checked apart could leave the target red
+# (docs/DEFECTS.md 13.5). The worker's verdict stands now when the merge is
+# the tree it judged and the target moved only in tasks/; otherwise the land
+# runs the suite and every check bound to green, in the worktree. The stub
+# suite says where it ran in $SUITE_LOG. `pair` passes on the build and fails
+# once main has src/other.py beside it.
+printf '\n62. the verdict: the worker'"'"'s when it stands, else the suite and the checks, there\n'
+fresh_project "$SANDBOX/p62"
+{
+  head -1 .aif/suite.sh
+  # shellcheck disable=SC2016  # a line of the suite being written, expanded when it runs
+  printf '[ -z "${SUITE_LOG:-}" ] || pwd -P >>"$SUITE_LOG"\n'
+  tail -n +2 .aif/suite.sh
+} >"$OUT/suite62" && mv "$OUT/suite62" .aif/suite.sh && chmod +x .aif/suite.sh
+tmp="$(mktemp)"
+jq '.checks = [ { name: "pair", command: "! { grep -q impl1 src/app.py && [ -f src/other.py ]; }", phase: ["green"], required: true } ]' \
+  .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+ticket_for AIF-165
+git add -A && git commit -qm "ticket 62, a suite that says where it ran, and a check" >/dev/null
+"$AIF" board create tasks/AIF-165/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-165 >"$OUT/run62.out" 2>&1 || rc=$?
+eq "built, the check passed on the build" "$rc,$(col AIF-165)" "0,review"
+copy_project "$SANDBOX/p62" "$SANDBOX/p62b" AIF-165
+cd "$SANDBOX/p62" || exit 1
+ticket_for AIF-166
+git add -A && git commit -qm "the analyst's next ticket" >/dev/null
+rc=0
+SUITE_LOG="$SANDBOX/s62a.log" "$AIF" land AIF-165 >"$OUT/land62a.out" 2>&1 || rc=$?
+eq "main moved only in tasks/: the worker's verdict stands — no suite run, landed" \
+  "$rc,$(col AIF-165),$(grep -c '^suite     the worker'"'"'s verdict stands' "$OUT/land62a.out"),$(cat "$SANDBOX/s62a.log" 2>/dev/null | wc -l | tr -d ' ')" "0,done,1,0"
+cd "$SANDBOX/p62b" || exit 1
+printf 'def other():\n    return 1\n' >src/other.py
+git add -A && git commit -qm "main added a module" >/dev/null
+head_before="$(git rev-parse HEAD)"
+rc=0
+SUITE_LOG="$SANDBOX/s62b.log" "$AIF" land AIF-165 >"$OUT/land62b.out" 2>&1 || rc=$?
+eq "a check bound to green, red on the result: exit 1, nothing landed, back to the worker" \
+  "$rc,$(git rev-parse HEAD),$(col AIF-165)" "1,$head_before,ready"
+eq "…on a sync: line naming the check" \
+  "$(last_comment AIF-165 | sed -n 1p | grep -c '^sync: the check "pair" is red on ')" "1"
+eq "…judged in the worktree, the suite green first" \
+  "$(grep -c '/\.aif/worktrees/AIF-165$' "$SANDBOX/s62b.log" 2>/dev/null)" "1"
+
+# ====== 63. TERM, then KILL 1.4 s later, during the verdict ===================
+# One Ctrl-C in a review session sends the land TERM, and SIGKILL 1.3–1.5 s
+# later (docs/DEFECTS.md 15.1; docs/FINDINGS.md #28). The land used to undo a
+# merge it had made on the developer's branch, a reset the KILL could cut in
+# half. Its merge is in the worktree now: the TERM puts the worktree back, and
+# the KILL finds nothing. The stand-ins of scenario 27 hold the suite open
+# (STOP_IN=suite); main has moved, so the land judges. One build, two copies.
+#
+# land_at <ticket> <stop-at> <out> [land options] — the land in the
+# background, a process group of its own with SIGINT at its default (python
+# puts it back, as scenario 27 says why), back once its stand-in waits.
+land_at() {
+  local t="$1" at="$2" out="$3" i=0
+  shift 3
+  rm -f "$STOP_MARK" "$STOP_GO"
+  STOP_IN="$at" STOP_MARK="$STOP_MARK" STOP_GO="$STOP_GO" python3 -c '
+import os, signal, sys
+os.setpgrp()
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" land "$t" ${1+"$@"} >"$out" 2>&1 &
+  LAND_PID=$!
+  while [ ! -f "$STOP_MARK" ] && [ "$i" -lt 150 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+printf '\n63. TERM to a land during its verdict, then KILL 1.4 s later: nothing landed, nothing left\n'
+fresh_project "$SANDBOX/p63"
+cat >.aif/stop-here.sh <<'STOP'
+#!/bin/bash
+[ "${STOP_IN:-}" = "$1" ] || exit 0
+touch "$STOP_MARK"
+i=0
+while [ ! -f "$STOP_GO" ] && [ "$i" -lt 300 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+STOP
+{
+  head -1 .aif/suite.sh
+  printf 'bash .aif/stop-here.sh suite\n'
+  tail -n +2 .aif/suite.sh
+} >"$OUT/suite63" && mv "$OUT/suite63" .aif/suite.sh && chmod +x .aif/suite.sh
+ticket_for AIF-170
+git add -A && git commit -qm "ticket 63, a suite that can be held" >/dev/null
+"$AIF" board create tasks/AIF-170/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-170 >"$OUT/run63.out" 2>&1 || rc=$?
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved" >/dev/null
+eq "built, in Review; main moved since" "$rc,$(col AIF-170)" "0,review"
+copy_project "$SANDBOX/p63" "$SANDBOX/p64" AIF-170
+cd "$SANDBOX/p63" || exit 1
+STOP_MARK="$SANDBOX/p63.at"
+STOP_GO="$SANDBOX/p63.go"
+head_before="$(git rev-parse HEAD)"
+reflog_before="$(git reflog "$(git symbolic-ref --short HEAD)" | wc -l | tr -d ' ')"
+land_at AIF-170 suite "$OUT/land63.out"
+kill -TERM -- "-$LAND_PID" 2>/dev/null
+sleep 1.4
+kill -KILL -- "-$LAND_PID" 2>/dev/null
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "TERM, then KILL 1.4 s later: exit 143, main where it was" "$rc,$(git rev-parse HEAD)" "143,$head_before"
+eq "…its reflog as long as before: nothing was written to it and taken back" \
+  "$(git reflog "$(git symbolic-ref --short HEAD)" | wc -l | tr -d ' ')" "$reflog_before"
+eq "…the worktree there, on its branch" "$(git -C .aif/worktrees/AIF-170 symbolic-ref --short HEAD 2>/dev/null)" "aif/AIF-170"
+eq "…no land lock or marker left, the card in Review, and said" \
+  "$(find .aif/state -maxdepth 1 -name 'land*' | wc -l | tr -d ' '),$(col AIF-170),$(grep -c 'terminated — nothing landed' "$OUT/land63.out")" "0,review,1"
+# The land holds the ticket's worktree while it runs: a worker on that ticket
+# meanwhile is refused before it touches the card. Then it lands.
+land_at AIF-170 suite "$OUT/land63b.out"
+rc=0
+"$AIF" work AIF-170 >"$OUT/run63w.out" 2>&1 || rc=$?
+eq "a worker on the ticket while its land runs: refused, exit 3, the card untouched" \
+  "$rc,$(col AIF-170),$(grep -c 'aif land AIF-170 runs in this checkout right now' "$OUT/run63w.out")" "3,review,1"
+touch "$STOP_GO"
+rc=0
+wait "$LAND_PID" || rc=$?
+eq "then it lands" "$rc,$(col AIF-170)" "0,done"
+
+# The same TERM and KILL, sent as the fast-forward starts: a branch of 30 000
+# files makes it long enough to be in. It runs in a process group of its own,
+# out of reach of both: main ends at the land's merge, clean, whether the land
+# lived to say so (143) or was killed waiting for it (137), and the next land
+# finishes the bookkeeping. A fast-forward in the land's own group stopped
+# where the TERM found it, files half written, the ref not moved — and one
+# that ignored the TERM still failed at its end (docs/FINDINGS.md #35).
+land_built "$SANDBOX/p63c" AIF-171
+python3 -c 'import os, sys
+for a in range(300):
+    os.makedirs("%s/big/%03d" % (sys.argv[1], a), exist_ok=True)
+    for b in range(100):
+        open("%s/big/%03d/f%03d.txt" % (sys.argv[1], a, b), "w").write("%d %d\n" % (a, b))' .aif/worktrees/AIF-171
+git -C .aif/worktrees/AIF-171 add -A && git -C .aif/worktrees/AIF-171 -c core.hooksPath=/dev/null commit -qm "a branch of 30 000 files" >/dev/null
+python3 -c '
+import os, signal, subprocess, sys, time
+def pre():
+    os.setpgrp(); signal.signal(signal.SIGINT, signal.SIG_DFL)
+p = subprocess.Popen([sys.argv[1], "land", "AIF-171"], preexec_fn=pre, stdout=open(sys.argv[3], "w"), stderr=subprocess.STDOUT)
+t = time.time()
+while not os.path.exists(sys.argv[2]) and p.poll() is None and time.time() - t < 120: time.sleep(0.002)
+os.killpg(p.pid, signal.SIGTERM)
+time.sleep(1.4)
+try: os.killpg(p.pid, signal.SIGKILL)
+except OSError: pass
+rc = p.wait()
+open(sys.argv[4], "w").write(str(128 - rc if rc < 0 else rc))' "$AIF" .aif/state/land.section "$OUT/land63c.out" "$OUT/land63c.rc"
+sec63="$(cat .aif/state/land.section 2>/dev/null)"
+i=0
+while [ -n "$sec63" ] && kill -0 "$sec63" 2>/dev/null && [ "$i" -lt 600 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+eq "TERM as the fast-forward starts, KILL 1.4 s later: the land stopped, main at its merge all the same, clean" \
+  "$(if grep -qxE '143|137' "$OUT/land63c.rc"; then echo stopped; else cat "$OUT/land63c.rc"; fi),$(git log --format=%s -1),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' '),$(jq -r .state .aif/state/land.json 2>/dev/null)" \
+  "stopped,aif: land AIF-171 — one-command user export,0,landed"
+rc=0
+"$AIF" land AIF-171 >"$OUT/land63d.out" 2>&1 || rc=$?
+eq "…and the next land finishes the bookkeeping" "$rc,$(col AIF-171),$(grep -c 'finishing the land of AIF-171' "$OUT/land63d.out")" "0,done,1"
+
+# ====== 64. KILL alone, during the verdict =====================================
+# No TERM before it — a kill -9, the power going: no handler runs. The land
+# never moved main, so main is as it was; it leaves the worktree off its
+# branch and its marker, which aif doctor names, the worker puts back, and the
+# next land settles.
+printf '\n64. KILL alone during the verdict: main untouched, the next run and the next land put back what it left\n'
+cd "$SANDBOX/p64" || exit 1
+STOP_MARK="$SANDBOX/p64.at"
+STOP_GO="$SANDBOX/p64.go"
+head_before="$(git rev-parse HEAD)"
+land_at AIF-170 suite "$OUT/land64.out"
+lpid="$LAND_PID"
+kill -KILL "$lpid" 2>/dev/null
+kill -KILL -- "-$lpid" 2>/dev/null
+wait "$lpid" 2>/dev/null
+eq "KILL during the verdict: main where it was, this checkout clean" \
+  "$(git rev-parse HEAD),$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" "$head_before,0"
+eq "…the worktree left there, detached" \
+  "$([ -e .aif/worktrees/AIF-170/.git ] && echo there),$(git -C .aif/worktrees/AIF-170 symbolic-ref -q HEAD >/dev/null 2>&1 && echo attached || echo detached)" "there,detached"
+eq "aif doctor names the land that died there" \
+  "$("$AIF" doctor 2>&1 | grep -c "a land of AIF-170 (pid $lpid, gone) stopped before its fast-forward")" "1"
+rc=0
+"$AIF" work AIF-170 >"$OUT/run64b.out" 2>&1 || rc=$?
+eq "aif work puts the worktree back on its branch, says so, and builds" \
+  "$rc,$(col AIF-170),$(grep -c 'back on aif/AIF-170' "$OUT/run64b.out")" "0,review,1"
+rc=0
+"$AIF" land AIF-170 >"$OUT/land64c.out" 2>&1 || rc=$?
+eq "the next land says what it settled, and lands" \
+  "$rc,$(col AIF-170),$(grep -c "an earlier land of AIF-170 (pid $lpid) stopped before it moved" "$OUT/land64c.out")" "0,done,1"
+
+# ====== 65. what only a KILL of the fast-forward itself leaves ================
+# The fast-forward runs where no signal to the land reaches it, in tens of
+# milliseconds — only a KILL of that step itself, or the power going, stops it
+# half way, and no signal can be timed into it. So what it leaves is built by
+# hand: the marker as the land writes it, and git as it would be. Built at
+# landed — the branch moved, the bookkeeping not begun — the next land
+# finishes it without judging again; in its fast-forward with git's lock
+# left, the next land names the lock and touches nothing; without the lock,
+# the ticket's own files come back from aside, said, and the land goes on.
+printf '\n65. what a KILL of the fast-forward itself leaves: finished, or named, or put back\n'
+fresh_project "$SANDBOX/p65"
+{
+  head -1 .aif/suite.sh
+  # shellcheck disable=SC2016  # a line of the suite being written, expanded when it runs
+  printf '[ -z "${SUITE_LOG:-}" ] || pwd -P >>"$SUITE_LOG"\n'
+  tail -n +2 .aif/suite.sh
+} >"$OUT/suite65" && mv "$OUT/suite65" .aif/suite.sh && chmod +x .aif/suite.sh
+git add -A && git commit -qm "a suite that says where it ran" >/dev/null
+ticket_for AIF-175
+"$AIF" board create tasks/AIF-175/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-175 >"$OUT/run65.out" 2>&1 || rc=$?
+eq "built, the analyst's ticket left uncommitted here" "$rc,$(col AIF-175),$(git status --porcelain tasks/AIF-175 | cut -c1-2)" "0,review,??"
+copy_project "$SANDBOX/p65" "$SANDBOX/p65b" AIF-175
+cd "$SANDBOX/p65" || exit 1
+sleep 30 &
+gone65=$!
+kill "$gone65" 2>/dev/null
+wait "$gone65" 2>/dev/null
+target65="$(git symbolic-ref --short HEAD)"
+pre65="$(git rev-parse HEAD)"
+w065="$(git rev-parse aif/AIF-175)"
+mv tasks/AIF-175 "$OUT/aside65" # what the land takes aside, as it would
+git merge -q --no-ff -m "aif: land AIF-175 — one-command user export" aif/AIF-175 >/dev/null 2>&1
+merge65="$(git rev-parse HEAD)"
+jq -n --arg t AIF-175 --argjson pid "$gone65" --arg tg "$target65" --arg pre "$pre65" --arg w0 "$w065" --arg m "$merge65" \
+  '{ ticket: $t, pid: $pid, started_at: "2026-10-08T00:00:00Z", target: $tg, pre: $pre, branch: $w0, merge: $m,
+     worktree: ".aif/worktrees/AIF-175", made_worktree: false, installed_in_worktree: false, keep: false,
+     prepare_here: null, aside_dir: null, aside: [], state: "landed", done: [], at: "2026-10-08T00:00:01Z" }' >.aif/state/land.json
+rc=0
+SUITE_LOG="$SANDBOX/s65.log" "$AIF" land AIF-175 >"$OUT/land65a.out" 2>&1 || rc=$?
+eq "a land gone after its fast-forward is finished by the next one: exit 0, Done, said" \
+  "$rc,$(col AIF-175),$(grep -c 'finishing the land of AIF-175' "$OUT/land65a.out")" "0,done,1"
+eq "…one landing note, one land commit, no suite run, the worktree and the branch gone, no marker left" \
+  "$("$AIF" board show AIF-175 --json | jq '[ .comments[] | select(.text | startswith("# AIF-175 — landed")) ] | length'),$(git log --format=%s | grep -c '^aif: land AIF-175 — '),$(cat "$SANDBOX/s65.log" 2>/dev/null | wc -l | tr -d ' '),$([ -e .aif/worktrees/AIF-175 ] && echo wt),$(git show-ref --verify --quiet refs/heads/aif/AIF-175 && echo branch),$([ -e .aif/state/land.json ] && echo marker)" \
+  "1,1,0,,,"
+# In its fast-forward: the merge made in the worktree, the analyst's ticket
+# aside, main at the tip the land found — and git's own lock left.
+cd "$SANDBOX/p65b" || exit 1
+pre65="$(git rev-parse HEAD)"
+w065="$(git rev-parse aif/AIF-175)"
+git -C .aif/worktrees/AIF-175 checkout -q --detach "$pre65" >/dev/null 2>&1
+git -C .aif/worktrees/AIF-175 merge -q --no-ff -m "aif: land AIF-175 — one-command user export" "$w065" >/dev/null 2>&1
+merge65="$(git -C .aif/worktrees/AIF-175 rev-parse HEAD)"
+aside65=".aif/tmp/land-AIF-175-20261008T000000Z"
+mkdir -p "$aside65/tasks/AIF-175" && mv tasks/AIF-175/ticket.md "$aside65/tasks/AIF-175/ticket.md"
+jq -n --arg t AIF-175 --argjson pid "$gone65" --arg tg "$(git symbolic-ref --short HEAD)" --arg pre "$pre65" --arg w0 "$w065" \
+  --arg m "$merge65" --arg ad "$aside65" \
+  '{ ticket: $t, pid: $pid, started_at: "2026-10-08T00:00:00Z", target: $tg, pre: $pre, branch: $w0, merge: $m,
+     worktree: ".aif/worktrees/AIF-175", made_worktree: false, installed_in_worktree: false, keep: false,
+     prepare_here: null, aside_dir: $ad, aside: ["tasks/AIF-175/ticket.md"], state: "ff", done: [], at: "2026-10-08T00:00:01Z" }' >.aif/state/land.json
+touch .git/index.lock
+rc=0
+"$AIF" land AIF-175 >"$OUT/land65c.out" 2>&1 || rc=$?
+eq "in its fast-forward, git's lock left: exit 3, naming it — nothing touched, the card in Review" \
+  "$rc,$(grep -c 'rm .git/index.lock, then aif land AIF-175' "$OUT/land65c.out"),$(git rev-parse HEAD),$([ -f "$aside65/tasks/AIF-175/ticket.md" ] && echo aside),$([ -f .aif/state/land.json ] && echo marker),$(col AIF-175)" \
+  "3,1,$pre65,aside,marker,review"
+rm -f .git/index.lock
+rc=0
+"$AIF" land AIF-175 >"$OUT/land65b.out" 2>&1 || rc=$?
+eq "without the lock: main is back where the land found it, the ticket's own file back from aside, said — then it lands" \
+  "$rc,$(col AIF-175),$(grep -c 'stopped in its fast-forward — .* is back at .*, as it was; the ticket.s own files are back from .aif/tmp/land-AIF-175-20261008T000000Z: tasks/AIF-175/ticket.md' "$OUT/land65b.out")" \
+  "0,done,1"
+
+# ====== 66. the land's merge commit runs the project's hooks ==================
+# Every commit aif makes on its own behalf skips the project's hooks (scenario
+# 86); the land's merge commit is the one they are for (docs/DEFECTS.md 13.11),
+# and a clean `git merge` runs no pre-commit at all. The land commits its merge
+# itself, in the worktree, with the hooks: a refusal is a land: line for a
+# human, nothing landed. The hook logs where it ran.
+printf '\n66. the land'"'"'s merge commit runs the project'"'"'s hooks, the worker'"'"'s git none of them\n'
+fresh_project "$SANDBOX/p66"
+ticket_for AIF-180
+git add -A && git commit -qm "ticket 66" >/dev/null
+"$AIF" board create tasks/AIF-180/ticket.md --column ready >/dev/null
+HOOK_LOG66="$SANDBOX/p66-hooks.log"
+HOOK_PASS66="$SANDBOX/p66-pass"
+cat >.git/hooks/pre-commit <<HOOK
+#!/bin/sh
+printf '%s\n' "\$PWD" >>"$HOOK_LOG66"
+[ -f "$HOOK_PASS66" ] && exit 0
+echo "lint: 3 problems"
+exit 1
+HOOK
+printf '#!/bin/sh\nexit 7\n' >.git/hooks/post-checkout
+chmod +x .git/hooks/pre-commit .git/hooks/post-checkout
+rc=0
+"$AIF" work AIF-180 >"$OUT/run66.out" 2>&1 || rc=$?
+eq "the worker builds under a failing pre-commit and a post-checkout that exits 7, running neither" \
+  "$rc,$(col AIF-180),$(cat "$HOOK_LOG66" 2>/dev/null | wc -l | tr -d ' ')" "0,review,0"
+head_before="$(git rev-parse HEAD)"
+rc=0
+"$AIF" land AIF-180 >"$OUT/land66a.out" 2>&1 || rc=$?
+eq "the land's merge commit runs pre-commit, which refuses it: exit 1, Needs Human, nothing landed" \
+  "$rc,$(col AIF-180),$(git rev-parse HEAD)" "1,needs_human,$head_before"
+eq "…on a land: line, the hook's own words on the card" \
+  "$(last_comment AIF-180 | sed -n 1p | grep -c "^land: the project's git hooks refused the land's merge commit"),$(last_comment AIF-180 | grep -c 'lint: 3 problems')" "1,1"
+eq "…the hook ran once, in the ticket's worktree" \
+  "$(cat "$HOOK_LOG66" | wc -l | tr -d ' '),$(grep -c '\.aif/worktrees/AIF-180$' "$HOOK_LOG66")" "1,1"
+: >"$HOOK_PASS66"
+rc=0
+{ "$AIF" board move AIF-180 review && "$AIF" land AIF-180; } >"$OUT/land66b.out" 2>&1 || rc=$?
+eq "the hook satisfied: landed, Done" "$rc,$(col AIF-180),$(git log --format=%s -1)" "0,done,aif: land AIF-180 — one-command user export"
+
+# ====== 67. the target moves while the land runs ===============================
+# A person committing in another terminal — here a pre-commit hook of the
+# land's own merge commit, which commits in the checkout — moves the branch
+# the land judged a merge onto. The land lands nothing then: the card stays
+# in Review, and it says so.
+printf '\n67. the target moves while the land runs: nothing landed, said\n'
+land_built "$SANDBOX/p67" AIF-185
+eq "built, in Review" "$(col AIF-185)" "review"
+main67="$(pwd -P)"
+cat >.git/hooks/pre-commit <<HOOK
+#!/bin/sh
+cd "$main67" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git commit -q --allow-empty --no-verify -m "a commit made meanwhile" >/dev/null 2>&1
+exit 0
+HOOK
+chmod +x .git/hooks/pre-commit
+rc=0
+"$AIF" land AIF-185 >"$OUT/land67.out" 2>&1 || rc=$?
+eq "the branch moved during the land: exit 1, the card in Review, main at that commit, no land commit" \
+  "$rc,$(col AIF-185),$(git log --format=%s -1),$(git log --format=%s | grep -c '^aif: land AIF-185')" "1,review,a commit made meanwhile,0"
+eq "…said, and the worktree back on its branch" \
+  "$(grep -c 'moved while the land ran' "$OUT/land67.out"),$(git -C .aif/worktrees/AIF-185 symbolic-ref --short HEAD 2>/dev/null)" "1,aif/AIF-185"
 
 # ====== 80. the runner's usage limit pauses the run, outside the wall clock ===
 # docs/DEFECTS.md 13.7. A station that met the account's usage limit returned

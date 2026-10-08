@@ -146,6 +146,25 @@ aif_shift_lock_dir() {
   printf '%s/.aif/state/shift' "$(aif_main_root "$1")"
 }
 
+# aif_land_lock_dir <root> — the same for `aif land`: one land per checkout.
+# A land moves the checkout's branch, and two would each judge a merge onto a
+# tip the other is about to move; it also borrows the ticket's worktree for
+# the length of its verdict, which the worker reads as the land's while this
+# is held (docs/DEFECTS.md 13.5, 15.1). Its owner.json names the ticket.
+aif_land_lock_dir() {
+  printf '%s/.aif/state/land' "$(aif_main_root "$1")"
+}
+
+# aif_land_marker_file <root> — what a land in flight has done, and what the
+# next land must undo or finish if this one is killed outright: the tip it
+# found, the merge it made, how far it got (lib/integrate.sh,
+# aif_land_marker_set). Beside the lock, never in it: a takeover of a dead
+# lock deletes that directory, and the marker is what the taker reads next
+# (docs/DEFECTS.md 15.1).
+aif_land_marker_file() {
+  printf '%s/.aif/state/land.json' "$(aif_main_root "$1")"
+}
+
 # aif_pause_file <root> — the file whose line says the runner's usage limit
 # holds on this machine, and until when: `<until-epoch|0> <scope> <type>
 # <ticket> <written-epoch> <why…>` (lib/cmd_work.sh _aif_work_pause_write).

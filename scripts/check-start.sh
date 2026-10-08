@@ -31,7 +31,8 @@
 #      15.12, 15.6, 14.2); a ready gate's 3 the environment, a card unread
 #      three looks in a row a line nothing waits on, the held build offered
 #      as "build again", R12 on Trello keyed on a card's entry into Ready
-#      (15.8, 15.9) — and
+#      (15.8, 15.9); R7 warning of the uncommitted files the card's branch
+#      changes, and of no others (13.5) — and
 #      lib/requests.sh over requests shaped like a real project's: a status
 #      the tickets that name the request overrule, a blank line before it,
 #      a fenced block in a slice, two old-format requests with no status; the
@@ -67,7 +68,9 @@
 #      the whole of a wait; a session that changed only another card is a
 #      change; a move never tried left with its comment and the commands
 #      that make it (15.9); an ignore block from before the shift — the
-#      header, and aif doctor naming its missing line and aif init (15.2)
+#      header, and aif doctor naming its missing line and aif init (15.2);
+#      R7's warning read off the repository per card: an edit beside the
+#      branch none, an edit to a file it changes named (13.5)
 #   T  Trello, against scripts/mock-trello.py with the real clock: this
 #      host's claim is requeued and another host's is a line; a card's head
 #      is read again when a comment moves its last activity, and a block by
@@ -753,9 +756,19 @@ fx "R7: built here — the review session" '.units[0].rule == "R7" and .units[0]
   "local":{"class":"built","branch":{"exists":true},"lock":{"held":false,"live":false},"run":{"branch_status":"built"}}}]}
 JSON
 
-fx "R7 with tracked changes — warned before the land refuses" '.units[0].rule == "R7" and .units[0].warn == "aif land will refuse while these are uncommitted: requests/x.md, src/a.py — commit them first"' <<JSON
+fx "R7 with a file its branch changes uncommitted — warned before the land refuses, that file alone" '.units[0].rule == "R7" and .units[0].warn == "aif land will refuse while these files it changes are uncommitted: src/a.py — commit or stash them first"' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"dirty":["requests/x.md","src/a.py"],"cards":[
  {"ticket":"AIF-25","column":"review","pos":1,"head":{"line":"# AIF-25 — built","at":"2026-10-07T09:30:02Z","after":0,"heads":[]},
+  "land_dirty":["src/a.py"],
+  "local":{"class":"built","branch":{"exists":true},"lock":{"held":false,"live":false}}}]}
+JSON
+
+# A land refuses only on the uncommitted files its branch changes
+# (docs/DEFECTS.md 13.5): a request rewritten here beside it is no warning.
+fx "R7 with only files its branch does not change uncommitted — no warning" '.units[0].rule == "R7" and .units[0].warn == null' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"dirty":["requests/x.md"],"cards":[
+ {"ticket":"AIF-25","column":"review","pos":1,"head":{"line":"# AIF-25 — built","at":"2026-10-07T09:30:02Z","after":0,"heads":[]},
+  "land_dirty":[],
   "local":{"class":"built","branch":{"exists":true},"lock":{"held":false,"live":false}}}]}
 JSON
 
@@ -2217,6 +2230,29 @@ eq "a block from before the shift: aif doctor names the line it lacks and aif in
 "$AIF" doctor >"$OUT/i-doctor2.out" 2>&1 || true
 eq "…aif init adds it: doctor's row is a ✓, and git ignores the file" \
   "$(grep -c '✓ \.gitignore *the managed block names every path aif keeps out of git' "$OUT/i-doctor2.out"),$(git check-ignore -q .aif/start.local && echo ignored)" "1,ignored"
+
+# R7's warning is the card's own (docs/DEFECTS.md 13.5): the land merges in
+# the ticket's worktree and refuses only on uncommitted changes to the files
+# its branch changes. A built card in Review: the notes edited here beside it
+# are no warning; an edit to the module its branch changes is, named. q at
+# the review, so nothing is opened.
+PW="$SANDBOX/pW"
+fresh_project "$PW"
+ticket_for AIF-1
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "a ticket, and notes" >/dev/null
+card AIF-1 ready
+rc=0
+"$AIF" work AIF-1 >"$OUT/w-work.out" 2>&1 || rc=$?
+printf 'more notes\n' >>NOTES.md
+rc1=0
+run_bg "$OUT/w-shift1.out" 30 env AIF_START_KEYS=q "$AIF" start --no-build || rc1=$?
+printf '# my own edit\n' >>src/aif_1.py
+rc2=0
+run_bg "$OUT/w-shift2.out" 30 env AIF_START_KEYS=q "$AIF" start --no-build || rc2=$?
+eq "R7's warning is the card's own: the notes edited beside it none; an edit to the module its branch changes, named" \
+  "$rc,$(col AIF-1),$rc1,$(grep -c 'aif land will refuse' "$OUT/w-shift1.out"),$rc2,$(grep -c 'aif land will refuse while these files it changes are uncommitted: src/aif_1.py — commit or stash them first' "$OUT/w-shift2.out")" \
+  "0,review,0,0,0,1"
 
 # =================================== T ======================================
 printf '\nT. Trello — the stand-in server, with the real clock\n'

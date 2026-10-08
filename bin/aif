@@ -61,7 +61,7 @@ usage: aif <command> [options]
 
 commands:
   work          Build the next Ready ticket (or a named one) headless — no questions asked
-  land          The yes after review: merge the branch, suite on the result, card to Done, next slice released
+  land          The yes after review: merged and judged in the ticket's worktree, this branch fast-forwarded, card to Done, next slice released
   start         The shift: review, analyst and owner sessions one at a time, the board moved by fixed rules
   board         The board: next-ready, move, comment, create, status, show, head, release, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
@@ -158,6 +158,9 @@ main() {
       aif_cmd_work ${1+"$@"}
       ;;
     land)
+      # The worker's lock helpers and its readers of a run lock: the land takes
+      # one lock of its own the same way, and refuses a ticket a worker is on
+      # (docs/DEFECTS.md 14.5, 15.1).
       # shellcheck source=lib/ledger.sh
       . "$AIF_ROOT/lib/ledger.sh"
       # shellcheck source=lib/gates.sh
@@ -166,8 +169,12 @@ main() {
       . "$AIF_ROOT/lib/secret.sh"
       # shellcheck source=lib/board.sh
       . "$AIF_ROOT/lib/board.sh"
+      # shellcheck source=lib/run.sh
+      . "$AIF_ROOT/lib/run.sh"
       # shellcheck source=lib/integrate.sh
       . "$AIF_ROOT/lib/integrate.sh"
+      # shellcheck source=lib/cmd_work.sh
+      . "$AIF_ROOT/lib/cmd_work.sh"
       # shellcheck source=lib/cmd_land.sh
       . "$AIF_ROOT/lib/cmd_land.sh"
       aif_cmd_land ${1+"$@"}
@@ -330,6 +337,10 @@ main() {
       . "$AIF_ROOT/lib/board.sh"
       # shellcheck source=lib/roles.sh
       . "$AIF_ROOT/lib/roles.sh"
+      # The land's marker readers, for a land that died here (docs/DEFECTS.md
+      # 15.1).
+      # shellcheck source=lib/integrate.sh
+      . "$AIF_ROOT/lib/integrate.sh"
       # shellcheck source=lib/doctor.sh
       . "$AIF_ROOT/lib/doctor.sh"
       aif_doctor ${1+"$@"}

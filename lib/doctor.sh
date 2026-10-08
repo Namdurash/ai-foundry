@@ -164,6 +164,28 @@ _aif_doctor_project() {
     fi
   fi
 
+  # A land that died here, killed outright — a review session's Ctrl-C sends
+  # TERM and then KILL (docs/DEFECTS.md 15.1). Its marker says how far it got:
+  # before its fast-forward nothing landed and its worktree is off its
+  # branch, in it the branch may be half-way, after it the bookkeeping is
+  # left. The next aif land settles it; this only says so, and reads.
+  local lm lpid lid lwhen
+  lm="$(aif_land_marker_file "$root")"
+  if [ -f "$lm" ]; then
+    lpid="$(aif_land_marker_get "$lm" .pid)"
+    if ! aif_land_pid_live "$lpid"; then
+      lid="$(aif_land_marker_get "$lm" .ticket)"
+      case "$(aif_land_marker_get "$lm" .state)" in
+        landed) lwhen="after" ;;
+        ff) lwhen="in" ;;
+        *) lwhen="before" ;;
+      esac
+      printf '  %s %-14s %sa land of %s (pid %s, gone) stopped %s its fast-forward at %s — aif land %s settles it%s\n' \
+        "$(aif_no)" "land" "$AIF_C_YELLOW" "${lid:-?}" "${lpid:-?}" "$lwhen" \
+        "$(aif_land_marker_get "$lm" .at)" "${lid:-<ticket>}" "$AIF_C_RESET"
+    fi
+  fi
+
   # Every agent a skill dispatches to must exist, or the fork silently falls
   # back to general-purpose.
   local skills_dir agents_dir missing=0 skill agent_name

@@ -55,7 +55,7 @@ flowchart TB
     SYNC --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ 2 per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ 1 per ticket"| S_plan
-    LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
+    LAND["aif land — the merge made and judged in the ticket's worktree, aif's own files<br/>settled by owner, the suite and the green checks unless the worker judged that tree;<br/>the checkout fast-forwarded to it, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
@@ -71,9 +71,9 @@ flowchart TB
   QA -->|"wrong — a comment in the reviewer's words, its first line wrong:"| PJM
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
-  LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
-  LAND -->|"undone after its merge — an install that failed, git refusing the merge,<br/>a red over dependencies not installed here: a land: comment"| NEEDS_HUMAN
+  LAND -->|"judged green, the checkout fast-forwarded"| DONE
+  LAND -->|"a conflict in code, or red on the result — the suite or a check: nothing landed,<br/>and the card back to the worker, which brings it onto the branch"| READY
+  LAND -->|"nothing landed — an install that failed in the worktree, git or the project's hooks<br/>refusing the merge commit, a suite that could not run there: a land: comment"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG

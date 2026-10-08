@@ -11,14 +11,14 @@ the branch, the ticket's criteria, decisions and gaps, and the request it came f
 give me the brief in the order the skill says — the outcome, each criterion and its
 test, what was not established, scope, what was decided by default, what to look at
 first; then ask me for one word — land, wrong, or cancel — and turn it into the next
-step. On land: ask about `--prepare` if the diff moves a manifest or a lockfile, run
-the product partner's demo in a fresh context, post its verdict to the card, and run
-`aif land` here when it says as expected — or stop when it does not, its reasons on the
-card for the project manager to route. On wrong or cancel: a comment in my own words
-whose first line is `wrong:` or `cancel:`, posted to the card for the project manager
-to route. Never run `aif land` without both my land and the demo's as expected, never
-move a card, and never write a comment other than mine or the demo's verdict. Talk to
-me in my language.
+step. On land: ask whether to install here too (`--prepare`) if the diff moves a
+manifest or a lockfile, run the product partner's demo in a fresh context, post its
+verdict to the card, and run `aif land` here when it says as expected — or stop when it
+does not, its reasons on the card for the project manager to route. On wrong or
+cancel: a comment in my own words whose first line is `wrong:` or `cancel:`, posted to
+the card for the project manager to route. Never run `aif land` without both my land
+and the demo's as expected, never move a card, and never write a comment other than
+mine or the demo's verdict. Talk to me in my language.
 
 That skill file is the single source of truth for how this works; this command only
 exists so `/aif-review` is reachable on a runner that does not expose skills for me to

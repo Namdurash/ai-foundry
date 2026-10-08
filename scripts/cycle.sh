@@ -110,9 +110,9 @@ lib/cmd_start.sh|aif_runner_claude_session|aif start opens one interactive sessi
 lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
 lib/release.sh|aif_release_sweep|aif board release moves the Backlog cards whose dependencies are Done and landed
-lib/cmd_land.sh|reset --hard "$pre"|a red suite on the result undoes the merge
-lib/cmd_land.sh|land: %s|a land undone after its merge says so on a land: line
-lib/cmd_land.sh|aif_integrate_own "$root" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner
+lib/cmd_land.sh|merge -q --ff-only|a land moves the checkout only by a fast-forward, once judged
+lib/cmd_land.sh|land: %s|a land that landed nothing for a human says so on a land: line
+lib/cmd_land.sh|aif_integrate_own "$wt" "$ticket" theirs|aif land settles a conflict in aif's own files — the ticket's record, the set — by owner, in the ticket's worktree
 lib/cmd_land.sh|_aif_land_requeue "$root" "$ticket"|aif land sends a conflict in code, or a red on the result, back to Ready for the worker
 lib/cmd_land.sh|ready top|…to the top of Ready
 lib/cmd_work.sh|_aif_work_sync "$root" "$wt" "$ticket"|the worker brings the branch onto the branch it lands on before it reports built
@@ -284,7 +284,7 @@ $mermaid_stations    SYNC["sync — the branch brought onto the checkout's branc
     SYNC --> REPORT
     G_implement -.->|"the oracle's, not the code's: repaired by the tests station<br/>in a copy without the implementation, ≤ $repairs_max per ticket"| S_tests
     G_implement -.->|"the contract cannot hold it, says the implementer: replanned, ≤ $replans_max per ticket"| S_plan
-    LAND["aif land — merge into the checkout's branch, aif's own files<br/>settled by owner, the suite on the result, Done, the next slice released"]
+    LAND["aif land — the merge made and judged in the ticket's worktree, aif's own files<br/>settled by owner, the suite and the green checks unless the worker judged that tree;<br/>the checkout fast-forwarded to it, Done, the next slice released"]
   end
 
   DOR -->|"the first slice"| READY
@@ -300,9 +300,9 @@ $mermaid_stations    SYNC["sync — the branch brought onto the checkout's branc
   QA -->|"wrong — a comment in the reviewer's words, its first line wrong:"| PJM
   DEMO -->|"as expected — the review runs it"| LAND
   DEMO -->|"not as expected — its reasons on the card"| PJM
-  LAND -->|"merged, the suite green"| DONE
-  LAND -->|"a conflict in code, or red on the result: the merge undone,<br/>and the card back to the worker, which brings it onto the branch"| READY
-  LAND -->|"undone after its merge — an install that failed, git refusing the merge,<br/>a red over dependencies not installed here: a land: comment"| NEEDS_HUMAN
+  LAND -->|"judged green, the checkout fast-forwarded"| DONE
+  LAND -->|"a conflict in code, or red on the result — the suite or a check: nothing landed,<br/>and the card back to the worker, which brings it onto the branch"| READY
+  LAND -->|"nothing landed — an install that failed in the worktree, git or the project's hooks<br/>refusing the merge commit, a suite that could not run there: a land: comment"| NEEDS_HUMAN
   LAND -.->|"the next slice, when all it depends on is Done"| READY
   NEEDS_HUMAN --> PJM
   PJM -->|"rework, in the reviewer's or the demo's words"| BACKLOG

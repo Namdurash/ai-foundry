@@ -119,9 +119,10 @@ on the kind:
   to `ready` only when they say it is fixed.
 - **`blocked: stopped`** — a person stopped the run (Ctrl-C, `aif work <ID> --stop`) or
   a TERM did; the line says who and during which stage. Their decision — leave it.
-- **`land:`** — not the worker's: `aif land` undid its merge after an install that
-  failed, git refusing the merge, or a red over dependencies not installed here. The
-  lines under it name the command that lands it once that is resolved
+- **`land:`** — not the worker's: `aif land` landed nothing — the install in the
+  ticket's worktree failed or rewrote a lockfile, git or the project's git hooks
+  refused the land's merge commit, or the suite could not run there. The lines under
+  it name the command that lands it once that is resolved
   (`aif board move <ID> review && aif land <ID>`, with `--prepare` when they say so).
   It is for the human; say what the comment names, and do not move it.
 
@@ -136,7 +137,8 @@ A comment with no `blocked:` line is from before the worker wrote one: read it, 
 route a ticket problem as rework and anything else to the human, as above.
 
 A card at the top of Ready whose last comment begins `sync:` is one `aif land` sent
-back: its branch conflicts with the checkout's, or is red on it. The worker brings it
+back: its branch conflicts with the checkout's, or is red on it — the suite, or a
+check bound to green. The worker brings it
 onto the checkout's branch — or builds it again from there — and it returns to Review,
 to be looked at again. Nothing for you; do not move it.
 

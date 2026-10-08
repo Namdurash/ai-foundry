@@ -106,7 +106,9 @@ _aif_start_board() {
 #                local: <_aif_work_status_json>|null,
 #                kept_block: { path }|null,
 #                ticket_file, meta: { depends_on, request, slice }|null,
-#                deps: [ { ticket, column, landed } ], ready_gate, land_commit } ],
+#                deps: [ { ticket, column, landed } ], ready_gate, land_commit,
+#                land_dirty (the dirty paths its branch changes: what its
+#                            land would refuse on) } ],
 #     loose_tasks: [ { ticket, stub, tracked, landed, request, slice } ],
 #     requests: <aif_requests_json>,
 #     memory: { done: [ { key, note } ], retried_env: [..], retried_run: [..] } }
@@ -177,12 +179,28 @@ _aif_start_facts_in() {
   _aif_start_ready_gates "$root" "$tmp" || return 1
   _aif_start_loose "$root" "$tmp" "$re" || return 1
 
-  # Exactly what `aif land` refuses on (lib/cmd_land.sh): tracked files with
-  # changes. A new request or ticket the analyst wrote is untracked, and does
-  # not stop a land; a rewritten `## Status` in a committed request does
-  # (docs/AUTOPILOT-RESEARCH.md R25). A rename names its new path.
+  # The tracked files with changes here — a rename names its new path. `aif
+  # land` refuses on the ones its ticket's branch changes, and on nothing else
+  # (lib/cmd_land.sh; docs/DEFECTS.md 13.5): a rewritten `## Status` in a
+  # committed request, the analyst's edit to another ticket, stop no land
+  # (docs/AUTOPILOT-RESEARCH.md R25). So each card in Review whose branch is
+  # here gets its own: these ∩ what aif/<ID> changed since it left this
+  # branch — `land_dirty`, R7's warning (lib/start.jq). Untracked files are
+  # the land's to take aside or refuse by owner, as before.
   git -C "$main" status --porcelain --untracked-files=no 2>/dev/null |
     cut -c4- | sed 's/.* -> //' >"$tmp/dirty" || : >"$tmp/dirty"
+  local lid lbase
+  : >"$tmp/land_dirty"
+  if [ -s "$tmp/dirty" ]; then
+    for lid in $(jq -r '.[] | select(.column == "review") | .ticket' "$tmp/cards.json" 2>/dev/null); do
+      git -C "$main" show-ref --verify --quiet "refs/heads/aif/$lid" || continue
+      lbase="$(git -C "$main" merge-base HEAD "aif/$lid" 2>/dev/null)" || continue
+      { git -C "$main" -c core.quotePath=false diff --name-only "$lbase" "aif/$lid" 2>/dev/null || true; } |
+        AIF_START_DIRTY="$(cat "$tmp/dirty")" awk -v t="$lid" '
+          BEGIN { n = split(ENVIRON["AIF_START_DIRTY"], d, "\n"); for (i = 1; i <= n; i++) if (d[i] != "") w[d[i]] = 1 }
+          ($0 in w) { printf "%s\t%s\n", t, $0 }' >>"$tmp/land_dirty" || true
+    done
+  fi
   # Every line that says a ticket landed: `aif: land <ID> — <title>`, the
   # subject `aif land` writes (lib/cmd_land.sh), read once for every card and
   # dependency of the tick — matched below as lib/release.sh matches it, the
@@ -227,7 +245,7 @@ _aif_start_facts_in() {
     --arg po "${AIF_START_FLAG_PO:-0}" --arg pjm "${AIF_START_FLAG_PJM:-1}" \
     --arg rr "${AIF_START_FLAG_RETRY_RUNS:-0}" \
     --arg holds "${AIF_RELEASE_HOLD_LABELS:-parked retired-direction}" \
-    --rawfile dirty "$tmp/dirty" --rawfile lands "$tmp/lands" \
+    --rawfile dirty "$tmp/dirty" --rawfile lands "$tmp/lands" --rawfile ld "$tmp/land_dirty" \
     --slurpfile all "$tmp/status.json" --slurpfile cards "$tmp/cards.json" \
     --slurpfile x "$tmp/extras" --slurpfile g "$tmp/gates" --slurpfile loose "$tmp/loose" \
     --slurpfile req "$tmp/requests.json" \
@@ -237,6 +255,7 @@ _aif_start_facts_in() {
     ([ $entry | split("\n")[] | select(length > 0) | split("\t") | { key: .[0], value: (.[1:] | join("\t")) } ]
      | from_entries) as $em
     | ($lands | split("\n") | map(select(length > 0))) as $ll
+    | ($ld | split("\n") | map(select(length > 0) | split("\t"))) as $ldl
     | def landed($id): any($ll[]; contains("aif: land " + $id + " — "));
       ($x | map({ key: .ticket, value: . }) | from_entries) as $e
     | ($g | map({ key: .ticket, value: .rc }) | from_entries) as $gate
@@ -263,6 +282,7 @@ _aif_start_facts_in() {
                                  column: (first($a[] | select(.ticket == $d) | .column) // null),
                                  landed: landed($d) } ],
                      ready_gate: ($gate[$c.ticket] // null),
+                     land_dirty: [ $ldl[] | select(.[0] == $c.ticket) | .[1] ],
                      land_commit: landed($c.ticket) } ],
         loose_tasks: [ $loose[] | . + { landed: landed(.ticket) } ],
         requests: $req[0],

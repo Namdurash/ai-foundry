@@ -903,7 +903,7 @@ _aif_board_trello_comment_edit() { _aif_trello_comment_edit "$@"; }
 #   wrong: <the first thing>  ·  cancel: <why>
 #               the reviewer (sets/claude/skills/aif-review/SKILL.md)
 #   land: <headline>
-#               `_aif_land_fail` in lib/cmd_land.sh — a land undone after its merge
+#               `_aif_land_fail` in lib/cmd_land.sh — a land that landed nothing, for a human
 #   demo: as expected | not as expected — <…>
 #               the product partner (sets/claude/skills/aif-po/SKILL.md)
 #   released by aif land <ID>: …  ·  released by aif board release: …

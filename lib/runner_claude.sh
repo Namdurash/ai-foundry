@@ -139,9 +139,18 @@ aif_runner_claude_result_cost() {
 #
 # One headless station run, for `aif work`. The instrumented path: aif invokes
 # claude -p itself, so the JSON envelope carries num_turns and the four token
-# classes the ledger needs — under subscription auth total_cost_usd is 0
-# (docs/FINDINGS.md #2), so tokens are what gets recorded, and dollars are
-# derived from the project's price table.
+# classes the ledger needs — under subscription auth total_cost_usd was 0 and
+# is not always now (docs/FINDINGS.md #2, #30), so tokens are what gets
+# recorded, and dollars are derived from the project's price table.
+#
+# The output is stream-json, not json: one JSON line per event, the envelope
+# the last of them. The envelope says that a run failed, and in words for a
+# person why; whether it met the account's usage limit, and when that resets,
+# is only in the stream's rate_limit_event (docs/FINDINGS.md #27, #30), and a
+# limit read as a station's failure was billed to the station — retried, the
+# same refusal again, the run stopped blocked: run (docs/DEFECTS.md 13.7).
+# <out> is the stream; aif_runner_claude_classify reads it into a class and
+# the envelope alone, which is what every reader after it reads.
 #
 # The caller has already exported the profile's environment, so `--model opus`
 # resolves to whatever the profile maps opus to (glm-5.2 on the glm profile).
@@ -187,13 +196,116 @@ aif_runner_claude_station() {
       --append-system-prompt "$(cat "$sys")" \
       --model "$model" \
       --tools "$tools" \
-      --output-format json \
+      --output-format stream-json --verbose \
       --max-turns "$max_turns" \
       ${cap[@]+"${cap[@]}"} \
       --permission-mode bypassPermissions \
       --setting-sources project,local \
       >"$out" 2>"$err" </dev/null
   )
+}
+
+# aif_runner_claude_classify <stream> <envelope-out> [<facts-out>] — what one
+# station run came to, read from its stream: one line on stdout,
+# `<class>\t<reset>\t<type>\t<why>`, the run's result object written to
+# <envelope-out> (empty when it left none) and, when asked, what the worker
+# records of a run that was not ok to <facts-out> (turns, output tokens, the
+# last rate_limit_info, the API error's kind). rc 0 always. Only <why> may be
+# empty: a TAB in IFS collapses empty fields, and every field after one would
+# shift (docs/FINDINGS.md #15).
+#
+#   ok         the result says is_error false
+#   limit      the account's usage limit: the stream's rate_limit_event says
+#              rejected and names the limit (rateLimitType) or the credits
+#              (errorCode credits_required); <reset> when it resets, in epoch
+#              seconds, 0 when it names none; <type> the limit's name
+#   transient  the runner did not answer: no result at all (no-envelope —
+#              nothing was written; not-json — something that is not the
+#              CLI's JSON), the server's throttle, overload, a 5xx, a network
+#              error; <type> what said so
+#   error      anything else — max turns, an error during execution, a 4xx,
+#              authentication, billing: the station's run, which the gate then
+#              judges by what it left, as it always did
+#
+# Decided on fields alone, never on the result's prose: the throttle's own
+# words are "Server is temporarily limiting requests (not your usage limit)",
+# which a grep reads as the usage limit (docs/FINDINGS.md #27). The fields are
+# the ones the CLI writes in stream-json --verbose (docs/FINDINGS.md #30): a
+# rate_limit_event at every change of the limit's state, its status rejected
+# for any 429 a subscriber gets and a rateLimitType only when that 429 named a
+# limit — a rejected event with no type is the server's throttle; the
+# API-error assistant line's `error` kind; the result's api_error_status and
+# terminal_reason. <why> — the result's first line, its first error, or its
+# subtype — is for a person, and decides nothing.
+#
+# jq reads a stream of JSON values whatever its line breaks, so a real stream
+# and the harness's one pretty-printed envelope read alike. A value that is
+# not JSON stops that read where it stands; a second read, a line at a time,
+# then takes what parses around it, so a warning printed before the stream
+# does not cost the result after it.
+aif_runner_claude_classify() {
+  local stream="$1" env_out="$2" facts_out="${3:-}" kept keep empty=1 first="" line
+  # shellcheck disable=SC2016  # jq's own syntax
+  keep='objects | select(.type == "result" or .type == "rate_limit_event"
+          or (.type == "assistant" and .is_api_error_message == true))
+        | if .type == "assistant" then { type, error } else . end'
+  : >"$env_out" 2>/dev/null || true
+  [ -z "$facts_out" ] || : >"$facts_out" 2>/dev/null || true
+  if ! kept="$(mktemp "${TMPDIR:-/tmp}/aif-kept-XXXXXX")"; then
+    printf 'transient\t0\tnot-json\tthe stream could not be read here\n'
+    return 0
+  fi
+  if [ -s "$stream" ]; then
+    empty=0
+    jq -c "$keep" "$stream" >"$kept" 2>/dev/null || true
+    if ! jq -e -s 'any(.[]; .type == "result")' "$kept" >/dev/null 2>&1; then
+      jq -R -c "fromjson? | $keep" "$stream" >"$kept" 2>/dev/null || true
+    fi
+    first="$(grep -m 1 -v '^[[:space:]]*$' "$stream" 2>/dev/null | cut -c1-200 | tr '\t' ' ')" || first=""
+  fi
+  jq -c -s '[ .[] | select(.type == "result") ] | last // empty' "$kept" >"$env_out" 2>/dev/null ||
+    : >"$env_out" 2>/dev/null || true
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  line="$(jq -r -s --argjson empty "$empty" --arg first "$first" '
+    def num: if type == "number" and . > 0
+             then (if . > 100000000000 then . / 1000 else . end) | floor else 0 end;
+    def oneline: tostring | split("\n")[0] | gsub("\t"; " ") | .[0:300];
+    ([ .[] | select(.type == "result") ] | last) as $e
+    | ([ .[] | select(.type == "rate_limit_event") | .rate_limit_info ] | last) as $r
+    | ([ .[] | select(.type == "assistant") | .error | select(. != null) ] | last) as $a
+    | ($e.api_error_status // null) as $st
+    | (($r.rateLimitType // "") | if type == "string" then . else "" end) as $rt
+    | (if $e == null then ""
+       else (($e.result // ($e.errors // [])[0] // $e.subtype // "") | oneline) end) as $why
+    | (if $e == null then
+         [ "transient", 0, (if $empty == 1 then "no-envelope" else "not-json" end), (if $empty == 1 then "" else $first end) ]
+       elif $e.is_error == false then [ "ok", 0, "-", $why ]
+       elif ($st == 429 or ($st == null and $e.terminal_reason == "api_error"))
+            and ($r.status // "") == "rejected"
+            and ($rt != "" or ($r.errorCode // "") == "credits_required") then
+         [ "limit",
+           ((if $rt == "overage" then ($r.overageResetsAt // $r.resetsAt) else $r.resetsAt end) | num),
+           (if $rt != "" then $rt else $r.errorCode end), $why ]
+       elif $a == "rate_limit" or $a == "server_error" or $a == "overloaded" then
+         [ "transient", 0, ($a + (if $st == null then "" else "-\($st)" end)), $why ]
+       elif $a == null
+            and ((($st | type) == "number" and any([408, 429, 500, 502, 503, 504, 529][]; . == $st))
+                 or ($st == null and $e.terminal_reason == "api_error")) then
+         [ "transient", 0, (if $st == null then "api_error" else "api-\($st)" end), $why ]
+       else [ "error", 0, ($e.subtype // "error" | tostring), $why ] end)
+    | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$kept" 2>/dev/null)" || line=""
+  if [ -n "$facts_out" ]; then
+    jq -c -s '([ .[] | select(.type == "result") ] | last) as $e
+      | { num_turns: ($e.num_turns // 0), output_tokens: ($e.usage.output_tokens // 0),
+          api_error_status: ($e.api_error_status // null), terminal_reason: ($e.terminal_reason // null),
+          rate_limit: ([ .[] | select(.type == "rate_limit_event") | .rate_limit_info ] | last),
+          api_error: ([ .[] | select(.type == "assistant") | .error | select(. != null) ] | last) }' \
+      "$kept" >"$facts_out" 2>/dev/null || printf '{}\n' >"$facts_out" 2>/dev/null || true
+  fi
+  rm -f "$kept"
+  [ -n "$line" ] || line="$(printf 'transient\t0\tnot-json\t%s' "$first")"
+  printf '%s\n' "$line"
+  return 0
 }
 
 # aif_runner_claude_probe — does this runner actually ANSWER here?

@@ -137,8 +137,11 @@ the machine checked again: the loop goes on while its preflight passes, and take
 no new card when that fails or at the third such run in a row, so a machine that
 cannot run anything costs at most three cards. It takes no new card after two that
 did not build, because two cards in Needs Human usually mean the problem is not the
-cards. Ctrl-C takes no new card and lets the runs in flight finish; Ctrl-C again
-stops them, each card saying so — and from any terminal, `aif work --loop --drain`
+cards. While the account's usage limit pauses its workers it takes no new card either
+— the dashboard says until when — and goes on once the limit resets; a limit with no
+reset within 12 hours stops it, naming the limit. Ctrl-C takes no new card and lets
+the runs in flight finish; Ctrl-C again stops them, each card saying so — and from
+any terminal, `aif work --loop --drain`
 does the first and `aif work --loop --stop` the second, each card saying who. A
 `--stop` on one run is not held against the cards, and its slot takes the next.
 Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — `<ID>.2.log` for a
@@ -308,6 +311,26 @@ always finishes and the worker stops before the next one, so a ceiling is
 "stop past this", not a hard stop. When a ceiling is set, each station is also
 invoked with `--max-budget-usd` carrying what is left of it; with no ceiling
 the flag is not passed at all.
+
+**A usage limit pauses; it does not stop.** A station that the runner cut
+off is not the station's attempt, and nothing bills it to the station. The
+worker reads each station's stream (`--output-format stream-json`): when the
+account's usage limit refused it and names a reset within 12 hours — any
+five-hour window, a weekly reset that falls in the night — the worker writes
+the pause to `.aif/state/pause` and waits it out, a second at a time, then
+dispatches the same attempt again; every other worker on the checkout waits
+on the same file before its next station, the loop takes no new card until
+the pause is over (its dashboard says until when), and the shift opens no
+session and no build meanwhile. The wait is outside the wall clock, and the
+report says how long it was. `rm .aif/state/pause` lifts it by hand. A limit
+that names no reset, or a later one, stops the run `blocked: environment` with
+the reset named, and the loop with it; a weekly limit of one model holds only
+the stations that ask for that model. A runner that did not answer — no
+output, output that is not JSON, the server's throttle (whose words say "not
+your usage limit"), an overload — is asked again after 1, 5 and 15 minutes,
+uncounted and outside the clock, then `blocked: environment`, which the loop
+reads as the machine. Each wait is in the run record's `runner_waits`, with
+what the stream said.
 
 Two smaller things, each learned the hard way. **A station
 that commits is still judged on what it did**: the worker records HEAD before
@@ -571,7 +594,8 @@ card, skipped and said; two machines that take one card at once leave it to the
 earlier claim, and the later withdraws its own. Every other way out
 ends in **Needs Human** with a comment whose first line says whose problem it is —
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
-machine, nothing spent) or `blocked: stopped` (and by whom), or `land:` when `aif
+machine, nothing spent — or, mid-run, the runner: a usage limit past what a run waits,
+a runner that never answered) or `blocked: stopped` (and by whom), or `land:` when `aif
 land` undid its merge, with why and the command that lands it once resolved — so a
 taken card is never left in Ready for the next run to take again, nor anywhere
 without its reason — a `blocked:` line the board refused is kept in

@@ -96,13 +96,18 @@ EOF
 # removal where that side removed it (a modify/delete conflict). The worker's
 # sync takes a conflicted lockfile this way too, from the branch it lands on,
 # and has the package manager write it again.
+#
+# Without the project's hooks (aif_git_own, lib/common.sh): a post-checkout
+# that exits non-zero made the checkout of one side read as failed, after it
+# was made, and the path was left for a station to settle (docs/DEFECTS.md
+# 13.11; probed, docs/FINDINGS.md #30).
 aif_integrate_take() {
   local dir="$1" p="$2" keep="$3" stage=2
   [ "$keep" = ours ] || stage=3
   if git -C "$dir" ls-files -u -- "$p" 2>/dev/null | awk -v s="$stage" '$3 == s { f = 1 } END { exit !f }'; then
-    git -C "$dir" checkout "--$keep" -- "$p" >/dev/null 2>&1 &&
-      git -C "$dir" add -- "$p" >/dev/null 2>&1
+    aif_git_own "$dir" checkout "--$keep" -- "$p" >/dev/null 2>&1 &&
+      aif_git_own "$dir" add -- "$p" >/dev/null 2>&1
   else
-    git -C "$dir" rm -q -- "$p" >/dev/null 2>&1
+    aif_git_own "$dir" rm -q -- "$p" >/dev/null 2>&1
   fi
 }

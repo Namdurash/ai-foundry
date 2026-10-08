@@ -210,9 +210,16 @@ _aif_start_facts_in() {
   # environment either way, and only a gate not installed is `aif init`'s to
   # fix (docs/DEFECTS.md 15.9).
   [ -f "$(aif_gate_path "$main" ready)" ] || gate=false
+  # The runner's usage limit as a worker of this checkout left it, paused or
+  # held, with the time a person reads — the oracle reads no clock: while it
+  # holds, no session and no build is offered, since each would meet it at
+  # once (lib/cmd_work.sh _aif_work_pause_json; docs/DEFECTS.md 13.7).
+  local pausej
+  pausej="$(_aif_work_pause_json "$root")" || pausej=null
+  [ -n "$pausej" ] || pausej=null
 
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-  jq -n -c --argjson now "$(date +%s)" \
+  jq -n -c --argjson now "$(date +%s)" --argjson pause "$pausej" \
     --arg started "${AIF_START_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}" \
     --argjson wall "$wall" --argjson margin "$margin" --argjson installed "$gate" \
     --arg host "$(aif_host_short)" --arg kind "$kind" --arg re "$re" \
@@ -236,6 +243,7 @@ _aif_start_facts_in() {
     | $all[0] as $a
     | { now: $now, shift_started_at: $started, host: $host, board_kind: $kind, ticket_re: $re,
         wall_clock_min: $wall, fresh_margin_s: $margin, ready_gate_installed: $installed,
+        pause: $pause,
         build: $build[0],
         flags: { po: ($po == "1"), pjm: ($pjm != "0"), retry_runs: ($rr == "1") },
         hold_labels: ($holds | words),
@@ -2689,6 +2697,9 @@ aif_cmd_start() {
   # An alias the profile does not map is sent as it is to an endpoint that
   # never heard of it, after a session was opened for a person
   # (docs/DEFECTS.md 14.6) — refused here, with what the profile does map.
+  # No model named is the CLI's default, held to the same rule as `default`
+  # (aif_profile_maps_model): one passing and the other refused was the same
+  # default read two ways.
   for role in review ba po pjm; do
     case "$role" in
       review) pick="$(_aif_start_pick_model review "$m_review" "$model" "$cfg" "")" ;;
@@ -2698,12 +2709,12 @@ aif_cmd_start() {
     esac
     mdl="${pick%%	*}"
     src="${pick#*	}"
-    if [ -n "$mdl" ] && ! aif_profile_maps_model "$mdl"; then
-      mapped=""
-      [ -z "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] || mapped="opus"
-      [ -z "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ] || mapped="${mapped:+$mapped, }sonnet"
-      [ -z "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ] || mapped="${mapped:+$mapped, }haiku"
-      aif_die "$src: the profile $profile does not map $mdl (it maps ${mapped:-no alias}) — name one of those or a full model id"
+    if ! aif_profile_maps_model "$mdl"; then
+      mapped="$(aif_profile_mapped_aliases)"
+      if [ -z "$mdl" ]; then
+        aif_die "--model-$role: none named, so the CLI's default — which the profile $profile does not map (it maps $mapped; the default resolves to opus or sonnet, and no ANTHROPIC_MODEL names it) — name one of those or a full model id"
+      fi
+      aif_die "$src: the profile $profile does not map $mdl (it maps $mapped) — name one of those or a full model id"
     fi
     case "$role" in
       review) AIF_START_MODEL_REVIEW="$mdl" ;;

@@ -197,11 +197,16 @@ EOF
 # instead of here (docs/DEFECTS.md 14.6: `fable` under glm). So: no base URL —
 # every alias is the CLI's and passes; with one, `opus`/`sonnet`/`haiku` pass
 # when their variable is set, `opusplan` (opus to plan, sonnet to build) when
-# both are, `fable` never (no profile variable routes it yet), `default` only
-# when ANTHROPIC_MODEL says what it is. A `[…]` suffix (`opus[1m]`, the
-# long-context variant) is the same alias. Anything else is a full model id,
-# the caller's own choice, and passes; so does an empty model — no `--model`
-# at all.
+# both are, `fable` never (no profile variable routes it yet). A `[…]` suffix
+# (`opus[1m]`, the long-context variant) is the same alias. Anything else is a
+# full model id, the caller's own choice, and passes.
+#
+# `default` and an empty model — no `--model` at all — are one thing, the
+# CLI's own default, and one rule: they pass when ANTHROPIC_MODEL says what it
+# is, or when opus AND sonnet are mapped, the aliases that default resolves to
+# (read). `default` used to need ANTHROPIC_MODEL while no model at all passed
+# always, so the same default was refused or let through by how it was
+# spelled (docs/DEFECTS.md 14.6).
 aif_profile_maps_model() {
   local m="$1"
   case "$m" in
@@ -212,9 +217,24 @@ aif_profile_maps_model() {
     opus | sonnet | haiku) _aif_profile_alias_mapped "$m" ;;
     opusplan) _aif_profile_alias_mapped opus && _aif_profile_alias_mapped sonnet ;;
     fable) return 1 ;;
-    default) [ -n "${ANTHROPIC_MODEL:-}" ] ;;
+    default | '')
+      [ -n "${ANTHROPIC_MODEL:-}" ] && return 0
+      _aif_profile_alias_mapped opus && _aif_profile_alias_mapped sonnet
+      ;;
     *) return 0 ;;
   esac
+}
+
+# aif_profile_mapped_aliases — the aliases the exported profile maps, as a
+# person reads them: "opus, sonnet, haiku", or "no alias". What a refusal of
+# a model the profile does not map names beside it (the shift's, the
+# worker's).
+aif_profile_mapped_aliases() {
+  local mapped=""
+  [ -z "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] || mapped="opus"
+  [ -z "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ] || mapped="${mapped:+$mapped, }sonnet"
+  [ -z "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ] || mapped="${mapped:+$mapped, }haiku"
+  printf '%s' "${mapped:-no alias}"
 }
 
 # _aif_profile_alias_mapped <opus|sonnet|haiku> — is its variable set? A

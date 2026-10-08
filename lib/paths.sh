@@ -146,6 +146,19 @@ aif_shift_lock_dir() {
   printf '%s/.aif/state/shift' "$(aif_main_root "$1")"
 }
 
+# aif_pause_file <root> — the file whose line says the runner's usage limit
+# holds on this machine, and until when: `<until-epoch|0> <scope> <type>
+# <ticket> <written-epoch> <why…>` (lib/cmd_work.sh _aif_work_pause_write).
+#
+# One for every worker of this checkout and the loop and the shift beside
+# them, so in the MAIN checkout with the locks, gitignored: a limit is this
+# account's on this machine, and the next worker would only meet it again — a
+# refused call each — where one that waits for the reset costs nothing
+# (docs/DEFECTS.md 13.7). `rm` lifts it by hand.
+aif_pause_file() {
+  printf '%s/.aif/state/pause' "$(aif_main_root "$1")"
+}
+
 # aif_station_file <root> <station> — the file declaring a pipeline station.
 #
 # A station is a SUBAGENT, so its file lives where the runner looks for agents

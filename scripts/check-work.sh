@@ -183,6 +183,26 @@
 #  69  the worker keeps its claim's comment id and words in its run lock and
 #      edits the claim at every dispatch — `· alive at <time>` — on the local
 #      board, no comment added
+#  80  the runner's usage limit pauses a run: the same attempt dispatched again
+#      once it resets, uncounted, the wait outside the wall clock, the claim
+#      beating meanwhile, the wait in the run's record and in its report
+#  81  a limit that names no reset, or one past what a run waits, is blocked:
+#      environment, naming it, and the loop stops on the hold it leaves,
+#      asking nothing of the machine again
+#  82  the server's throttle and an overload are asked again, uncounted, and
+#      the throttle's words "usage limit" are not read as one
+#  83  a runner that wrote nothing, or not JSON, is asked again, then blocked:
+#      environment — never the station's, never a dead worker; the loop asks
+#      the machine again
+#  84  the pause is shared: a worker waits before its station, a loop takes no
+#      card until it is over, one model's limit holds that model's stations
+#  85  a run stopped while it waits: the card says until when it was paused,
+#      the attempt is not counted, and aif work --status says it is paused
+#  86  the worker's own git — its commits, the sync's merge, its worktree —
+#      runs none of the project's hooks
+#  87  a station's model the profile does not map is refused before the claim,
+#      naming it and what the profile maps; default passes where opus and
+#      sonnet are both mapped
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -458,6 +478,68 @@ for hold in ${FAKE_SLEEP_IN:-}; do
     fi
   fi
 done
+# The runner's own ends, not the station's (docs/DEFECTS.md 13.7): each knob
+# names `<ticket>:<station>`, and the dispatch it hits writes no artifact and
+# prints a stream with the fields the CLI writes in stream-json --verbose
+# (docs/FINDINGS.md #30) — system/init, the rate_limit_event, the API-error
+# assistant line, a result with is_error, api_error_status and
+# terminal_reason — and exits 1.
+#   FAKE_LIMIT_ONCE=<ID>:<st>:<secs>  the first dispatch: the usage limit,
+#       rejected, resetsAt now + secs, of type FAKE_LIMIT_TYPE (five_hour),
+#       cut off after a turn
+#   FAKE_LIMIT_NORESET=<ID>:<st>      every dispatch: a credit limit, no reset
+#   FAKE_THROTTLE_ONCE=<ID>:<st>      the first: the server's throttle — a
+#       rejected event with no type, and "usage limit" in its words
+#   FAKE_TRANSIENT_ONCE=<ID>:<st>     the first: a 529, overloaded
+#   FAKE_NOENVELOPE=<ID>:<st>[:<n>]   nothing written (every dispatch, or the first n)
+#   FAKE_NOTJSON=<ID>:<st>[:<n>]      a line that is not JSON
+# The default envelope below stays one pretty-printed object: the worker
+# reads that shape too.
+runner_end() { # <rate_limit_info JSON|""> <API error kind|""> <api_error_status> <result> <turns>
+  {
+    printf '{"type":"system","subtype":"init","apiKeySource":"none","session_id":"fake"}\n'
+    [ -z "$1" ] || jq -nc --argjson r "$1" '{type:"rate_limit_event",rate_limit_info:$r,session_id:"fake"}'
+    [ -z "$2" ] || jq -nc --arg e "$2" --arg t "$4" \
+      '{type:"assistant",is_api_error_message:true,error:$e,message:{content:[{type:"text",text:$t}]},session_id:"fake"}'
+    jq -nc --argjson s "$3" --arg t "$4" --argjson n "$5" \
+      '{type:"result",subtype:"success",is_error:true,api_error_status:$s,terminal_reason:"api_error",num_turns:$n,
+        result:$t,total_cost_usd:0.002,duration_ms:5,
+        usage:{input_tokens:5,output_tokens:3,cache_read_input_tokens:0,cache_creation_input_tokens:0}}'
+  } >"$out"
+  [ -z "${FAKE_TIMELINE:-}" ] || printf 'end %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
+  exit 1
+}
+knob() { case "${1:-}" in "$ticket:$station" | "$ticket:$station:"*) return 0 ;; esac; return 1; }
+knob_arg() { local v="${1#"$ticket:$station"}"; printf '%s' "${v#:}"; }
+if knob "${FAKE_LIMIT_ONCE:-}" && [ "$n" = 1 ]; then
+  runner_end "$(jq -nc --arg t "${FAKE_LIMIT_TYPE:-five_hour}" --argjson r "$(($(date +%s) + $(knob_arg "$FAKE_LIMIT_ONCE")))" \
+    '{status:"rejected",resetsAt:$r,rateLimitType:$t,overageStatus:"rejected",isUsingOverage:false}')" \
+    rate_limit 429 "You've hit your session limit · resets soon" 1
+fi
+if knob "${FAKE_LIMIT_NORESET:-}"; then
+  runner_end '{"status":"rejected","rateLimitType":"overage","overageStatus":"rejected"}' rate_limit 429 "You're out of usage credits" 0
+fi
+if knob "${FAKE_THROTTLE_ONCE:-}" && [ "$n" = 1 ]; then
+  runner_end '{"status":"rejected"}' rate_limit 429 "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited" 0
+fi
+if knob "${FAKE_TRANSIENT_ONCE:-}" && [ "$n" = 1 ]; then
+  runner_end "" server_error 529 "API Error: Repeated 529 Overloaded errors" 0
+fi
+if knob "${FAKE_NOENVELOPE:-}"; then
+  k="$(knob_arg "$FAKE_NOENVELOPE")"
+  if [ -z "$k" ] || [ "$n" -le "$k" ]; then
+    : >"$out"
+    printf 'claude: the API could not be reached\n' >"${11}"
+    exit 1
+  fi
+fi
+if knob "${FAKE_NOTJSON:-}"; then
+  k="$(knob_arg "$FAKE_NOTJSON")"
+  if [ -z "$k" ] || [ "$n" -le "$k" ]; then
+    printf 'Error: something went wrong\n' >"$out"
+    exit 1
+  fi
+fi
 retry=0; printf '%s' "$prompt" | grep -q "was REJECTED" && retry=1
 repair=0; printf '%s' "$prompt" | grep -q "^REPAIR" && repair=1
 # What the worker handed this dispatch: the turn cap and the tools.
@@ -5241,6 +5323,332 @@ gi59 "$SANDBOX/p59c" >/dev/null
 eq "no block at all: one is appended with the line, the developer's own line first" \
   "$(sed -n 1p "$SANDBOX/p59c/.gitignore")|$(grep -cx '.aif/worktrees/' "$SANDBOX/p59c/.gitignore")|$(grep -c '^# aif:end' "$SANDBOX/p59c/.gitignore")" \
   "mine/|1|1"
+
+# ====== 80. the runner's usage limit pauses the run, outside the wall clock ===
+# docs/DEFECTS.md 13.7. A station that met the account's usage limit returned
+# an envelope with is_error, and the worker billed it to the station: the
+# gate judged what the refused run left, rejected it, the retry met the same
+# refusal at once, and the second identical complaint stopped the run
+# blocked: run. The limit is read off the stream now (its rate_limit_event,
+# docs/FINDINGS.md #30): a reset within what a run waits is a pause — the
+# shared one, .aif/state/pause — and the same attempt is dispatched again
+# once it is over, uncounted, the wait outside the wall clock. Here the reset
+# is 24 s off and the wall clock 20 s: counted, the pause alone would stop the
+# run. The claim beats while the worker waits (14.4's heartbeat, each second
+# here), or another machine's shift would read a paused worker as gone.
+printf '\n80. the runner'"'"'s usage limit pauses the run, and the same attempt runs again outside the wall clock\n'
+fresh_project "$SANDBOX/p80"
+ticket_for AIF-800
+git add -A && git commit -qm "one to pause" >/dev/null
+"$AIF" board create tasks/AIF-800/ticket.md --column ready >/dev/null
+FAKE_LIMIT_ONCE=AIF-800:tests:24 AIF_PAUSE_MARGIN_SECS=0 AIF_WORK_MAX_SECS=20 AIF_WORK_BEAT_SECS=1 \
+  "$AIF" work AIF-800 --no-worktree >"$OUT/run80.out" 2>&1 &
+w80=$!
+wait_count "$OUT/run80.out" 'paused until' 1 30
+claim80() { "$AIF" board show AIF-800 --json | jq -r --arg c "$(cat .aif/state/runs/AIF-800/claim.id 2>/dev/null)" '[.comments[] | select(.id == $c)][0].text // "" | split("\n")[0]'; }
+beat80a="$(claim80)"
+sleep 2.5
+beat80b="$(claim80)"
+pause80="$(cat .aif/state/pause 2>/dev/null)"
+rc=0
+wait_exit "$w80" 120 || rc=$?
+eq "a limit whose reset is 24 s off under a wall clock of 20 s: built — the wait outside the clock — the tests station dispatched twice, one attempt counted, no runner error billed to it" \
+  "$rc,$(col AIF-800),$(cat .aif/tmp/fake-tests.count 2>/dev/null),$(jq -r '.attempts.tests' tasks/AIF-800/run.json),$(jq -r '(.station_errors // []) | length' tasks/AIF-800/run.json)" \
+  "0,review,2,1,0"
+eq "…the wait in the run's record: a limit, five_hour, 23 s or more, what the stream said kept beside it" \
+  "$(jq -r '(.runner_waits // []) | length' tasks/AIF-800/run.json),$(jq -r '(.runner_waits // [])[0] | [.class, .type, (.waited_s >= 23), .rate_limit.status, .api_error, .turns] | map(tostring) | join(",")' tasks/AIF-800/run.json)" \
+  "1,limit,five_hour,true,rejected,rate_limit,1"
+eq "…said once; the pause written for the whole checkout, by AIF-800; the claim beating while it waited" \
+  "$(grep -c 'paused until' "$OUT/run80.out"),$(printf '%s' "$pause80" | awk '{ print $2 " " $3 " " $4 }'),$([ -n "$beat80a" ] && [ "$beat80a" != "$beat80b" ] && echo beat || echo "silent: $beat80a")" \
+  "1,all five_hour AIF-800,beat"
+# shellcheck disable=SC2016  # the backticks are the report's markdown
+eq "…the retry told that its run before was cut off after a turn; the report says how long it waited, and on what" \
+  "$(grep -c "Your previous run of this same attempt ended early — the runner's usage limit — after 1 turn(s)" .aif/tmp/fake-prompt-tests-2 2>/dev/null),$(grep -c '· waited [0-9]* s on the runner ·' tasks/AIF-800/report.md),$(grep -c '^- `tests` attempt 1 — limit (five_hour)' tasks/AIF-800/report.md)" \
+  "1,1,1"
+
+# ====== 81. a limit with no reset, or one past what a run waits ================
+# docs/DEFECTS.md 13.7, 13.8. A limit that names no reset — a credit limit —
+# or one whose reset is further off than a run waits (a weekly reset days
+# away; AIF_PAUSE_MAX_SECS=5 here, its 12 h) is no pause: the run stops on
+# the environment, naming it, and leaves the pause as a hold, on which the
+# loop stops taking cards — read before the loop asks the machine again,
+# which would pass and take the next card into the same refusal.
+printf '\n81. a limit with no reset, or one past what a run waits, is the environment, and the loop holds on it\n'
+fresh_project "$SANDBOX/p81"
+ticket_for AIF-810
+ticket_for AIF-811
+ticket_for AIF-812
+git add -A && git commit -qm "three" >/dev/null
+for t in AIF-810 AIF-811; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+rc=0
+FAKE_LIMIT_NORESET=AIF-810:plan AIF_WORK_LOOP_LOGDIR="$SANDBOX/p81-loop" "$AIF" work --loop --parallel 1 --no-tui >"$OUT/run81.out" 2>&1 || rc=$?
+S81="$SANDBOX/p81-loop/summary.json"
+eq "a credit limit with no reset at the first card's plan: the loop stops on the environment — exit 3, the second card left in Ready, env 1" \
+  "$rc,$(col AIF-810),$(col AIF-811),$(jq -r '.env' "$S81" 2>/dev/null)" "3,needs_human,ready,1"
+eq "…the card says the runner's limit, named, no reset — the environment, mid-run; the plan station tried once" \
+  "$("$AIF" board head AIF-810 | grep -c "^blocked: environment — the runner's usage limit (the usage credit limit): no reset named — longer than a run waits (You're out of usage credits)$"),$(last_comment AIF-810 | grep -c '^This machine or the runner, not the ticket'),$(cat .aif/worktrees/AIF-810/.aif/tmp/fake-plan.count 2>/dev/null)" \
+  "1,1,1"
+eq "…the hold it stopped on: no reset, every station, the credit limit, by AIF-810; the loop's reason names it, and nothing was asked of the machine again" \
+  "$(awk '{ print $1 " " $2 " " $3 " " $4 }' .aif/state/pause 2>/dev/null),$(jq -r '.why' "$S81" 2>/dev/null | grep -c "^the runner's usage limit (the usage credit limit): no reset named — longer than the loop waits; no new card (rm .aif/state/pause to try anyway)$"),$(jq -r '.rechecks' "$S81" 2>/dev/null)" \
+  "0 all overage AIF-810,1,0"
+rm -f .aif/state/pause
+rc=0
+FAKE_LIMIT_ONCE=AIF-812:plan:60 AIF_PAUSE_MAX_SECS=5 "$AIF" work AIF-812 --no-worktree >"$OUT/run81b.out" 2>&1 || rc=$?
+eq "a limit whose reset is past what a run waits: the environment, naming the reset's time; the attempt not counted" \
+  "$rc,$(col AIF-812),$("$AIF" board head AIF-812 | grep -cE "^blocked: environment — the runner's usage limit \(the session limit\): resets [0-9]{2}:[0-9]{2} — longer than a run waits"),$(jq -r '.attempts.plan' tasks/AIF-812/run.json)" \
+  "1,needs_human,1,0"
+rm -f .aif/state/pause
+
+# ====== 82. the server's throttle and an overload, asked again ================
+# docs/DEFECTS.md 13.7. A runner that did not answer — the server's throttle,
+# a 529 — is asked again after a backoff, the attempt uncounted, and none of
+# it billed to the station. The throttle's own words are "Server is
+# temporarily limiting requests (not your usage limit)": read as prose it is a
+# usage limit, and the run would pause for nothing. It is told apart by its
+# fields — a rejected event with no rateLimitType (docs/FINDINGS.md #27, #30).
+printf '\n82. the server'"'"'s throttle and an overload are asked again, uncounted, and the throttle'"'"'s words are not read as a limit\n'
+fresh_project "$SANDBOX/p82"
+ticket_for AIF-820
+git add -A && git commit -qm "one to throttle" >/dev/null
+"$AIF" board create tasks/AIF-820/ticket.md --column ready >/dev/null
+rc=0
+FAKE_THROTTLE_ONCE=AIF-820:plan FAKE_TRANSIENT_ONCE=AIF-820:tests AIF_TRANSIENT_BACKOFF=0 \
+  "$AIF" work AIF-820 --no-worktree >"$OUT/run82.out" 2>&1 || rc=$?
+eq "built: the plan and the tests station each dispatched twice, each counted once" \
+  "$rc,$(col AIF-820),$(cat .aif/tmp/fake-plan.count 2>/dev/null),$(cat .aif/tmp/fake-tests.count 2>/dev/null),$(jq -r '[.attempts.plan, .attempts.tests] | map(tostring) | join("/")' tasks/AIF-820/run.json)" \
+  "0,review,2,2,1/1"
+eq "…each wait recorded by what said it — the throttle's 429, the 529 — no runner error billed, no pause written" \
+  "$(jq -r '[(.runner_waits // [])[] | .class + ":" + .type] | join(" ")' tasks/AIF-820/run.json),$(jq -r '(.station_errors // []) | length' tasks/AIF-820/run.json),$(test -f .aif/state/pause && echo paused || echo none)" \
+  "transient:rate_limit-429 transient:server_error-529,0,none"
+eq "…said as the runner's, with the attempt uncounted" \
+  "$(grep -c 'plan — rate_limit-429: API Error: Server is temporarily limiting requests (not your usage limit)' "$OUT/run82.out"),$(grep -c 'again in 0s (attempt uncounted)' "$OUT/run82.out")" "1,2"
+
+# ====== 83. a runner that wrote nothing, or not JSON ===========================
+# docs/DEFECTS.md 13.7, 13.8. A runner that produced no envelope — the
+# network, a CLI that could not start — stopped the run blocked: run on one
+# try, so the loop counted it against the cards toward two in a row and never
+# asked the machine; an envelope that was not JSON ended the worker under
+# set -e, code 5. Both are asked again after a backoff now, then the
+# environment: blocked: environment, which the loop reads as the machine.
+printf '\n83. a runner that wrote nothing, or not JSON: asked again, then the environment — never the station, never a dead worker\n'
+fresh_project "$SANDBOX/p83"
+ticket_for AIF-830
+ticket_for AIF-831
+git add -A && git commit -qm "two" >/dev/null
+for t in AIF-830 AIF-831; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+rc=0
+FAKE_NOENVELOPE=AIF-830:tests AIF_TRANSIENT_BACKOFF="0 0" "$AIF" work AIF-830 >"$OUT/run83a.out" 2>&1 || rc=$?
+eq "no envelope from the tests station, every try: asked three times, then blocked: environment — exit 1, the attempt not counted" \
+  "$rc,$(cat .aif/worktrees/AIF-830/.aif/tmp/fake-tests.count 2>/dev/null),$(col AIF-830),$("$AIF" board head AIF-830 | grep -c '^blocked: environment — the runner did not answer for the tests station — no-envelope: claude: the API could not be reached, 3 tries over '),$(jq -r '.attempts.tests' .aif/worktrees/AIF-830/tasks/AIF-830/run.json)" \
+  "1,3,needs_human,1,0"
+rc=0
+FAKE_NOTJSON=AIF-831:plan:1 AIF_TRANSIENT_BACKOFF=0 "$AIF" work AIF-831 >"$OUT/run83b.out" 2>&1 || rc=$?
+eq "a plan station whose first try printed a line that is not JSON: asked again and built — the worker does not die of it" \
+  "$rc,$(col AIF-831),$(jq -r '.attempts.plan' .aif/worktrees/AIF-831/tasks/AIF-831/run.json),$(jq -r '[(.runner_waits // [])[] | .type] | join(" ")' .aif/worktrees/AIF-831/tasks/AIF-831/run.json)" \
+  "0,review,1,not-json"
+fresh_project "$SANDBOX/p83c"
+ticket_for AIF-832
+ticket_for AIF-833
+git add -A && git commit -qm "two for the loop" >/dev/null
+for t in AIF-832 AIF-833; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+rc=0
+FAKE_NOENVELOPE=AIF-832:plan AIF_TRANSIENT_BACKOFF=0 AIF_WORK_LOOP_LOGDIR="$SANDBOX/p83-loop" \
+  "$AIF" work --loop --parallel 1 --no-tui >"$OUT/run83c.out" 2>&1 || rc=$?
+eq "in a loop, a card whose runner never answered is the machine's: the machine asked again, and the next card built — one re-check, not one of two in a row" \
+  "$rc,$(col AIF-832),$(col AIF-833),$(grep -c 'AIF-832 could not start (exit 1) — checking the machine again' "$OUT/run83c.out"),$(jq -r '.rechecks' "$SANDBOX/p83-loop/summary.json" 2>/dev/null)" \
+  "1,needs_human,review,1,1"
+
+# ====== 84. the pause is shared ===============================================
+# docs/DEFECTS.md 13.7. One worker meets the limit; every other process of
+# the checkout reads it from .aif/state/pause, written here by hand: a worker
+# waits before its station starts, the loop takes no card until the pause is
+# over and says so, and a pause for one model's limit (the weekly Opus one)
+# holds only the stations that ask for that model.
+printf '\n84. the pause is shared: a worker, a loop, and only the stations of the model it holds\n'
+pause84() { # <seconds from now> <scope> <type>
+  mkdir -p .aif/state
+  printf '%s %s %s AIF-999 %s written by the harness\n' "$(($(date +%s) + $1))" "$2" "$3" "$(date +%s)" >.aif/state/pause
+}
+fresh_project "$SANDBOX/p84"
+ticket_for AIF-840
+git add -A && git commit -qm "one" >/dev/null
+"$AIF" board create tasks/AIF-840/ticket.md --column ready >/dev/null
+pause84 5 all five_hour
+rc=0
+"$AIF" work AIF-840 --no-worktree >"$OUT/run84a.out" 2>&1 || rc=$?
+eq "aif work alone with a pause in force: it waits before its first station says it starts, then builds" \
+  "$rc,$(col AIF-840),$(awk '/paused until/ && !p { p = NR } /^station .*plan ·/ && !s { s = NR } END { print (p > 0 && s > p) ? "pause first" : "pause " p ", station " s }' "$OUT/run84a.out")" \
+  "0,review,pause first"
+fresh_project "$SANDBOX/p84b"
+ticket_for AIF-841
+ticket_for AIF-842
+git add -A && git commit -qm "two" >/dev/null
+for t in AIF-841 AIF-842; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+pause84 8 all five_hour
+rc=0
+AIF_WORK_LOOP_LOGDIR="$SANDBOX/p84-loop" "$AIF" work --loop --parallel 1 --no-tui >"$OUT/run84b.out" 2>&1 || rc=$?
+eq "a loop over two cards with a pause in force: says it, takes nothing until the pause is over, then builds both" \
+  "$rc,$(col AIF-841),$(col AIF-842),$(awk '/paused until .*met by AIF-999; no new card until then/ && !p { p = NR } /the pause is over — taking cards again/ && !o { o = NR } /loop 1 — AIF-841/ && !t { t = NR } END { print (p && o > p && t > o) ? "in order" : p " " o " " t }' "$OUT/run84b.out")" \
+  "0,review,review,in order"
+fresh_project "$SANDBOX/p84c"
+ticket_for AIF-843
+sed 's/^model: .*/model: sonnet/' .claude/agents/aif-plan.md >"$OUT/plan84.md" && cat "$OUT/plan84.md" >.claude/agents/aif-plan.md
+git add -A && git commit -qm "one, its plan station on sonnet" >/dev/null
+"$AIF" board create tasks/AIF-843/ticket.md --column ready >/dev/null
+pause84 6 opus seven_day_opus
+rc=0
+"$AIF" work AIF-843 --no-worktree >"$OUT/run84c.out" 2>&1 || rc=$?
+eq "a pause for the weekly Opus limit: the plan station, on sonnet here, runs at once; the tests station, opus, waits for it; built" \
+  "$rc,$(col AIF-843),$(awk '/^station .*plan ·/ && !a { a = NR } /paused until .*the weekly Opus limit/ && !p { p = NR } /^station .*tests ·/ && !t { t = NR } END { print (a && p > a && t > p) ? "plan, pause, tests" : a " " p " " t }' "$OUT/run84c.out")" \
+  "0,review,plan, pause, tests"
+rm -f .aif/state/pause
+
+# ====== 85. stopped while it waits for the runner's limit ======================
+# docs/DEFECTS.md 13.7. A stop, a Ctrl-C or a hang-up that comes while a
+# worker waits out a pause runs its handler at once — the wait is spent in the
+# wait builtin, a second at a time — and the card says the run was paused;
+# the attempt the stage loop counted for the dispatch is taken back, since
+# nothing judged it, and back in Ready the card resumes the same one.
+printf '\n85. a run stopped while it waits for the runner'"'"'s limit: the card says so, and the attempt is not counted\n'
+fresh_project "$SANDBOX/p85"
+ticket_for AIF-850
+git add -A && git commit -qm "one" >/dev/null
+"$AIF" board create tasks/AIF-850/ticket.md --column ready >/dev/null
+pause84 60 all five_hour
+set -m
+"$AIF" work AIF-850 --no-worktree >"$OUT/run85.out" 2>&1 &
+w85=$!
+set +m
+wait_count "$OUT/run85.out" 'paused until' 1 30
+st85="$("$AIF" work --status AIF-850 --json 2>/dev/null)"
+eq "while it waits: aif work --status says the worker is live and paused until when, its lock the reset" \
+  "$(printf '%s' "$st85" | jq -r '.class'),$(printf '%s' "$st85" | jq -r '.why' | grep -cE "^being built here — its worker \(pid [0-9]+\) is at plan, attempt 1, paused until [0-9]{2}:[0-9]{2} for the runner's usage limit$"),$(printf '%s' "$st85" | jq -r '(.lock.paused_until // 0) > now')" \
+  "live,1,true"
+t0="$(date +%s)"
+rc=0
+"$AIF" work AIF-850 --stop >"$OUT/run85-stop.out" 2>&1 || rc=$?
+rc1=0
+wait_exit "$w85" 30 || rc1=$?
+eq "--stop while the plan station waits out the pause: the worker ends 143, in seconds" \
+  "$rc,$rc1,$([ $(($(date +%s) - t0)) -lt 15 ] && echo prompt || echo slow)" "0,143,prompt"
+eq "…the card says who stopped it, during plan, paused for the runner's usage limit until when; the attempt taken back, the station never run" \
+  "$(col AIF-850)|$("$AIF" board head AIF-850 | grep -cE "^blocked: stopped — by Work \(aif work AIF-850 --stop\), during plan, paused for the runner's usage limit until [0-9]{2}:[0-9]{2}$")|$(jq -r '.attempts.plan' tasks/AIF-850/run.json)|$(test -f .aif/tmp/fake-plan.count && echo ran || echo never)" \
+  "needs_human|1|0|never"
+rm -f .aif/state/pause
+"$AIF" board move AIF-850 ready >/dev/null
+rc=0
+"$AIF" work AIF-850 --no-worktree >"$OUT/run85b.out" 2>&1 || rc=$?
+eq "…the pause lifted by hand and the card back in Ready: it resumes and builds, the plan counted once" \
+  "$rc,$(col AIF-850),$(jq -r '.attempts.plan' tasks/AIF-850/run.json)" "0,review,1"
+
+# ====== 86. the worker's own git runs none of the project's hooks ==============
+# docs/DEFECTS.md 13.11. Every commit the worker makes on aif/<ID> — intake,
+# each admitted station (aif _commit), the report, the sync — ran the
+# project's hooks: a pre-commit that fails stopped a run as the tool's fault
+# and skipped the commits made with `|| true`, one that rewrites what it is
+# given changed frozen tests after their hashes were taken, and a
+# post-checkout that fails made `git worktree add` exit after the worktree was
+# cut. `--no-verify` would skip pre-commit and commit-msg alone. Every hook a
+# git command of the worker's can run is installed here, each writing its name
+# to a log; the land's own commit is the one the project's hooks are for.
+printf '\n86. the worker'"'"'s own commits, merge and checkouts run none of the project'"'"'s hooks\n'
+fresh_project "$SANDBOX/p86"
+ticket_for AIF-860
+ticket_for AIF-861
+ticket_for AIF-862
+git add -A && git commit -qm "three under hooks" >/dev/null
+for t in AIF-860 AIF-861 AIF-862; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+H86="$SANDBOX/hooks86.log"
+hooks86() { # <pre-commit's body> <post-checkout's exit> — every hook logging its name
+  local h
+  for h in prepare-commit-msg commit-msg post-commit post-merge pre-merge-commit post-rewrite reference-transaction post-index-change; do
+    printf '#!/bin/sh\nprintf "%%s %%s\\n" %s "$*" >>"%s"\n' "$h" "$H86" >".git/hooks/$h"
+  done
+  printf '#!/bin/sh\nprintf "post-checkout %%s\\n" "$*" >>"%s"\nexit %s\n' "$H86" "$2" >.git/hooks/post-checkout
+  printf '#!/bin/sh\nprintf "pre-commit\\n" >>"%s"\n%s\n' "$H86" "$1" >.git/hooks/pre-commit
+  chmod +x .git/hooks/*
+  : >"$H86"
+}
+hooks86 'exit 1' 7
+rc=0
+"$AIF" work AIF-860 >"$OUT/run86a.out" 2>&1 || rc=$?
+eq "a pre-commit that fails and a post-checkout that exits 7: the worktree cut, the run built to Review, every commit made" \
+  "$rc,$(col AIF-860),$(git log --format=%s aif/AIF-860 | grep -c '^aif: ')" "0,review,5"
+eq "…and not one hook ran" "$(wc -l <"$H86" | tr -d ' ')" "0"
+# shellcheck disable=SC2016  # the hook's own $f, expanded when the hook runs
+hooks86 'git diff --cached --name-only | while IFS= read -r f; do printf "# formatted\\n" >>"$f"; git add -- "$f"; done' 0
+rc=0
+"$AIF" work AIF-861 >"$OUT/run86b.out" 2>&1 || rc=$?
+eq "a pre-commit that rewrites every file it is given (and a post-checkout that passes): built, the frozen test as the tests station wrote it, not one hook run" \
+  "$rc,$(col AIF-861),$(git show aif/AIF-861:tests/t1.py 2>/dev/null | grep -c '# formatted'),$(wc -l <"$H86" | tr -d ' ')" "0,review,0,0"
+hooks86 'exit 1' 7
+FAKE_SLEEP_IN="AIF-862:implement" FAKE_RELEASE="$OUT/release86" "$AIF" work AIF-862 >"$OUT/run86c.out" 2>&1 &
+w86=$!
+wait_file .aif/worktrees/AIF-862/.aif/tmp/fake-running-AIF-862-implement 60
+printf 'notes\n' >notes86.md
+git -c core.hooksPath=/dev/null add notes86.md && git -c core.hooksPath=/dev/null commit -qm "the target moves" >/dev/null
+: >"$H86"
+: >"$OUT/release86"
+rc=0
+wait_exit "$w86" 90 || rc=$?
+eq "the branch it lands on moved meanwhile: brought onto it — the sync's merge and its commit — and still not one hook run" \
+  "$rc,$(col AIF-862),$(git log --format=%s aif/AIF-862 | grep -c '^aif: sync AIF-862 onto '),$(wc -l <"$H86" | tr -d ' ')" "0,review,1,0"
+rm -f .git/hooks/pre-commit .git/hooks/post-checkout
+
+# ====== 87. a station's model the profile does not map ========================
+# docs/DEFECTS.md 14.6. The worker resolved opus, sonnet and haiku through
+# the profile and sent anything else as it was — `fable` under a profile that
+# routes the other three went to that endpoint, which never heard of it, at
+# the first station that asked for it, a card already taken. The preflight
+# refuses it now, before the claim, naming the station and what the profile
+# maps — the shift's rule, so `default`, which the CLI resolves to opus or
+# sonnet, passes where both are mapped, as a station that names no model does.
+printf '\n87. a station whose model the profile does not map is refused before the claim, naming it and what the profile maps\n'
+fresh_project "$SANDBOX/p87"
+ticket_for AIF-870
+git add -A && git commit -qm "one" >/dev/null
+"$AIF" board create tasks/AIF-870/ticket.md --column ready >/dev/null
+X87="$SANDBOX/xdg87"
+mkdir -p "$X87/aif/profiles"
+profile87() { # <name> <the alias lines> — a profile of the developer's own, routed to another endpoint
+  {
+    printf 'AIF_PROFILE_DESC="routed (check-work 87)"\nAIF_PROFILE_RUNNER="claude"\nAIF_PROFILE_SET="claude"\n'
+    printf 'AIF_PROFILE_SECRET_VAR=""\nAIF_PROFILE_SECRET_TARGET=""\nAIF_PROFILE_ISOLATE_CONFIG="0"\n'
+    printf 'aif_profile_env() {\n  printf "%%s\\n" ANTHROPIC_BASE_URL=http://127.0.0.1:9/anthropic %s\n}\n' "$2"
+  } >"$X87/aif/profiles/$1.profile"
+}
+profile87 routed87 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
+profile87 haiku87 "ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
+model87() { # <model> — the plan station asks for it, committed
+  sed "s/^model: .*/model: $1/" .claude/agents/aif-plan.md >"$OUT/plan87.md" && cat "$OUT/plan87.md" >.claude/agents/aif-plan.md
+  git add -A && git commit -qm "the plan station on $1" >/dev/null
+}
+model87 fable
+rc=0
+XDG_CONFIG_HOME="$X87" "$AIF" work AIF-870 --profile routed87 --no-worktree >"$OUT/run87a.out" 2>&1 || rc=$?
+eq "the plan station asks for fable, which the profile does not route: refused, exit 3, naming the station and what the profile maps" \
+  "$rc,$(grep -c 'the profile routed87 does not map the model a station asks for — aif-plan asks for fable (it maps opus, sonnet, haiku)' "$OUT/run87a.out")" "3,1"
+eq "…before the claim: the card still in Ready, no run lock, no station run" \
+  "$(col AIF-870),$(test -d .aif/state/runs/AIF-870 && echo held || echo none),$(test -f .aif/tmp/fake-plan.count && echo ran || echo never)" "ready,none,never"
+model87 default
+rc=0
+XDG_CONFIG_HOME="$X87" "$AIF" work AIF-870 --profile haiku87 --no-worktree >"$OUT/run87b.out" 2>&1 || rc=$?
+c87="$(col AIF-870)"
+rc2=0
+XDG_CONFIG_HOME="$X87" "$AIF" work AIF-870 --profile routed87 --no-worktree >"$OUT/run87c.out" 2>&1 || rc2=$?
+eq "default — the CLI's own, which resolves to opus or sonnet: refused under a profile that maps neither, the card left in Ready; built under one that maps both, as a station that names no model is" \
+  "$rc,$(grep -c 'aif-plan asks for default' "$OUT/run87b.out"),$(grep -c '(it maps haiku)' "$OUT/run87b.out"),$c87|$rc2,$(col AIF-870)" \
+  "3,1,1,ready|0,review"
 cd "$SANDBOX" || exit 1
 
 # ----------------------------------------------------------------------------

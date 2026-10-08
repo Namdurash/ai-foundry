@@ -127,7 +127,10 @@ usage: aif work [<ticket>] [options]
                      while the preflight passes, and stops when it fails or at
                      the third such run in a row. Takes no new card after two
                      that did not build — two cards in Needs Human usually
-                     mean the problem is not the cards. Ctrl-C takes no new card
+                     mean the problem is not the cards. While the runner's
+                     usage limit pauses its workers it takes no new card
+                     either, and goes on once the limit resets; a limit with
+                     no reset within 12 hours stops it. Ctrl-C takes no new card
                      and lets the runs in flight finish; Ctrl-C again stops them.
                      --stop on one run stops that one, and its slot goes on.
                      Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
@@ -152,6 +155,16 @@ station runs). The dollar ceiling is the third and is opt-in: under
 subscription auth the runner reports \$0 for every station and
 .aif/prices.json ships empty, so a ceiling nobody configured could not fire.
 Price your model there before relying on one.
+
+A station the runner cut off is not the station's attempt. The account's
+usage limit pauses the run until it resets, when that is within 12 hours —
+every worker and the loop on this checkout with it (.aif/state/pause; rm it
+to lift the pause) — and the same attempt is dispatched again, the wait
+outside the wall clock; a limit that names no reset, or a later one, stops
+the run blocked: environment, naming it, and the loop takes no new card. A
+runner that did not answer (no output, not JSON, the server's throttle,
+overload) is asked again after 1, 5 and 15 minutes, then blocked:
+environment. Each wait is in the report and the run's runner_waits.
 
 A fresh worktree holds tracked files only. "prepare" in .aif/project.json
 (npm ci, bundle install) runs once after it is cut, and the suite is then
@@ -231,6 +244,18 @@ _aif_work_abandon() {
       why="the worker exited (code $rc_in) during $stage"
       [ -z "${AIF_LAST_ERR:-}" ] || why="$why; the last error it printed: $AIF_LAST_ERR"
     fi
+    # Stopped while it waited on the runner — a limit's pause, a backoff: the
+    # card says so, and the attempt the stage loop counted for the dispatch
+    # is taken back, since nothing judged it — back in Ready, the card
+    # resumes the same attempt (docs/DEFECTS.md 13.7).
+    if [ -n "${AIF_WORK_WAITING:-}" ]; then
+      why="$why, $AIF_WORK_WAITING"
+      if [ -n "${AIF_WORK_COUNTED:-}" ] && [ -n "${AIF_WORK_WORK:-}" ]; then
+        # shellcheck disable=SC2016  # jq's variable, bound by --arg
+        aif_run_update "$AIF_WORK_WORK" '.attempts[$s] = ([((.attempts[$s] // 1) - 1), 0] | max)' \
+          --arg s "$AIF_WORK_COUNTED" 2>/dev/null || true
+      fi
+    fi
     _aif_work_block "$AIF_WORK_ROOT" "$AIF_WORK_CARD" "$kind" "$why" "" || true
     # After a hang-up this terminal may be gone, and a write to it fails;
     # errexit holds inside a trap too (bash 3.2, probed), and a failed print
@@ -286,7 +311,15 @@ _aif_work_block_text() {
   case "$kind" in
     ticket) next="The ticket's problem, not the build's: the analyst (/aif-ba) reworks it from what is below, and it goes back to Ready." ;;
     run) next="The run stopped short of a build. What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged, and starts over when it changes." ;;
-    environment) next="This machine, not the ticket: no station ran on it, nothing was spent. Fix what is named below, then move the card back to Ready." ;;
+    environment)
+      # Mid-run — the runner's limit, a runner that did not answer — stations
+      # ran and the branch holds what they had accepted: "no station ran,
+      # nothing was spent" is only true before the run (docs/DEFECTS.md 13.7).
+      case "${AIF_WORK_PHASE:-}" in
+        run | report) next="This machine or the runner, not the ticket: fix what is named below, or let it pass — a limit's reset, the API answering again. What was accepted is committed on branch aif/$ticket; back in Ready once it has passed, the run resumes where it stopped." ;;
+        *) next="This machine, not the ticket: no station ran on it, nothing was spent. Fix what is named below, then move the card back to Ready." ;;
+      esac
+      ;;
     stopped) next="What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged." ;;
     *) next="" ;;
   esac
@@ -1194,7 +1227,7 @@ _aif_work_status_json() {
   local root="$1" id="$2" main lock wt held=false live=false pid="" alive=false
   local owner=null livej=null phase="" stopby="" ack=false orphans='[]' station=""
   local wtx=false brx=false subj="" where="" rec=null brec=null report="" tsha=""
-  local bfile bx=false bhead="" bmtime="" f t
+  local bfile bx=false bhead="" bmtime="" f t puh=""
   main="$(aif_main_root "$root")"
   lock="$(aif_run_lock_dir "$root" "$id")"
   if [ -d "$lock" ]; then
@@ -1209,6 +1242,13 @@ _aif_work_status_json() {
     [ -z "$t" ] || owner="$t"
     t="$(jq -c 'objects' "$lock/live.json" 2>/dev/null)" || t=""
     [ -z "$t" ] || livej="$t"
+    # A worker waiting on the runner's limit says until when, in a time a
+    # person reads (docs/DEFECTS.md 13.7); one past it is not waiting.
+    t="$(jq -r '.paused_until // empty' "$lock/live.json" 2>/dev/null)" || t=""
+    case "$t" in
+      '' | *[!0-9]*) ;;
+      *) [ "$t" -le "$(date +%s)" ] || puh="$(_aif_work_when "$t")" ;;
+    esac
     phase="$(sed -n 1p "$lock/phase" 2>/dev/null)" || phase=""
     [ ! -f "$lock/stop" ] || stopby="$(sed -n 1p "$lock/stop" 2>/dev/null)" || stopby=""
     [ ! -f "$lock/ack" ] || ack=true
@@ -1309,7 +1349,7 @@ _aif_work_status_json() {
     --argjson ack "$ack" --argjson orphans "$orphans" --arg station "$station" \
     --arg wtpath "$wt" --argjson wtx "$wtx" --argjson brx "$brx" --arg subj "$subj" \
     --arg where "$where" --argjson rec "$rec" --argjson brec "$brec" --arg report "$report" --arg tsha "$tsha" \
-    --arg bpath "$bfile" --argjson bx "$bx" --arg bhead "$bhead" --arg bmtime "$bmtime" '
+    --arg bpath "$bfile" --argjson bx "$bx" --arg bhead "$bhead" --arg bmtime "$bmtime" --arg puh "$puh" '
     def n: if . == "" then null else . end;
     def num: if . == null or . == "" then null else (tonumber? // null) end;
     def first_line: if . == null then null else (tostring | split("\n")[0]) end;
@@ -1353,7 +1393,8 @@ _aif_work_status_json() {
        else "none" end) as $class
     | (if $class == "live" then
          (if $p == null then "a worker took its lock a moment ago and has not signed it yet"
-          else "being built here — its worker\($pp) is at \($at)\($att)" end)
+          else "being built here — its worker\($pp) is at \($at)\($att)"
+               + (if $puh == "" then "" else ", paused until \($puh) for the runner'"'"'s usage limit" end) end)
        elif $class == "built" then
          (if $w == "checkout" then "the run built it in this checkout (--no-worktree) — there is no branch \($b) for aif land to take"
           else "the run built it; its report is on branch \($b)" end)
@@ -1386,6 +1427,7 @@ _aif_work_status_json() {
                 station: ($station | num),
                 started_at: ($o.started_at // null), started: ($l.started // null),
                 phase: $ph, stage: ($l.stage // null), attempt: ($l.attempt // null), last: ($l.last // null),
+                paused_until: (if $puh == "" then null else ($l.paused_until // null) end),
                 stop_requested_by: ($stopby | n), handler_ran: $ack, orphans: $orphans },
         worktree: { path: $wtpath, exists: $wtx },
         branch: { name: $b, exists: $brx, head_subject: ($subj | n) },
@@ -1526,6 +1568,23 @@ _aif_work_preflight() {
     fi
   fi
 
+  # Every station's model, against the profile: an alias the profile does
+  # not map — `fable` under glm, which routes the other three — went to the
+  # profile's endpoint as it was, and failed there, at the first station
+  # that asked for it, a card already taken (docs/DEFECTS.md 14.6). Refused
+  # here instead, before the claim, naming the station and what the profile
+  # does map — the shift's rule (aif_profile_maps_model), so `default`, the
+  # CLI's own, passes where opus and sonnet are both mapped; a station that
+  # names no model is dispatched as sonnet, and held to sonnet's mapping.
+  # In a subshell: the profile is exported for the stations at the end of
+  # this preflight, not before.
+  local unmapped
+  unmapped="$(aif_profile_export_env && _aif_work_station_models "$root")" || unmapped=""
+  if [ -n "$unmapped" ]; then
+    aif_err "the profile $profile does not map the model a station asks for — $(printf '%s' "$unmapped" | paste -sd ';' - | sed 's/;/; /g') (it maps $(aif_profile_export_env && aif_profile_mapped_aliases)) — name one of those in the station's model: line under .claude/agents/, or a full model id. Nothing was spent, and its card was not touched"
+    exit 3
+  fi
+
   # The board, before the first token. A token that expired since setup stops
   # the run here with one line, not as a card that quietly never moved after
   # the work was done.
@@ -1586,11 +1645,16 @@ _aif_work_worktree() {
   aif_gitignore_ensure "$root" "$AIF_WORK_WORKTREES/" "worker checkouts — one per ticket, disposable"
 
   mkdir -p "$(dirname "$wt")"
+  # Without the project's hooks, as every git call the worker makes on its
+  # own behalf from here — the commits on aif/<ID>, the sync's merge and its
+  # checkouts: a post-checkout that exits 7 made this exit 7 after the
+  # worktree was cut, and the run was refused for the environment
+  # (aif_git_own, lib/common.sh; docs/DEFECTS.md 13.11).
   if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$root" worktree add -q "$wt" "$branch" >/dev/null 2>&1 ||
+    aif_git_own "$root" worktree add -q "$wt" "$branch" >/dev/null 2>&1 ||
       aif_die "could not check out $branch into $wt"
   else
-    git -C "$root" worktree add -q -b "$branch" "$wt" >/dev/null 2>&1 ||
+    aif_git_own "$root" worktree add -q -b "$branch" "$wt" >/dev/null 2>&1 ||
       aif_die "could not create worktree $wt on $branch"
   fi
   printf '%s' "$wt"
@@ -1640,7 +1704,7 @@ _aif_work_set_forward() {
         mkdir -p "$wt/$(dirname "$p")"
         cp "$root/$p" "$wt/$p"
         [ ! -x "$root/$p" ] || chmod +x "$wt/$p"
-        git -C "$wt" add -A -- "$p" >/dev/null 2>&1 || true
+        aif_git_own "$wt" add -A -- "$p" >/dev/null 2>&1 || true
         n=$((n + 1))
       fi
     fi
@@ -1654,14 +1718,14 @@ EOF
     printf '%s\n' "$paths" | grep -qxF -- "$p" && continue
     [ -f "$wt/$p" ] || continue
     rm -f "${wt:?}/${p:?}"
-    git -C "$wt" add -A -- "$p" >/dev/null 2>&1 || true
+    aif_git_own "$wt" add -A -- "$p" >/dev/null 2>&1 || true
     r=$((r + 1))
   done <<EOF
 $old_paths
 EOF
   [ $((n + r)) -gt 0 ] || return 0
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: set $to for $ticket — the branch brought up to the checkout's set (from $from)" >/dev/null 2>&1 || true
   fi
   _aif_work_say "set" "aif/$ticket brought up to the checkout's set ($from → $to): $n file(s) refreshed, $r retired, committed on the branch"
@@ -1912,8 +1976,8 @@ _aif_work_intake() {
     # they would become the next plan's premises (docs/DEFECTS.md 10.3). The
     # stations after it keep their uncommitted work: a retried station fixes
     # its own.
-    if [ "$(aif_run_get "$work" '.stage')" = "plan" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
-      put_back="$(git -C "$wt" status --porcelain 2>/dev/null | grep -vcE " (\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)" || true)"
+    if [ "$(aif_run_get "$work" '.stage')" = "plan" ] && [ -n "$(aif_git_own "$wt" status --porcelain 2>/dev/null)" ]; then
+      put_back="$(aif_git_own "$wt" status --porcelain 2>/dev/null | grep -vcE " (\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)" || true)"
       _aif_work_restore_since "$wt" HEAD "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)"
       _aif_work_say "resume" "$(aif_run_get "$work" '.stage') — the ticket has not changed since the last run; ${put_back:-0} file(s) the stopped plan left are put back, the plan station reads the repository as the branch has it"
     else
@@ -1942,9 +2006,9 @@ _aif_work_intake() {
         # Not the set, which was just brought up to the checkout's; not the
         # ticket's record; everything else the old run and its stations did.
         _aif_work_restore_since "$wt" "$old_base" "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/(ledger\.json|run\.json|stations/|ticket\.md)$)"
-        git -C "$wt" add -A >/dev/null 2>&1 || true
+        aif_git_own "$wt" add -A >/dev/null 2>&1 || true
         if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-          git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+          aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
             commit -q -m "aif: restart $ticket — the tree put back to ${old_base:0:7} before a new plan" >/dev/null 2>&1 || true
         fi
         base="$(git -C "$wt" rev-parse HEAD 2>/dev/null || printf 'none')"
@@ -1970,9 +2034,9 @@ _aif_work_intake() {
   mkdir -p "$(dirname "$pointer")" 2>/dev/null || true
   printf '%s\n' "$ticket" >"$pointer" 2>/dev/null || true
 
-  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  aif_git_own "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: intake $ticket" >/dev/null 2>&1 || true
   fi
   return 0
@@ -2002,13 +2066,410 @@ _aif_work_frontmatter() {
   ' "$1/.claude/agents/$2.md"
 }
 
+# --------------------------------------------------------------- the runner
+#
+# What the worker does when a station's run did not come to an ok or an
+# error of the station's own — the account's usage limit, a runner that did
+# not answer (docs/DEFECTS.md 13.7, and 13.8's runner half). Both were billed
+# to the station: the gate judged what a refused run left, rejected it, the
+# retry met the same refusal at once, and the second identical complaint
+# stopped the run — Needs Human, blocked: run — while in a loop every worker in
+# flight met the same limit and two in a row stopped the queue for the night;
+# a runner that wrote nothing stopped the run as blocked: run, so the loop
+# counted it against the cards and never asked the machine again; an envelope
+# that was not JSON ended the worker under set -e. The user's call
+# (2026-10-02): a limit pauses, it does not stop, and paused time is outside
+# the wall clock. The classes are aif_runner_claude_classify's; what each
+# does is _aif_work_dispatch's.
+
+# _aif_work_num <value> <default> — <value> when it is whole digits, else
+# <default>: what the seams below say.
+_aif_work_num() {
+  case "$1" in
+    '' | *[!0-9]*) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# _aif_work_when <epoch> — a time as a person reads it here: HH:MM when it is
+# within the next twenty hours, the day before it when it is further
+# (`Thu 09:00`), the date when it is more than six days away and a weekday
+# would name two.
+_aif_work_when() {
+  local e="$1" now d fmt='%H:%M'
+  case "$e" in
+    '' | *[!0-9]* | 0) printf '?' && return 0 ;;
+  esac
+  now="$(date +%s)"
+  d=$((e - now))
+  [ "$d" -le 72000 ] || fmt='%a %H:%M'
+  [ "$d" -le 518400 ] || fmt='%Y-%m-%d %H:%M'
+  date -r "$e" "+$fmt" 2>/dev/null || date -d "@$e" "+$fmt" 2>/dev/null || printf '%s' "$e"
+}
+
+# _aif_work_dur <seconds> — "N min" from a minute on, else "N s".
+_aif_work_dur() {
+  if [ "$1" -ge 60 ]; then printf '%s min' "$(($1 / 60))"; else printf '%s s' "$1"; fi
+}
+
+# _aif_work_limit_label <type> — a limit's name as the CLI says it, into
+# AIF_LIMIT_LABEL (a global, so the loop that reads it each second forks
+# nothing): the types are the rate_limit_event's rateLimitType
+# (docs/FINDINGS.md #30).
+_aif_work_limit_label() {
+  case "$1" in
+    five_hour) AIF_LIMIT_LABEL="the session limit" ;;
+    seven_day) AIF_LIMIT_LABEL="the weekly limit" ;;
+    seven_day_opus) AIF_LIMIT_LABEL="the weekly Opus limit" ;;
+    seven_day_sonnet) AIF_LIMIT_LABEL="the weekly Sonnet limit" ;;
+    seven_day_overage_included) AIF_LIMIT_LABEL="the Fable 5 limit" ;;
+    overage) AIF_LIMIT_LABEL="the usage credit limit" ;;
+    credits_required) AIF_LIMIT_LABEL="no usage credits left" ;;
+    '' | -) AIF_LIMIT_LABEL="a limit it did not name" ;;
+    *) AIF_LIMIT_LABEL="$1" ;;
+  esac
+}
+
+# _aif_work_pause_scope <type> — which stations a limit holds, by the model
+# they ask for: the weekly Opus limit holds opus stations only — plan and
+# tests — and lets implement and the sync's MERGE (sonnet) run; the Sonnet
+# and Fable 5 limits the same; every other limit holds every station.
+_aif_work_pause_scope() {
+  case "$1" in
+    seven_day_opus) printf opus ;;
+    seven_day_sonnet) printf sonnet ;;
+    seven_day_overage_included) printf fable ;;
+    *) printf all ;;
+  esac
+}
+
+# _aif_work_pause_read <file> — the shared pause (aif_pause_file) into
+# AIF_PAUSE_UNTIL, _SCOPE, _TYPE, _BY, _AT and _WHY; rc 1 when there is none
+# or it does not read as one. Builtins only — a test, a read, a case — so the
+# loop can look every second and open no window a Ctrl-C can be lost in
+# (docs/DEFECTS.md 11.1).
+_aif_work_pause_read() {
+  local u="" s="" t="" b="" a="" w=""
+  AIF_PAUSE_UNTIL="" AIF_PAUSE_SCOPE="" AIF_PAUSE_TYPE="" AIF_PAUSE_BY="" AIF_PAUSE_AT="" AIF_PAUSE_WHY=""
+  [ -f "$1" ] || return 1
+  { IFS=' ' read -r u s t b a w <"$1"; } 2>/dev/null || true
+  case "$u" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  case "$a" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  case "$s" in
+    all | opus | sonnet | fable) ;;
+    *) return 1 ;;
+  esac
+  AIF_PAUSE_UNTIL="$u" AIF_PAUSE_SCOPE="$s" AIF_PAUSE_TYPE="$t" AIF_PAUSE_BY="$b" AIF_PAUSE_AT="$a" AIF_PAUSE_WHY="$w"
+  return 0
+}
+
+# _aif_work_pause_state <now> — what the pause last read means at <now>, into
+# AIF_PAUSE_STATE: paused (it resets within AIF_PAUSE_MAX_SECS, twelve hours —
+# any five-hour window, and a weekly reset that falls in the night), held (it
+# names no reset and was written within AIF_PAUSE_NORESET_SECS, an hour, or
+# its reset is further than a run waits) or none (none read, or stale: a
+# pause expires by itself). Plain arithmetic.
+_aif_work_pause_state() {
+  local now="$1" max="${AIF_PAUSE_MAX_SECS:-}" noreset="${AIF_PAUSE_NORESET_SECS:-}"
+  AIF_PAUSE_STATE=none
+  [ -n "$AIF_PAUSE_UNTIL" ] || return 0
+  # The seams read here with a case, not through _aif_work_num: the loop
+  # asks this every second, and a `$(…)` is a fork.
+  case "$max" in
+    '' | *[!0-9]*) max=43200 ;;
+  esac
+  case "$noreset" in
+    '' | *[!0-9]*) noreset=3600 ;;
+  esac
+  if [ "$AIF_PAUSE_UNTIL" -eq 0 ]; then
+    [ "$now" -ge $((AIF_PAUSE_AT + noreset)) ] || AIF_PAUSE_STATE=held
+  elif [ "$AIF_PAUSE_UNTIL" -gt $((now + max)) ]; then
+    AIF_PAUSE_STATE=held
+  elif [ "$now" -lt "$AIF_PAUSE_UNTIL" ]; then
+    AIF_PAUSE_STATE=paused
+  fi
+  return 0
+}
+
+# _aif_work_pause_covers <alias> <resolved> — rc 0 when the pause last read
+# holds a station that asks for <alias>, which the profile maps to <resolved>:
+# scope all, or its model's word in either.
+_aif_work_pause_covers() {
+  [ "$AIF_PAUSE_SCOPE" != all ] || return 0
+  case " $1 $2 " in
+    *"$AIF_PAUSE_SCOPE"*) return 0 ;;
+  esac
+  return 1
+}
+
+# _aif_work_pause_write <until|0> <type> <ticket> <why> — the shared pause,
+# for every worker, the loop and the shift on this checkout: written to a
+# temp name and moved. A new pause replaces the one there when its scope is
+# the same or it holds all; one for one model never replaces one in force for
+# another, or for all — rc 1 then, and when it could not be written: the
+# worker that met the limit waits on its own deadline (AIF_WORK_PAUSE_OWN).
+_aif_work_pause_write() {
+  local until="$1" type="${2:--}" by="${3:--}" why f scope now tmp
+  why="$(printf '%s' "$4" | tr '\t\n\r' '   ' | cut -c1-300)"
+  f="$(aif_pause_file "$AIF_WORK_ROOT")"
+  scope="$(_aif_work_pause_scope "$type")"
+  now="$(date +%s)"
+  if _aif_work_pause_read "$f"; then
+    _aif_work_pause_state "$now"
+    if [ "$AIF_PAUSE_STATE" != none ] && [ "$scope" != all ] && [ "$AIF_PAUSE_SCOPE" != "$scope" ]; then
+      return 1
+    fi
+  fi
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  tmp="$f.tmp.$$"
+  if ! { printf '%s %s %s %s %s %s\n' "$until" "$scope" "$type" "$by" "$now" "$why" >"$tmp" &&
+    mv -f "$tmp" "$f"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# _aif_work_pause_json <root> — the shared pause as `aif start` and `aif work
+# --status` read it: `{ state, until, until_hhmm, scope, type, label, by,
+# at, why }`, or null when none holds — the oracle reads no clock
+# (lib/start.jq), so the state and the time a person reads are said here.
+_aif_work_pause_json() {
+  local f now hhmm=""
+  f="$(aif_pause_file "$1")"
+  if ! _aif_work_pause_read "$f"; then
+    printf 'null'
+    return 0
+  fi
+  now="$(date +%s)"
+  _aif_work_pause_state "$now"
+  if [ "$AIF_PAUSE_STATE" = none ]; then
+    printf 'null'
+    return 0
+  fi
+  [ "$AIF_PAUSE_UNTIL" -eq 0 ] || hhmm="$(_aif_work_when "$AIF_PAUSE_UNTIL")"
+  _aif_work_limit_label "$AIF_PAUSE_TYPE"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  jq -cn --arg state "$AIF_PAUSE_STATE" --argjson until "$AIF_PAUSE_UNTIL" --arg hhmm "$hhmm" \
+    --arg scope "$AIF_PAUSE_SCOPE" --arg type "$AIF_PAUSE_TYPE" --arg label "$AIF_LIMIT_LABEL" \
+    --arg by "$AIF_PAUSE_BY" --argjson at "$AIF_PAUSE_AT" --arg why "$AIF_PAUSE_WHY" '
+    { state: $state, until: (if $until == 0 then null else $until end),
+      until_hhmm: (if $hhmm == "" then null else $hhmm end), scope: $scope,
+      type: (if $type == "-" then null else $type end), label: $label,
+      by: (if $by == "-" then null else $by end), at: $at, why: $why }' 2>/dev/null || printf 'null'
+}
+
+# _aif_work_sleep — one second, spent in the `wait` builtin on a `sleep 1` put
+# in the background: a TERM, a Ctrl-C or a hang-up that comes while the
+# worker waits on the runner runs its handler at once, where a foreground
+# `sleep` loses one that lands as it ends (docs/DEFECTS.md 11.1;
+# docs/FINDINGS.md #33). A sleep an interrupt leaves is ended here.
+_aif_work_sleep() {
+  local t rc=0
+  sleep 1 &
+  t=$!
+  wait "$t" 2>/dev/null || rc=$?
+  [ "$rc" -le 128 ] || kill -TERM "$t" 2>/dev/null || true
+  return 0
+}
+
+# _aif_work_beat_due — the claim's heartbeat (_aif_work_heartbeat), once a
+# minute while the worker waits on the runner (AIF_WORK_BEAT_SECS, the
+# harness's): a worker paused through a five-hour window that beat only at a
+# dispatch's start would read, to a shift on another machine, as a worker
+# gone once its claim was silent past the wall clock and ten minutes more
+# (docs/DEFECTS.md 14.4, 13.7).
+_aif_work_beat_due() {
+  local every
+  every="$(_aif_work_num "${AIF_WORK_BEAT_SECS:-}" 60)"
+  [ $((SECONDS - ${AIF_WORK_BEAT_AT:-0})) -ge "$every" ] || return 0
+  AIF_WORK_BEAT_AT="$SECONDS"
+  _aif_work_heartbeat
+}
+
+# _aif_work_pause_wait <alias> <resolved> <station> — before every try of a
+# dispatch: while a pause holds this station (the shared one, paused, of a
+# scope that covers its model — or this worker's own deadline when the shared
+# one could not say it), wait for it, a second at a time, the file read again
+# each second: `rm .aif/state/pause` lifts it by hand, and the worker that met
+# the limit lifts nothing. The seconds go to AIF_WORK_PAUSED_SECS, outside the
+# wall clock, and into AIF_WORK_PAUSE_WAITED for the wait just made. Said
+# once per reset; the dashboard's box shows it (live.json); a handler that runs
+# meanwhile says it on the card (AIF_WORK_WAITING). A held pause — no reset, or
+# one past the horizon — is not waited on: the worker meets the limit itself on
+# its next try, one refused call, and stops on the environment.
+_aif_work_pause_wait() {
+  local alias="$1" resolved="$2" station="$3" f now until said="" t0 waited hhmm e0
+  f="$(aif_pause_file "$AIF_WORK_ROOT")"
+  AIF_WORK_PAUSE_WAITED=0
+  t0="$SECONDS"
+  # The clock from one `date` and the shell's own count after it: nothing
+  # forked each second for a signal to kill (docs/FINDINGS.md #33).
+  e0=$(($(date +%s) - SECONDS))
+  while :; do
+    now=$((e0 + SECONDS))
+    until=""
+    if _aif_work_pause_read "$f"; then
+      _aif_work_pause_state "$now"
+      if [ "$AIF_PAUSE_STATE" = paused ] && _aif_work_pause_covers "$alias" "$resolved"; then
+        until="$AIF_PAUSE_UNTIL"
+      fi
+    fi
+    if [ -n "${AIF_WORK_PAUSE_OWN:-}" ] && [ "$AIF_WORK_PAUSE_OWN" -gt "$now" ]; then
+      [ -n "$until" ] && [ "$until" -ge "$AIF_WORK_PAUSE_OWN" ] || until="$AIF_WORK_PAUSE_OWN"
+      AIF_PAUSE_TYPE="${AIF_WORK_PAUSE_OWN_TYPE:-$AIF_PAUSE_TYPE}"
+    fi
+    [ -n "$until" ] || break
+    if [ "$until" != "$said" ]; then
+      said="$until"
+      hhmm="$(_aif_work_when "$until")"
+      _aif_work_limit_label "$AIF_PAUSE_TYPE"
+      AIF_WORK_WAITING="paused for the runner's usage limit until $hhmm"
+      _aif_work_say "runner" "paused until $hhmm — $AIF_LIMIT_LABEL${AIF_PAUSE_BY:+, met by $AIF_PAUSE_BY}; $station waits for it, outside the wall clock (rm .aif/state/pause lifts it)"
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+      _aif_work_live '.paused_until = $u | .paused_type = $t | .last = $l | .last_tone = "retry"' \
+        --argjson u "$until" --arg t "$AIF_PAUSE_TYPE" --arg l "paused until $hhmm — $AIF_LIMIT_LABEL"
+    fi
+    _aif_work_beat_due
+    _aif_work_sleep
+  done
+  waited=$((SECONDS - t0))
+  AIF_WORK_WAITING=""
+  [ -n "$said" ] || return 0
+  AIF_WORK_PAUSE_WAITED="$waited"
+  AIF_WORK_PAUSED_SECS=$((${AIF_WORK_PAUSED_SECS:-0} + waited))
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  _aif_work_live 'del(.paused_until, .paused_type) | .stage_started = $t | .last = $l' \
+    --argjson t "$(date +%s)" --arg l "$station dispatched again after the pause"
+  _aif_work_say "runner" "paused $(_aif_work_dur "$waited") — $station dispatched again, the same attempt"
+  return 0
+}
+
+# _aif_work_backoff_wait <seconds> — a runner that did not answer is asked
+# again after this long: a second at a time, outside the wall clock (the
+# environment's time, bounded per dispatch by AIF_TRANSIENT_BACKOFF), the
+# claim beating meanwhile.
+_aif_work_backoff_wait() {
+  local n="$1" t0
+  t0="$SECONDS"
+  while [ $((SECONDS - t0)) -lt "$n" ]; do
+    _aif_work_beat_due
+    _aif_work_sleep
+  done
+  AIF_WORK_PAUSED_SECS=$((${AIF_WORK_PAUSED_SECS:-0} + SECONDS - t0))
+}
+
+# _aif_work_wait_record <station> <class> <type> <reset> <until> <waited>
+# <why> <facts-file> — one try that was not the station's own, into the run's
+# record (`.runner_waits`, AIF_WORK_WORK — never a repair's copy): the class
+# and the limit or the error that said it, what the stream said of it (the
+# last rate_limit_info, the API error's kind — what will verify the
+# classifier on the first real limit), the turns and tokens it spent, how
+# long the worker waited. The report's "Waited on the runner" reads it.
+_aif_work_wait_record() {
+  [ -n "${AIF_WORK_WORK:-}" ] && [ -f "$(aif_run_path "$AIF_WORK_WORK")" ] || return 0
+  local facts="$8"
+  [ -s "$facts" ] || facts=/dev/null
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  aif_run_update "$AIF_WORK_WORK" '
+    ($f[0] // {}) as $x
+    | .runner_waits = ((.runner_waits // []) + [ {
+        stage: $s, via: $via, attempt: ($att | tonumber? // $att), class: $c, type: $t,
+        reset: ($r | tonumber? // 0), until: ($u | tonumber? // 0), waited_s: ($w | tonumber? // 0),
+        turns: ($x.num_turns // 0), output_tokens: ($x.output_tokens // 0), why: $why,
+        rate_limit: ($x.rate_limit // null), api_error: ($x.api_error // null), at: $at } ])' \
+    --arg s "$1" --arg via "${AIF_WORK_DISPATCH_VIA:-stage}" --arg att "${AIF_WORK_DISPATCH_ATTEMPT:-}" \
+    --arg c "$2" --arg t "$3" --arg r "$4" --arg u "$5" --arg w "$6" --arg why "$7" \
+    --slurpfile f "$facts" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" 2>/dev/null || true
+}
+
+# _aif_work_wait_waited <seconds> — the last wait recorded, its seconds now
+# known: a limit's pause is waited at the top of the next try.
+_aif_work_wait_waited() {
+  [ -n "${AIF_WORK_WORK:-}" ] && [ -f "$(aif_run_path "$AIF_WORK_WORK")" ] || return 0
+  # shellcheck disable=SC2016  # jq's variable, bound by --argjson
+  aif_run_update "$AIF_WORK_WORK" '
+    ((.runner_waits // []) | length) as $n
+    | if $n == 0 then . else .runner_waits[$n - 1].waited_s = $w end' --argjson w "$1" 2>/dev/null || true
+}
+
+# _aif_work_clock_past — rc 0 when this run is past its wall clock, the
+# seconds it waited on the runner left out: a limit's wait is the user's
+# decision and a backoff the environment's time (docs/DEFECTS.md 13.7). ONE
+# question, asked before every dispatch — the stage loop's, a repair's (up to
+# four), a sync's (up to three) — where it used to be asked at the top of the
+# stage loop alone, and a repair or a sync ran on past it.
+_aif_work_clock_past() {
+  [ -n "${AIF_WORK_CLOCK_START:-}" ] && [ -n "${AIF_WORK_CLOCK_MAX:-}" ] || return 1
+  [ $(($(date +%s) - AIF_WORK_CLOCK_START - ${AIF_WORK_PAUSED_SECS:-0})) -gt "$AIF_WORK_CLOCK_MAX" ]
+}
+
+# _aif_work_clock_why — why a run past its wall clock stopped, on the line
+# the shift reads as a cap (lib/start.jq R17: `wall clock:`).
+_aif_work_clock_why() {
+  local cap waited=""
+  if [ -n "${AIF_WORK_MAX_SECS_SET:-}" ]; then cap="${AIF_WORK_CLOCK_MAX} seconds"; else cap="$((AIF_WORK_CLOCK_MAX / 60)) minutes"; fi
+  [ "${AIF_WORK_PAUSED_SECS:-0}" -eq 0 ] || waited=" ($(_aif_work_dur "$AIF_WORK_PAUSED_SECS") waiting on the runner, outside it)"
+  printf 'wall clock: past %s%s. What was accepted is committed on the branch; nothing after it is.' "$cap" "$waited"
+}
+
+# _aif_work_cut_text <what ended it> <turns|""> — what the same attempt is told
+# when it is dispatched again after a try the runner cut off: that it ran,
+# that nothing judged it, that its work is in the tree. Prefixed with its own
+# blank line, for the prompt's end. Never the words the harness's stations
+# key on: "was REJECTED", "MERGE", a line that starts "REPAIR".
+_aif_work_cut_text() {
+  local how="and left no account of how far it got"
+  [ -z "$2" ] || how="after $2 turn(s)"
+  printf '\n\nYour previous run of this same attempt ended early — %s — %s; no gate has judged it. What it wrote is in the tree as it left it: read it before you write, and finish the work.' "$1" "$how"
+}
+
+# _aif_work_backoff_list — AIF_TRANSIENT_BACKOFF's seconds, "60 300 900"
+# unless every word of it is digits.
+_aif_work_backoff_list() {
+  local w
+  for w in ${AIF_TRANSIENT_BACKOFF:-60 300 900}; do
+    case "$w" in
+      *[!0-9]*)
+        printf '60 300 900'
+        return 0
+        ;;
+    esac
+  done
+  printf '%s' "${AIF_TRANSIENT_BACKOFF:-60 300 900}"
+}
+
+# _aif_work_station_models <root> — the station a run may dispatch whose model
+# the loaded profile does not map, one `<agent> asks for <model>` a line (the
+# CLI's default when it names none: what the dispatch sends then is sonnet).
+# Run once the profile is exported (aif_profile_maps_model reads what that
+# exported).
+_aif_work_station_models() {
+  local f agent m
+  for f in "$1"/.claude/agents/aif-*.md; do
+    [ -f "$f" ] || continue
+    agent="${f##*/}"
+    agent="${agent%.md}"
+    m="$(_aif_work_frontmatter "$1" "$agent" model)" || m=""
+    [ -n "$m" ] || m=sonnet
+    aif_profile_maps_model "$m" || printf '%s asks for %s\n' "$agent" "$m"
+  done
+  return 0
+}
+
 # _aif_work_dispatch <wt> <ticket> <station> <agent> <complaint> <budget-left>
 #                    <envelope-out>
 #
 # One station run. Writes the envelope to <envelope-out>, stages the cost row
-# for `aif _gate` to fold, and returns 0 when the runner produced an envelope
-# at all — the outcome of the station is read from the envelope by the caller,
-# because a failed station is a recorded attempt, not an aborted one.
+# for `aif _gate` to fold, and returns 0 when the station's run was its own —
+# ok, or an error of the station's — the outcome of the station is read from
+# the envelope by the caller, because a failed station is a recorded attempt,
+# not an aborted one. What the runner did instead — a usage limit, no answer
+# — is this function's, below: 3 the environment, 4 the wall clock.
 #
 # The prompt carries no hash. It used to: the state machine computed one and
 # the station was asked to copy it verbatim into its output. `aif _record`
@@ -2135,6 +2596,11 @@ $complaint"
   # (sets/claude/hooks/guard.sh).
   export AIF_STATION="$station"
 
+  # A pause the runner's limit holds this station's model under — met by any
+  # worker of this checkout (_aif_work_pause_write) — is waited out before
+  # the station is said to start, and before each try after it (below).
+  AIF_WORK_WAIT_PENDING=0
+  _aif_work_pause_wait "$model" "$resolved" "$station"
   _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns$knows"
   # THIS aif first on the station's PATH: `aif _verify` inside the tests
   # station must reach the aif that dispatched it, not whatever Homebrew
@@ -2154,29 +2620,171 @@ $complaint"
   # own to find it by (docs/DEFECTS.md 14.1). Gone once the dispatch ends.
   local pidfile=""
   [ -z "${AIF_WORK_LOCK:-}" ] || [ ! -d "$AIF_WORK_LOCK" ] || pidfile="$AIF_WORK_LOCK/station"
-  if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
-    if [ -n "$pidfile" ]; then
-      # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
-      /bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" \
-        "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
-        "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
-    else
-      "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt" "$model" \
-        "$max_turns" "$budget_left" "$tools" "$out" "$err" || rc=$?
+
+  # The station runs until its run is the station's own — ok, or an error the
+  # gate then judges by what it left — and every other end of a try is the
+  # runner's (aif_runner_claude_classify), never billed to the station: the
+  # same attempt dispatched again, uncounted by the stage loop, which counted
+  # it once (docs/DEFECTS.md 13.7).
+  #
+  #   limit      the account's usage limit. A reset within AIF_PAUSE_MAX_SECS
+  #              (12 h): the shared pause, written for every worker, the loop
+  #              and the shift, and waited out at the top of the next try,
+  #              outside the wall clock. No reset named, or one further off —
+  #              a weekly reset days away, a credit limit — and the run stops
+  #              on the environment naming it, the pause left as a hold the
+  #              loop stops on; so does a fourth limit in a row here.
+  #   transient  the runner did not answer — no envelope, not JSON, the
+  #              throttle, overload, a 5xx: asked again after each of
+  #              AIF_TRANSIENT_BACKOFF's seconds (60 300 900), on top of the
+  #              CLI's own retries, outside the wall clock; then the
+  #              environment. A stream that is not JSON no longer reaches a jq
+  #              under set -e.
+  #
+  # The tree is not put back between tries: a retry already builds on the
+  # uncommitted work of the attempt before it, so no commit is "the
+  # attempt's base". A try cut off after it worked, or that left no account
+  # of itself, is told so — in words the harness's stations key on none of
+  # (was REJECTED, MERGE, a line that starts REPAIR). What a swallowed try
+  # cost goes to AIF_WORK_DISPATCH_EXTRA for the caller's spend; its tokens
+  # are in the run's runner_waits, never in a ledger row.
+  #
+  # rc 0 the station's own run, its envelope in <envelope-out> · 3 the
+  # environment, AIF_WORK_DISPATCH_WHY says it for the card and
+  # AIF_WORK_RUNNER_ENV is 1 — the run ends blocked: environment, which the
+  # loop takes for the machine (13.8) · 4 the wall clock, asked before every
+  # try (_aif_work_clock_past).
+  local stream="$out.stream" facts="$out.facts" line cls reset type why tries=0 limits=0
+  local delays d ret=0 cut="" now max margin until label when limit_turns t0_disp transients=0
+  AIF_WORK_DISPATCH_WHY=""
+  AIF_WORK_DISPATCH_EXTRA=0
+  AIF_WORK_RUNNER_ENV=0
+  AIF_WORK_BEAT_AT="$SECONDS"
+  delays=" $(_aif_work_backoff_list) "
+  t0_disp="$SECONDS"
+  while :; do
+    if [ "$tries" -gt 0 ]; then
+      _aif_work_pause_wait "$model" "$resolved" "$station"
+      [ "${AIF_WORK_WAIT_PENDING:-0}" != 1 ] || _aif_work_wait_waited "$AIF_WORK_PAUSE_WAITED"
+      AIF_WORK_WAIT_PENDING=0
     fi
-  else
-    "aif_runner_${AIF_PROFILE_RUNNER}_station" "$wt" "$sys" "$prompt" "$model" \
-      "$max_turns" "$budget_left" "$tools" "$out" "$err" "$pidfile" || rc=$?
-  fi
-  [ -z "$pidfile" ] || rm -f "$pidfile"
+    if _aif_work_clock_past; then
+      ret=4
+      break
+    fi
+    tries=$((tries + 1))
+    rc=0
+    rm -f "$stream" "$facts"
+    [ "$tries" -eq 1 ] || _aif_work_beat_due
+    if [ -n "${AIF_WORK_STATION_CMD:-}" ]; then
+      if [ -n "$pidfile" ]; then
+        # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
+        /bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" \
+          "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt$cut" "$model" \
+          "$max_turns" "$budget_left" "$tools" "$stream" "$err" || rc=$?
+      else
+        "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt$cut" "$model" \
+          "$max_turns" "$budget_left" "$tools" "$stream" "$err" || rc=$?
+      fi
+    else
+      "aif_runner_${AIF_PROFILE_RUNNER}_station" "$wt" "$sys" "$prompt$cut" "$model" \
+        "$max_turns" "$budget_left" "$tools" "$stream" "$err" "$pidfile" || rc=$?
+    fi
+    [ -z "$pidfile" ] || rm -f "$pidfile"
+    line="$("aif_runner_${AIF_PROFILE_RUNNER}_classify" "$stream" "$out" "$facts")" || line=""
+    cls="" reset=0 type="" why=""
+    IFS=$'\t' read -r cls reset type why <<EOF
+$line
+EOF
+    case "$cls" in
+      ok | error) break ;;
+      limit | transient) ;;
+      *) cls=transient type=not-json ;;
+    esac
+    case "$reset" in
+      '' | *[!0-9]*) reset=0 ;;
+    esac
+    # What the runner itself said on its way out, when the stream says
+    # nothing: a CLI that could not start writes only there.
+    [ -n "$why" ] || why="$(sed -n '/[^[:space:]]/{p;q;}' "$err" 2>/dev/null | cut -c1-200)" || why=""
+    [ ! -s "$out" ] ||
+      AIF_WORK_DISPATCH_EXTRA="$(awk -v s="$AIF_WORK_DISPATCH_EXTRA" -v c="$(_aif_work_envelope_cost "$wt" "$out")" 'BEGIN { printf "%.4f", s + c }')"
+    limit_turns="$(jq -r '.num_turns // 0' "$facts" 2>/dev/null)" || limit_turns=0
+    case "$limit_turns" in
+      '' | *[!0-9]*) limit_turns=0 ;;
+    esac
+    now="$(date +%s)"
+    if [ "$cls" = limit ]; then
+      limits=$((limits + 1))
+      _aif_work_limit_label "$type"
+      label="$AIF_LIMIT_LABEL"
+      max="$(_aif_work_num "${AIF_PAUSE_MAX_SECS:-}" 43200)"
+      margin="$(_aif_work_num "${AIF_PAUSE_MARGIN_SECS:-}" 120)"
+      if [ "$reset" -gt 0 ] && [ "$reset" -le $((now + max)) ] && [ "$limits" -lt 4 ]; then
+        until=$reset
+        [ "$until" -ge "$now" ] || until=$now
+        until=$((until + margin))
+        AIF_WORK_PAUSE_OWN=""
+        if ! _aif_work_pause_write "$until" "$type" "$ticket" "$why"; then
+          AIF_WORK_PAUSE_OWN="$until"
+          AIF_WORK_PAUSE_OWN_TYPE="$type"
+        fi
+        _aif_work_wait_record "$station" limit "$type" "$reset" "$until" 0 "$why" "$facts"
+        AIF_WORK_WAIT_PENDING=1
+        _aif_work_say "runner" "$station — the runner's usage limit ($label): resets $(_aif_work_when "$reset"); the same attempt waits for it, outside the wall clock (attempt uncounted)"
+        cut=""
+        [ "$limit_turns" -eq 0 ] ||
+          cut="$(_aif_work_cut_text "the runner's usage limit" "$limit_turns")"
+        continue
+      fi
+      if [ "$limits" -ge 4 ]; then
+        AIF_WORK_DISPATCH_WHY="the runner's usage limit ($label) refused the $station station $limits times in a row, each reset waited out — the environment, not the ticket"
+      else
+        until=0
+        [ "$reset" -eq 0 ] || until=$((reset + margin))
+        _aif_work_pause_write "$until" "$type" "$ticket" "$why" || true
+        if [ "$reset" -eq 0 ]; then when="no reset named"; else when="resets $(_aif_work_when "$reset")"; fi
+        AIF_WORK_DISPATCH_WHY="the runner's usage limit ($label): $when — longer than a run waits${why:+ ($why)}"
+      fi
+      _aif_work_wait_record "$station" limit "$type" "$reset" "${until:-0}" 0 "$why" "$facts"
+      AIF_WORK_RUNNER_ENV=1
+      ret=3
+      break
+    fi
+    # transient: the next wait in the list, or the environment. A limit
+    # after it is the first in a row again.
+    limits=0
+    transients=$((transients + 1))
+    d="$(printf '%s' "$delays" | awk -v i="$transients" '{ print (i <= NF) ? $i : "" }')"
+    if [ -z "$d" ]; then
+      AIF_WORK_DISPATCH_WHY="the runner did not answer for the $station station — $type${why:+: $why}, $tries tries over $(_aif_work_dur $((SECONDS - t0_disp))) — the environment, not the ticket"
+      _aif_work_wait_record "$station" transient "$type" 0 0 0 "$why" "$facts"
+      AIF_WORK_RUNNER_ENV=1
+      ret=3
+      break
+    fi
+    _aif_work_say "runner" "$station — $type${why:+: $why}; again in ${d}s (attempt uncounted)"
+    AIF_WORK_WAITING="waiting on the runner ($type), again at $(_aif_work_when $((now + d)))"
+    _aif_work_backoff_wait "$d"
+    AIF_WORK_WAITING=""
+    _aif_work_wait_record "$station" transient "$type" 0 0 "$d" "$why" "$facts"
+    cut=""
+    if [ ! -s "$out" ]; then
+      cut="$(_aif_work_cut_text "the runner did not answer" "")"
+    elif [ "$limit_turns" -gt 0 ]; then
+      cut="$(_aif_work_cut_text "the API did not answer" "$limit_turns")"
+    fi
+  done
+  rm -f "$stream" "$facts"
   export PATH="$path_was"
   unset AIF_STATION
   rm -f "$sys"
-
-  if [ ! -s "$out" ]; then
-    aif_err "the runner produced no envelope for $station — $(head -1 "$err" 2>/dev/null)"
+  if [ "$ret" -ne 0 ]; then
+    if [ "$ret" -eq 3 ]; then
+      aif_err "$AIF_WORK_DISPATCH_WHY"
+    fi
     rm -f "$err"
-    return 3
+    return "$ret"
   fi
   rm -f "$err"
 
@@ -2186,9 +2794,14 @@ $complaint"
   # tree, and instrumentation must not perturb what it measures.
   local usage turns cost summary subtype model_ran result
   usage="$("aif_runner_${AIF_PROFILE_RUNNER}_result_usage" "$out")"
-  turns="$(jq -r '.num_turns // 0' "$out")"
-  subtype="$("aif_runner_${AIF_PROFILE_RUNNER}_result_subtype" "$out")"
-  summary="$(jq -r '(.result // "") | split("\n")[0] | .[0:200]' "$out")"
+  # Guarded, though only an envelope that classified is here now: a jq that
+  # cannot read it must not end the worker under set -e (docs/DEFECTS.md 13.7).
+  turns="$(jq -r '.num_turns // 0' "$out" 2>/dev/null)" || turns=0
+  case "$turns" in
+    '' | *[!0-9]*) turns=0 ;;
+  esac
+  subtype="$("aif_runner_${AIF_PROFILE_RUNNER}_result_subtype" "$out")" || subtype=""
+  summary="$(jq -r '(.result // "") | split("\n")[0] | .[0:200]' "$out" 2>/dev/null)" || summary=""
   model_ran="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
   [ -n "$model_ran" ] || model_ran="$model"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
@@ -2386,10 +2999,20 @@ $complaint"
     fi
     out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
     rc=0
+    # The wall clock is asked before this dispatch too (_aif_work_clock_past,
+    # inside it): a repair used to run on past it (docs/DEFECTS.md 13.7).
+    AIF_WORK_DISPATCH_VIA=repair AIF_WORK_DISPATCH_ATTEMPT="$n"
     _aif_work_dispatch "$copy" "$ticket" tests "$agent" "$complaint" "$budget_left" "$out" || rc=$?
+    AIF_WORK_DISPATCH_VIA="" AIF_WORK_DISPATCH_ATTEMPT=""
+    AIF_WORK_REPAIR_SPENT="$(awk -v s="${AIF_WORK_REPAIR_SPENT:-0}" -v c="${AIF_WORK_DISPATCH_EXTRA:-0}" 'BEGIN { printf "%.4f", s + c }')"
     if [ "$rc" -eq 3 ]; then
       rm -f "$out"
-      AIF_WORK_REPAIR_WHY="the runner could not run the tests station for the repair (no envelope) — the environment, not the ticket."
+      AIF_WORK_REPAIR_WHY="${AIF_WORK_DISPATCH_WHY:-the runner could not run the tests station for the repair — the environment, not the ticket.}"
+      break
+    fi
+    if [ "$rc" -eq 4 ]; then
+      rm -f "$out"
+      AIF_WORK_REPAIR_WHY="$(_aif_work_clock_why)"
       break
     fi
     AIF_WORK_REPAIR_DISPATCHES=$((${AIF_WORK_REPAIR_DISPATCHES:-0} + 1))
@@ -2455,16 +3078,16 @@ EOF
   # The commit holds the oracle and the ticket's record, never the code: the
   # implementation stays uncommitted, and the baseline green diffs it against
   # is this commit, which carries the tests it is now judged by.
-  git -C "$wt" add -- "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  aif_git_own "$wt" add -- "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ -f "$wt/$f" ] || continue
-    git -C "$wt" add -- "$f" >/dev/null 2>&1 || true
+    aif_git_own "$wt" add -- "$f" >/dev/null 2>&1 || true
   done <<EOF
 $test_files
 EOF
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: tests $ticket (repair $repairs)" >/dev/null 2>&1 || true
   fi
   # shellcheck disable=SC2016  # jq's variables, bound by --arg
@@ -2544,7 +3167,9 @@ Write the plan again, and the skeleton with it, so that the contract can. Everyt
 # rc 0 the branch holds the target · 1 it could not be brought on — a test file
 # in conflict, or the station's attempts spent — and the ticket is to be built
 # again from the target (AIF_WORK_SYNC_WHY) · 3 the environment: an install
-# that failed, a gate with no verdict, a merge git would not start.
+# that failed, a gate with no verdict, a merge git would not start, a runner
+# that did not answer or whose limit holds past a run · 4 the run's wall clock,
+# reached before a dispatch (AIF_WORK_SYNC_WHY says it).
 # AIF_WORK_SYNC_DISPATCHES and AIF_WORK_SYNC_SPENT are what it cost.
 _aif_work_sync() {
   local root="$1" wt="$2" ticket="$3" budget_left="$4" dispatched="${5:-0}"
@@ -2568,15 +3193,15 @@ _aif_work_sync() {
 
   # What the run left uncommitted is its own record: in first, because git does
   # not start a merge over local changes to a path the merge brings.
-  if [ -n "$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-    git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+  if [ -n "$(aif_git_own "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    aif_git_own "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: record $ticket before the sync" >/dev/null 2>&1 || true
   fi
   pre="$(git -C "$wt" rev-parse HEAD)"
   _aif_work_say "sync" "aif/$ticket onto $target_name at ${target:0:7}"
 
-  if ! git -C "$wt" -c merge.conflictStyle=diff3 merge --no-ff --no-commit "$target" >/dev/null 2>&1; then
+  if ! aif_git_own "$wt" -c merge.conflictStyle=diff3 merge --no-ff --no-commit "$target" >/dev/null 2>&1; then
     if ! git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
       AIF_WORK_SYNC_WHY="git would not start the merge of $target_name into aif/$ticket in ${wt#"$root"/}"
       _aif_work_sync_abort "$wt" "$pre"
@@ -2643,12 +3268,23 @@ The gates judge the merged tree when you finish: this ticket's frozen tests, eve
       _aif_work_say "sync" "the implement station, MERGE (attempt $n/$attempts_max)"
       out="$(mktemp "${TMPDIR:-/tmp}/aif-env-XXXXXX")"
       rc=0
+      # The wall clock is asked before this dispatch too (inside it): a sync
+      # used to run on past it (docs/DEFECTS.md 13.7).
+      AIF_WORK_DISPATCH_VIA=sync AIF_WORK_DISPATCH_ATTEMPT="$n"
       _aif_work_dispatch "$wt" "$ticket" implement "$agent" "$complaint" "$budget_left" "$out" || rc=$?
+      AIF_WORK_DISPATCH_VIA="" AIF_WORK_DISPATCH_ATTEMPT=""
+      AIF_WORK_SYNC_SPENT="$(awk -v s="$AIF_WORK_SYNC_SPENT" -v c="${AIF_WORK_DISPATCH_EXTRA:-0}" 'BEGIN { printf "%.4f", s + c }')"
       if [ "$rc" -eq 3 ]; then
         rm -f "$out"
-        AIF_WORK_SYNC_WHY="the runner could not run the implement station for the sync (no envelope) — the environment, not the ticket"
+        AIF_WORK_SYNC_WHY="${AIF_WORK_DISPATCH_WHY:-the runner could not run the implement station for the sync — the environment, not the ticket}"
         _aif_work_sync_abort "$wt" "$pre"
         return 3
+      fi
+      if [ "$rc" -eq 4 ]; then
+        rm -f "$out"
+        AIF_WORK_SYNC_WHY="$(_aif_work_clock_why)"
+        _aif_work_sync_abort "$wt" "$pre"
+        return 4
       fi
       AIF_WORK_SYNC_DISPATCHES=$((AIF_WORK_SYNC_DISPATCHES + 1))
       _aif_work_keep_envelope "$wt" "$ticket" "$((dispatched + AIF_WORK_SYNC_DISPATCHES))" implement "$out"
@@ -2680,7 +3316,7 @@ $(printf '%s' "$markers" | sed '/^$/d; s/^/  - /')
 Settle each conflict: both sides' behaviour kept, and no <<<<<<<, |||||||, ======= or >>>>>>> line left."
         continue
       fi
-      git -C "$wt" add -A >/dev/null 2>&1 || true
+      aif_git_own "$wt" add -A >/dev/null 2>&1 || true
     fi
 
     # The dependencies, whenever the tree's manifests or lockfiles are no
@@ -2722,8 +3358,8 @@ $(grep -v '^$' "$gate_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,40p')"
   done
   rm -f "$gate_out" "$lock_kept"
 
-  git -C "$wt" add -A >/dev/null 2>&1 || true
-  if ! git -C "$wt" -c user.email="aif@local" -c user.name="aif" commit -q --cleanup=strip \
+  aif_git_own "$wt" add -A >/dev/null 2>&1 || true
+  if ! aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" commit -q --cleanup=strip \
     -m "aif: sync $ticket onto $target_name at ${target:0:7}" \
     -m "$(_aif_work_sync_body "$left" "$lockfiles" "$n")" >/dev/null 2>&1; then
     AIF_WORK_SYNC_WHY="could not commit the merge of $target_name into aif/$ticket"
@@ -2768,8 +3404,8 @@ _aif_work_sync_body() {
 # _aif_work_sync_abort <wt> <pre> — a sync given up: the worktree exactly as it
 # was before it, the merge and whatever the station wrote gone with it.
 _aif_work_sync_abort() {
-  git -C "$1" merge --abort >/dev/null 2>&1 || true
-  git -C "$1" reset -q --hard "$2" >/dev/null 2>&1 || true
+  aif_git_own "$1" merge --abort >/dev/null 2>&1 || true
+  aif_git_own "$1" reset -q --hard "$2" >/dev/null 2>&1 || true
   git -C "$1" clean -fdq >/dev/null 2>&1 || true
 }
 
@@ -2871,20 +3507,20 @@ _aif_work_rebuild() {
     cp "$wt/.aif/tmp/stations-$ticket"/*.json "$work/stations/" 2>/dev/null || true
     rm -rf "${wt:?}/.aif/tmp/stations-${ticket:?}"
   fi
-  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  aif_git_own "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: record $ticket — the build kept at $ref" >/dev/null 2>&1 || true
   fi
   old="$(git -C "$wt" rev-parse HEAD)"
-  if ! git -C "$root" update-ref "$ref" "$old" >/dev/null 2>&1; then
+  if ! aif_git_own "$root" update-ref "$ref" "$old" >/dev/null 2>&1; then
     AIF_WORK_REBUILD_WHY="$why — and the build could not be kept at $ref, so it was not built again"
     return 1
   fi
   old_plan="$(git -C "$wt" show "$old:$AIF_TASKS_DIR/$ticket/plan.md" 2>/dev/null | sed -n '1,150p')" || old_plan=""
   keep="$(mktemp "${TMPDIR:-/tmp}/aif-ticket-XXXXXX")"
   cp "$work/ticket.md" "$keep" 2>/dev/null || true
-  git -C "$wt" reset -q --hard "$target" >/dev/null 2>&1 || {
+  aif_git_own "$wt" reset -q --hard "$target" >/dev/null 2>&1 || {
     rm -f "$keep"
     AIF_WORK_REBUILD_WHY="$why — and the worktree could not be put at $target_name to build it again"
     return 1
@@ -2910,8 +3546,8 @@ _aif_work_rebuild() {
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   aif_run_update "$work" '.rebuilds = ($n | tonumber) | .rebuilt_from = $old | .rebuild_ref = $ref | .rebuild_why = $why' \
     --arg n "$((n + 1))" --arg old "$old" --arg ref "$ref" --arg why "$why" || true
-  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
-  git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+  aif_git_own "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
     commit -q -m "aif: rebuild $ticket on $target_name at ${target:0:7} — the build at ${old:0:7} could not be brought onto it; kept at $ref" >/dev/null 2>&1 || true
   _aif_work_say "rebuild" "$ticket from $target_name at ${target:0:7}; the build at ${old:0:7} is kept at $ref"
   AIF_WORK_REBUILD_COMPLAINT="REBUILD — this ticket was built before, on an older $target_name, and that build could not be brought onto $target_name as it is now: $why
@@ -2954,6 +3590,15 @@ _aif_work_report() {
   [ -n "$diffstat" ] || diffstat="no code changed"
   mins=$((($(date +%s) - started) / 60))
   checklist="$(aif_run_checklist "$work")"
+  # The time spent waiting on the runner — a limit's pause, a backoff — is
+  # in the minutes above and outside the wall clock: said beside them, and
+  # each wait in its own section below (docs/DEFECTS.md 13.7).
+  local waited_s waited_say=""
+  waited_s="$(jq -r '[ (.runner_waits // [])[] | (.waited_s // 0) ] | add // 0' "$run" 2>/dev/null)" || waited_s=0
+  case "$waited_s" in
+    '' | *[!0-9]*) waited_s=0 ;;
+  esac
+  [ "$waited_s" -eq 0 ] || waited_say=" · waited $(_aif_work_dur "$waited_s") on the runner"
 
   jq --arg st "$status" --arg why "$why" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.status = $st | .why = (if $why == "" then null else $why end) | .finished_at = $at' \
@@ -2964,8 +3609,8 @@ _aif_work_report() {
   # shellcheck disable=SC2016
   {
     printf '# %s — %s\n\n' "$ticket" "$status"
-    printf -- '- branch `%s` · %s · %s min · %s dispatch(es) · stage `%s`\n' \
-      "$(jq -r '.branch' "$run")" "$diffstat" "$mins" \
+    printf -- '- branch `%s` · %s · %s min%s · %s dispatch(es) · stage `%s`\n' \
+      "$(jq -r '.branch' "$run")" "$diffstat" "$mins" "$waited_say" \
       "$(jq -r '.dispatches' "$run")" "$(jq -r '.stage' "$run")"
     printf -- '- built against `ticket.md` sha256 `%s`\n' "$(jq -r '.ticket_sha256' "$run")"
     if [ -f "$work/ticket.md" ] && [ "$(aif_sha256 "$work/ticket.md")" != "$(jq -r '.ticket_sha256' "$run")" ]; then
@@ -3020,6 +3665,23 @@ _aif_work_report() {
         | "- `" + .stage + "` attempt " + (.attempt | tostring) + " — " + .error' "$run" 2>/dev/null
     fi
 
+    # Every try the runner cut off — a usage limit, a runner that did not
+    # answer — dispatched again, the attempt uncounted, and none of it billed
+    # to the station (docs/DEFECTS.md 13.7): what it was, what the stream said,
+    # and how long the run waited on it.
+    if [ "$(jq -r '(.runner_waits // []) | length' "$run" 2>/dev/null)" != "0" ]; then
+      printf '\n## Waited on the runner\n\n'
+      printf 'Tries the runner cut off, not the station: dispatched again as the same\n'
+      printf 'attempt, uncounted, the wait outside the wall clock — or, the last of them,\n'
+      printf 'where the run stopped on the environment.\n\n'
+      jq -r '(.runner_waits // [])[]
+        | "- `" + .stage + "`" + (if (.via // "stage") != "stage" then " (" + .via + ")" else "" end)
+          + " attempt " + ((.attempt // "?") | tostring) + " — " + .class + " (" + .type + ")"
+          + (if (.why // "") != "" then ": " + .why else "" end)
+          + " — waited " + (if (.waited_s // 0) >= 60 then "\((.waited_s / 60) | floor) min" else "\(.waited_s // 0) s" end)
+          + (if (.turns // 0) > 0 then ", after \(.turns) turn(s)" else "" end)' "$run" 2>/dev/null
+    fi
+
     # Where the branch was brought onto the one it lands on, and what that
     # took (docs/DEFECTS.md 13.4). A conflict settled by a station is code the
     # reviewer has not seen in any other form, so it says where to look.
@@ -3069,9 +3731,9 @@ _aif_work_report() {
     printf '\n---\n_Written by `aif work`. Review the diff on the branch; merge when it is what you meant, or send the ticket back through the analyst with what was wrong._\n'
   } >"$report.tmp" && mv "$report.tmp" "$report"
 
-  git -C "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
+  aif_git_own "$wt" add -A "$AIF_TASKS_DIR/$ticket" >/dev/null 2>&1 || true
   if ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
-    git -C "$wt" -c user.email="aif@local" -c user.name="aif" \
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
       commit -q -m "aif: report $ticket ($status)" >/dev/null 2>&1 || true
   fi
 
@@ -3246,6 +3908,12 @@ _aif_work_loop() {
   AIF_WORK_LOOP_IDLE_WHY="" # what an idle loop says of Ready: empty, or what it holds
   AIF_WORK_LOOP_READY=""    # the last Ready read, the loop's or the dashboard's
   AIF_WORK_LOOP_READ_AT=0   # when that was
+  AIF_WORK_LOOP_PAUSED=""   # "paused until HH:MM — <limit>, met by <ID>" while the runner's limit holds
+  AIF_WORK_LOOP_PAUSE_SEEN="" # the reset that line was said for
+  AIF_WORK_LOOP_PAUSE_HELD=0  # 1 while the limit holds past what the loop waits
+  AIF_WORK_LOOP_PAUSE_OVER=0  # 1 once, when a pause has just ended
+  AIF_WORK_LOOP_HOLD_WHY=""   # what the loop says when it stops on a held limit
+  AIF_WORK_LOOP_PAUSE_FILE="$(aif_pause_file "$root")"
   AIF_TUI_PARALLEL="$parallel" AIF_TUI_STARTED="$(date +%s)" AIF_TUI_NOW="$AIF_TUI_STARTED"
   # The clock and the run locks' directory, read once and then computed with
   # builtins: what the loop does every second forks as little as it can. A
@@ -3291,6 +3959,25 @@ _aif_work_loop() {
           AIF_WORK_LOOP_STOP="drained by ${who:-someone} (aif work --loop --drain) — no new card taken"
         _aif_work_loop_event yellow "drained by ${who:-someone} (aif work --loop --drain) — no new card; the runs in flight finish"
       fi
+    fi
+
+    # The runner's usage limit, met by a worker and written where every
+    # process of this checkout reads it (_aif_work_pause_write): while it
+    # pauses, no new card — a new card starts at the plan station, opus, and
+    # whatever the limit's scope, the loop would only start workers to wait
+    # beside the ones already waiting; past what a run waits, or with no
+    # reset, the loop stops on the environment, naming when to come back.
+    # Read before the reaper, so a worker that stopped on a held limit is not
+    # taken for a machine to check again (docs/DEFECTS.md 13.7, 13.8).
+    _aif_work_loop_pause
+    if [ "$AIF_WORK_LOOP_PAUSE_HELD" = 1 ] && [ -z "$AIF_WORK_LOOP_STOP" ]; then
+      AIF_WORK_LOOP_STOP="$AIF_WORK_LOOP_HOLD_WHY"
+      env=1
+      _aif_work_loop_event red "$AIF_WORK_LOOP_HOLD_WHY"
+    fi
+    if [ "$AIF_WORK_LOOP_PAUSE_OVER" = 1 ]; then
+      AIF_WORK_LOOP_PAUSE_OVER=0
+      next_poll=0
     fi
 
     # Every run that has ended: how, and what it means for the loop.
@@ -3470,7 +4157,7 @@ EOF
         why="--max-tickets $max reached"
         break
       fi
-    elif [ "$n" -lt "$parallel" ] && ! _aif_work_loop_starting "$root"; then
+    elif [ "$n" -lt "$parallel" ] && [ -z "$AIF_WORK_LOOP_PAUSED" ] && ! _aif_work_loop_starting "$root"; then
       now=$((AIF_WORK_LOOP_EPOCH + SECONDS))
       if [ "$now" -ge "$next_poll" ]; then
         pick=""
@@ -3560,6 +4247,12 @@ EOF
         if [ -n "$pick" ] && { [ -n "$AIF_WORK_LOOP_STOP" ] ||
           [ -f "${AIF_WORK_LOOP_LOCK:-/nonexistent}/drain" ] ||
           [ -f "${AIF_WORK_LOOP_LOCK:-/nonexistent}/stop" ]; }; then
+          continue
+        fi
+        # And the runner's limit, which a worker may have met during the
+        # read (docs/DEFECTS.md 13.7).
+        [ -z "$pick" ] || _aif_work_loop_pause
+        if [ -n "$pick" ] && { [ -n "$AIF_WORK_LOOP_PAUSED" ] || [ "$AIF_WORK_LOOP_PAUSE_HELD" = 1 ]; }; then
           continue
         fi
         if [ -n "$pick" ]; then
@@ -3952,6 +4645,10 @@ _aif_work_loop_draw() {
     AIF_TUI_STATUS="stopping every run in flight" AIF_TUI_STATUS_TONE=red
   elif [ -n "$AIF_WORK_LOOP_STOP" ]; then
     AIF_TUI_STATUS="no new cards — ^C again: stop all" AIF_TUI_STATUS_TONE=yellow
+  elif [ -n "${AIF_WORK_LOOP_PAUSED:-}" ]; then
+    # The runner's limit: the workers wait, each box says until when (its
+    # live.json's last), and no card is taken (docs/DEFECTS.md 13.7).
+    AIF_TUI_STATUS="$AIF_WORK_LOOP_PAUSED · no new cards until then · q: end" AIF_TUI_STATUS_TONE=yellow
   elif [ "${AIF_WORK_LOOP_IDLE:-0}" = 1 ]; then
     # Idle is a state, not an end: said, with the cards it leaves in Ready —
     # and Ready not called empty while it holds them (docs/DEFECTS.md 15.3).
@@ -4159,6 +4856,52 @@ _aif_work_loop_idle_why() {
   else
     AIF_WORK_LOOP_IDLE_WHY="Ready holds nothing this loop can take now"
   fi
+}
+
+# _aif_work_loop_pause — the shared pause (aif_pause_file), as the loop reads
+# it at the top of every second: AIF_WORK_LOOP_PAUSED the line it says while
+# the runner's limit pauses — said once a reset, the take skipped, the board
+# not read — AIF_WORK_LOOP_PAUSE_HELD 1 while it holds past what a run waits
+# (AIF_WORK_LOOP_HOLD_WHY the stop's reason), AIF_WORK_LOOP_PAUSE_OVER 1 once
+# it has ended. Builtins only, on the loop's own clock: a `date` forks only
+# when the reset changes, for the time a person reads (docs/DEFECTS.md 11.1,
+# 13.7).
+_aif_work_loop_pause() {
+  local now hhmm
+  AIF_WORK_LOOP_PAUSE_HELD=0
+  now=$((AIF_WORK_LOOP_EPOCH + SECONDS))
+  AIF_PAUSE_STATE=none
+  ! _aif_work_pause_read "$AIF_WORK_LOOP_PAUSE_FILE" || _aif_work_pause_state "$now"
+  case "$AIF_PAUSE_STATE" in
+    paused)
+      [ "$AIF_PAUSE_UNTIL" != "$AIF_WORK_LOOP_PAUSE_SEEN" ] || return 0
+      AIF_WORK_LOOP_PAUSE_SEEN="$AIF_PAUSE_UNTIL"
+      hhmm="$(_aif_work_when "$AIF_PAUSE_UNTIL")" || hhmm="?"
+      _aif_work_limit_label "$AIF_PAUSE_TYPE"
+      AIF_WORK_LOOP_PAUSED="paused until $hhmm — $AIF_LIMIT_LABEL, met by ${AIF_PAUSE_BY:-a worker}"
+      _aif_work_loop_event yellow "$AIF_WORK_LOOP_PAUSED; no new card until then"
+      ;;
+    held)
+      AIF_WORK_LOOP_PAUSE_HELD=1
+      [ -z "$AIF_WORK_LOOP_HOLD_WHY" ] || return 0
+      _aif_work_limit_label "$AIF_PAUSE_TYPE"
+      if [ "$AIF_PAUSE_UNTIL" -eq 0 ]; then
+        hhmm="no reset named"
+      else
+        hhmm="$(_aif_work_when "$AIF_PAUSE_UNTIL")" || hhmm="?"
+        hhmm="resets $hhmm"
+      fi
+      AIF_WORK_LOOP_HOLD_WHY="the runner's usage limit ($AIF_LIMIT_LABEL): $hhmm — longer than the loop waits; no new card (rm .aif/state/pause to try anyway)"
+      ;;
+    *)
+      [ -n "$AIF_WORK_LOOP_PAUSED" ] || return 0
+      AIF_WORK_LOOP_PAUSED=""
+      AIF_WORK_LOOP_PAUSE_SEEN=""
+      AIF_WORK_LOOP_PAUSE_OVER=1
+      _aif_work_loop_event green "the pause is over — taking cards again"
+      ;;
+  esac
+  return 0
 }
 
 # _aif_work_loop_take_log <ID> — the log the worker about to take <ID>
@@ -4826,7 +5569,23 @@ aif_cmd_work() {
   local budget_say="off"
   [ -z "$budget" ] || budget_say="\$$budget"
   run_max=$((max_minutes * 60))
+  # AIF_WORK_MAX_SECS — the harness's: the clock in seconds, over
+  # --max-minutes, as AIF_WORK_LOOP_POLL is the loop's.
+  AIF_WORK_MAX_SECS_SET=""
+  case "${AIF_WORK_MAX_SECS:-}" in
+    '' | *[!0-9]*) ;;
+    *)
+      run_max="$AIF_WORK_MAX_SECS"
+      AIF_WORK_MAX_SECS_SET=1
+      ;;
+  esac
   started="$(date +%s)"
+  # The wall clock, for the one question every dispatch asks of it
+  # (_aif_work_clock_past): the seconds waited on the runner are counted
+  # apart and left out of it (docs/DEFECTS.md 13.7).
+  AIF_WORK_CLOCK_START="$started"
+  AIF_WORK_CLOCK_MAX="$run_max"
+  AIF_WORK_PAUSED_SECS=0
 
   printf '\n%swork%s %s · profile %s · budget %s · ≤%s min · ≤%s dispatches\n\n' \
     "$AIF_C_BOLD" "$AIF_C_RESET" "$ticket" "$profile" "$budget_say" "$max_minutes" \
@@ -4847,9 +5606,9 @@ aif_cmd_work() {
   gate_out="$wt/.aif/tmp/gate-$ticket.out"
 
   while :; do
-    if [ $(($(date +%s) - started)) -gt "$run_max" ]; then
+    if _aif_work_clock_past; then
       status="stopped"
-      why="wall clock: past $max_minutes minutes. What was accepted is committed on the branch; nothing after it is."
+      why="$(_aif_work_clock_why)"
       break
     fi
     if [ "$dispatches" -ge "$dispatches_max" ]; then
@@ -4891,10 +5650,17 @@ aif_cmd_work() {
             dispatches=0
             spent=0
             started="$(date +%s)"
+            AIF_WORK_CLOCK_START="$started"
+            AIF_WORK_PAUSED_SECS=0
             continue
           fi
           status="stopped"
           why="$AIF_WORK_REBUILD_WHY"
+          break
+          ;;
+        4)
+          status="stopped"
+          why="$AIF_WORK_SYNC_WHY"
           break
           ;;
         *)
@@ -4968,12 +5734,29 @@ $complaint"
       _aif_work_live '.stage = $s | .attempt = $a | .attempts_max = $m | .dispatches = $d | .stage_started = $t' \
         --arg s "$stage" --argjson a "$((attempts + 1))" --argjson m "$attempts_max" \
         --argjson d "$dispatches" --argjson t "$(date +%s)"
+      # The stage this dispatch counted an attempt of: a handler that runs
+      # while the dispatch waits on the runner takes it back, since nothing
+      # was judged (_aif_work_abandon).
+      AIF_WORK_COUNTED="$stage"
+      AIF_WORK_DISPATCH_VIA=stage AIF_WORK_DISPATCH_ATTEMPT="$((attempts + 1))"
       _aif_work_dispatch "$wt" "$ticket" "$stage" "$agent" "$complaint" \
         "$budget_left" "$out" || rc=$?
-      if [ "$rc" -eq 3 ]; then
+      AIF_WORK_COUNTED="" AIF_WORK_DISPATCH_VIA="" AIF_WORK_DISPATCH_ATTEMPT=""
+      # What the tries the runner cut off cost — a limit's refused call, a
+      # throttled one — is spent too, whatever the dispatch came to.
+      spent="$(awk -v s="$spent" -v c="${AIF_WORK_DISPATCH_EXTRA:-0}" 'BEGIN { printf "%.4f", s + c }')"
+      if [ "$rc" -eq 3 ] || [ "$rc" -eq 4 ]; then
         rm -f "$out"
+        # Nothing was judged: the attempt is not one (docs/DEFECTS.md 13.7).
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
+        aif_run_update "$work" '.attempts[$s] = ([((.attempts[$s] // 1) - 1), 0] | max) | .spent_usd = $sp' \
+          --arg s "$stage" --argjson sp "$spent" || true
         status="stopped"
-        why="the runner could not run the $stage station (no envelope) — the environment, not the ticket."
+        if [ "$rc" -eq 3 ]; then
+          why="${AIF_WORK_DISPATCH_WHY:-the runner could not run the $stage station — the environment, not the ticket.}"
+        else
+          why="$(_aif_work_clock_why)"
+        fi
         break
       fi
       _aif_work_keep_envelope "$wt" "$ticket" "$dispatches" "$stage" "$out"
@@ -4981,7 +5764,11 @@ $complaint"
       # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags below
       aif_run_update "$work" '.spent_usd = $s' --argjson s "$spent"
       if ! "aif_runner_${AIF_PROFILE_RUNNER}_result_ok" "$out"; then
-        station_err="$("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")"
+        # Guarded: a read that fails is no reason for the worker to die here
+        # under set -e — it did, with code 5, on an envelope that was not JSON
+        # (docs/DEFECTS.md 13.7).
+        station_err="$("aif_runner_${AIF_PROFILE_RUNNER}_result_error" "$out")" ||
+          station_err="the runner's envelope could not be read"
         # A station that ended badly may still have left a usable artifact on
         # disk, and the GATE decides, not the runner's exit code. That is
         # deliberate — but on its own it reads as a contradiction: "ended with an
@@ -5196,9 +5983,16 @@ $(head -20 "$gate_out")"
     fi
   else
     # A spec stop is the ticket's own problem, found by a station — the
-    # analyst's. Whatever else stopped the run is the run's.
+    # analyst's. Whatever else stopped the run is the run's — unless the last
+    # dispatch ended on the runner, whatever called it (the stage loop, a
+    # repair, a sync): its usage limit past what a run waits, or no answer
+    # after every backoff. That is the environment, and the loop that reads
+    # this line asks the machine again instead of counting the card toward
+    # two in a row (docs/DEFECTS.md 13.8, 13.7). The flag is set again at
+    # every dispatch, so only the last one's end says it.
     kind=run
     [ "$status" != "spec" ] || kind=ticket
+    [ "${AIF_WORK_RUNNER_ENV:-0}" != 1 ] || kind=environment
     headline="$(printf '%s\n' "$why" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]]*$' | sed -n 1p)" || headline=""
     [ -n "$headline" ] || headline="the run stopped at $(aif_run_get "$work" '.stage')"
     _aif_work_block "$root" "$ticket" "$kind" "$headline" "$report_path" "$full_at" || true

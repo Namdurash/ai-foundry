@@ -118,6 +118,20 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | ($b.parallel // 2) as $par
 | ($f.cards // []) as $cards
 | ($f.requests // []) as $reqs
+# The runner's usage limit as a worker of this checkout left it
+# (lib/cmd_work.sh _aif_work_pause_json): paused — it resets within what a run
+# waits — or held, past that or with no reset named. While either holds no
+# session and no build is offered, each of which would meet it at once; a
+# pause is waited out, as work in flight is, and a hold with nothing else to
+# do ends the shift on the environment, naming when to come back
+# (docs/DEFECTS.md 13.7).
+| (($f.pause // null) | if type == "object" and (.state == "paused" or .state == "held") then . else null end) as $pause
+| (($pause // {}).state // "") as $pstate
+| (if $pause == null then ""
+   else "the runner's usage limit (\($pause.label // "a limit"))"
+        + (if $pstate == "paused" then " until \($pause.until_hhmm // "its reset")"
+           elif $pause.until_hhmm != null then ": resets \($pause.until_hhmm), longer than a run waits"
+           else ": no reset named" end) end) as $pausesay
 
 # One column, in the board's order.
 | def col($k): [ $cards[] | select(.column == $k) ] | sort_by(.pos);
@@ -462,7 +476,13 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
        else ($c.head.at // "") >= ($f.shift_started_at // "") end) as $fresh
     | any(($f.memory.retried_env // [])[]; . == $c.ticket) as $again
     | ($c.head.line | ltrimstr("blocked: environment — ")) as $why
-    | if $fresh and ($again | not) then
+    # A block by the runner's usage limit is retried once the limit is over,
+    # not while it holds: the retry would meet it at its first station
+    # (docs/DEFECTS.md 13.7).
+    | if $fresh and ($again | not) and $pause != null and ($why | startswith("the runner's usage limit")) then
+        [ line("R16"; $c; "blocked by the runner's usage limit during this shift — \($why); not retried while that limit holds";
+               "aif board move \($c.ticket) ready") ]
+      elif $fresh and ($again | not) then
         [ move("R16"; ($c | hkey("R16")); $c; "env-retry"; "ready";
                "blocked by the environment during this shift — retried once, if the preflight passes again")
           + { comment: "released by aif start: blocked by the environment during this shift; the preflight passes again — retried once" } ]
@@ -785,16 +805,24 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
           text: "Ready holds \($ready) — no loop runs on this checkout", command: "aif work --loop --idle" } ]
     else [] end)
    + [ $heldready[] | line("R12"; .c; "the loop in another terminal will not take it again — \(.why); aif work \(.c.ticket), or restart the loop";
-                           "aif work \(.c.ticket)") ]) as $l12
+                           "aif work \(.c.ticket)") ]
+   # The build the runner's limit holds back (below): said, with Ready.
+   + (if $pause != null and ($u12_live | length) > 0 then
+        [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
+            text: "no build while \($pausesay) — Ready holds \($ready)", command: null } ]
+      else [] end)) as $l12
 
 # ---------------------------------------------------------------- the plan
 
 | ([ ($ip + $rv + $nh + $bl + $r10)[] | select(.type == "move") ]) as $moves_all
 | ($moves_all | live_of) as $moves
-| (($u_ip | live_of) + $rv_live + ($u_nh | live_of)
-   + (if $ba_first then [ $ba_live[0] ] else [] end)
-   + $u14_live + $u12_live
-   + (if $ba_first then $ba_live[1:] else $ba_live end)) as $units0
+| ((($u_ip | live_of) + $rv_live + ($u_nh | live_of)
+    + (if $ba_first then [ $ba_live[0] ] else [] end)
+    + $u14_live + $u12_live
+    + (if $ba_first then $ba_live[1:] else $ba_live end))
+   # The runner's limit holds: no session, no build (above, $pause). Moves,
+   # pulls, requeues and lands do not call the runner, and go on.
+   | if $pause == null then . else [ .[] | select(.kind != "session" and .kind != "build") ] end) as $units0
 # Work in flight is waited for, never an end: a card built here now, a loop in
 # another terminal with Ready to take, a card not read yet (critics
 # operations-1). R21 only when none of it is left. Under --no-build with no
@@ -806,8 +834,9 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # once it starts.
 | (($moves | length) == 0 and ($units0 | length) == 0) as $idle
 # Ready the loop elsewhere would take — never the cards it holds (above).
-| ($building > 0 or (($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1) or $unread > 0) as $inflight
-| (if $idle and ($inflight | not) and $flags.po == true then
+| ($building > 0 or (($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1) or $unread > 0
+   or $pstate == "paused") as $inflight
+| (if $idle and ($inflight | not) and $flags.po == true and $pause == null then
      [ session("R21"; "R21"; "po"; "/aif-po"; "aif po"; "owner — nothing left on the board; bring a need") ]
    else [] end) as $u21
 | ($units0 + ($u21 | live_of)) as $units
@@ -823,7 +852,8 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     wait: (if $idle and $inflight then
              { why: (([ (if $building > 0 then "\($building) being built" else empty end),
                         (if ($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1 then "\($ready_loop) in Ready" else empty end),
-                        (if $unread > 0 then "\($unread) card\(if $unread == 1 then "" else "s" end) not read yet" else empty end) ]
+                        (if $unread > 0 then "\($unread) card\(if $unread == 1 then "" else "s" end) not read yet" else empty end),
+                        (if $pstate == "paused" then "\($pausesay) — no session and no build until then" else empty end) ]
                       | join(", "))
                      + (if $mode == "elsewhere"
                         then " — the loop in another terminal" + (if $b.loop.pid == null then "" else " (pid \($b.loop.pid))" end)
@@ -832,4 +862,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                         else "" end)) }
            else null end),
     "end": (if $idle and ($inflight | not) and ($units | length) == 0
-            then { rc: 0, why: "nothing left for the shift" } else null end) }
+            then (if $pstate == "held"
+                  then { rc: 3, why: "\($pausesay) — longer than the shift waits; rm .aif/state/pause to try anyway" }
+                  else { rc: 0, why: "nothing left for the shift" } end)
+            else null end) }

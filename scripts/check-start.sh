@@ -984,6 +984,37 @@ fx "R16 with the margin: a block stamped three minutes before the start — a li
  {"ticket":"AIF-117","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T09:57:00Z","after":0,"heads":[]}}]}
 JSON
 
+# The runner's usage limit as a worker of this checkout left it — the facts'
+# `pause`, paused or held (lib/cmd_work.sh _aif_work_pause_json;
+# docs/DEFECTS.md 13.7). While either holds, no session and no build is
+# offered: each would meet the limit at once. A pause is waited out as work
+# in flight is; a hold with nothing else to do ends the shift on the
+# environment, naming it; a card the limit blocked is not retried while it
+# holds. Moves need no runner, and are made.
+PZ='"pause":{"state":"paused","until":1791400000,"until_hhmm":"19:00","scope":"all","type":"five_hour","label":"the session limit","by":"AIF-1","at":1791390000,"why":"You have hit your session limit"}'
+PH='"pause":{"state":"held","until":null,"until_hhmm":null,"scope":"all","type":"overage","label":"the usage credit limit","by":"AIF-1","at":1791390000,"why":"You are out of usage credits"}'
+fx "a pause in force, Ready holding a card here: no build — a line saying why — and a wait naming the limit, never the end" '(.units | length) == 0 and ([.lines[] | select(.rule == "R12") | .text] == ["no build while the runner'"'"'s usage limit (the session limit) until 19:00 — Ready holds 1"]) and .wait.why == "the runner'"'"'s usage limit (the session limit) until 19:00 — no session and no build until then" and ."end" == null' <<JSON
+{$S,$PZ,"build":{"mode":"here","parallel":2},"cards":[
+ {"ticket":"AIF-130","column":"ready","pos":1,"moved_at":"2026-10-07T09:01:00Z"}]}
+JSON
+
+fx "…a built card in Review and one the review said wrong: of — no review session while it holds, and the move to the analyst made: a move needs no runner" '(.units | length) == 0 and ([.moves[] | .rule + " " + .kind + " " + .ticket] == ["R5 rework AIF-132"]) and ."end" == null' <<JSON
+{$S,$PZ,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-131","column":"review","pos":1,"head":{"line":"# AIF-131 — built","at":"2026-10-07T09:30:02Z","after":0,"heads":[]},
+  "local":{"class":"built","branch":{"exists":true},"lock":{"live":false},"run":{"where":"worktree","status":"built","branch_status":"built"}}},
+ {"ticket":"AIF-132","column":"review","pos":2,"head":{"line":"wrong: the export is empty","at":"2026-10-07T10:10:00Z","after":0,"heads":[]}}]}
+JSON
+
+fx "a hold — no reset named — and nothing else to do: the end, 3, naming the limit" '(.units | length) == 0 and .wait == null and ."end".rc == 3 and ."end".why == "the runner'"'"'s usage limit (the usage credit limit): no reset named — longer than the shift waits; rm .aif/state/pause to try anyway"' <<JSON
+{$S,$PH,"build":{"mode":"here","parallel":2},"cards":[
+ {"ticket":"AIF-133","column":"ready","pos":1,"moved_at":"2026-10-07T09:01:00Z"}]}
+JSON
+
+fx "…a card the limit blocked during the shift: a line while it holds, not R16's retry" '(.moves | length) == 0 and .lines[0].rule == "R16" and (.lines[0].text | startswith("blocked by the runner'"'"'s usage limit during this shift — the runner'"'"'s usage limit (the usage credit limit): no reset named")) and (.lines[0].text | endswith("; not retried while that limit holds"))' <<JSON
+{$S,$PH,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-134","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the runner's usage limit (the usage credit limit): no reset named — longer than a run waits","at":"2026-10-07T10:05:00Z","after":0,"heads":[]}}]}
+JSON
+
 R17='"heads":[{"line":"taken: mac pid 1 at x — aif work","at":"t0"},{"line":"blocked: run — the worker exited (code 1) during implement","at":"t1"}]'
 fx "R17 without --retry-runs — a line" '(.moves | length) == 0 and .lines[0].rule == "R17" and .lines[0].text == "blocked: run — the worker exited (code 1) during implement" and .lines[0].command == "aif board move AIF-77 ready"' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[
@@ -1496,6 +1527,34 @@ refused "no terminal and no session seam: 3, before anything is opened" 3 "aif s
 refused "--model-ba fable under a profile that maps only the three aliases: 1, naming what it maps" 1 \
   "--model-ba fable: the profile routed does not map fable (it maps opus, sonnet, haiku)" \
   env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --no-build --profile routed --model-ba fable
+
+# `default` and no model at all are one thing, the CLI's own default, and one
+# rule (aif_profile_maps_model; docs/DEFECTS.md 14.6): under a profile that
+# maps opus and sonnet — what that default resolves to — `default` passes,
+# where it was refused unless ANTHROPIC_MODEL was set; under one that maps
+# neither, a role with no model named is refused as `default` is, where it
+# passed.
+cat >"$SANDBOX/xdg/aif/profiles/haikuonly.profile" <<'PROFILE'
+AIF_PROFILE_DESC="a routed endpoint that maps haiku alone (check-start)"
+AIF_PROFILE_RUNNER="claude"
+AIF_PROFILE_SET="claude"
+AIF_PROFILE_SECRET_VAR=""
+AIF_PROFILE_SECRET_TARGET=""
+AIF_PROFILE_ISOLATE_CONFIG="0"
+aif_profile_env() {
+  cat <<'EOF'
+ANTHROPIC_BASE_URL=http://127.0.0.1:9/anthropic
+ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small
+EOF
+}
+PROFILE
+rc=0
+run_bg "$OUT/b-default.out" 30 env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --dry-run --no-build --profile routed --model-ba default || rc=$?
+eq "--model-ba default under a profile that maps opus and sonnet: not refused — the dry run goes on, exit 0" \
+  "$rc,$(grep -c 'does not map' "$OUT/b-default.out"),$(grep -c 'a dry run — nothing was posted, moved, opened or locked' "$OUT/b-default.out")" "0,0,1"
+refused "no model named for the review under a profile that maps neither opus nor sonnet: 1, as default is" 1 \
+  "--model-review: none named, so the CLI's default — which the profile haikuonly does not map (it maps haiku" \
+  env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --no-build --profile haikuonly --model-ba haiku --model-po haiku
 
 # A shift already open: one held on its session, in the background — its
 # fake session waits for a file. A second is refused, naming the first's pid,
@@ -2023,6 +2082,35 @@ eq "the ready gate not installed: aif _ready exits 3, the environment, and the s
   "$rc,$(grep -c "the ready gate is not installed in this project — run 'aif init'" "$OUT/x-ready.out"),$rc2,$(grep -c 'AIF-1 backlog · the ready gate could not run — it is not installed here; aif init installs it · yours: aif init' "$OUT/x-dry2.out")" \
   "3,1,0,1"
 mv "$OUT/ready.sh.px" .aif/gates/ready.sh
+
+# The runner's usage limit as a worker of this checkout left it
+# (docs/DEFECTS.md 13.7): .aif/state/pause — written here by hand, as the
+# worker writes it (lib/cmd_work.sh _aif_work_pause_write) — is in the
+# facts, paused or held. A pause is waited for, the wait naming the limit and
+# when it ends; a hold with nothing else to do ends the shift on the
+# environment, 3; one gone stale — no reset named, written two hours ago — is
+# nothing any more.
+PP="$SANDBOX/pP"
+fresh_project "$PP"
+ticket_for AIF-1
+git add -A && git commit -qm "one in Backlog" >/dev/null
+card AIF-1 backlog
+mkdir -p .aif/state
+printf '%s all five_hour AIF-9 %s You have hit your session limit\n' "$(($(date +%s) + 3600))" "$(date +%s)" >.aif/state/pause
+rc=0
+run_bg "$OUT/p-paused.out" 30 "$AIF" start --dry-run --no-build || rc=$?
+eq "a pause in force: the shift would wait for it, naming the limit and its end" \
+  "$rc,$(grep -cE "^wait +the runner's usage limit \(the session limit\) until [0-9]{2}:[0-9]{2} — no session and no build until then$" "$OUT/p-paused.out")" "0,1"
+printf '0 all overage AIF-9 %s You are out of usage credits\n' "$(date +%s)" >.aif/state/pause
+rc=0
+run_bg "$OUT/p-held.out" 30 env AIF_START_KEYS=q "$AIF" start --no-build || rc=$?
+printf '0 all overage AIF-9 %s You are out of usage credits\n' "$(($(date +%s) - 7200))" >.aif/state/pause
+rc2=0
+run_bg "$OUT/p-stale.out" 30 "$AIF" start --dry-run --no-build || rc2=$?
+eq "a hold — no reset named — and nothing else to do: the shift ends 3 on the environment, naming it, its lock gone; the same hold written two hours ago is nothing any more" \
+  "$rc,$(grep -c "the runner's usage limit (the usage credit limit): no reset named — longer than the shift waits" "$OUT/p-held.out"),$(lock_gone)|$rc2,$(grep -c '^end .*nothing left for the shift (exit 0)$' "$OUT/p-stale.out")" \
+  "3,1,gone|0,1"
+rm -f .aif/state/pause
 
 # The shift's seams are its own (docs/DEFECTS.md 15.9): what was left of the
 # keys, and the session's stand-in, reached the loop, the land and the

@@ -100,6 +100,32 @@ aif_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# aif_git_own <dir> <git args…> — git in <dir>, run on aif's own behalf, with
+# none of the project's hooks: `git -C <dir> -c core.hooksPath=/dev/null …`.
+#
+# The worker's commits on aif/<ID> — intake, each admitted station, a repair,
+# the record, the report, a restart, a rebuild, the sync's merge — are
+# bookkeeping on a disposable branch, and they ran the project's hooks: a
+# pre-commit that fails (husky, lint-staged) stopped a run at `aif _commit` as
+# "the tool, not the station" and silently skipped the commits made with
+# `|| true`, and one that rewrites the files it is given changed frozen tests
+# after their hashes were taken (docs/DEFECTS.md 13.11). `--no-verify` is not
+# enough: it skips pre-commit and commit-msg only, and the worktree and
+# checkout calls run post-checkout — one that exits 7 makes `git worktree add`
+# exit 7 after the checkout is made, and `git checkout --ours -- <path>` the
+# same, so the sync took its own settlement for a conflict left (probed:
+# docs/FINDINGS.md #30). With the hooks path pointed where no hook can be,
+# none runs — pre-commit, prepare-commit-msg, commit-msg, post-commit,
+# post-checkout, post-merge, reference-transaction, post-index-change. The
+# land's own commit keeps them: that is the commit the project's hooks are for
+# (lib/cmd_land.sh). A read (rev-parse, show, diff, log) runs no hook and
+# needs none of this.
+aif_git_own() {
+  local dir="$1"
+  shift
+  git -C "$dir" -c core.hooksPath=/dev/null "$@"
+}
+
 # aif_host_short — this machine's name, as aif writes it wherever a claim says
 # where: the worker's `taken:` comment, the loop's and the shift's locks, what
 # the shift reads off a card to tell its own claims from another machine's.

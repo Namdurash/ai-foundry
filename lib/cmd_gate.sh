@@ -376,8 +376,13 @@ aif_cmd_commit() {
   # way; scope's baseline and green's revert both lean on the commit having
   # happened, and a tool failure here was billed to the human as the next
   # station's fault (docs/DEFECTS.md 3.7).
+  #
+  # And without the project's hooks: bookkeeping on a disposable branch,
+  # which a failing pre-commit stopped here as "the tool, not the station",
+  # and a formatting one rewrote — frozen tests among the files, after their
+  # hashes were taken (aif_git_own, lib/common.sh; docs/DEFECTS.md 13.11).
   local out
-  out="$(git -C "$root" add -A 2>&1)" ||
+  out="$(aif_git_own "$root" add -A 2>&1)" ||
     aif_die "git add failed in ${root} — $(printf '%s' "$out" | tail -1)"
   if git -C "$root" diff --cached --quiet 2>/dev/null; then
     printf '%snothing to commit%s for %s\n' "$AIF_C_DIM" "$AIF_C_RESET" "$station"
@@ -390,7 +395,7 @@ aif_cmd_commit() {
     "$(aif_ledger_path "$(aif_task_dir "$root" "$ticket")")" 2>/dev/null)"
   [ -n "$attempt" ] || attempt=1
 
-  out="$(git -C "$root" \
+  out="$(aif_git_own "$root" \
     -c user.email="aif@local" -c user.name="aif" \
     commit -q -m "aif: $station $ticket (attempt $attempt)" 2>&1)" ||
     aif_die "git commit failed for $station $ticket — $(printf '%s' "$out" | tail -1)"

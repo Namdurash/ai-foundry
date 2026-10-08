@@ -19,6 +19,19 @@ AIF_PROFILE_STATE=".aif/profile.local"
 # shellcheck disable=SC2034
 AIF_START_STATE=".aif/start.local"
 
+# aif_gitignore_block — the lines of the one managed block `aif init` writes
+# into a project's .gitignore, between its markers (lib/merge.sh
+# aif_block_inject): what under .aif/ is one developer's or one machine's,
+# each pattern under the line that says why. One list for the writer and for
+# the reader that names what a block written by an older aif lacks — nothing
+# else rewrites the block, so a project set up before a line joined it goes
+# without until its next `aif init`, and `aif doctor` says which
+# (docs/DEFECTS.md 15.2).
+aif_gitignore_block() {
+  printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s\n# worker checkouts — one per ticket, disposable (aif work)\n%s\n# the local board — this machine'"'"'s, not the team'"'"'s (aif board)\n%s\n# per-developer shift defaults (aif start)\n%s' \
+    "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/" ".aif/worktrees/" ".aif/board/" "$AIF_START_STATE"
+}
+
 # Where a ticket's artifacts live, relative to the project root.
 #
 # At the root, not under .aif/, and that is a deliberate split: .aif/ holds what

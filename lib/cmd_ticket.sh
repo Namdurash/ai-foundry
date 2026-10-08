@@ -72,6 +72,9 @@ EOF
 # runs at intake (`lib/cmd_work.sh`), so the two cannot disagree. Prints the
 # gate's own words: a pass with what was decided by default, or one reason per
 # line, each of which is the next question to put to the human.
+#
+# rc 0 ready · 1 not ready · 3 the environment: the gate could not run, or is
+# not installed here.
 aif_cmd_ready() {
   local ticket="${1:-}"
   [ -n "$ticket" ] || aif_die "usage: aif _ready <ticket>"
@@ -91,7 +94,13 @@ aif_cmd_ready() {
       printf '  %s%s/%s/ticket.md%s\n' "$AIF_C_DIM" "$AIF_TASKS_DIR" "$ticket" "$AIF_C_RESET"
       ;;
     127)
-      aif_die "the ready gate is not installed in this project — run 'aif init'"
+      # The environment, as a gate that cannot run is (3 below), not a
+      # ticket that is not ready: a caller that reads the code — the shift's
+      # facts read 0 ready, 1 not, 3 the environment — took the 1 aif_die
+      # exits with for "not ready", offered no pull, and said nothing of why
+      # (docs/DEFECTS.md 15.9).
+      aif_err "the ready gate is not installed in this project — run 'aif init'"
+      return 3
       ;;
     3)
       aif_err "the ready gate could not run — that is the environment, not the ticket:"

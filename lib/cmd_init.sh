@@ -427,14 +427,13 @@ EOF
     # machine, not the record of what was built, which stays in tasks/), and
     # .aif/start.local (a developer's own shift defaults — models, how long the
     # control point waits — as personal as the profile beside it). A project
-    # set up before a line was added gets it on its next `aif init`
-    # (docs/DEFECTS.md 15.2).
+    # set up before a line was added gets it on its next `aif init`, and `aif
+    # doctor` names what its block lacks till then (docs/DEFECTS.md 15.2) —
+    # the list is aif_gitignore_block's (lib/paths.sh), the one both read.
     # One call, because a second aif_block_inject would replace the block rather
     # than extend it.
     aif_block_inject "$root/.gitignore" \
-      "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" \
-      "$(printf '# per-developer model choice; the shared set is committed\n%s\n# gate scratch\n%s\n# session-local pointer for the metering hook\n%s\n# worker checkouts — one per ticket, disposable (aif work)\n%s\n# the local board — this machine'"'"'s, not the team'"'"'s (aif board)\n%s\n# per-developer shift defaults (aif start)\n%s' \
-        "$AIF_PROFILE_STATE" ".aif/tmp/" ".aif/state/" ".aif/worktrees/" ".aif/board/" "$AIF_START_STATE")"
+      "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" "$(aif_gitignore_block)"
 
     printf '%s\n' "$profile" | aif_write_file "$root/$AIF_PROFILE_STATE"
     # Ours, so the ledger owns it too, even though no set ships it.

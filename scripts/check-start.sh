@@ -28,10 +28,15 @@
 #      ties to it; another machine's claim silent past a run's wall clock, a
 #      card changed after its build, a block stamped inside the margin before
 #      the start, a refused blocked: line posted where it was kept (14.4,
-#      15.12, 15.6, 14.2) — and
+#      15.12, 15.6, 14.2); a ready gate's 3 the environment, a card unread
+#      three looks in a row a line nothing waits on, the held build offered
+#      as "build again", R12 on Trello keyed on a card's entry into Ready
+#      (15.8, 15.9) — and
 #      lib/requests.sh over requests shaped like a real project's: a status
 #      the tickets that name the request overrule, a blank line before it,
-#      a fenced block in a slice, two old-format requests with no status
+#      a fenced block in a slice, two old-format requests with no status; the
+#      analyst's list under the status read under the tickets, and fences at
+#      column 0 (15.5)
 #   B  the start refuses before it touches anything — a Claude Code session,
 #      a worker's checkout, a profile that does not load, a board that fails
 #      its check, no terminal and no seam, a shift already open (named by its
@@ -55,7 +60,14 @@
 #      the same id left running; a process opened by hand in a dead worker's
 #      worktree named, never stopped, the card not requeued; a loop in
 #      another terminal holding the one card in Ready — a line, no wait, the
-#      shift's end
+#      shift's end; the build held with Ready not empty offered as "build
+#      again", passed by to the end or built by Enter (15.8); the ticket
+#      pattern matched by one regex engine; a ready gate not installed — aif
+#      _ready 3, a line naming aif init; the seams the shift's own, and `*`
+#      the whole of a wait; a session that changed only another card is a
+#      change; a move never tried left with its comment and the commands
+#      that make it (15.9); an ignore block from before the shift — the
+#      header, and aif doctor naming its missing line and aif init (15.2)
 #   T  Trello, against scripts/mock-trello.py with the real clock: this
 #      host's claim is requeued and another host's is a line; a card's head
 #      is read again when a comment moves its last activity, and a block by
@@ -65,7 +77,10 @@
 #      before it and three after (15.6); a card edited after its build is not
 #      offered for review (15.12); another machine's claim silent past a
 #      run's wall clock is a line, read again when it beats (14.4); a
-#      blocked: line the board refused is posted by the shift (14.2)
+#      blocked: line the board refused is posted by the shift (14.2); a card
+#      whose comments fail on every look waited for twice, then a line; a
+#      person's comment on a card the loop left in Ready offers no build
+#      again (15.9)
 #   D  a real terminal (a pty): a Ctrl-C at the control point ends 130 with
 #      the terminal as it was; a Ctrl-C inside a session ends the session, not
 #      the shift, which pauses; a closed window at the control point and in a
@@ -74,8 +89,10 @@
 #      pause; Ctrl-Z in a session continued, and a window closed over it
 #      still 129 with the session in the summary; a window whose hang-up
 #      never reaches the shift — a shell that ignores it, zsh with NO_HUP —
-#      129 all the same, summary.json written and the lock gone; a session
-#      killed -9 at --max-units leaves no screen mode behind
+#      129 all the same, summary.json written and the lock gone — and a
+#      session that fails once its window closed under it is that 129, not
+#      claude failing (15.9); a session killed -9 at --max-units leaves no
+#      screen mode behind
 #
 # Run by `make check`. Requires git, jq and curl; skips without python3.
 
@@ -423,7 +440,9 @@ export AIF_WORK_STATION_CMD="$SANDBOX/fake-station.sh"
 # modes (the alternate screen, mouse and paste reporting) and dies of kill -9;
 # FAKE_SESSION_TSTP=1 is claude's Ctrl+Z — it says it was suspended and stops
 # itself; FAKE_SESSION_TTY=1 then reads a line from its terminal, and leaves
-# when the terminal is gone, as claude does (docs/FINDINGS.md #28).
+# when the terminal is gone, as claude does (docs/FINDINGS.md #28);
+# FAKE_SESSION_NOHUP=1 ignores a hang-up, so that a closed window ends it
+# through that read alone, with its own code.
 cat >"$SANDBOX/fake-session.sh" <<'SESS'
 #!/bin/bash
 set -u
@@ -431,7 +450,11 @@ cwd="$1" prompt="$2" model="$3" name="$4" sid="$5"
 printf '%s\n' "$$" >"$FAKE_SB/session.pid"
 trap 'rm -f "$FAKE_SB/session.pid"' EXIT
 trap 'exit 130' INT TERM
+[ "${FAKE_SESSION_NOHUP:-0}" != 1 ] || trap '' HUP
 printf '%s|%s|%s|%s\n' "$name" "$model" "$sid" "$prompt" >>"$FAKE_SB/sessions.log"
+# FAKE_SEAMS_LOG=<file>: what of the shift's own seams this session was
+# handed — nothing, since they are the shift's alone (layer C).
+[ -z "${FAKE_SEAMS_LOG:-}" ] || printf 'session %s|%s\n' "${AIF_START_KEYS-unset}" "${AIF_START_SESSION_CMD-unset}" >>"$FAKE_SEAMS_LOG"
 # FAKE_SESSION_MARK=<the mock's base URL>: the session's start and end marked
 # in the stand-in Trello's request log, to tell its requests from the shift's
 # around it (layer T).
@@ -516,6 +539,14 @@ if [ "${FAKE_SESSION_NOOP:-0}" != 1 ]; then
       "$FAKE_AIF" board move "$id" backlog >/dev/null
       ;;
   esac
+fi
+# FAKE_ALSO="<ID>:<first line>": that line posted on another card while the
+# session is open, in FAKE_ALSO_BY's name (default reviewer) — whatever
+# FAKE_SESSION_NOOP says: a review that also sends the card beside its own
+# back, or a loop in another terminal blocking one meanwhile (layer C).
+if [ -n "${FAKE_ALSO:-}" ]; then
+  printf '%s\n' "${FAKE_ALSO#*:}" >"$FAKE_SB/also.txt"
+  AIF_BOARD_BY="${FAKE_ALSO_BY:-reviewer}" "$FAKE_AIF" board comment "${FAKE_ALSO%%:*}" "$FAKE_SB/also.txt" >/dev/null
 fi
 [ -z "${FAKE_SESSION_MARK:-}" ] || curl -s "$FAKE_SESSION_MARK/_mark/session-end" >/dev/null 2>&1
 exit "${FAKE_SESSION_RC:-0}"
@@ -797,14 +828,38 @@ fx "R12: a card back in Ready since its build (rework, analyst, Ready) — the b
  {"ticket":"AIF-7","column":"ready","pos":1,"moved_at":"2026-10-07T11:00:00Z"}]}
 JSON
 
+# On Trello a Ready card's moved_at is its last activity, which a comment
+# moves too: keyed on it, the build was offered again after a comment on a
+# card the loop had left in Ready (docs/DEFECTS.md 15.9). The facts give a
+# Ready card its entry — the moved_at it had when the shift first saw it in
+# Ready, kept while it stays.
+fx "R12 on Trello: a comment moved a Ready card's last activity, its entry the same — not offered again" '(.units | length) == 0 and .lines[0].rule == "R12" and .lines[0].text == "the loop ended rc 0 — taken 0, built 0" and ."end".rc == 0' <<JSON
+{$S,"board_kind":"trello","build":{"mode":"here","parallel":2,"hold":null},"memory":{"done":[{"key":"R12 AIF-121@2026-10-07T09:00:00.000Z","note":"the loop ended rc 0 — taken 0, built 0"}],"retried_env":[],"retried_run":[]},"cards":[
+ {"ticket":"AIF-121","column":"ready","pos":1,"moved_at":"2026-10-07T10:30:00.000Z","entry":"2026-10-07T09:00:00.000Z"}]}
+JSON
+
 fx "R12: the same Ready read again after its build — a line, and the end" '(.units | length) == 0 and .lines[0].rule == "R12" and .lines[0].text == "the loop ended rc 0 — taken 0, built 0" and ."end".rc == 0' <<JSON
 {$S,"build":{"mode":"here","parallel":2,"hold":null},"memory":{"done":[{"key":"R12 AIF-7@2026-10-07T09:00:00Z","note":"the loop ended rc 0 — taken 0, built 0"}],"retried_env":[],"retried_run":[]},"cards":[
  {"ticket":"AIF-7","column":"ready","pos":1,"moved_at":"2026-10-07T09:00:00Z"}]}
 JSON
 
-fx "R12 here with the build held — a line, b builds again" '(.units | length) == 0 and .lines[0].rule == "R12" and .lines[0].text == "the build is held: two runs in a row did not build — b at the control point builds again" and ."end".rc == 0' <<JSON
+# The build held in this terminal, Ready not empty: it was a line, and with
+# nothing else the shift ended — Ready holding cards, the b its line named
+# never offered (docs/DEFECTS.md 15.8). A unit now, "build again", its default
+# to leave it; passed by, a line naming aif work --loop, and the end; behind a
+# review, the line it was.
+fx "R13 here, the build held and Ready not empty — a unit: build again, its default to leave it; no end" '([.units[] | [.rule, .kind, .default, .key]] == [["R13","build","skip","R13 AIF-52@-"]]) and (.units[0].text | startswith("build again — the build is held: two runs in a row did not build; Ready holds 1: AIF-52")) and ."end" == null and (.lines | length) == 0' <<JSON
 {$S,"build":{"mode":"here","parallel":2,"hold":"two runs in a row did not build"},"cards":[
  {"ticket":"AIF-52","column":"ready","pos":1}]}
+JSON
+fx "…passed by: a line naming aif work --loop, and the end" '(.units | length) == 0 and ([.lines[] | [.rule, .text, .command]] == [["R13","offered, not taken (no key)","aif work --loop --parallel 2"]]) and ."end".rc == 0' <<JSON
+{$S,"build":{"mode":"here","parallel":2,"hold":"two runs in a row did not build"},"memory":{"done":[{"key":"R13 AIF-52@-","note":"offered, not taken (no key)"}],"retried_env":[],"retried_run":[]},"cards":[
+ {"ticket":"AIF-52","column":"ready","pos":1}]}
+JSON
+fx "…behind a review: the review first, the hold a line" '([.units[] | .rule] == ["R7"]) and ([.lines[] | [.rule, .text]] == [["R13","the build is held: stopped by kk (aif work --loop --stop) — b at the control point builds again"]])' <<JSON
+{$S,"build":{"mode":"here","parallel":2,"hold":"stopped by kk (aif work --loop --stop)"},"cards":[
+ {"ticket":"AIF-52","column":"ready","pos":1},
+ {"ticket":"AIF-53","column":"review","pos":1,"head":{"line":"# AIF-53 — built","at":"t","after":0,"heads":[]},"local":{"class":"built","branch":{"exists":true},"lock":{"live":false}}}]}
 JSON
 
 fx "R12 with a loop elsewhere — no unit, a wait" '(.units | length) == 0 and (.lines | length) == 0 and .wait.why == "1 in Ready — the loop in another terminal (pid 999)" and ."end" == null' <<JSON
@@ -861,6 +916,20 @@ fx "R14 here, 1 ≤ ready < parallel — pulls for the free slots, then the buil
  {"ticket":"AIF-61","column":"backlog","pos":2,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":0},
  {"ticket":"AIF-62","column":"backlog","pos":3,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":1},
  {"ticket":"AIF-63","column":"backlog","pos":4,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":0}]}
+JSON
+
+# A gate's 3 is the environment, never "not ready" (docs/DEFECTS.md 15.9): a
+# gate not installed is aif init's, one that could not run says what it lacks
+# through aif _ready.
+fx "R14: the ready gate could not run — not installed: a line naming aif init; installed: the environment, aif _ready says what" '(.units | length) == 1 and ([.lines[] | [.ticket, .text, .command]] == [["AIF-118","the ready gate could not run — it is not installed here; aif init installs it","aif init"]])' <<JSON
+{$S,"ready_gate_installed":false,"build":{"mode":"here","parallel":2,"hold":null},"cards":[
+ {"ticket":"AIF-117","column":"ready","pos":1},
+ {"ticket":"AIF-118","column":"backlog","pos":1,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":3}]}
+JSON
+fx "…and with the gate there, the environment: aif _ready says what it lacks" '[.lines[] | [.ticket, .text, .command]] == [["AIF-118","the ready gate could not run — the environment, not the ticket; aif _ready AIF-118 says what it lacks","aif _ready AIF-118"]]' <<JSON
+{$S,"ready_gate_installed":true,"build":{"mode":"here","parallel":2,"hold":null},"cards":[
+ {"ticket":"AIF-117","column":"ready","pos":1},
+ {"ticket":"AIF-118","column":"backlog","pos":1,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":3}]}
 JSON
 
 fx "R14 elsewhere, nothing in Ready or in flight, parallel 2 — two pulls" '([.units[] | .rule + " " + .ticket] == ["R14 AIF-64","R14 AIF-65"]) and .wait == null and ."end" == null' <<JSON
@@ -1091,6 +1160,18 @@ fx "a card not read this tick — a line, and a wait" '(.units | length) == 0 an
  {"ticket":"AIF-109","column":"review","pos":1,"unread":true,"unread_why":"not read this tick","head":null}]}
 JSON
 
+# A card whose comments fail on every look was waited for until q (docs/
+# DEFECTS.md 15.9): two looks in a row are still a wait; the third is a line
+# the shift does not wait on, and with nothing else, the end.
+fx "a card unread two looks in a row — still waited for" '.wait.why == "1 card not read yet" and ."end" == null' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-120","column":"review","pos":1,"unread":true,"unread_why":"Trello: could not read the comments","unread_looks":2,"head":null}]}
+JSON
+fx "…three looks in a row — a line naming aif board head, no wait, the end" '.wait == null and ."end".rc == 0 and .lines[0].rule == "R1" and .lines[0].text == "its comments could not be read for 3 looks in a row — Trello: could not read the comments; the shift does not wait on it" and .lines[0].command == "aif board head AIF-120"' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-120","column":"review","pos":1,"unread":true,"unread_why":"Trello: could not read the comments","unread_looks":3,"head":null}]}
+JSON
+
 # ---------------------------------------------------------------- the end
 fx "R21: nothing left — the end" '(.units | length) == 0 and .wait == null and ."end" == {"rc":0,"why":"nothing left for the shift"}' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[{"ticket":"AIF-110","column":"done","pos":1}]}
@@ -1239,6 +1320,108 @@ eq "requests: the tickets that name a request overrule its own line; a broken me
   '[["requests/allowance.md","not cut","cut in part",2,"cut in part","AIF-1:1"],["requests/first-run.md","none","cut",null,"cut","AIF-4:1"],["requests/history.md","not cut","cut",null,"cut","AIF-2:1 AIF-3:2"],["requests/rhythm.md","none",null,1,"not cut",""]]'
 eq "requests: each has its sha — a key for one version of it" \
   "$(req aif_requests_json "$R" | jq -r '[ .[] | .sha | test("^[0-9a-f]{64}$") ] | all')" "true"
+
+# Tickets cut before the analyst recorded `request` in their meta name none,
+# and the analyst's list under `## Status` is then the only record of the cut
+# (docs/DEFECTS.md 15.5): read as a second source, under the tickets. Opes's
+# daily allowance, its first slice built as a ticket that names nothing —
+# `cut in part`, the next slice 2, where slice 1 was offered again; a list
+# entry naming a ticket whose meta places it elsewhere counts for nothing, and
+# a ticket that names the request wins its slice; `cut in part` with no list
+# and nothing that names it is no guess at slice 1. And fences at column 0:
+# the `## ` and `1. ` lines inside one are the request's prose — a template
+# quoted under `## Watch out` read as its last `## Status`.
+R2="$SANDBOX/req2"
+mkdir -p "$R2/requests" "$R2/tasks"
+git -C "$R2" init -q
+cat >"$R2/requests/daily-allowance.md" <<'REQ'
+# What a day may cost, from a goal
+
+## Now
+A goal is set and nothing says what a day may cost.
+
+## Slices
+1. **The goal and a rough income.** The user enters two numbers and the
+   number on Home becomes advice with a "~":
+
+   ```
+   1. what is left for the month
+   2. divided by the days left
+   ```
+
+2. **Subscriptions ahead.** Known subscriptions come off in advance.
+3. **The number's colour.** What share of the day is left.
+4. **The fact beside the guess.** What came in this month.
+5. **Why today differs from yesterday.**
+
+## Not this
+- budgets per category
+
+## Status
+cut in part
+- slice 1 → AIF-69
+- slice 2 → not cut
+- slice 3 → AIF-71 (later), AIF-72
+- slice 4 → not cut
+- slice 5 → not cut
+REQ
+cat >"$R2/requests/quoted.md" <<'REQ'
+# A request that quotes what it was sent
+
+## Slices
+1. The first.
+
+```
+## Later, maybe
+1. not a slice — a list the support team sent
+2. nor this
+```
+
+2. The second.
+
+## Status
+not cut
+
+## Watch out
+- the analyst's own format, as the team pasted it:
+
+```
+## Status
+cut
+- slice 1 → AIF-1
+```
+REQ
+cat >"$R2/requests/cut-in-part.md" <<'REQ'
+# Cut in part, and nothing says which
+
+## Slices
+1. One.
+2. Two.
+
+## Status
+cut in part
+REQ
+reqticket2() { # <id> <meta fields, JSON without braces>
+  mkdir -p "$R2/tasks/$1"
+  printf '<!-- aif:meta\n{ "schema": 2, "ticket": "%s"%s }\n-->\n# %s — a slice\n' "$1" "${2:+, $2}" "$1" >"$R2/tasks/$1/ticket.md"
+}
+reqticket2 AIF-69 ''
+reqticket2 AIF-71 '"request": "requests/other.md", "slice": 1'
+reqticket2 AIF-72 '"request": "requests/daily-allowance.md", "slice": 2'
+eq "requests (15.5): fences at column 0 — the ## and 1. lines inside one are neither a heading nor a slice" \
+  "$(facts3 "$R2/requests/quoted.md")" "not cut|2|slices"
+eq "requests (15.5): the list under ## Status read under the tickets — a ticket naming the request wins its slice, an id placed by its own meta counts for nothing, the next slice 3" \
+  "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "daily-allowance") | .derived, .next_slice, .effective,
+      ([ .tickets[] | .ticket + ":" + (.slice | tostring) ] | join(" ")), ([ .listed[] | "\(.slice):\(.tickets | join(","))" ] | join(" ")) ]')" \
+  '["cut in part",3,"cut in part","AIF-72:2","1:AIF-69"]'
+sed '/^- slice 3 /d' "$R2/requests/daily-allowance.md" >"$OUT/daily-allowance.md" && cp "$OUT/daily-allowance.md" "$R2/requests/daily-allowance.md"
+rm -rf "$R2/tasks/AIF-72"
+eq "requests (15.5): opes's daily allowance, slice 1 a ticket that names no request — cut in part, the next slice 2" \
+  "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "daily-allowance") | .derived, .next_slice, .effective ]')" \
+  '["cut in part",2,"cut in part"]'
+eq "requests (15.5): cut in part with no list and no ticket naming it — the analyst opened on the request, no slice guessed" \
+  "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "cut-in-part") | .derived, .next_slice, .effective ]')" \
+  '[null,null,"cut in part"]'
 
 # =================================== B ======================================
 printf '\nB. the start refuses before it touches anything\n'
@@ -1550,6 +1733,48 @@ eq "built, wrong: at the review, the analyst's rework back in Ready — and buil
   "$rc,$(grep -c '^next: build' "$OUT/w-shift.out"),$(grep -c '^next: analyst AIF-1 ' "$OUT/w-shift.out"),$(jq -r '[ .built ] | map(tostring) | join(",")' "$SW/loop-1/summary.json" "$SW/loop-2/summary.json" 2>/dev/null | paste -sd ' ' -),$(col AIF-1),$(jq -r .why "$SW/summary.json")" \
   "0,2,1,1 1,review,ended at the control point (q)"
 
+# A build held in this terminal with Ready still holding cards was a line,
+# and with nothing else left the shift ended — the b the line named never
+# offered (docs/DEFECTS.md 15.8). It is a unit, "build again", its default to
+# leave it. Here the loop does not start (the stations are not installed when
+# it runs its preflight): no key at "build again" — passed by, the shift ends,
+# and the summary names aif work --loop.
+PG="$SANDBOX/pG"
+fresh_project "$PG"
+ticket_for AIF-1
+git add -A && git commit -qm "a ticket" >/dev/null
+card AIF-1 ready
+mv .claude/agents/aif-implement.md "$OUT/aif-implement.md.pg"
+rc=0
+run_bg "$OUT/g-shift.out" 60 env AIF_START_KEYS=._ "$AIF" start || rc=$?
+mv "$OUT/aif-implement.md.pg" .claude/agents/aif-implement.md
+SG="$(newest_shift)"
+eq "the build held, Ready not empty: build again offered, passed by — the end, the summary naming aif work --loop" \
+  "$rc|$(grep -c '^next: build again — the build is held: the loop did not start (rc 1)' "$OUT/g-shift.out")|$(jq -r .why "$SG/summary.json" 2>/dev/null)|$(jq -r '[.left[] | select(.rule == "R13") | .command] | join(",")' "$SG/summary.json" 2>/dev/null)|$(col AIF-1)" \
+  "0|1|nothing left for the shift|aif work --loop --parallel 2|ready"
+
+# …and Enter at it builds. A loop drained from another terminal while it
+# builds the first card holds the build; the review of that card comes
+# first, then "build again", and Enter builds the second.
+ticket_for AIF-2
+git add -A && git commit -qm "a second ticket" >/dev/null
+card AIF-2 ready
+marks="$SANDBOX/pG-marks"
+mkdir -p "$marks"
+HOLDS="$HOLDS $marks/go"
+start_bg "$OUT/g2-shift.out" env AIF_START_KEYS=.... FAKE_SLEEP_IN="AIF-1:plan" FAKE_MARKS="$marks" FAKE_RELEASE="$marks/go" \
+  "$AIF" start --parallel 1
+gshift=$BG
+wait_for "$marks/AIF-1-plan"
+"$AIF" work --loop --drain >"$OUT/g2-drain.out" 2>&1
+: >"$marks/go"
+rc=0
+wait_exit "$gshift" 120 || rc=$?
+SG2="$(newest_shift)"
+eq "…Enter at build again: the second card built — after the review of the first, held by the drain" \
+  "$rc|$(jq -r '.why | startswith("drained by")' "$SG2/loop-1/summary.json" 2>/dev/null)|$(grep -c '^next: build again — the build is held: drained by ' "$OUT/g2-shift.out")|$(jq -r '.built' "$SG2/loop-2/summary.json" 2>/dev/null)|$(col AIF-1),$(col AIF-2)|$(jq -r .why "$SG2/summary.json" 2>/dev/null)" \
+  "0|true|1|1|done,done|nothing left for the shift"
+
 # Pulls beside a loop in another terminal (a process whose command line is
 # the loop's, its lock signed: parallel 2, Ready empty): the first two cards
 # of Backlog whose ready gate passes are offered. Passed by — the countdown
@@ -1764,6 +1989,147 @@ eq "a loop elsewhere holding the one card in Ready: no wait for it — a line wi
 "$AIF" work --loop --drain >/dev/null 2>&1
 wait_exit "$hloop" 60 >/dev/null || true
 
+# One regex engine for the ticket pattern (docs/DEFECTS.md 15.9): the cards
+# are matched by jq, and the tickets with no card were matched by grep -E — a
+# pattern the two read differently (`\p{Lu}`, any script's capital: jq's
+# Oniguruma has it, POSIX does not) kept the card and dropped the loose
+# ticket. Matched by jq both ways, the ticket with no card is a line.
+PX="$SANDBOX/pX"
+fresh_project "$PX"
+jq '.ticket_pattern = "^\\p{Lu}{2,10}-[0-9]+$"' .aif/project.json >"$OUT/px-project.json" && cp "$OUT/px-project.json" .aif/project.json
+ticket_for AIF-1
+ticket_for AIF-9
+git add -A && git commit -qm "a pattern of any script, a ticket with no card" >/dev/null
+card AIF-1 backlog
+rc=0
+run_bg "$OUT/x-dry.out" 30 "$AIF" start --dry-run --no-build || rc=$?
+eq "a ticket pattern jq and grep -E read differently: the card on the board and the ticket with no card, both — the latter a line" \
+  "$rc,$(grep -c '^board      backlog 1 · ready 0 ' "$OUT/x-dry.out"),$(grep -c 'AIF-9 · committed, never landed by aif land, no card on the board' "$OUT/x-dry.out")" "0,1,1"
+
+# A ready gate not installed is the environment, not a ticket that is not
+# ready (docs/DEFECTS.md 15.9): `aif _ready` died with 1, the facts read it as
+# "does not pass", and no pull was offered with nothing to say why. Now 3, and
+# the shift's line names aif init. A build here with a free slot, so that the
+# Backlog card is gated.
+ticket_for AIF-2
+git add -A && git commit -qm "one for Ready" >/dev/null
+card AIF-2 ready
+mv .aif/gates/ready.sh "$OUT/ready.sh.px"
+rc=0
+"$AIF" _ready AIF-1 >"$OUT/x-ready.out" 2>&1 || rc=$?
+rc2=0
+run_bg "$OUT/x-dry2.out" 30 "$AIF" start --dry-run || rc2=$?
+eq "the ready gate not installed: aif _ready exits 3, the environment, and the shift's line for the card it would pull names aif init" \
+  "$rc,$(grep -c "the ready gate is not installed in this project — run 'aif init'" "$OUT/x-ready.out"),$rc2,$(grep -c 'AIF-1 backlog · the ready gate could not run — it is not installed here; aif init installs it · yours: aif init' "$OUT/x-dry2.out")" \
+  "3,1,0,1"
+mv "$OUT/ready.sh.px" .aif/gates/ready.sh
+
+# The shift's seams are its own (docs/DEFECTS.md 15.9): what was left of the
+# keys, and the session's stand-in, reached the loop, the land and the
+# sessions it ran, where they mean nothing. A project whose suite says what it
+# was handed — the loop's preflight, the worker's gates and the land each run
+# it — and a session that says the same: none of them is handed either.
+PK="$SANDBOX/pK"
+fresh_project "$PK"
+cat >>.aif/suite.sh <<'SUITE'
+[ -z "${FAKE_SEAMS_LOG:-}" ] || printf 'suite %s|%s\n' "${AIF_START_KEYS-unset}" "${AIF_START_SESSION_CMD-unset}" >>"$FAKE_SEAMS_LOG"
+SUITE
+ticket_for AIF-1
+git add -A && git commit -qm "a suite that says what it was handed, a ticket" >/dev/null
+card AIF-1 ready
+rc=0
+run_bg "$OUT/k-shift.out" 120 env AIF_START_KEYS=.. FAKE_SEAMS_LOG="$OUT/k-seams.log" "$AIF" start || rc=$?
+eq "the seams are the shift's own: the loop, the worker's gates, the land and the session it ran were handed neither the keys nor the session's stand-in" \
+  "$rc,$(col AIF-1),$([ "$(grep -c '^suite ' "$OUT/k-seams.log" 2>/dev/null)" -ge 3 ] && echo suites),$(grep -c '^session ' "$OUT/k-seams.log" 2>/dev/null),$(grep -vc ' unset|unset$' "$OUT/k-seams.log" 2>/dev/null)" \
+  "0,done,suites,1,0"
+
+# `*` in the key seam is the whole of a wait (docs/DEFECTS.md 15.9): a row
+# that waits on work of unknown length sized its run of `_`, one a look, and
+# too few ended the shift at q mid-wait. A worker here for four seconds (a
+# process whose command line is the worker's, its lock signed; orphaned, so
+# that nothing has to reap it), then gone: the shift waits it out on one `*`,
+# then offers the requeue — q there.
+ticket_for AIF-2
+git add -A && git commit -qm "one being built" >/dev/null
+card AIF-2 in_progress
+( (exec -a "aif work AIF-2" sleep 4) & printf '%s\n' "$!" >"$OUT/k-w2.pid" )
+mkdir -p .aif/state/runs/AIF-2
+printf '{ "ticket": "AIF-2", "pid": %s, "started_at": "%s" }\n' "$(cat "$OUT/k-w2.pid")" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >.aif/state/runs/AIF-2/owner.json
+rc=0
+run_bg "$OUT/k-star.out" 60 env 'AIF_START_KEYS=*q' "$AIF" start --no-build || rc=$?
+eq "a * in the key seam waits out a whole wait — look after look until the worker is gone — and the key after it answers what comes next" \
+  "$rc,$(jq -r .why "$(newest_shift)/summary.json"),$([ "$(grep -c '^waiting — 1 being built' "$OUT/k-star.out")" -ge 2 ] && echo waited),$(grep -c '^next: requeue AIF-2 ' "$OUT/k-star.out")" \
+  "0,ended at the control point (q),waited,1"
+rm -rf .aif/state/runs/AIF-2
+
+# A session that changed only another card (docs/DEFECTS.md 15.9): the
+# analyst, on AIF-1, also sends AIF-2 back with a wrong: line — its own card
+# as it was. It read as "changed nothing" and the shift paused; the after
+# reads the heads of the cards whose key changed outside In Progress and
+# Ready, and a head a session writes is a change: no pause, and the next tick
+# routes the wrong: line as the review's.
+PD="$SANDBOX/pD"
+fresh_project "$PD"
+ticket_for AIF-1
+ticket_for AIF-2
+git add -A && git commit -qm "two tickets" >/dev/null
+card AIF-1 needs_human
+say AIF-1 "aif work" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+card AIF-2 review
+rc=0
+run_bg "$OUT/d2-shift.out" 60 env AIF_START_KEYS=_ FAKE_SESSION_NOOP=1 FAKE_ALSO="AIF-2:wrong: the export misses the header row" "$AIF" start --no-build || rc=$?
+SD2="$(newest_shift)"
+eq "a session that changed only another card is a change: no pause, the other card's wrong: routed on the next tick" \
+  "$rc|$(jq -r .why "$SD2/summary.json")|$(grep -c '^paused — the session changed nothing' "$OUT/d2-shift.out")|$(jq -r '.units[0].what | sub("^.* — rc 0, "; "")' "$SD2/summary.json")|$(col AIF-2)|$(card_head AIF-2)" \
+  "0|ended at the control point (q)|0|changed the board or the repository|backlog|rework: the export misses the header row"
+
+# A move the shift never tried — it ended first — that carries a comment
+# other than rework: or cancelled: (docs/DEFECTS.md 15.9): it was left with
+# `aif start` as its command. A loop in another terminal blocks AIF-2 by the
+# environment while the analyst's session is open, and --max-units 1 ends the
+# shift on that session: the retry R16 would make is left with its comment in
+# the shift's directory and the two commands that make it.
+PM="$SANDBOX/pM"
+fresh_project "$PM"
+ticket_for AIF-1
+ticket_for AIF-2
+git add -A && git commit -qm "two tickets" >/dev/null
+card AIF-1 needs_human
+say AIF-1 "aif work" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+card AIF-2 needs_human
+say AIF-2 "aif work" "blocked: run — the worker exited (code 1) during plan"
+rc=0
+run_bg "$OUT/m-shift.out" 60 env AIF_START_KEYS=_ FAKE_SESSION_NOOP=1 FAKE_ALSO_BY="aif work" \
+  FAKE_ALSO="AIF-2:blocked: environment — the suite could not start (exit 7)" "$AIF" start --no-build --max-units 1 || rc=$?
+SM="$(newest_shift)"
+mcmd="$(jq -r '[.left[] | select(.ticket == "AIF-2") | .command] | join(";")' "$SM/summary.json" 2>/dev/null)"
+mfile="$(printf '%s' "$mcmd" | sed -n 's/^aif board comment AIF-2 \([^ ]*\) && aif board move AIF-2 ready$/\1/p')"
+eq "a move never tried, its comment kept in the shift's directory with the two commands that make it — not aif start" \
+  "$rc|$(jq -r .why "$SM/summary.json" 2>/dev/null)|$(printf '%s' "$mfile" | grep -c '/\.aif/tmp/shift-[^/]*/comment-AIF-2\.md$')|$(sed -n 1p "$mfile" 2>/dev/null)|$(col AIF-2)" \
+  "0|--max-units 1 reached|1|released by aif start: blocked by the environment during this shift; the preflight passes again — retried once|needs_human"
+
+# A project set up before the shift: its managed .gitignore block has no
+# .aif/start.local, and nothing but its next `aif init` rewrites the block —
+# the file, one developer's shift defaults, untracked and not ignored
+# (docs/DEFECTS.md 15.2). The shift's header says so; `aif doctor` names the
+# line the block lacks and `aif init`, and writes nothing; `aif init` adds it.
+PI="$SANDBOX/pI"
+fresh_project "$PI"
+awk '$0 != ".aif/start.local" && $0 != "# per-developer shift defaults (aif start)"' .gitignore >"$OUT/pi-gitignore" && cp "$OUT/pi-gitignore" .gitignore
+git add -A && git commit -qm "the ignore block an aif before the shift wrote" >/dev/null
+printf 'WAIT=10\n' >.aif/start.local
+sum="$(cksum <.gitignore | tr -d ' ')"
+"$AIF" doctor >"$OUT/i-doctor.out" 2>&1 || true
+rc=0
+run_bg "$OUT/i-shift.out" 30 env AIF_START_KEYS=q "$AIF" start --no-build || rc=$?
+eq "a block from before the shift: aif doctor names the line it lacks and aif init, and writes nothing; the shift's header says so too" \
+  "$(grep -c '✗ \.gitignore *the managed block lacks \.aif/start\.local — aif init adds it' "$OUT/i-doctor.out"),$(cksum <.gitignore | tr -d ' '),$rc,$(grep -c '\.aif/start\.local is not gitignored here — aif init adds it' "$OUT/i-shift.out")" \
+  "1,$sum,0,1"
+"$AIF" init anthropic >"$OUT/i-init.out" 2>&1 || true
+"$AIF" doctor >"$OUT/i-doctor2.out" 2>&1 || true
+eq "…aif init adds it: doctor's row is a ✓, and git ignores the file" \
+  "$(grep -c '✓ \.gitignore *the managed block names every path aif keeps out of git' "$OUT/i-doctor2.out"),$(git check-ignore -q .aif/start.local && echo ignored)" "1,ignored"
+
 # =================================== T ======================================
 printf '\nT. Trello — the stand-in server, with the real clock\n'
 
@@ -1870,7 +2236,7 @@ MOCK_PID=""
 # the tick's own read; a card edited after its build (15.12); another
 # machine's claim that went silent, then beat again (14.4); and a blocked:
 # line the board refused, posted by the shift (14.2).
-MOCK_REAL_TIME=1 MOCK_SKEW_SECS=-30 python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock2.port" 2>"$OUT/mock2.err" &
+MOCK_REAL_TIME=1 MOCK_SKEW_SECS=-30 MOCK_FAULT_FILE="$OUT/fault2" python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock2.port" 2>"$OUT/mock2.err" &
 MOCK_PID=$!
 i=0
 while [ ! -s "$OUT/mock2.port" ] && [ "$i" -lt 50 ]; do
@@ -2001,6 +2367,64 @@ else
   eq "Trello: a blocked: line the board refused, kept here — the shift posts it, the card left in Needs Human, the file gone" \
     "$rc,$(grep -c 'AIF-16 → needs_human — its blocked: line, refused by the board when it was blocked, kept on this machine — posted now; the card stays in Needs Human (R18)' "$OUT/t2-dry16.out"),$(card_head AIF-16),$(col AIF-16),$(test -f .aif/tmp/blocked-AIF-16.md && echo kept || echo gone)" \
     "0,1,blocked: run — the worker exited (code 1) during plan,needs_human,gone"
+
+  # A card whose comments the board will not give, look after look (the
+  # mock's fault file: every read of AIF-17's comments a 500). It was work in
+  # flight on every tick, and the shift waited on it until q (docs/DEFECTS.md
+  # 15.9): two looks are waited for, the third is a line naming aif board head
+  # that nothing waits on — and with nothing else left, the end.
+  "$AIF" board move AIF-12 "done" >/dev/null
+  ticket_for AIF-17
+  "$AIF" board create tasks/AIF-17/ticket.md --column review >/dev/null
+  printf '500 999 /cards/%s/actions\n' "$(cid2 AIF-17)" >"$OUT/fault2"
+  rc=0
+  run_bg "$OUT/t2-unread.out" 60 env AIF_START_KEYS="________" FAKE_SESSION_NOOP=1 "$AIF" start --no-build || rc=$?
+  rm -f "$OUT/fault2"
+  SU="$(newest_shift)"
+  eq "Trello: a card whose comments fail on every look — waited for twice, then a line naming aif board head; nothing else, so the end" \
+    "$rc|$(jq -r .why "$SU/summary.json" 2>/dev/null)|$(grep -c '^waiting — 1 card not read yet' "$OUT/t2-unread.out")|$(jq -r '[.left[] | select(.ticket == "AIF-17") | .command + " · " + (.text | sub(" — .*"; ""))] | join(";")' "$SU/summary.json" 2>/dev/null)" \
+    "0|nothing left for the shift|2|aif board head AIF-17 · its comments could not be read for 3 looks in a row"
+  "$AIF" board move AIF-17 "done" >/dev/null
+
+  # A comment moves a Trello card's last activity, the moved_at the build in
+  # this terminal was keyed on: a card the loop had left in Ready — a worker
+  # on this machine holds its lock — was offered again after a person's
+  # comment, a loop started for nothing (docs/DEFECTS.md 15.9). A card being
+  # built here (In Progress, its worker live) keeps the shift waiting while
+  # the comment lands; the build is offered once. Both workers are processes
+  # whose command line is the worker's, their locks signed, orphaned so that
+  # nothing has to reap them.
+  ticket_for AIF-18
+  ticket_for AIF-19
+  "$AIF" board create tasks/AIF-18/ticket.md --column ready >/dev/null
+  "$AIF" board create tasks/AIF-19/ticket.md --column in_progress >/dev/null
+  for t in AIF-18 AIF-19; do
+    ( (exec -a "aif work $t" sleep 90) & printf '%s\n' "$!" >"$OUT/f-$t.pid" )
+    mkdir -p ".aif/state/runs/$t"
+    printf '{ "ticket": "%s", "pid": %s, "started_at": "%s" }\n' "$t" "$(cat "$OUT/f-$t.pid")" "$(now)" >".aif/state/runs/$t/owner.json"
+  done
+  keys="."
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do keys="${keys}_"; done
+  start_bg "$OUT/t2-entry.out" env AIF_START_KEYS="$keys" FAKE_SESSION_NOOP=1 "$AIF" start
+  tshift=$BG
+  wait_said "$OUT/t2-entry.out" "^waiting — 1 being built" 60
+  say AIF-18 person "is this one stuck? it has been in Ready all morning"
+  n0="$(grep -c '^waiting — ' "$OUT/t2-entry.out")"
+  i=0
+  while [ "$(grep -c '^waiting — ' "$OUT/t2-entry.out")" -lt $((n0 + 3)) ] && [ "$i" -lt 300 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -TERM "$tshift" 2>/dev/null
+  wait_exit "$tshift" 30 || true
+  SE="$(newest_shift)"
+  eq "Trello: a person's comment on a card the loop left in Ready moves its last activity — the build here is not offered again" \
+    "$(grep -c '^next: build' "$OUT/t2-entry.out"),$(find "$SE" -maxdepth 1 -name 'loop-*' | wc -l | tr -d ' '),$(col AIF-18)" "1,1,ready"
+  for t in AIF-18 AIF-19; do
+    kill "$(cat "$OUT/f-$t.pid")" 2>/dev/null
+    rm -rf ".aif/state/runs/$t"
+    "$AIF" board move "$t" "done" >/dev/null
+  done
   unset AIF_TRELLO_API TRELLO_KEY TRELLO_TOKEN
 fi
 kill "$MOCK_PID" 2>/dev/null
@@ -2037,6 +2461,9 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 #                 pass it on, with the shift its child: the master closed at
 #                 the control point — no HUP reaches the shift, which finds
 #                 the terminal gone itself
+#   nohupsession  the same leader and child: Enter (a session opens), the
+#                 master closed while it is open — the session ends with a
+#                 code of its own, and no HUP reaches the shift
 #   leaderdies    a leader that dies of the hang-up and passes it on to
 #                 nobody — zsh with NO_HUP — with the shift a job of its own
 #                 in the foreground: Enter (a held session opens), the master
@@ -2056,7 +2483,7 @@ pid, fd = pty.fork()
 if pid == 0:
     if mode in ("close", "pauseclose", "tstpclose"):
         os.execve(argv[0], argv, env)
-    if mode == "nohupclose":
+    if mode in ("nohupclose", "nohupsession"):
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
         c = os.fork()
         if c == 0:
@@ -2152,11 +2579,11 @@ elif mode == "tstpclose":
     send(b"\r")
     pump(10, rb"suspended")
     time.sleep(0.3)
-elif mode == "leaderdies":
+elif mode in ("leaderdies", "nohupsession"):
     send(b"\r")
     opens()
     time.sleep(0.5)
-if mode in ("close", "pauseclose", "tstpclose", "nohupclose", "leaderdies"):
+if mode in ("close", "pauseclose", "tstpclose", "nohupclose", "leaderdies", "nohupsession"):
     os.close(fd)
     live = False
 status = None
@@ -2277,6 +2704,20 @@ SD="$(newest_shift)"
 eq "zsh with NO_HUP: its shell and the session die of the hang-up; the shift, nobody's to wait for, finds the terminal gone — summary.json 129 with the session, the lock gone" \
   "$r,$(jq -r '[.rc, .hup, (.sessions | length)] | map(tostring) | join(",")' "$SD/summary.json" 2>/dev/null),$(grep -c '^shift ended — the terminal closed (HUP) · exit 129' "$SD/shift.log"),$(grep -c 'invalid JSON' "$SD/shift.log"),$(lock_gone)" \
   "signal 1,129,true,1,1,0,gone"
+
+# A session that ends with a code of its own once its window is gone — its
+# read of the terminal finds nothing (claude's "Device not configured", or
+# its read of a dead terminal), and no hang-up reaches the shift: the
+# window's end, the hang-up's way out with 129, not "claude exited 1" and
+# the shift's end with 1 (docs/DEFECTS.md 15.9). A terminal whose master is
+# closed under a leader that ignores the hang-up still opens; it no longer
+# takes a write (probed).
+rm -f "$SANDBOX/session.pid"
+r="$(FAKE_SESSION_TTY=1 FAKE_SESSION_NOHUP=1 FAKE_SESSION_RC=1 FAKE_SESSION_NOOP=1 python3 "$SANDBOX/terminal.py" nohupsession "$OUT/d-nohupsession.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+SD="$(newest_shift)"
+eq "a session that fails once its window closed under it, no hang-up reaching the shift: 129 and the hang-up's summary — not claude failing, 1" \
+  "$r,$(jq -r '[.rc, .hup, (.why | startswith("claude exited")), (.sessions | length)] | map(tostring) | join(",")' "$SD/summary.json" 2>/dev/null),$(lock_gone)" \
+  "exit 129,129,true,false,1,gone"
 
 # A session killed -9 leaves claude's screen modes on (#28); the reset after
 # a 137 has to come before anything that may end the shift — here the unit

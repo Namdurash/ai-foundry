@@ -244,9 +244,13 @@ The analyst and the owner run on `opus` and the reviewer and the project manager
 on claude's own default, unless `--model-ba`, `--model-po`, `--model-review`,
 `--model-pjm` or `--model` say otherwise; an alias your profile does not route is
 refused before anything opens. Your own defaults go in `.aif/start.local`
-(`MODEL_BA=opus`, `PARALLEL=3`, `WAIT=20`, …; gitignored by `aif init`). Without
+(`MODEL_BA=opus`, `PARALLEL=3`, `WAIT=20`, …; gitignored by `aif init` — in a
+project set up before the shift, `aif doctor` names the line its ignore block
+lacks, and your next `aif init` adds it). Without
 `--no-build` the loop runs in the shift's own terminal when Ready holds cards,
-and is held — not restarted — when it stops on two runs that did not build.
+and is held — not restarted — when it stops on two runs that did not build, a
+stop or a drain: while Ready still holds cards the control point offers *build
+again*, its default to leave it, Enter or `b` to build.
 `aif work --status [<ID>]` says what this machine knows of a run, offline: its
 lock and whether its worker is alive, what a worker killed outright left running,
 its worktree, branch and record. The shift reads it, and a card whose worker is

@@ -127,6 +127,23 @@ _aif_doctor_project() {
     fi
   fi
 
+  # The managed block in .gitignore, against the one `aif init` writes now.
+  # Nothing else rewrites it — not an upgrade, not `aif project upgrade` — so
+  # a project set up before a line joined it goes without: .aif/start.local,
+  # one developer's shift defaults, untracked and not ignored, one `git add -A`
+  # from the team's repository (docs/DEFECTS.md 15.2). Named here with the
+  # command that adds it, never written: the developer's .gitignore is theirs
+  # to have rewritten, when they say so.
+  local gi_missing
+  gi_missing="$(_aif_doctor_gitignore_missing "$root")"
+  if [ -z "$gi_missing" ]; then
+    printf '  %s %-14s the managed block names every path aif keeps out of git\n' "$(aif_ok)" ".gitignore"
+  else
+    printf '  %s %-14s %sthe managed block lacks %s — aif init adds %s (it rewrites that block and nothing else)%s\n' \
+      "$(aif_no)" ".gitignore" "$AIF_C_YELLOW" "$(printf '%s\n' "$gi_missing" | paste -sd, - | sed 's/,/, /g')" \
+      "$([ "$(printf '%s\n' "$gi_missing" | grep -c .)" -eq 1 ] && printf it || printf them)" "$AIF_C_RESET"
+  fi
+
   # Worktrees cut under an older set. Nothing to fix by hand — the worker
   # brings a branch up to the checkout's set before a run (docs/DEFECTS.md
   # 9.1) — but a reader of this table should see which branches still carry
@@ -174,6 +191,30 @@ _aif_doctor_project() {
     done
   fi
   [ "$missing" -eq 0 ] && printf '  %s %-14s all skill agent targets exist\n' "$(aif_ok)" "skill targets"
+}
+
+# _aif_doctor_gitignore_missing <root> — each pattern of the managed block
+# `aif init` writes (aif_gitignore_block, lib/paths.sh) that the block in
+# <root>/.gitignore lacks, one a line; every one of them when the file or the
+# block is not there. Found as aif_block_inject finds the block (lib/merge.sh):
+# by its markers, anywhere on a line; a line inside it matched whole, a
+# browser's \r and trailing blanks taken off.
+_aif_doctor_gitignore_missing() {
+  local f="$1/.gitignore" have=""
+  # shellcheck source=lib/merge.sh
+  . "$AIF_ROOT/lib/merge.sh"
+  if [ -f "$f" ]; then
+    have="$(awk -v b="$AIF_MARK_BEGIN_HASH" -v e="$AIF_MARK_END_HASH" '
+      index($0, b) { inb = 1; next }
+      inb && index($0, e) { inb = 0; next }
+      inb { sub(/\r$/, ""); sub(/[[:space:]]+$/, ""); print }' "$f" 2>/dev/null)" || have=""
+  fi
+  # The lines through the environment, not `-v`: a multi-line assignment on
+  # awk's command line dies with "newline in string" (lib/merge.sh says why).
+  aif_gitignore_block | AIF_D_HAVE="$have" awk '
+    BEGIN { n = split(ENVIRON["AIF_D_HAVE"], h, "\n"); for (i = 1; i <= n; i++) got[h[i]] = 1 }
+    /^#/ || !NF { next }
+    !($0 in got) { print }'
 }
 
 # _aif_doctor_unroot <root> — stdin with every spelling of <root> taken out, as

@@ -276,6 +276,28 @@ _aif_work_live() {
   return 0
 }
 
+# _aif_work_block_text <ticket> <kind> <why> [<body-file>] — the comment
+# alone, on stdout: the line, the next step for its kind, the body. Its own
+# function so that a shift that ends before it could make the move a dead
+# worker's card was owed leaves the same comment in a file for a person to
+# post (lib/cmd_start.sh _aif_start_summary; docs/DEFECTS.md 15.9).
+_aif_work_block_text() {
+  local ticket="$1" kind="$2" why="$3" body="${4:-}" next
+  case "$kind" in
+    ticket) next="The ticket's problem, not the build's: the analyst (/aif-ba) reworks it from what is below, and it goes back to Ready." ;;
+    run) next="The run stopped short of a build. What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged, and starts over when it changes." ;;
+    environment) next="This machine, not the ticket: no station ran on it, nothing was spent. Fix what is named below, then move the card back to Ready." ;;
+    stopped) next="What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged." ;;
+    *) next="" ;;
+  esac
+  printf 'blocked: %s — %s\n' "$kind" "$why"
+  [ -z "$next" ] || printf '\n%s\n' "$next"
+  if [ -n "$body" ] && [ -s "$body" ]; then
+    printf '\n'
+    cat "$body"
+  fi
+}
+
 # _aif_work_block <root> <ticket> <kind> <why> [<body-file>] — the card goes
 # to Needs Human, and its comment says why on a first line the project manager
 # routes on: `blocked: ticket | run | environment | stopped — <why>`.
@@ -299,23 +321,9 @@ _aif_work_live() {
 # rc 0 posted and moved · 1 either failed, with the command to do it by hand.
 _aif_work_block() {
   local root="$1" ticket="$2" kind="$3" why="$4" body="${5:-}" full_at="${6:-}"
-  local next f keep="" rc=0 said="why posted"
-  case "$kind" in
-    ticket) next="The ticket's problem, not the build's: the analyst (/aif-ba) reworks it from what is below, and it goes back to Ready." ;;
-    run) next="The run stopped short of a build. What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged, and starts over when it changes." ;;
-    environment) next="This machine, not the ticket: no station ran on it, nothing was spent. Fix what is named below, then move the card back to Ready." ;;
-    stopped) next="What was accepted is committed on branch aif/$ticket; back in Ready, the run resumes where it stopped while the ticket is unchanged." ;;
-    *) next="" ;;
-  esac
+  local f keep="" rc=0 said="why posted"
   f="$(mktemp "${TMPDIR:-/tmp}/aif-blocked-XXXXXX")"
-  {
-    printf 'blocked: %s — %s\n' "$kind" "$why"
-    [ -z "$next" ] || printf '\n%s\n' "$next"
-    if [ -n "$body" ] && [ -s "$body" ]; then
-      printf '\n'
-      cat "$body"
-    fi
-  } >"$f"
+  _aif_work_block_text "$ticket" "$kind" "$why" "$body" >"$f"
   if ! (AIF_BOARD_BY="${AIF_WORK_BLOCK_BY:-aif work}" AIF_BOARD_FULL_AT="$full_at" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
     keep="$(aif_main_root "$root")/.aif/tmp/blocked-$ticket.md"
     { mkdir -p "$(dirname "$keep")" && cp "$f" "$keep"; } 2>/dev/null || keep="$f"

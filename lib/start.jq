@@ -167,8 +167,18 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
   # A card whose head could not be read this tick: a line, and nothing decided
   # on it — an unread head is never an empty one (research R1; DEFECTS 14.7).
+  # It is work in flight, waited for, until its head failed three looks in a
+  # row (`unread_looks`, counted by the facts): a board that never answers for
+  # one card kept the shift waiting on it until q, its line the only word of
+  # why (docs/DEFECTS.md 15.9). Past that it is a line the shift does not wait
+  # on — still nothing decided on it.
+  def gave_up: .unread == true and (.unread_looks // 0) >= 3;
   def unread_line:
-    line("R1"; .; "not read — \(.unread_why // "the card could not be read")"; "aif board head \(.ticket)");
+    if gave_up then
+      line("R1"; .; "its comments could not be read for \(.unread_looks) looks in a row — \(.unread_why // "the card could not be read"); the shift does not wait on it"; "aif board head \(.ticket)")
+    else
+      line("R1"; .; "not read — \(.unread_why // "the card could not be read")"; "aif board head \(.ticket)")
+    end;
 
 # ------------------------------------------------------------ In Progress
 #
@@ -589,6 +599,13 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
       elif (($c.meta.depends_on // []) | length) > 0 then
         (if ($c | releasable) then [] else (waits($c)) as $w | [ line("R10"; $c; $w[0]; $w[1]) ] end)
       elif $c.ready_gate == 1 then [ line("R14"; $c; "its ready gate does not pass"; "aif _ready \($c.ticket)") ]
+      # 3 is the environment, never "not ready" (docs/DEFECTS.md 15.9): a
+      # gate not installed here is aif init's to put back; one that could
+      # not run says what it lacks through aif _ready.
+      elif $c.ready_gate == 3 and $f.ready_gate_installed == false then
+        [ line("R14"; $c; "the ready gate could not run — it is not installed here; aif init installs it"; "aif init") ]
+      elif $c.ready_gate == 3 then
+        [ line("R14"; $c; "the ready gate could not run — the environment, not the ticket; aif _ready \($c.ticket) says what it lacks"; "aif _ready \($c.ticket)") ]
       elif $c.ready_gate != null and $c.ready_gate != 0 then
         [ line("R14"; $c; "its ready gate could not run (rc \($c.ready_gate))"; "aif _ready \($c.ticket)") ]
       else [] end;
@@ -597,7 +614,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
   { backlog: count("backlog"), ready: count("ready"), in_progress: count("in_progress"),
     review: count("review"), needs_human: count("needs_human"), done: count("done") } as $counts
-| ([ $cards[] | select(.unread == true) ] | length) as $unread
+| ([ $cards[] | select(.unread == true) | select(gave_up | not) ] | length) as $unread
 | ([ col("in_progress")[] | select(.local.class == "live") ] | length) as $building
 | [ col("in_progress")[] | ip_entries[] ] as $ip
 | [ col("review")[] | rv_entries[] ] as $rv
@@ -710,11 +727,14 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # review, rework: to the analyst, back in Ready — rebuilds the same set of
 # ids, and a key of ids alone read the reworked card as the build already
 # done and ended the shift with it unbuilt. A card's moved_at moves on every
-# move and create (lib/board.sh; on Trello its last activity, which a comment
-# moves too — a new fact, offered again). A card the loop left in Ready, its
-# moved_at untouched, keeps the key: the same Ready is never offered twice
+# move and create (lib/board.sh). On Trello it is the card's last activity,
+# which a comment moves too, so the facts give each Ready card its `entry`:
+# the moved_at it had when the shift first saw it in Ready, kept while it
+# stays there — a comment on a card the loop left in Ready offered the build
+# again, a loop that took nothing new (docs/DEFECTS.md 15.9). A card the loop
+# left in Ready keeps the key: the same Ready is never offered twice
 # (docs/AUTOPILOT-PHASE1.md G §6). _aif_start_build_now makes the same key.
-| ([ col("ready")[] | "\(.ticket)@\(.moved_at | nz)" ] | sort) as $readykeys
+| ([ col("ready")[] | "\(.ticket)@\((.entry // .moved_at) | nz)" ] | sort) as $readykeys
 # The cards a loop in another terminal holds — it took each, the run ended
 # with the card still in Ready, and it will not take it again (lib/cmd_work.sh
 # _aif_work_loop_held_publish) — are not its load: the wait and the pulls
@@ -728,10 +748,24 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | (if $mode == "here" then (if $ready >= 1 and $ready < $par then $par - $ready else 0 end)
    elif $mode == "elsewhere" then $par - ($ready_loop + $building)
    else 0 end) as $free
-| (if $mode == "here" and $b.hold == null and $ready >= 1 and ($rv_live | length) == 0 then
-     [ unit("R12"; "R12 \($readykeys | join(" "))"; "build";
-            "build — Ready holds \($ready): \($readyids | join(", ")); the loop runs in this terminal, \($par) at once")
-       + { column: "ready", default: "go" } ]
+# R13, the build held (two runs in a row that did not build, a stop or a
+# drain, a loop that ended 1 or 143, or never started): never again on its
+# own — but a unit, "build again", its default to leave it and Enter or b to
+# build. It was a line, and with no unit, no move and nothing in flight the
+# shift ended, Ready still holding cards and the b its line named never
+# offered (docs/DEFECTS.md 15.8). Keyed as R12 is: passed by, it is a line
+# with aif work --loop and the shift may end; a Ready that changed offers it
+# again.
+| (if $mode == "here" and $ready >= 1 and ($rv_live | length) == 0 then
+     (if $b.hold == null then
+        [ unit("R12"; "R12 \($readykeys | join(" "))"; "build";
+               "build — Ready holds \($ready): \($readyids | join(", ")); the loop runs in this terminal, \($par) at once")
+          + { column: "ready", default: "go" } ]
+      else
+        [ unit("R13"; "R13 \($readykeys | join(" "))"; "build";
+               "build again — the build is held: \($b.hold); Ready holds \($ready): \($readyids | join(", "))")
+          + { column: "ready", default: "skip" } ]
+      end)
    else [] end) as $u12
 | ($u12 | live_of) as $u12_live
 | (($u12_live | length) > 0 and $ready < $par and ($ba_live | length) > 0) as $ba_first
@@ -742,8 +776,9 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
              comment: "released by aif start: pulled from Backlog at the shift's control point — it has no depends_on and its ready gate passes" } ]
    else [] end) as $u14
 | (if $free >= 1 then $u14 | live_of | .[0:$free] else [] end) as $u14_live
-| ((if $mode == "here" and $b.hold != null and $ready >= 1 then
-      [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
+# The held build is a line only while a review is offered ahead of it.
+| ((if $mode == "here" and $b.hold != null and $ready >= 1 and ($rv_live | length) > 0 then
+      [ { type: "line", rule: "R13", ticket: null, file: null, column: "ready",
           text: "the build is held: \($b.hold) — b at the control point builds again", command: null } ]
     elif $mode == "none" and $ready >= 1 then
       [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",

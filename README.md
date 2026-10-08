@@ -141,11 +141,19 @@ cards. Ctrl-C takes no new card and lets the runs in flight finish; Ctrl-C again
 stops them, each card saying so — and from any terminal, `aif work --loop --drain`
 does the first and `aif work --loop --stop` the second, each card saying who. A
 `--stop` on one run is not held against the cards, and its slot takes the next.
-Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — or under
-`AIF_WORK_LOOP_LOGDIR`, when it names a directory — and `summary.json` beside the
-logs says how the loop ended: what it took, built, blocked and stopped, and why it
-took no more; the exit code says how the process ended, not what Ready still holds,
-so whatever started the loop reads the file. On a terminal the loop draws a
+Each worker's output is in `.aif/tmp/loop-<when>/<ID>.log` — `<ID>.2.log` for a
+second take of the same card, and so on — or under `AIF_WORK_LOOP_LOGDIR`, when it
+names a directory, and `summary.json` beside the logs says how the loop ended: what
+it took, built, blocked and stopped, each run with its log, and why it took no more;
+the exit code says how the process ended, not what Ready still holds, so whatever
+started the loop reads the file — an exit 3, the environment, comes only once the
+machine was asked again: the loop's own preflight failing too, or three runs in a
+row that could not start, or three reads of Ready. A card whose run ended with it
+still in Ready — a worker that stopped before
+taking it, or refused to take over a dead run whose processes still run — is held:
+the loop does not take it again, says so, and names it with why in its lock
+(`owner.json`), where `aif start` in another terminal reads it instead of waiting
+on the card. On a terminal the loop draws a
 dashboard — itself in the middle, each worker around it with its ticket, station and
 attempt, model, progress and last verdict, joined by a line whose colour is that
 worker's state — and takes keys: `1`–`9` select a worker, `s` stops it (after a

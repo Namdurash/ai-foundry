@@ -123,8 +123,9 @@ usage: aif work [<ticket>] [options]
                      mean the problem is not the cards. Ctrl-C takes no new card
                      and lets the runs in flight finish; Ctrl-C again stops them.
                      --stop on one run stops that one, and its slot goes on.
-                     Each worker's output is in .aif/tmp/loop-<when>/<ID>.log,
-                     or under AIF_WORK_LOOP_LOGDIR when it names a directory;
+                     Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
+                     (<ID>.2.log for a second take of the card, and on), or
+                     under AIF_WORK_LOOP_LOGDIR when it names a directory;
                      summary.json there says how the loop ended
   --idle             with --loop: an empty Ready is not the end — the loop
                      looks again every 30 s (AIF_WORK_LOOP_POLL) and takes what
@@ -595,12 +596,20 @@ _aif_work_lock() {
 # leads — and looked for again every second, up to AIF_WORK_TAKEOVER_WAIT
 # seconds (30): a process the last look missed, a child a station started
 # after it, gets its TERM on the next. Something still there at the end — a
-# shell someone has open in the worktree, a process that ignores TERM — and
-# there is no takeover: exit 3, the card untouched, the dead lock left to say
-# what it left.
+# process that ignores TERM — and there is no takeover: exit 3, the card
+# untouched, the dead lock left to say what it left.
+#
+# Only what is proved the dead run's is signalled: its group, with its leader
+# gone, and the station pid it recorded. A process named by its working
+# directory alone — inside .aif/worktrees/<ID>, nothing else tying it to the
+# run — may be a person's shell, editor or language server opened there,
+# and it used to get its TERM with the rest; it is named and never
+# signalled, and while it runs there is no takeover (docs/DEFECTS.md 14.1).
+# Once nothing but such processes is left, the refusal comes at once: no wait
+# makes a process go that nothing asked to.
 _aif_work_lock_orphans() {
   local lock="$1" lp="$2" main="${AIF_WORK_LOCKING_MAIN:-}" id="${AIF_WORK_LOCKING_ID:-}"
-  local orph n rows pid pgid sent=" " deadline wait_s said=0 led=0 grp
+  local orph n nc rows pid pgid why sent=" " deadline wait_s said=0 led=0 grp ours
   wait_s="${AIF_WORK_TAKEOVER_WAIT:-30}"
   case "$wait_s" in
     '' | *[!0-9]*) wait_s=30 ;;
@@ -616,16 +625,23 @@ _aif_work_lock_orphans() {
       '' | *[!0-9]*) n=0 ;;
     esac
     [ "$n" -gt 0 ] || return 0
+    rows="$(printf '%s' "$orph" | jq -r '.[] | "\(.pid) \(.pgid) \(.why)"' 2>/dev/null)" || rows=""
     if [ "$said" -eq 0 ]; then
       said=1
-      _aif_work_say "lock" "$id — the worker that held it (pid ${lp:-?}) is gone, and $n process(es) it started still run — TERM, up to ${wait_s}s, before it is taken over"
+      nc="$(printf '%s\n' "$rows" | awk '$3 == "cwd" { c++ } END { print c + 0 }')" || nc=0
+      [ "$nc" -ge "$n" ] ||
+        _aif_work_say "lock" "$id — the worker that held it (pid ${lp:-?}) is gone, and $((n - nc)) process(es) it started still run — TERM, up to ${wait_s}s, before it is taken over"
+      [ "$nc" -eq 0 ] ||
+        _aif_work_say "lock" "$id — $nc process(es) in its worktree that nothing but their directory ties to the run: named, never signalled — no takeover while one runs"
     fi
     # Each process once; the group once a look, whenever the look finds a
     # member it had not seen — one a station started after the last look.
-    rows="$(printf '%s' "$orph" | jq -r '.[] | "\(.pid) \(.pgid)"' 2>/dev/null)" || rows=""
     grp=""
-    while read -r pid pgid; do
+    ours=0
+    while read -r pid pgid why; do
       [ -n "$pid" ] || continue
+      [ "$why" != cwd ] || continue
+      ours=1
       case "$sent" in
         *" $pid "*) continue ;;
       esac
@@ -639,10 +655,13 @@ _aif_work_lock_orphans() {
 $rows
 EOF
     [ -z "$grp" ] || kill -TERM -- "-$grp" 2>/dev/null || true
+    [ "$ours" -eq 1 ] || break
     [ "$SECONDS" -lt "$deadline" ] || break
     sleep 1
   done
-  AIF_LOCK_HELD="$(printf '%s' "$orph" | jq -r '[ .[] | "pid \(.pid) (\(.command | .[0:60]))" ] | join(", ")' 2>/dev/null)" || AIF_LOCK_HELD=""
+  AIF_LOCK_HELD="$(printf '%s' "$orph" | jq -r '[ .[] | "pid \(.pid) (\(.command | .[0:60]))"
+    + (if .why == "cwd" then " in its worktree, never signalled: nothing but its directory ties it to the run" else "" end) ]
+    | join(", ")' 2>/dev/null)" || AIF_LOCK_HELD=""
   [ -n "$AIF_LOCK_HELD" ] || AIF_LOCK_HELD="$n process(es)"
   return 1
 }
@@ -2854,14 +2873,18 @@ _aif_work_report() {
 #             toward two in a row: the machine is not a verdict on the cards.
 #             A loop whose every card hit the environment, but never three in
 #             a row, ends on an empty Ready with rc 1 and env 0 in its summary,
-#             rechecks saying how often the machine was asked again.
+#             rechecks saying how often the machine was asked again. A Ready
+#             that could not be read is asked about the same way. A worker
+#             that refused to take over a dead run whose processes still run
+#             is neither: the card is held (docs/DEFECTS.md 14.1, 13.8).
 #   one loop  per checkout, through the loop lock (aif_loop_lock_dir), taken
 #             before the preflight; a second is refused with exit 3 and
 #             touches nothing. In it, `aif work --loop --drain` and `--stop`
 #             leave the files the loop reads at the top of every second.
 #   output    each worker writes its own log under .aif/tmp/loop-<when>/ — or
 #             under AIF_WORK_LOOP_LOGDIR, so a parent can name the directory it
-#             will read. On a terminal the loop draws its dashboard (lib/tui.sh)
+#             will read — one a take, a card taken again writing <ID>.2.log
+#             (docs/DEFECTS.md 15.7). On a terminal the loop draws its dashboard (lib/tui.sh)
 #             from what each worker writes into its run lock as it moves;
 #             anywhere else it says one line per start and per end. A summary
 #             either way, and summary.json beside the logs for a parent.
@@ -2871,7 +2894,9 @@ _aif_work_report() {
 #             each settling its card as stopped by Ctrl-C. `set -m` is on only
 #             around the spawn: left on, bash hands the terminal to every
 #             foreground command it runs — a jq, a curl, the tick's sleep — and
-#             a Ctrl-C then reaches that command and not the loop.
+#             a Ctrl-C then reaches that command and not the loop. The tick's
+#             second is spent in the `wait` builtin, where a Ctrl-C always
+#             runs the handler (_aif_work_loop_tick, docs/DEFECTS.md 11.1).
 #
 # Takes no new card when Ready has none it has not taken — unless --idle, when
 # it looks again every AIF_WORK_LOOP_POLL seconds (30) and goes on — at
@@ -2887,7 +2912,9 @@ _aif_work_report() {
 # Idle, the taken list forgets a card once it has left Ready: one that comes
 # back — a land's sync:, a shift's retry, a person's move — is the loop's
 # again, while one still sitting in Ready after its run ended stays skipped
-# (named as held), until the machine has been asked again and passed.
+# (named as held), until the machine has been asked again and passed. What
+# it holds, and why each, is in its lock's owner.json as it changes, for a
+# shift in another terminal (docs/DEFECTS.md 15.3).
 #
 # Exit: 0 every ticket taken was built · 1 some were not · 3 stopped on the
 # environment, or another loop holds this checkout · 130 / 143 stopped by
@@ -2903,7 +2930,7 @@ _aif_work_loop() {
   local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0
   local now n list pick id pid rc entry left what kind mins results="" slot st i
   local poll idling=0 unread=0 read_ok env_in_a_row=0 rechecks=0 envhit rc2
-  local who drained=0 abs
+  local who drained=0 abs log held_by why_now err rl unread_n=0
 
   set --
   [ -z "$profile" ] || set -- "$@" --profile "$profile"
@@ -2961,15 +2988,27 @@ _aif_work_loop() {
   AIF_WORK_LOOP_RUNNING=""  # "<pid>:<ticket>:<started>:<slot>" per run in flight
   AIF_WORK_LOOP_IDLE=0      # 1 while an idle loop has nothing to take and nothing running
   AIF_WORK_LOOP_POLL_S="$poll"
-  AIF_WORK_LOOP_HELD=""     # idle: taken cards still in Ready, skipped — named, not hidden
+  AIF_WORK_LOOP_HELD=""     # taken cards still in Ready, skipped — named, not hidden
+  AIF_WORK_LOOP_WHYS=""     # "<id>|<how its last run here ended>", a line a card: why one is held
+  AIF_WORK_LOOP_HELD_PUB="" # the held cards as the loop lock's owner.json last said them
+  AIF_WORK_LOOP_TAKES=" "   # every take, an id once per take: which log the next one writes
+  AIF_WORK_LOOP_IDLE_WHY="" # what an idle loop says of Ready: empty, or what it holds
   AIF_WORK_LOOP_READY=""    # the last Ready read, the loop's or the dashboard's
   AIF_WORK_LOOP_READ_AT=0   # when that was
   AIF_TUI_PARALLEL="$parallel" AIF_TUI_STARTED="$(date +%s)" AIF_TUI_NOW="$AIF_TUI_STARTED"
+  # The clock and the run locks' directory, read once and then computed with
+  # builtins: what the loop does every second forks as little as it can. A
+  # Ctrl-C that lands in a `$(…)` the loop waits on kills the child, and under
+  # set -e the assignment it fed then ends the loop itself — its runs left
+  # building, the second Ctrl-C never forwarded (probed; docs/DEFECTS.md
+  # 11.1, docs/FINDINGS.md #33). SECONDS is the shell's own count of them.
+  AIF_WORK_LOOP_EPOCH=$((AIF_TUI_STARTED - SECONDS))
+  AIF_WORK_LOOP_RUNS="$(dirname "$(aif_run_lock_dir "$root" x)")"
   AIF_TUI_BUILT=0 AIF_TUI_BLOCKED=0 AIF_TUI_STOPPED=0 AIF_TUI_READY="" AIF_TUI_LOAD="" AIF_TUI_DISK=""
   AIF_TUI_EVENTS="" AIF_TUI_SEL=1 AIF_TUI_BOTTOM=events AIF_TUI_LOG="" AIF_TUI_ASK=""
   for i in $(seq 1 "$parallel"); do
     AIF_LS_PID[i]="" AIF_LS_ID[i]="" AIF_LS_RESULT[i]="" AIF_LS_KIND[i]="" AIF_LS_LIVE[i]=""
-    AIF_LS_START[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0
+    AIF_LS_START[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0 AIF_LS_LOG[i]=""
   done
   _aif_work_loop_tui_start "$tui"
   aif_trap_arm "_aif_work_loop_signal"
@@ -3015,10 +3054,14 @@ EOF
       fi
       rc=0
       wait "$pid" 2>/dev/null || rc=$?
-      now="$(date +%s)"
+      now=$((AIF_WORK_LOOP_EPOCH + SECONDS))
       mins=$(((now - st) / 60))
       AIF_LS_PID[slot]=""
       AIF_LS_END[slot]="$now"
+      # This take's own log (_aif_work_loop_take_log), and the last error its
+      # worker printed there: what the loop says of the card should it hold it.
+      log="${AIF_LS_LOG[slot]:-$id.log}"
+      err="$(sed -n 's/^error: //p' "$logdir/$log" 2>/dev/null | tail -1)" || err=""
       kind=""
       envhit=""
       case "$rc" in
@@ -3027,19 +3070,39 @@ EOF
           in_a_row=0
           env_in_a_row=0
           what="built → Review"
+          why_now="its run here built it, and it was back in Ready before this loop saw it leave"
           AIF_LS_RESULT[slot]=built
           _aif_work_loop_event green "$id built → Review · $mins min"
           ;;
         3)
-          what="could not start (exit 3)"
-          AIF_LS_RESULT[slot]="env"
-          envhit="$id could not start (exit 3) — the environment, not the card"
+          # A takeover the worker refused because what a dead run of the card
+          # started still runs (_aif_work_lock_orphans, its fixed line read
+          # back the way the blocked: kind is below): the card untouched, and
+          # nothing about the machine — a person's shell open in the worktree
+          # refuses it the same way. Counted toward the environment, three
+          # such cards stopped an idle loop that had a fourth to build, and
+          # each was a preflight asked again for nothing (docs/DEFECTS.md
+          # 14.1, 13.8). Held instead, its why published (15.3); the exit codes
+          # stay the documented contract.
+          held_by="$(sed -n 's/.* last worker is gone, and what it started still runs: \(.*\) — not taken over\..*/\1/p' "$logdir/$log" 2>/dev/null | tail -1)" || held_by=""
+          if [ -n "$held_by" ]; then
+            what="not taken over (exit 3) — what its last run started still runs"
+            why_now="its last worker is gone, and what it started still runs: $held_by — aif work --status $id says what"
+            AIF_LS_RESULT[slot]=held
+            _aif_work_loop_event yellow "$id not taken over — what its last worker started still runs ($held_by); the card is held, the loop goes on · aif work --status $id"
+          else
+            what="could not start (exit 3)"
+            why_now="its worker could not start (exit 3)${err:+: $err}"
+            AIF_LS_RESULT[slot]="env"
+            envhit="$id could not start (exit 3) — the environment, not the card"
+          fi
           ;;
         # 129 as well: a worker whose own group was hung up on — not by this
         # loop, which forwards a TERM — was stopped, not judged, like the
         # other two.
         129 | 130 | 143)
           what="stopped (exit $rc)"
+          why_now="its worker was stopped (exit $rc) before it took the card"
           AIF_TUI_STOPPED=$((AIF_TUI_STOPPED + 1))
           AIF_LS_RESULT[slot]=stopped
           if [ -z "$AIF_WORK_LOOP_KILLED" ] && [ "$AIF_WORK_LOOP_CTRL_C" -eq 0 ]; then
@@ -3049,11 +3112,21 @@ EOF
           fi
           ;;
         *)
-          kind="$(sed -n 's/.*→ needs_human — blocked: \([a-z]*\).*/\1/p' "$logdir/$id.log" 2>/dev/null | tail -1)" || kind=""
-          what="not built → Needs Human${kind:+, blocked: $kind}"
+          kind="$(sed -n 's/.*→ needs_human — blocked: \([a-z]*\).*/\1/p' "$logdir/$log" 2>/dev/null | tail -1)" || kind=""
+          # No blocked: line in its log is a worker that never moved the
+          # card — it exited before its claim, in its own preflight — and the
+          # card is still in Ready, not in Needs Human: said so, in the
+          # results row and as why the loop holds it (docs/DEFECTS.md 15.3).
+          if [ -n "$kind" ]; then
+            what="not built → Needs Human, blocked: $kind"
+            why_now="its run here ended blocked: $kind, and it was back in Ready before this loop saw it leave"
+          else
+            what="not built — its worker exited $rc before it took the card"
+            why_now="its worker exited $rc before it took the card${err:+: $err}"
+          fi
           AIF_TUI_BLOCKED=$((AIF_TUI_BLOCKED + 1))
           AIF_LS_RESULT[slot]=blocked
-          _aif_work_loop_event red "$id not built → Needs Human${kind:+ (blocked: $kind)} · $mins min"
+          _aif_work_loop_event red "$id $what · $mins min"
           if [ "$kind" = environment ]; then
             # Its handler's label for an exit in the claim, the worktree or
             # the intake — before any station ran: the machine, as an exit 3
@@ -3109,7 +3182,8 @@ EOF
         fi
       fi
       AIF_LS_KIND[slot]="$kind"
-      results="$results$id|$what|$mins
+      _aif_work_loop_why_set "$id" "$why_now"
+      results="$results$id|$what|$mins|$log
 "
       next_poll=0
     done
@@ -3123,8 +3197,8 @@ EOF
       # Every run in flight was told to stop: wait for them — each settles its
       # card first — a minute at most.
       [ "$n" -gt 0 ] || break
-      [ "$kill_by" -ne 0 ] || kill_by=$(($(date +%s) + 60))
-      if [ "$(date +%s)" -gt "$kill_by" ]; then
+      [ "$kill_by" -ne 0 ] || kill_by=$((AIF_WORK_LOOP_EPOCH + SECONDS + 60))
+      if [ $((AIF_WORK_LOOP_EPOCH + SECONDS)) -gt "$kill_by" ]; then
         aif_warn "still running a minute after the stop: $AIF_WORK_LOOP_RUNNING — each settles its own card when it ends"
         break
       fi
@@ -3136,18 +3210,22 @@ EOF
         break
       fi
     elif [ "$n" -lt "$parallel" ] && ! _aif_work_loop_starting "$root"; then
-      now="$(date +%s)"
+      now=$((AIF_WORK_LOOP_EPOCH + SECONDS))
       if [ "$now" -ge "$next_poll" ]; then
         pick=""
         read_ok=0
-        if list="$(aif_board_ready_list "$root" 2>/dev/null)"; then
+        rl=0
+        list="$(aif_board_ready_list "$root" 2>/dev/null)" || rl=$?
+        if [ "$rl" -eq 0 ]; then
           read_ok=1
           unread=0
+          unread_n=0
           # The dashboard shows this read, and makes none of its own while
           # this one is fresh (_aif_work_loop_refresh).
           AIF_WORK_LOOP_READY="$list"
           AIF_WORK_LOOP_READ_AT="$now"
-          [ "$idle" -eq 0 ] || _aif_work_loop_prune "$list"
+          _aif_work_loop_prune "$list" "$idle"
+          _aif_work_loop_held_publish
           for id in $list; do
             case "$AIF_WORK_LOOP_TAKEN" in
               *" $id "*) continue ;;
@@ -3155,22 +3233,58 @@ EOF
             # A worker in another terminal holds it: not this loop's — for
             # good, or, idle, for this poll only: that worker ends, and the
             # card, should it still be in Ready then, is the loop's.
-            if _aif_work_lock_live "$(aif_run_lock_dir "$root" "$id")"; then
-              [ "$idle" -eq 1 ] || AIF_WORK_LOOP_TAKEN="$AIF_WORK_LOOP_TAKEN$id "
+            if _aif_work_lock_live "$AIF_WORK_LOOP_RUNS/$id"; then
+              if [ "$idle" -eq 0 ]; then
+                AIF_WORK_LOOP_TAKEN="$AIF_WORK_LOOP_TAKEN$id "
+                _aif_work_loop_why_set "$id" "a worker in another terminal was building it when this loop looked"
+              fi
               continue
             fi
             pick="$id"
             break
           done
-        elif [ "$n" -eq 0 ] && { [ "$idle" -eq 0 ] || [ -n "$AIF_WORK_LOOP_STOP" ]; }; then
-          why="the board's Ready column could not be read — aif board check says why"
-          env=1
-          break
+        elif [ -n "$AIF_WORK_LOOP_STOP" ] || [ "$rl" -gt 128 ]; then
+          # A signal that came during the read ended the read, not the board:
+          # a Ctrl-C reaches the `$(…)` with the loop, and the loop's own
+          # handler has what it meant — the top of the next iteration acts on
+          # it. Read as the board, it ended the loop with env 1 in its summary
+          # beside a 130, which a reader of `env` takes for the machine
+          # (docs/DEFECTS.md 15.9).
+          :
+        elif [ "$n" -eq 0 ] && [ "$idle" -eq 0 ]; then
+          # Nothing running, nothing read, and not idle: the end — as the
+          # machine only once the machine has been asked again, as a worker
+          # that could not start is (below, docs/DEFECTS.md 13.8). The rc 3 it
+          # ends in is read as the environment, by `aif start` above all,
+          # and one read the adapter's own retries could not save was that
+          # with no second look (docs/DEFECTS.md 14.3). A preflight that
+          # passes — `aif board check` among it — reads Ready again at the
+          # next tick, three reads in a row at most.
+          unread_n=$((unread_n + 1))
+          rc2=0
+          (AIF_WORK_LOOP=1 _aif_work_preflight "$root" "$profile_name") >>"$logdir/loop.log" 2>&1 || rc2=$?
+          if [ "$rc2" -eq 0 ] && [ "$unread_n" -lt 3 ]; then
+            rechecks=$((rechecks + 1))
+            _aif_work_loop_event yellow "the board's Ready column could not be read, but the machine checks out (preflight passed) — reading it again ($unread_n of 3)"
+            next_poll=0
+            _aif_work_loop_tick
+            continue
+          elif [ "$rc2" -le 128 ]; then
+            why="the board's Ready column could not be read"
+            if [ "$rc2" -eq 0 ]; then
+              why="$why three times in a row, though the preflight passes — aif board check says why"
+            else
+              why="$why, and the preflight fails again (exit $rc2) — loop.log has what it said"
+            fi
+            env=1
+            break
+          fi
+          # rc2 above 128: the preflight was interrupted, and the loop's
+          # handler has what the signal meant.
         elif [ "$n" -eq 0 ] && [ "$unread" -eq 0 ]; then
           # Idle, a board that does not answer is a board to ask again, not
           # the end of a loop meant to outlast the night — said once a
-          # stretch, the loop's preflight having seen it answer. With a stop
-          # set, a Ctrl-C may have killed the read itself: the line above.
+          # stretch, the loop's preflight having seen it answer.
           unread=1
           _aif_work_loop_event red "the board's Ready column could not be read — looking again in ${poll}s"
         fi
@@ -3196,31 +3310,39 @@ EOF
           while [ -n "${AIF_LS_PID[slot]}" ]; do
             slot=$((slot + 1))
           done
+          _aif_work_loop_take_log "$pick"
+          log="$AIF_WORK_LOOP_TAKE_LOG"
           if [ "$AIF_WORK_LOOP_TUI" = 1 ]; then
-            _aif_work_loop_event orange "$pick taken · worker $slot"
+            _aif_work_loop_event orange "$pick taken · worker $slot · log $log"
           else
             printf '\n%sloop%s %s — %s · %s of %s running · %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" \
-              "$taken_n" "$pick" "$((n + 1))" "$parallel" "${logdir#"$main"/}/$pick.log" >&2
+              "$taken_n" "$pick" "$((n + 1))" "$parallel" "${logdir#"$main"/}/$log" >&2
           fi
           # A process group of its own, so the terminal's Ctrl-C passes it by
           # — and job control off again at once, or the next foreground
           # command takes the terminal and the next Ctrl-C with it.
           set -m
-          AIF_WORK_LOOP=1 "$AIF_ROOT/bin/aif" work "$pick" ${1+"$@"} </dev/null >"$logdir/$pick.log" 2>&1 &
+          AIF_WORK_LOOP=1 "$AIF_ROOT/bin/aif" work "$pick" ${1+"$@"} </dev/null >"$logdir/$log" 2>&1 &
           pid=$!
           set +m
-          AIF_WORK_LOOP_RUNNING="${AIF_WORK_LOOP_RUNNING:+$AIF_WORK_LOOP_RUNNING }$pid:$pick:$(date +%s):$slot"
+          AIF_WORK_LOOP_RUNNING="${AIF_WORK_LOOP_RUNNING:+$AIF_WORK_LOOP_RUNNING }$pid:$pick:$((AIF_WORK_LOOP_EPOCH + SECONDS)):$slot"
           # A TERM, a hang-up or a second Ctrl-C between the look above and
           # this line was forwarded to every run but this one, which was not
           # in the list yet: it gets the same signal now.
           [ -z "$AIF_WORK_LOOP_KILLED" ] || kill -"$AIF_WORK_LOOP_KILLED" -- "-$pid" 2>/dev/null || kill -"$AIF_WORK_LOOP_KILLED" "$pid" 2>/dev/null || true
-          AIF_LS_PID[slot]="$pid" AIF_LS_ID[slot]="$pick" AIF_LS_RESULT[slot]=running AIF_LS_KIND[slot]=""
-          AIF_LS_LIVE[slot]="" AIF_LS_START[slot]="$(date +%s)" AIF_LS_END[slot]="" AIF_LS_PCT[slot]=0 AIF_LS_PSTAGE[slot]=0
+          AIF_LS_PID[slot]="$pid" AIF_LS_ID[slot]="$pick" AIF_LS_RESULT[slot]=running AIF_LS_KIND[slot]="" AIF_LS_LOG[slot]="$log"
+          AIF_LS_LIVE[slot]="" AIF_LS_START[slot]=$((AIF_WORK_LOOP_EPOCH + SECONDS)) AIF_LS_END[slot]="" AIF_LS_PCT[slot]=0 AIF_LS_PSTAGE[slot]=0
           continue
         fi
         if [ "$read_ok" -eq 1 ] && [ "$n" -eq 0 ]; then
+          # What Ready holds when there is nothing in it to take: nothing at
+          # all, or only cards this loop will not take again, said as such —
+          # "Ready is empty" over a Ready that held them left a person, and
+          # a shift, waiting on cards nobody would take (docs/DEFECTS.md
+          # 15.3) — or cards workers elsewhere hold.
+          _aif_work_loop_idle_why "$list"
           if [ "$idle" -eq 0 ]; then
-            why="Ready is empty"
+            why="$AIF_WORK_LOOP_IDLE_WHY"
             break
           fi
           # Idle: not the end — one line on the way in, then a look every
@@ -3228,7 +3350,7 @@ EOF
           if [ "$idling" -eq 0 ]; then
             idling=1
             AIF_WORK_LOOP_IDLE=1
-            _aif_work_loop_event dim "Ready is empty — idle, looking again every ${poll}s · Ctrl-C, q or aif work --loop --drain ends the loop${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}"
+            _aif_work_loop_event dim "$AIF_WORK_LOOP_IDLE_WHY — idle, looking again every ${poll}s · Ctrl-C, q or aif work --loop --drain ends the loop${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}"
           fi
         fi
         # Nothing to take: look again in a while, not every second — on a
@@ -3242,11 +3364,13 @@ EOF
 
   [ -z "$AIF_WORK_LOOP_STOP" ] || why="$AIF_WORK_LOOP_STOP"
   printf '\n%sloop%s %s taken, %s built — %s\n' "$AIF_C_BOLD" "$AIF_C_RESET" "$taken_n" "$AIF_TUI_BUILT" "$why" >&2
-  while IFS='|' read -r id what mins; do
+  # Each run with the log of its own take: a card taken twice has two
+  # (docs/DEFECTS.md 15.7).
+  while IFS='|' read -r id what mins log; do
     [ -n "$id" ] || continue
     case "$what" in
-      built*) printf '  %s · %s min · %s · aif land %s\n' "$id" "$mins" "$what" "$id" >&2 ;;
-      *) printf '  %s · %s min · %s\n' "$id" "$mins" "$what" >&2 ;;
+      built*) printf '  %s · %s min · %s · aif land %s · %s\n' "$id" "$mins" "$what" "$id" "$log" >&2 ;;
+      *) printf '  %s · %s min · %s · %s\n' "$id" "$mins" "$what" "$log" >&2 ;;
     esac
   done <<EOF
 $results
@@ -3281,7 +3405,7 @@ _aif_work_loop_starting() {
     pid="${entry%%:*}"
     id="${entry#*:}"
     id="${id%%:*}"
-    lock="$(aif_run_lock_dir "$root" "$id")"
+    lock="$AIF_WORK_LOOP_RUNS/$id"
     [ "$(_aif_work_lock_pid "$lock")" = "$pid" ] || return 0
     case "$(cat "$lock/phase" 2>/dev/null)" in
       intake | run | report) ;;
@@ -3298,13 +3422,17 @@ _aif_work_loop_starting() {
 #
 # The exit code says how the loop ENDED, not what the board holds: rc 0 comes
 # with a non-empty Ready when a live lock or the taken list skipped a card, or
-# at --max-tickets; rc 1 from a preflight die with nothing taken; rc 3 from one
-# 429 (docs/AUTOPILOT-RESEARCH.md §6.11, verification 1; docs/DEFECTS.md
-# 14.3). A parent that read the code alone would start a loop again over a
-# Ready it had just drained, or hold one that had taken nothing — so the
-# counts, the reason and each run's end are written here, and a parent reads
-# the file, never the rc alone. The results array is built by jq from the
-# `id|what|minutes` lines the loop keeps: the environment carries no arrays,
+# at --max-tickets; rc 1 from a preflight die with nothing taken; rc 3 came
+# from one 429 (docs/AUTOPILOT-RESEARCH.md §6.11, verification 1;
+# docs/DEFECTS.md 14.3), and now only once the machine was asked again — the
+# adapter retries the board's calls, and a worker that could not start or a
+# Ready that could not be read has the loop's preflight run again first. A
+# parent that read the code alone would start a loop again over a Ready it had
+# just drained, or hold one that had taken nothing — so the counts, the reason
+# — what Ready held when it was not empty — and each run's end are written
+# here, and a parent reads the file, never the rc alone (`aif start` does,
+# lib/cmd_start.sh _aif_start_run_build). The results array is built by jq
+# from the `id|what|minutes|log` lines the loop keeps: the environment carries no arrays,
 # bash 3.2 has none worth passing, and jq owns the escaping. Written whole
 # — to a temp name, then moved — so a parent polling for it never reads half.
 # Not writing it is a warning, not a stop: every run is settled on its card
@@ -3313,15 +3441,19 @@ _aif_work_loop_starting() {
 # the file is there on every path once the logdir is.
 #
 # Idle and its re-checks are said too: `idle` whether it waited for Ready,
-# `rechecks` how often a worker that could not start was followed by a
-# preflight that passed — a loop whose every card hit the environment ends
-# rc 1 with env 0, and this is what tells it from cards that failed on their
-# own — and `held`, the cards it left in Ready on purpose.
+# `rechecks` how often a worker that could not start, or a Ready that could
+# not be read, was followed by a preflight that passed — a loop whose every
+# card hit the environment ends rc 1 with env 0, and this is what tells it
+# from cards that failed on their own — and `held`, the cards it left in
+# Ready on purpose. Each results row names its take's log, a file beside
+# this one: a card taken twice is two rows, and was one log written over
+# (docs/DEFECTS.md 15.7).
 _aif_work_loop_summary() {
   local file="$1" taken="$2" env="$3" why="$4" lines="$5" idle="${6:-0}" rechecks="${7:-0}" held="${8:-}" results
   results="$(printf '%s' "$lines" | jq -R -s '
     split("\n") | map(select(length > 0) | split("|")
-      | { ticket: .[0], what: .[1], minutes: (.[2] | tonumber? // 0) })' 2>/dev/null)" || results="[]"
+      | { ticket: .[0], what: .[1], minutes: (.[2] | tonumber? // 0),
+          log: (if (.[3] // "") == "" then (.[0] + ".log") else .[3] end) })' 2>/dev/null)" || results="[]"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   if {
     jq -n --argjson taken "$taken" --argjson built "$AIF_TUI_BUILT" \
@@ -3345,11 +3477,14 @@ _aif_work_loop_summary() {
 # _aif_work_loop_event <tone> <text> — one thing that happened: into the loop's
 # own log, and onto the dashboard, newest first — or, with no dashboard, said.
 _aif_work_loop_event() {
-  local at
-  at="$(date '+%H:%M')"
+  local at ev
+  # Each `$(…)` guarded: a Ctrl-C that kills its child would otherwise end
+  # the loop through set -e — the first Ctrl-C's own event is said from the
+  # handler, where a second may land (docs/DEFECTS.md 11.1).
+  at="$(date '+%H:%M')" || at="--:--"
   printf '%s %s\n' "$at" "$2" >>"$AIF_WORK_LOOP_LOGDIR/loop.log" 2>/dev/null || true
   if [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ]; then
-    AIF_TUI_EVENTS="$(printf '%s|%s|%s\n%s\n' "$1" "$at" "$2" "$AIF_TUI_EVENTS" | sed -n '1,3p')"
+    ev="$(printf '%s|%s|%s\n%s\n' "$1" "$at" "$2" "$AIF_TUI_EVENTS" | sed -n '1,3p')" && AIF_TUI_EVENTS="$ev" || true
   elif [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ]; then
     # Not once the terminal has closed: stderr is loop.log from then on, and
     # the line is there already, with its time.
@@ -3422,13 +3557,34 @@ _aif_work_loop_typical() {
 }
 
 # _aif_work_loop_tick — a second of the loop: with the dashboard, a frame and a
-# key (the key's read is the second); without, a sleep. `|| true` on both: a
-# Ctrl-C reaches what the loop runs in the foreground as well as the loop,
-# and under set -e a command it ended would end the loop with it.
+# key (the key's read is the second); without, a wait. Neither may end the
+# loop: under set -e a command a Ctrl-C ended would end the loop with it.
+#
+# Without the dashboard the second is spent in the `wait` builtin, on a
+# `sleep 1` put in the background — never in a foreground `sleep 1`, which
+# lost a Ctrl-C (docs/DEFECTS.md 11.1). bash 3.2 runs the INT trap for a
+# foreground child only when the child died of the INT, or the INT came while
+# the shell still waited for it; one that lands after waitpid returned and
+# before the shell put its own handler back is noted in a flag nobody reads
+# again. That is where a second Ctrl-C sent one tick after the first lands —
+# handling the first started the tick again — and on this loop it was lost
+# 10 times in 60, and 12 in 80 as the delay walked across the tick's end; the
+# same Ctrl-Cs sent to a loop waiting in the builtin, none (docs/FINDINGS.md
+# #33). A trapped signal that comes while the shell is inside `wait` makes the
+# builtin return at once, over 128, and the trap runs once it has. The sleep
+# ignores the INT — a background job of a script starts with it ignored
+# (docs/FINDINGS.md #23) — so an interrupted wait leaves it running: it is
+# ended here, by a TERM, which the loop traps, so the shell prints no notice
+# of its death; one that is missed ends within the second. A HUP's handler
+# runs after the builtin has put back its redirection, not inside it as in the
+# dashboard's read (probed, #33), so its move of fd 2 to loop.log stands.
 _aif_work_loop_tick() {
-  local key=""
+  local key="" tick rc=0
   if [ "${AIF_WORK_LOOP_TUI:-0}" != 1 ]; then
-    sleep 1 || true
+    sleep 1 &
+    tick=$!
+    wait "$tick" 2>/dev/null || rc=$?
+    [ "$rc" -le 128 ] || kill -TERM "$tick" 2>/dev/null || true
     return 0
   fi
   _aif_work_loop_refresh
@@ -3475,11 +3631,11 @@ _aif_work_loop_to_log() {
 # shellcheck disable=SC2034
 _aif_work_loop_refresh() {
   local i now lock id out="" l c
-  now="$(date +%s)"
+  now=$((AIF_WORK_LOOP_EPOCH + SECONDS))
   AIF_TUI_NOW="$now"
   for i in $(seq 1 "$AIF_TUI_PARALLEL"); do
     [ "${AIF_LS_RESULT[i]}" = running ] || continue
-    lock="$(aif_run_lock_dir "$AIF_WORK_LOOP_ROOT" "${AIF_LS_ID[i]}")"
+    lock="$AIF_WORK_LOOP_RUNS/${AIF_LS_ID[i]}"
     [ ! -f "$lock/live.json" ] || AIF_LS_LIVE[i]="$(cat "$lock/live.json" 2>/dev/null)" || true
   done
   if [ "$now" -ge $((${AIF_WORK_LOOP_READ_AT:-0} + ${AIF_WORK_LOOP_POLL_S:-30})) ]; then
@@ -3505,7 +3661,8 @@ _aif_work_loop_refresh() {
     AIF_TUI_DISK="$(df -Pk "$AIF_WORK_LOOP_MAIN" 2>/dev/null | awk 'NR == 2 { printf "%.0f GB free", $4 / 1048576 }')" || AIF_TUI_DISK=""
   fi
   if [ "$AIF_TUI_BOTTOM" = log ]; then
-    AIF_TUI_LOG="$(tail -n 6 "$AIF_WORK_LOOP_LOGDIR/${AIF_LS_ID[AIF_TUI_SEL]}.log" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')" || AIF_TUI_LOG=""
+    # The selected worker's own take: a card taken twice has a log a take.
+    AIF_TUI_LOG="$(tail -n 6 "$AIF_WORK_LOOP_LOGDIR/${AIF_LS_LOG[AIF_TUI_SEL]:-${AIF_LS_ID[AIF_TUI_SEL]}.log}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')" || AIF_TUI_LOG=""
   fi
 }
 
@@ -3535,8 +3692,9 @@ _aif_work_loop_draw() {
   elif [ -n "$AIF_WORK_LOOP_STOP" ]; then
     AIF_TUI_STATUS="no new cards — ^C again: stop all" AIF_TUI_STATUS_TONE=yellow
   elif [ "${AIF_WORK_LOOP_IDLE:-0}" = 1 ]; then
-    # Idle is a state, not an end: said, with the cards it leaves in Ready.
-    AIF_TUI_STATUS="idle — Ready is empty; looking again every ${AIF_WORK_LOOP_POLL_S:-30}s · q: end${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}" AIF_TUI_STATUS_TONE=dim
+    # Idle is a state, not an end: said, with the cards it leaves in Ready —
+    # and Ready not called empty while it holds them (docs/DEFECTS.md 15.3).
+    AIF_TUI_STATUS="idle — ${AIF_WORK_LOOP_IDLE_WHY:-Ready is empty}; looking again every ${AIF_WORK_LOOP_POLL_S:-30}s · q: end${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}" AIF_TUI_STATUS_TONE=dim
   else
     AIF_TUI_STATUS="^C or q: no new cards" AIF_TUI_STATUS_TONE=dim
   fi
@@ -3678,9 +3836,12 @@ _aif_work_loop_forget() {
   AIF_WORK_LOOP_TAKEN="$keep"
 }
 
-# _aif_work_loop_prune <ready-ids> — idle only, after a Ready read that
-# answered: the taken list keeps what is running and what is still in Ready,
-# and forgets the rest; AIF_WORK_LOOP_HELD names what it keeps in Ready.
+# _aif_work_loop_prune <ready-ids> <idle 0|1> — after a Ready read that
+# answered: AIF_WORK_LOOP_HELD names the cards the loop took that are still
+# in Ready, and will not take again; and, idle, the taken list keeps what is
+# running and what is still in Ready, and forgets the rest. A loop that is not
+# idle takes each card once for its life, and names what it left in Ready the
+# same way — in its summary, where "Ready is empty" used to stand over them.
 #
 # Without it an idle loop took each card once for the life of the loop, and
 # the cards that come BACK to Ready are exactly the ones a loop meant to run
@@ -3713,8 +3874,98 @@ _aif_work_loop_prune() {
         ;;
     esac
   done
-  AIF_WORK_LOOP_TAKEN="$keep"
+  [ "${2:-1}" -eq 0 ] || AIF_WORK_LOOP_TAKEN="$keep"
   AIF_WORK_LOOP_HELD="$held"
+}
+
+# _aif_work_loop_idle_why <ready-ids> — what to say of a Ready this loop has
+# nothing to take from, into AIF_WORK_LOOP_IDLE_WHY: empty; holding only
+# cards it took and will not take again (AIF_WORK_LOOP_TAKEN, the held ones
+# when idle); or holding cards workers elsewhere have (docs/DEFECTS.md 15.3).
+_aif_work_loop_idle_why() {
+  local id others=0 n=0
+  for id in $1; do
+    n=$((n + 1))
+    case "$AIF_WORK_LOOP_TAKEN" in
+      *" $id "*) ;;
+      *) others=$((others + 1)) ;;
+    esac
+  done
+  if [ "$n" -eq 0 ]; then
+    AIF_WORK_LOOP_IDLE_WHY="Ready is empty"
+  elif [ "$others" -eq 0 ]; then
+    AIF_WORK_LOOP_IDLE_WHY="Ready holds only cards this loop will not take again"
+  else
+    AIF_WORK_LOOP_IDLE_WHY="Ready holds nothing this loop can take now"
+  fi
+}
+
+# _aif_work_loop_take_log <ID> — the log the worker about to take <ID>
+# writes, a name in the loop's log directory, into AIF_WORK_LOOP_TAKE_LOG:
+# <ID>.log the first time this loop takes it, <ID>.2.log the second, and so
+# on. An idle loop takes a card again when it comes back — a land's sync:, a
+# shift's retry, a person's move — and one log per card had the second
+# worker's output written over the first's: why it stopped, the lines before
+# a refusal, gone, and two results rows naming one file (docs/DEFECTS.md
+# 15.7). Counts the take; a global, not printed — a `$(…)` would lose the
+# count with its subshell.
+_aif_work_loop_take_log() {
+  local t n=1
+  for t in $AIF_WORK_LOOP_TAKES; do
+    [ "$t" != "$1" ] || n=$((n + 1))
+  done
+  AIF_WORK_LOOP_TAKES="$AIF_WORK_LOOP_TAKES$1 "
+  if [ "$n" -eq 1 ]; then
+    AIF_WORK_LOOP_TAKE_LOG="$1.log"
+  else
+    AIF_WORK_LOOP_TAKE_LOG="$1.$n.log"
+  fi
+}
+
+# _aif_work_loop_why_set <ID> <why> — how <ID>'s last run here ended, in the
+# words a held card is named with: one line a card in AIF_WORK_LOOP_WHYS,
+# `<ID>|<why>`, the newest kept. One line however it was said: a why is read
+# back a line at a time.
+_aif_work_loop_why_set() {
+  local keep="" line why="${2//$'\n'/ }"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "${line%%|*}" = "$1" ] || keep="$keep$line
+"
+  done <<EOF
+$AIF_WORK_LOOP_WHYS
+EOF
+  AIF_WORK_LOOP_WHYS="$keep$1|$why
+"
+}
+
+# _aif_work_loop_held_publish — the cards this loop holds, each with why, into
+# its lock's owner.json as `held: [ { ticket, why } ]` whenever that changed
+# (docs/DEFECTS.md 15.3). The loop remembered what it held and nothing outside
+# the process could know: owner.json said nothing of it, and summary.json's
+# `held` is written when the loop ends — so a shift in another terminal read
+# a live idle loop and a Ready of cards that loop would never take as work in
+# flight, and waited for it until the person pressed q. Rewritten whole, to a
+# temp name and moved, like the logdir before it; not having written it costs
+# the shift its line, not the loop its run.
+_aif_work_loop_held_publish() {
+  local lock="${AIF_WORK_LOOP_LOCK:-}" held
+  [ -n "$lock" ] && [ -f "$lock/owner.json" ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  held="$(printf '%s' "$AIF_WORK_LOOP_WHYS" | jq -R -s -c --arg held "$AIF_WORK_LOOP_HELD" '
+    (split("\n") | map(select(length > 0) | { key: split("|")[0], value: .[(index("|") + 1):] })
+      | from_entries) as $w
+    | [ $held | split(" ")[] | select(length > 0)
+        | { ticket: ., why: ($w[.] // "its run here ended with the card still in Ready") } ]' 2>/dev/null)" || return 0
+  [ -n "$held" ] && [ "$held" != "$AIF_WORK_LOOP_HELD_PUB" ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  if { jq --argjson h "$held" '.held = $h' "$lock/owner.json" >"$lock/owner.json.tmp" &&
+    mv "$lock/owner.json.tmp" "$lock/owner.json"; } 2>/dev/null; then
+    AIF_WORK_LOOP_HELD_PUB="$held"
+  else
+    rm -f "$lock/owner.json.tmp" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # _aif_work_loop_stop_runs <who> — before the loop's TERM to its runs: a stop
@@ -3729,7 +3980,7 @@ _aif_work_loop_stop_runs() {
     pid="${entry%%:*}"
     id="${entry#*:}"
     id="${id%%:*}"
-    lock="$(aif_run_lock_dir "$AIF_WORK_LOOP_ROOT" "$id")"
+    lock="$AIF_WORK_LOOP_RUNS/$id"
     [ "$(_aif_work_lock_pid "$lock")" = "$pid" ] || continue
     printf '%s\n' "$1" >"$lock/stop" 2>/dev/null || true
   done
@@ -3751,9 +4002,10 @@ _aif_work_loop_stop_runs() {
 # instant over a dead one both passed (docs/DEFECTS.md 14.5); its liveness
 # matches `aif work … --loop`, not a worker and not the word.
 # owner.json is what a shift in another terminal reads of the loop: its pid
-# and host, since when, how many at once, whether it idles, and where its
-# logs and summary.json are — null until the loop has named the directory,
-# after its preflight.
+# and host, since when, how many at once, whether it idles, where its logs
+# and summary.json are — null until the loop has named the directory, after
+# its preflight — and the cards it holds in Ready and will not take again,
+# each with why (`held`, rewritten as that changes: docs/DEFECTS.md 15.3).
 _aif_work_loop_lock() {
   local root="$1" parallel="$2" idle="$3" lock rc=0
   AIF_WORK_LOOP_LOCK=""
@@ -3778,7 +4030,7 @@ _aif_work_loop_lock() {
       --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --argjson started "$(date +%s)" \
       --argjson parallel "$parallel" --argjson idle "$idle" \
       '{ pid: $pid, host: $host, started_at: $at, started: $started,
-         parallel: $parallel, idle: $idle, logdir: null }' >"$lock/owner.json.tmp" &&
+         parallel: $parallel, idle: $idle, logdir: null, held: [] }' >"$lock/owner.json.tmp" &&
       mv "$lock/owner.json.tmp" "$lock/owner.json"
   } 2>/dev/null; then
     # Unsigned, the lock would read as live for a minute and then be taken
@@ -3837,7 +4089,7 @@ _aif_work_loop_early() {
 # rc 0 told (drain) or stopped (stop) · 1 no loop to tell, or a stop that did
 # not end it within 90 seconds.
 _aif_work_loop_tell() {
-  local root="$1" what="$2" lock pid who logdir l t0 why
+  local root="$1" what="$2" lock pid who logdir l t0 why pg
   lock="$(aif_loop_lock_dir "$root")"
   if [ ! -d "$lock" ]; then
     aif_err "no loop is running on this checkout — nothing to $what"
@@ -3874,6 +4126,26 @@ _aif_work_loop_tell() {
     return 0
   fi
   _aif_work_say "stop" "the loop (pid $pid) — no new card, and every run in flight stopped, each card saying who"
+  # Still in its preflight — the loop names its log directory in its lock as
+  # its first act after it, so none named is a loop that has not looked at
+  # the file yet, and will not until its suite probe ends: the stop answered
+  # "still running after 90 s" over a loop that stopped at its first look
+  # (docs/DEFECTS.md 15.9). Nothing of a run to settle yet, so a TERM, which
+  # the handler it has then (_aif_work_loop_early) answers by releasing the
+  # lock and ending 143 — to its whole group when it leads one, as a loop
+  # started from a terminal or by a shift does, so the probe it waits on ends
+  # with it and the handler runs at once; else to the loop alone, whose
+  # handler then runs once the probe is done (docs/FINDINGS.md #23).
+  l="$(jq -r '.logdir // empty' "$lock/owner.json" 2>/dev/null)" || l=""
+  if [ -z "$logdir" ] && [ -z "$l" ] && [ "$(_aif_work_lock_pid "$lock")" = "$pid" ]; then
+    pg="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" || pg=""
+    if [ "$pg" = "$pid" ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  fi
+  logdir="${logdir:-$l}"
   t0="$(date +%s)"
   # Ended when its pid is gone, or its lock: the loop releases the lock once
   # its summary is written, a breath before it exits — and a pid its parent

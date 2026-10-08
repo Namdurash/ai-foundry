@@ -198,14 +198,32 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
        then " (the build on branch aif/\($c.ticket) is of a round before)" else "" end) as $old
     | (if $over then "back to the top of Ready, where a loop builds it from the start"
        else "back to the top of Ready, where a loop resumes it from \($at)" end) as $back
-    | [ ($k.orphans // [])[] | . + { group: (.pgid == $k.pid and $k.pid_alive != true) } ] as $kill
+    # Only what is proved the dead run's is stopped: its group, its station.
+    # A process tied to it by nothing but a working directory inside the
+    # worktree may be a person's shell or editor opened there, and it used to
+    # be TERMed with the rest: it is named, never signalled, and the card
+    # stays while it runs — the next worker would dispatch into a tree it is
+    # in, as the takeover refuses to (lib/cmd_work.sh _aif_work_lock_orphans;
+    # docs/DEFECTS.md 14.1).
+    | [ ($k.orphans // [])[] | select(.why != "cwd") | . + { group: (.pgid == $k.pid and $k.pid_alive != true) } ] as $kill
+    | [ ($k.orphans // [])[] | select(.why == "cwd") ] as $keep
     | ($kill | length) as $n
-    | unit("R3b"; "R3b \($c.ticket) \(($k.started // $k.started_at) | nz)"; "requeue";
-           "requeue \($c.ticket) — its worker\($pp) is \($gone)\($old); \($back)"
-           + (if $n == 0 then ""
-              else " · \($n) process\(if $n == 1 then "" else "es" end) it left running, stopped first" end))
-      + { ticket: $c.ticket, column: $c.column, default: "go", to: "ready", top: true, kill: $kill,
-          comment: "released by aif start: its worker\($pp) was \($gone), with no process left behind it — \($back)" };
+    | ($keep | length) as $m
+    | ([ $keep[] | "pid \(.pid) (\((.command // "") | .[0:60]))" ] | join(", ")) as $kept
+    | if $m > 0 and $n == 0 then
+        line("R3b"; $c;
+             "its worker\($pp) is \($gone)\($old), and \($kept) \(if $m == 1 then "runs" else "run" end) in its worktree — nothing but the directory ties \(if $m == 1 then "it" else "them" end) to the run, so the shift stops nothing and requeues nothing while \(if $m == 1 then "it runs" else "they run" end)";
+             "aif work --status \($c.ticket)")
+      else
+        unit("R3b"; "R3b \($c.ticket) \(($k.started // $k.started_at) | nz)"; "requeue";
+             "requeue \($c.ticket) — its worker\($pp) is \($gone)\($old); \($back)"
+             + (if $n == 0 then ""
+                else " · \($n) process\(if $n == 1 then "" else "es" end) it left running, stopped first" end)
+             + (if $m == 0 then ""
+                else " · \($kept) in its worktree, never stopped — not requeued while \(if $m == 1 then "it runs" else "they run" end)" end))
+        + { ticket: $c.ticket, column: $c.column, default: "go", to: "ready", top: true, kill: $kill, keep: $keep,
+            comment: "released by aif start: its worker\($pp) was \($gone), with no process left behind it — \($back)" }
+      end;
 
   def ip_entries:
     . as $c
@@ -645,8 +663,18 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # moved_at untouched, keeps the key: the same Ready is never offered twice
 # (docs/AUTOPILOT-PHASE1.md G §6). _aif_start_build_now makes the same key.
 | ([ col("ready")[] | "\(.ticket)@\(.moved_at | nz)" ] | sort) as $readykeys
+# The cards a loop in another terminal holds — it took each, the run ended
+# with the card still in Ready, and it will not take it again (lib/cmd_work.sh
+# _aif_work_loop_held_publish) — are not its load: the wait and the pulls
+# leave them out, and each is a line with what moves it. Counted as Ready the
+# loop would take, they made the shift wait on them for good (docs/DEFECTS.md
+# 15.3).
+| (if $mode == "elsewhere" then [ ($b.loop.held // [])[] | select(type == "object" and .ticket != null) ] else [] end) as $loopheld
+| [ col("ready")[] | . as $c | first($loopheld[] | select(.ticket == $c.ticket)) as $h
+    | { c: $c, why: ($h.why // "its run there ended with the card still in Ready") } ] as $heldready
+| ($ready - ($heldready | length)) as $ready_loop
 | (if $mode == "here" then (if $ready >= 1 and $ready < $par then $par - $ready else 0 end)
-   elif $mode == "elsewhere" then $par - ($ready + $building)
+   elif $mode == "elsewhere" then $par - ($ready_loop + $building)
    else 0 end) as $free
 | (if $mode == "here" and $b.hold == null and $ready >= 1 and ($rv_live | length) == 0 then
      [ unit("R12"; "R12 \($readykeys | join(" "))"; "build";
@@ -662,13 +690,15 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
              comment: "released by aif start: pulled from Backlog at the shift's control point — it has no depends_on and its ready gate passes" } ]
    else [] end) as $u14
 | (if $free >= 1 then $u14 | live_of | .[0:$free] else [] end) as $u14_live
-| (if $mode == "here" and $b.hold != null and $ready >= 1 then
-     [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
-         text: "the build is held: \($b.hold) — b at the control point builds again", command: null } ]
-   elif $mode == "none" and $ready >= 1 then
-     [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
-         text: "Ready holds \($ready) — no loop runs on this checkout", command: "aif work --loop --idle" } ]
-   else [] end) as $l12
+| ((if $mode == "here" and $b.hold != null and $ready >= 1 then
+      [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
+          text: "the build is held: \($b.hold) — b at the control point builds again", command: null } ]
+    elif $mode == "none" and $ready >= 1 then
+      [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
+          text: "Ready holds \($ready) — no loop runs on this checkout", command: "aif work --loop --idle" } ]
+    else [] end)
+   + [ $heldready[] | line("R12"; .c; "the loop in another terminal will not take it again — \(.why); aif work \(.c.ticket), or restart the loop";
+                           "aif work \(.c.ticket)") ]) as $l12
 
 # ---------------------------------------------------------------- the plan
 
@@ -688,7 +718,8 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # The shift waits, naming the command, and takes the loop up as `elsewhere`
 # once it starts.
 | (($moves | length) == 0 and ($units0 | length) == 0) as $idle
-| ($building > 0 or (($mode == "elsewhere" or $mode == "none") and $ready >= 1) or $unread > 0) as $inflight
+# Ready the loop elsewhere would take — never the cards it holds (above).
+| ($building > 0 or (($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1) or $unread > 0) as $inflight
 | (if $idle and ($inflight | not) and $flags.po == true then
      [ session("R21"; "R21"; "po"; "/aif-po"; "aif po"; "owner — nothing left on the board; bring a need") ]
    else [] end) as $u21
@@ -704,12 +735,12 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     lines: [ $lines[] | del(.type) ],
     wait: (if $idle and $inflight then
              { why: (([ (if $building > 0 then "\($building) being built" else empty end),
-                        (if ($mode == "elsewhere" or $mode == "none") and $ready >= 1 then "\($ready) in Ready" else empty end),
+                        (if ($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1 then "\($ready_loop) in Ready" else empty end),
                         (if $unread > 0 then "\($unread) card\(if $unread == 1 then "" else "s" end) not read yet" else empty end) ]
                       | join(", "))
                      + (if $mode == "elsewhere"
                         then " — the loop in another terminal" + (if $b.loop.pid == null then "" else " (pid \($b.loop.pid))" end)
-                        elif $mode == "none" and $ready >= 1
+                        elif $mode == "none" and $ready_loop >= 1
                         then " — no loop runs on this checkout yet: aif work --loop --idle in another terminal"
                         else "" end)) }
            else null end),

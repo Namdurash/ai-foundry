@@ -89,7 +89,8 @@ _aif_start_board() {
 #
 #   { now (epoch), shift_started_at (ISO UTC), host, board_kind, ticket_re,
 #     build: { mode: "here"|"elsewhere"|"none", parallel, hold: null|"<why>",
-#              loop: { live, pid, host, idle, parallel, logdir }|null },
+#              loop: { live, pid, host, idle, parallel, logdir,
+#                      held: [ { ticket, why } ] }|null },
 #     flags: { po, pjm, retry_runs }, hold_labels: [..], dirty: [ "<path>" ],
 #     cards: [ { ticket, title, column, pos, labels, moved_at, unread, unread_why,
 #                head: { line, at, body, after, heads: [ { line, at } ] }|null,
@@ -359,6 +360,11 @@ _aif_start_cards() {
 # a dead lock (docs/DEFECTS.md 14.5). No live loop: `none` under --no-build,
 # else `here` — this shift runs the loop itself, in the foreground (R12). A
 # dead lock is still described, `live: false`: the next loop takes it over.
+#
+# `held` is what the loop publishes of the cards it will not take again, each
+# with why (_aif_work_loop_held_publish): the oracle leaves them out of the
+# wait and names each, where it used to wait on them until the person
+# pressed q (docs/DEFECTS.md 15.3). A lock from before the field holds none.
 _aif_start_build() {
   local root="$1" lock live=false owner="" loopj=null mode=here par
   par="$(_aif_start_parallel "$root")"
@@ -370,7 +376,9 @@ _aif_start_build() {
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
     loopj="$(jq -cn --argjson o "$owner" --argjson live "$live" '
       { live: $live, pid: ($o.pid // null), host: ($o.host // null), idle: (($o.idle // 0) == 1),
-        parallel: ($o.parallel // null), logdir: ($o.logdir // null) }')" || loopj=null
+        parallel: ($o.parallel // null), logdir: ($o.logdir // null),
+        held: [ ($o.held // [])[]? | select(type == "object" and (.ticket | type) == "string")
+                | { ticket, why: (if (.why | type) == "string" then .why else null end) } ] }')" || loopj=null
     [ "$live" = false ] || mode=elsewhere
   fi
   if [ "$mode" != elsewhere ] && [ "${AIF_START_FLAG_NO_BUILD:-0}" = 1 ]; then
@@ -1643,11 +1651,15 @@ _aif_start_run_send() {
 # TERM — to its whole group when that group is the dead worker's own (its id
 # the lock's pid, and that pid gone), else to the process alone, never a
 # group some other program leads (critics operations-3) — and given 30
-# seconds to go.
+# seconds to go. What `keep` names — a process tied to the dead run only by
+# its working directory in the worktree, maybe a person's shell there — is
+# never signalled, and the card is not requeued while it runs
+# (docs/DEFECTS.md 14.1; lib/start.jq, the requeue).
 _aif_start_run_requeue() {
-  local root="$1" u="$2" id key rows pid pgid grp alive t0 col
+  local root="$1" u="$2" id key rows pid pgid grp alive t0 col keep
   id="$(printf '%s' "$u" | jq -r '.ticket')"
   key="$(printf '%s' "$u" | jq -r '.key')"
+  keep="$(printf '%s' "$u" | jq -r '(.keep // [])[] | .pid')" || keep=""
   rows="$(printf '%s' "$u" | jq -r '(.kill // [])[] | "\(.pid) \(.pgid) \(.group)"')"
   if [ -n "$rows" ]; then
     while read -r pid pgid grp; do
@@ -1677,6 +1689,17 @@ EOF
       _aif_start_acted
       return 0
     fi
+  fi
+  alive=""
+  for pid in $keep; do
+    if _aif_work_pid_alive "$pid"; then alive="${alive:+$alive }$pid"; fi
+  done
+  if [ -n "$alive" ]; then
+    _aif_start_say "requeue" "$id — a process in its worktree that nothing but its directory ties to the run still runs (pid $alive) — never signalled, and not requeued while it runs; aif work --status $id says what it is"
+    _aif_start_done "$key" "a process in its worktree, never signalled, still runs (pid $alive) — not requeued"
+    _aif_start_record "$u" "not requeued — a process in its worktree still runs (pid $alive)" "" "in_progress"
+    _aif_start_acted
+    return 0
   fi
   if _aif_start_comment_move "$root" "$id" "$(printf '%s' "$u" | jq -r '.comment // empty')" ready top; then
     _aif_start_out "moved $id → ready (top) — $(printf '%s' "$u" | jq -r '.text')"

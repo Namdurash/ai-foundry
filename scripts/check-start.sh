@@ -22,7 +22,10 @@
 #      into Ready, the owner's seed on the rework and not the request it
 #      rewrites; a line never the bare move that would undo what the shift
 #      held back), a shared board's block on another machine a line, the
-#      wait — for a loop not started yet too — and the end — and
+#      wait — for a loop not started yet too, never for the cards a loop
+#      elsewhere holds, each a line — and the end; a requeue that stops only
+#      what is the dead run's, never a process in its worktree nothing else
+#      ties to it — and
 #      lib/requests.sh over requests shaped like a real project's: a status
 #      the tickets that name the request overrule, a blank line before it,
 #      a fenced block in a slice, two old-format requests with no status
@@ -46,7 +49,10 @@
 #      killed outright, its station stopped and its card requeued — a child
 #      its group gains after the facts were read stopped with it (the TERM
 #      is the group's, not each pid's), and another checkout's station on
-#      the same id left running
+#      the same id left running; a process opened by hand in a dead worker's
+#      worktree named, never stopped, the card not requeued; a loop in
+#      another terminal holding the one card in Ready — a line, no wait, the
+#      shift's end
 #   T  Trello, against scripts/mock-trello.py with the real clock: this
 #      host's claim is requeued and another host's is a line; a card's head
 #      is read again when a comment moves its last activity, and a block by
@@ -583,6 +589,25 @@ fx "R3b: a lock with no phase and no record — its phase unknown, built from th
            "lock":{"held":true,"live":false,"pid":6100,"pid_alive":false,"phase":null,"started":1791300300,"orphans":[]},"run":{"where":null,"status":null,"stage":null}}}]}
 JSON
 
+# A process tied to the dead run by nothing but its working directory in the
+# worktree — a person's shell or editor, maybe — is never stopped, and the
+# card is not requeued while it runs (docs/DEFECTS.md 14.1): alone, it is a
+# line naming it; beside the dead run's own group, the requeue stops the group
+# and keeps it, said so.
+fx "R3b: only a process in the worktree that nothing else ties to the run — a line naming it, no requeue, nothing stopped" '(.units | length) == 0 and (.moves | length) == 0 and .lines[0].rule == "R3b" and .lines[0].command == "aif work --status AIF-62" and (.lines[0].text | contains("pid 6201 (vim notes.md) runs in its worktree — nothing but the directory ties it to the run, so the shift stops nothing and requeues nothing while it runs"))' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-62","column":"in_progress","pos":1,"head":{"line":"taken: mac pid 6200 at 2026-10-07T09:00:00Z — aif work","at":"2026-10-07T09:00:01Z","after":0,"heads":[$TK]},
+  "local":{"class":"interrupted","lock":{"held":true,"live":false,"pid":6200,"pid_alive":false,"phase":"run","stage":"plan","started":1791300400,
+           "orphans":[{"pid":6201,"pgid":6201,"why":"cwd","command":"vim notes.md"}]},"run":{"where":"worktree","status":"running","stage":"plan"}}}]}
+JSON
+
+fx "R3b: the dead run's group and a process in the worktree — the requeue stops the group only, and keeps the other, said" '.units[0].rule == "R3b" and ([.units[0].kill[] | .pid] == [6301]) and ([.units[0].keep[] | .pid] == [6302]) and (.units[0].text | contains("1 process it left running, stopped first · pid 6302 (zsh) in its worktree, never stopped — not requeued while it runs"))' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-63","column":"in_progress","pos":1,"head":{"line":"taken: mac pid 6300 at 2026-10-07T09:00:00Z — aif work","at":"2026-10-07T09:00:01Z","after":0,"heads":[$TK]},
+  "local":{"class":"interrupted","lock":{"held":true,"live":false,"pid":6300,"pid_alive":false,"phase":"run","stage":"plan","started":1791300500,
+           "orphans":[{"pid":6301,"pgid":6300,"why":"group","command":"claude -p Ticket AIF-63. x"},{"pid":6302,"pgid":6302,"why":"cwd","command":"zsh"}]},"run":{"where":"worktree","status":"running","stage":"plan"}}}]}
+JSON
+
 fx "R3b on Trello, the newest taken: this host's — offered" '.units[0].rule == "R3b" and (.lines | length) == 0' <<JSON
 {$S,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-7","column":"in_progress","pos":1,"head":{"line":"taken: mac pid 6000 at 2026-10-07T09:00:00Z — aif work","at":"2026-10-07T09:00:01Z","after":0,"heads":[$TK]},
@@ -745,6 +770,28 @@ JSON
 fx "R12 with a loop elsewhere — no unit, a wait" '(.units | length) == 0 and (.lines | length) == 0 and .wait.why == "1 in Ready — the loop in another terminal (pid 999)" and ."end" == null' <<JSON
 {$S,"build":{"mode":"elsewhere","parallel":2,"hold":null,"loop":{"live":true,"pid":999,"idle":true,"parallel":2}},"cards":[
  {"ticket":"AIF-53","column":"ready","pos":1}]}
+JSON
+
+# What a loop elsewhere holds — taken once, its run ended with the card still
+# in Ready, never taken again by it — is not its load (docs/DEFECTS.md 15.3):
+# left out of the wait, a line each with why and its command; a Ready of
+# nothing else is no work in flight, and the shift ends where it waited for
+# good; the pulls count the free slots without them.
+fx "R12 with a loop elsewhere holding a card — the card a line with why, the wait for the rest only" '(.units | length) == 0 and .wait.why == "1 in Ready — the loop in another terminal (pid 999)" and ([.lines[] | select(.rule == "R12")] | length) == 1 and .lines[0].ticket == "AIF-81" and .lines[0].text == "the loop in another terminal will not take it again — its worker exited 1 before it took the card: no profile; aif work AIF-81, or restart the loop" and .lines[0].command == "aif work AIF-81" and ."end" == null' <<JSON
+{$S,"build":{"mode":"elsewhere","parallel":2,"hold":null,"loop":{"live":true,"pid":999,"idle":true,"parallel":2,"held":[{"ticket":"AIF-81","why":"its worker exited 1 before it took the card: no profile"}]}},"cards":[
+ {"ticket":"AIF-81","column":"ready","pos":1},{"ticket":"AIF-82","column":"ready","pos":2}]}
+JSON
+
+fx "…Ready holding only what the loop elsewhere holds — no wait: the shift ends, each card a line" '(.units | length) == 0 and .wait == null and ."end".rc == 0 and ([.lines[] | .ticket] == ["AIF-83","AIF-84"]) and ([.lines[] | .command] == ["aif work AIF-83","aif work AIF-84"])' <<JSON
+{$S,"build":{"mode":"elsewhere","parallel":2,"hold":null,"loop":{"live":true,"pid":999,"idle":true,"parallel":2,"held":[{"ticket":"AIF-83","why":"a"},{"ticket":"AIF-84","why":"b"},{"ticket":"AIF-89","why":"no longer in Ready"}]}},"cards":[
+ {"ticket":"AIF-83","column":"ready","pos":1},{"ticket":"AIF-84","column":"ready","pos":2},{"ticket":"AIF-89","column":"done","pos":1}]}
+JSON
+
+fx "…and the pulls count the loop's free slots without its held cards" '([.units[] | .rule + " " + .ticket] == ["R14 AIF-86","R14 AIF-87"]) and .lines[0].ticket == "AIF-85"' <<JSON
+{$S,"build":{"mode":"elsewhere","parallel":2,"hold":null,"loop":{"live":true,"pid":999,"idle":true,"parallel":2,"held":[{"ticket":"AIF-85","why":"x"}]}},"cards":[
+ {"ticket":"AIF-85","column":"ready","pos":1},
+ {"ticket":"AIF-86","column":"backlog","pos":1,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":0},
+ {"ticket":"AIF-87","column":"backlog","pos":2,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":[]},"ready_gate":0}]}
 JSON
 
 fx "R12 under --no-build with no loop yet — a line, and a wait for the loop, never the end" '(.units | length) == 0 and .lines[0].text == "Ready holds 1 — no loop runs on this checkout" and .lines[0].command == "aif work --loop --idle" and .wait.why == "1 in Ready — no loop runs on this checkout yet: aif work --loop --idle in another terminal" and ."end" == null' <<JSON
@@ -1596,6 +1643,54 @@ eq "R3b: another clone's station on the same id is not listed, and survives the 
 rc=0
 wait_exit "$r5o" 60 || rc=$?
 eq "…and that clone's build finishes on its own" "$rc,$(cd "$SANDBOX/pB2" && col AIF-5)" "0,review"
+
+# A process someone opened in a dead worker's worktree — nothing but its
+# directory ties it to the run: the shift neither stops it nor requeues the
+# card while it runs, and the line names it (docs/DEFECTS.md 14.1). It used
+# to be TERMed with the rest, and the card put back for the next worker to
+# dispatch into the tree beside it.
+fresh_project "$SANDBOX/pR"
+ticket_for AIF-6
+git add -A && git commit -qm "one with a shell in its worktree" >/dev/null
+card AIF-6 in_progress
+mkdir -p .aif/worktrees/AIF-6
+(cd .aif/worktrees/AIF-6 && exec sleep 57.9 >/dev/null 2>&1) &
+hand=$!
+dead_pid
+mkdir -p .aif/state/runs/AIF-6
+printf '{ "ticket": "AIF-6", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$DEAD" >.aif/state/runs/AIF-6/owner.json
+printf 'run\n' >.aif/state/runs/AIF-6/phase
+rc=0
+run_bg "$OUT/r6-shift.out" 60 env AIF_START_KEYS=. "$AIF" start --no-build || rc=$?
+eq "R3b: a process opened by hand in a dead worker's worktree — named in a line, never signalled, the card not requeued" \
+  "$rc,$(kill -0 "$hand" 2>/dev/null && echo alive),$(col AIF-6),$(jq -r '.left[] | select(.ticket == "AIF-6") | .text' "$(newest_shift)/summary.json" 2>/dev/null | grep -c "pid $hand (sleep 57.9) runs in its worktree — nothing but the directory ties it to the run"),$(grep -c '^next: requeue' "$OUT/r6-shift.out")" \
+  "0,alive,in_progress,1,0"
+kill "$hand" 2>/dev/null
+wait "$hand" 2>/dev/null
+
+# A loop in another terminal holding the one card in Ready — its worker
+# exited before its claim, the stations gone from the checkout after the
+# loop's preflight — is no work in flight: the shift waited on it until the
+# person pressed q (docs/DEFECTS.md 15.3). Now the card is a line with why and
+# the command, and with nothing else left the shift ends.
+fresh_project "$SANDBOX/pH3"
+ticket_for AIF-7
+git add -A && git commit -qm "one for a held card" >/dev/null
+start_bg "$OUT/h3-loop.out" env AIF_WORK_LOOP_LOGDIR="$SANDBOX/h3-loop" "$AIF" work --loop --idle --parallel 1 --no-tui
+hloop=$BG
+wait_said "$SANDBOX/h3-loop/loop.log" "Ready is empty — idle" 30
+mv .claude/agents/aif-implement.md "$OUT/aif-implement.md.h3"
+card AIF-7 ready
+wait_said "$SANDBOX/h3-loop/loop.log" "Ready holds only cards this loop will not take again" 30
+mv "$OUT/aif-implement.md.h3" .claude/agents/aif-implement.md
+rc=0
+run_bg "$OUT/h3-shift.out" 60 env AIF_START_KEYS=____ "$AIF" start --no-build || rc=$?
+SH3="$(newest_shift)"
+eq "a loop elsewhere holding the one card in Ready: no wait for it — a line with why and aif work AIF-7 — and the shift ends" \
+  "$rc|$(grep -c '^waiting — ' "$OUT/h3-shift.out")|$(jq -r '.why' "$SH3/summary.json" 2>/dev/null)|$(jq -r '[.left[] | select(.ticket == "AIF-7") | .command] | join(",")' "$SH3/summary.json" 2>/dev/null)|$(jq -r '.left[] | select(.ticket == "AIF-7") | .text' "$SH3/summary.json" 2>/dev/null)" \
+  "0|0|nothing left for the shift|aif work AIF-7|the loop in another terminal will not take it again — its worker exited 1 before it took the card: the stations are not installed — run 'aif init'; aif work AIF-7, or restart the loop"
+"$AIF" work --loop --drain >/dev/null 2>&1
+wait_exit "$hloop" 60 >/dev/null || true
 
 # =================================== T ======================================
 printf '\nT. Trello — the stand-in server, with the real clock\n'

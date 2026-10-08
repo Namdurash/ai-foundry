@@ -40,7 +40,8 @@
 #   AIF_LS_START[i], AIF_LS_END[i], AIF_LS_PCT[i], AIF_LS_PSTAGE[i]
 #                                 per slot, 1..AIF_TUI_PARALLEL: the card, how its
 #                                 run ended (running, built, blocked, stopped,
-#                                 env), the worker's live state as it wrote it
+#                                 env, held — a takeover refused while a dead
+#                                 run's processes still run), the worker's live state as it wrote it
 #                                 (lib/cmd_work.sh, _aif_work_live), and the
 #                                 progress shown last, so it never goes back
 #                                 within a stage
@@ -157,16 +158,20 @@ aif_tui_border() {
   AIF_TUI_OUT="$out$AIF_TUI_OUT$right$AIF_TUI_C_reset"
 }
 
-# aif_tui_ago <seconds> — "45s", "31m", "2h05", into AIF_TUI_OUT.
+# aif_tui_ago <seconds> — "45s", "31m", "2h05", into AIF_TUI_OUT. With
+# `printf -v`, no `$(…)`: a frame is drawn every second, and a Ctrl-C that
+# kills a child the loop waits on in an assignment ends the loop under set -e
+# (docs/DEFECTS.md 11.1).
 aif_tui_ago() {
-  local s="$1"
+  local s="$1" m
   [ "$s" -ge 0 ] 2>/dev/null || s=0
   if [ "$s" -lt 60 ]; then
     AIF_TUI_OUT="${s}s"
   elif [ "$s" -lt 3600 ]; then
     AIF_TUI_OUT="$((s / 60))m"
   else
-    AIF_TUI_OUT="$((s / 3600))h$(printf '%02d' $(((s % 3600) / 60)))"
+    printf -v m '%02d' $(((s % 3600) / 60))
+    AIF_TUI_OUT="$((s / 3600))h$m"
   fi
 }
 
@@ -228,7 +233,7 @@ EOF
     pct="${AIF_LS_PCT[$i]}"
   fi
   case "$result" in
-    blocked | stopped | env) pct="${AIF_LS_PCT[$i]:-$pct}" ;;
+    blocked | stopped | env | held) pct="${AIF_LS_PCT[$i]:-$pct}" ;;
   esac
   AIF_LS_PCT[i]="$pct"
   AIF_LS_PSTAGE[i]="$k"
@@ -241,7 +246,7 @@ EOF
   case "$result" in
     built) AIF_TUI_W_link=green ;;
     blocked | env) AIF_TUI_W_link=red ;;
-    stopped) AIF_TUI_W_link=dim ;;
+    stopped | held) AIF_TUI_W_link=dim ;;
     running)
       AIF_TUI_W_link=orange
       case "$AIF_TUI_W_phase" in
@@ -303,6 +308,9 @@ aif_tui_worker() {
     blocked) aif_tui_line "$tw" red "$AIF_TUI_G_no Blocked${AIF_LS_KIND[$i]:+: ${AIF_LS_KIND[$i]}}" ;;
     env) aif_tui_line "$tw" red "$AIF_TUI_G_no could not start $AIF_TUI_G_sep the machine" ;;
     stopped) aif_tui_line "$tw" dim "$AIF_TUI_G_halt stopped" ;;
+    # A takeover the worker refused: its last run's processes still run,
+    # and the card is held, untouched (docs/DEFECTS.md 14.1).
+    held) aif_tui_line "$tw" yellow "$AIF_TUI_G_halt not taken over $AIF_TUI_G_sep its last run still runs" ;;
     running)
       case "$AIF_TUI_W_phase" in
         run)
@@ -365,7 +373,7 @@ aif_tui_worker() {
       done_tone="fg"
       case "${AIF_LS_RESULT[$i]-}" in
         blocked | env) done_tone=red ;;
-        stopped) done_tone=dim ;;
+        stopped | held) done_tone=dim ;;
       esac
       set -- "$@" "$done_tone" "$s"
     else
@@ -679,6 +687,7 @@ aif_tui_compact() {
       blocked) state="$AIF_TUI_G_no Blocked${AIF_LS_KIND[$i]:+: ${AIF_LS_KIND[$i]}}" ;;
       env) state="$AIF_TUI_G_no could not start" ;;
       stopped) state="$AIF_TUI_G_halt stopped" ;;
+      held) state="$AIF_TUI_G_halt not taken over" ;;
       running)
         state="$AIF_TUI_G_run ${AIF_TUI_W_stage:-${AIF_TUI_W_phase:-starting}}"
         [ -z "$AIF_TUI_W_attempt" ] || state="$state $AIF_TUI_W_attempt/${AIF_TUI_W_amax:-?}"

@@ -160,6 +160,18 @@
 #      nor stopped
 #  55  aif work --status with no id lists a --no-worktree build, and a lock
 #      with no phase says its phase is unknown
+#  56  the loop's second Ctrl-C sent a tick after the first — where a
+#      foreground sleep's end lost it — stops the runs every time; and a
+#      Ctrl-C that lands while the loop waits on a slow `date` leaves it
+#      alive, its run built and reported
+#  57  an idle loop names in its lock each card it holds, with why, and says
+#      when Ready holds only those; a worker that refused to take over a
+#      dead run still running is held, not counted as the machine; a process
+#      opened by hand in a dead run's worktree is never signalled and refuses
+#      the takeover; a card taken twice has a log for each take
+#  58  a Ctrl-C during the Ready read is not the board; aif work --loop
+#      --stop reaches a loop still in its preflight; a loop that is not idle
+#      asks the machine again before one failed Ready read ends it 3
 #
 # Run by `make check`. Requires git, jq and python3; skips without python3.
 
@@ -2774,9 +2786,10 @@ wait_said() { # <file> <text> — until the text is in the file, up to ten secon
 # ctrl_c_twice <loop-pid> <out> — as a person does it: the second once the loop
 # has said what the first meant, and off the loop's one-second tick. Sent
 # exactly a second after the first, the second landed where the tick's sleep
-# ends and the shell is between commands, and bash 3.2 lost it about one time
-# in three (docs/DEFECTS.md 11.1) — a race in the loop's shell this harness
-# must not be the thing that hits.
+# ended and the shell was between commands, and bash 3.2 lost it about one
+# time in six (docs/DEFECTS.md 11.1). The tick waits in the `wait` builtin
+# now, and scenario 56 sends the second on the tick's end itself; the rows
+# that use this one test something else, and keep it off the tick.
 ctrl_c_twice() {
   kill -INT -- "-$1" 2>/dev/null
   wait_said "$2" "Ctrl-C — no new card"
@@ -4817,6 +4830,289 @@ eq "…and with one, where it died" \
   "$("$AIF" work --status AIF-552 2>&1)" \
   "AIF-552  interrupted — its worker (pid $dead55) is gone during its worktree, before its intake — no station ran; nothing of it still runs"
 rm -rf .aif/state/runs/AIF-552
+
+# ====== 56. the second Ctrl-C one tick after the first ========================
+# docs/DEFECTS.md 11.1. The second Ctrl-C sent a tick after the first — the
+# alignment this harness used before ctrl_c_twice waited for the loop's word —
+# landed as the tick's foreground `sleep 1` ended, where bash 3.2 notes an INT
+# and runs no trap: lost 10 times in 60 on the loop at that alignment, and 7 in
+# 16 where the offset walks the end of the tick (docs/FINDINGS.md #33). The
+# tick waits in the `wait` builtin now, where a trapped INT always runs its
+# trap. Twelve times, the second sent a tick and 0 to 10 ms after the first:
+# the run stopped by it every time. Each loop waited on with a bound.
+printf '\n56. the second Ctrl-C a tick after the first stops the runs, every time\n'
+fresh_project "$SANDBOX/p56"
+for i in $(seq 1 12); do
+  ticket_for "AIF-$((560 + i))"
+done
+git add -A && git commit -qm "twelve for the second Ctrl-C" >/dev/null
+wrong56=""
+i=0
+for d56 in 1 1.002 1.004 1.006 1.008 1.010 1 1.002 1.004 1.006 1.008 1.010; do
+  i=$((i + 1))
+  id="AIF-$((560 + i))"
+  "$AIF" board create "tasks/$id/ticket.md" --column ready >/dev/null
+  m56="$SANDBOX/p56-marks-$i"
+  mkdir -p "$m56"
+  FAKE_SLEEP_IN="$id:plan" FAKE_MARKS="$m56" FAKE_RELEASE="$m56/go" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p56-loop-$i" \
+    launch "$OUT/run56-$i.out" --parallel 1 --no-tui
+  l56=$loop
+  IDLE_PIDS="$IDLE_PIDS $l56"
+  wait_for "$m56/$id-plan"
+  # The first anywhere in a tick; the second a tick after it, as `sleep 1`
+  # between two kills put it, and a few ms later on.
+  sleep "0.$((RANDOM % 9))"
+  kill -INT -- "-$l56" 2>/dev/null
+  sleep "$d56"
+  kill -INT -- "-$l56" 2>/dev/null
+  # Forwarded, the second ends the run at once and the loop with it, 130; a
+  # lost one leaves the station holding: the harness lets it go and stops
+  # the loop itself.
+  j=0
+  while kill -0 "$l56" 2>/dev/null && [ "$j" -lt 80 ]; do
+    sleep 0.1
+    j=$((j + 1))
+  done
+  : >"$m56/go"
+  kill -0 "$l56" 2>/dev/null && kill -TERM -- "-$l56" 2>/dev/null
+  rc=0
+  wait_exit "$l56" 30 || rc=$?
+  [ "$rc,$(col "$id")" = "130,needs_human" ] || wrong56="$wrong56 $i:$d56:$rc"
+done
+eq "Ctrl-C twice, the second a tick and 0–10 ms after the first, 12 times: the run stopped and the loop ended 130 each time" \
+  "${wrong56# }" ""
+
+# A Ctrl-C that lands in a `$(…)` the loop assigns from kills the child, and
+# under set -e the assignment's 130 then ended the loop itself — its runs left
+# to build on with nobody to forward the second Ctrl-C (docs/FINDINGS.md #33).
+# The loop forks for nothing it reads each second now. Here its `date` takes a
+# second and a half, as a loaded machine's fork can, so a Ctrl-C at a random
+# point lands in it more often than not where the loop still asks it: four
+# loops, one held run each, one Ctrl-C each — every loop alive after it,
+# waiting for its run, which it then reports built.
+mkdir -p "$SANDBOX/p56-slow"
+cat >"$SANDBOX/p56-slow/date" <<'SLOW'
+#!/bin/bash
+# The loop's own `date` slow; its workers, which carry AIF_WORK_LOOP=1, not.
+[ "${AIF_WORK_LOOP:-}" = 1 ] || sleep 1.5
+exec /bin/date "$@"
+SLOW
+chmod +x "$SANDBOX/p56-slow/date"
+wrong56=""
+for i in 1 2 3 4; do
+  id="AIF-$((572 + i))"
+  ticket_for "$id"
+  git add -A && git commit -qm "$id for a Ctrl-C in a slow date" >/dev/null
+  "$AIF" board create "tasks/$id/ticket.md" --column ready >/dev/null
+  m56="$SANDBOX/p56-slow-marks-$i"
+  mkdir -p "$m56"
+  PATH="$SANDBOX/p56-slow:$PATH" FAKE_SLEEP_IN="$id:plan" FAKE_MARKS="$m56" FAKE_RELEASE="$m56/go" \
+    AIF_WORK_LOOP_LOGDIR="$SANDBOX/p56-slow-loop-$i" launch "$OUT/run56s-$i.out" --parallel 2 --no-tui
+  l56=$loop
+  IDLE_PIDS="$IDLE_PIDS $l56"
+  wait_file "$m56/$id-plan" 60
+  sleep "$((RANDOM % 3)).$((RANDOM % 10))"
+  kill -INT -- "-$l56" 2>/dev/null
+  sleep 4
+  alive56="$(kill -0 "$l56" 2>/dev/null && echo alive || echo gone)"
+  : >"$m56/go"
+  rc=0
+  wait_exit "$l56" 90 || rc=$?
+  b56="$(jq -r '.built' "$SANDBOX/p56-slow-loop-$i/summary.json" 2>/dev/null)"
+  [ "$alive56,$rc,$b56,$(col "$id")" = "alive,130,1,review" ] || wrong56="$wrong56 $i:$alive56,$rc,$b56"
+done
+eq "one Ctrl-C while the loop waits on a slow date, 4 times: the loop still there, its run built and reported — exit 130" \
+  "${wrong56# }" ""
+
+# ====== 57. what an idle loop holds, said where a shift can read it =========
+# docs/DEFECTS.md 15.3, 15.7 and 14.1. An idle loop holds a card whose run
+# ended with the card still in Ready — skipped, never taken again by that
+# loop — and said so in its own lines only, and in summary.json once it
+# ended: a shift in another terminal read the card as work in flight and
+# waited for it for good. The lock's owner.json names each held card with
+# why now, and the idle line says Ready holds only such cards. A takeover a
+# worker refused because what a dead run of the card started still runs is
+# held the same way — no preflight asked again, nothing counted toward the
+# environment — and the loop goes on with the next card. A process tied to a
+# dead run by nothing but its working directory is never signalled: the
+# takeover refuses at once, naming it. And a card taken twice has a log for
+# each take, where the second worker's output used to replace the first's.
+printf '\n57. an idle loop names what it holds, a refused takeover is not the machine, and each take has its log\n'
+fresh_project "$SANDBOX/p57"
+for t in AIF-575 AIF-576 AIF-577 AIF-578 AIF-579; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "five for what an idle loop holds" >/dev/null
+L57="$SANDBOX/p57-loop"
+AIF_WORK_TAKEOVER_WAIT=2 AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L57" launch "$OUT/run57a.out" --idle --no-tui --parallel 1
+l57=$loop
+IDLE_PIDS="$IDLE_PIDS $l57"
+wait_count "$L57/loop.log" 'Ready is empty — idle' 1 30
+eq "an idle loop's lock says what it holds: nothing yet" "$(jq -c '.held' .aif/state/loop/owner.json 2>/dev/null)" "[]"
+
+# Taken twice: built, back in Ready as a land's sync: sends it, built again.
+"$AIF" board create tasks/AIF-575/ticket.md --column ready >/dev/null
+wait_col AIF-575 review 60
+wait_count "$L57/loop.log" 'Ready is empty — idle' 2 30
+"$AIF" board move AIF-575 ready >/dev/null
+wait_count "$OUT/run57a.out" 'loop [0-9]* — AIF-575 ' 2 30
+wait_col AIF-575 review 60
+wait_count "$L57/loop.log" 'Ready is empty — idle' 3 30
+eq "a card taken twice: a log a take — the first kept, the second beside it — each named where its worker started" \
+  "$(find "$L57" -name 'AIF-575*.log' | wc -l | tr -d ' '),$(grep -c 'cut .aif/worktrees/AIF-575 on aif/AIF-575' "$L57/AIF-575.log" 2>/dev/null),$(grep -c 'cut .aif/worktrees/AIF-575' "$L57/AIF-575.2.log" 2>/dev/null),$(grep -c "loop 1 — AIF-575 · .*/AIF-575.log$" "$OUT/run57a.out"),$(grep -c "loop 2 — AIF-575 · .*/AIF-575.2.log$" "$OUT/run57a.out")" \
+  "2,1,0,1,1"
+
+# A worker that exits before its claim — the stations gone from the checkout
+# after the loop's preflight — leaves its card in Ready: held, and said.
+mv .claude/agents/aif-implement.md "$OUT/aif-implement.md.57"
+"$AIF" board create tasks/AIF-576/ticket.md --column ready >/dev/null
+wait_count "$L57/loop.log" 'Ready holds only cards this loop will not take again — idle' 1 30
+mv "$OUT/aif-implement.md.57" .claude/agents/aif-implement.md
+eq "a worker that exited before its claim: the card held in Ready, the lock naming it with why, the idle line saying Ready holds only cards this loop will not take again" \
+  "$(col AIF-576)|$(jq -r '[.held[] | .ticket + ": " + .why] | join(";")' .aif/state/loop/owner.json 2>/dev/null)|$(grep -c 'Ready holds only cards this loop will not take again — idle, looking again every 1s · .* · held: AIF-576$' "$L57/loop.log")" \
+  "ready|AIF-576: its worker exited 1 before it took the card: the stations are not installed — run 'aif init'|1"
+
+# A dead run of AIF-577 whose station left a child that ignores TERM: the
+# takeover TERMs what is the run's, waits (2 s here), and refuses, exit 3,
+# the card untouched. Moved back to Ready by hand, beside AIF-578.
+"$AIF" board create tasks/AIF-577/ticket.md --column backlog >/dev/null
+set -m
+FAKE_SLEEP_IN="AIF-577:plan" FAKE_SLEEP_SECS=44 FAKE_CHILD_DEAF=1 "$AIF" work AIF-577 >"$OUT/run57c.out" 2>&1 &
+w57=$!
+set +m
+wait_for .aif/worktrees/AIF-577/.aif/tmp/fake-running-AIF-577-plan
+deaf57="$(pgrep -f 'sleep 63.3' | head -1)"
+kill -9 "$w57" 2>/dev/null
+wait "$w57" 2>/dev/null
+"$AIF" board move AIF-577 ready >/dev/null
+"$AIF" board create tasks/AIF-578/ticket.md --column ready >/dev/null
+wait_col AIF-578 review 90
+wait_count "$L57/loop.log" 'Ready holds only cards this loop will not take again — idle' 2 30
+eq "a takeover refused — what the dead run started still runs: the card held untouched, no preflight asked again, the next card built, the loop idle" \
+  "$(col AIF-577),$(col AIF-578),$(grep -c "AIF-577 not taken over — what its last worker started still runs (pid $deaf57 (sleep 63.3)); the card is held, the loop goes on" "$L57/loop.log"),$(grep -c 'checking the machine again' "$L57/loop.log"),$(kill -0 "$l57" 2>/dev/null && echo alive)" \
+  "ready,review,1,0,alive"
+eq "…the lock names both held cards, the refused one with what still runs" \
+  "$(jq -r '[.held[] | .ticket] | join(" ")' .aif/state/loop/owner.json 2>/dev/null),$(jq -r '.held[] | select(.ticket == "AIF-577") | .why' .aif/state/loop/owner.json 2>/dev/null | grep -c "^its last worker is gone, and what it started still runs: pid $deaf57 (sleep 63.3) — aif work --status AIF-577 says what$")" \
+  "AIF-576 AIF-577,1"
+kill -9 "$deaf57" 2>/dev/null
+"$AIF" work --loop --drain >/dev/null 2>&1
+rc=0
+wait_exit "$l57" 30 || rc=$?
+eq "…drained: the environment never blamed, nothing re-checked, both held, and every run with its own take's log" \
+  "$rc|$(jq -r '[.env, .rechecks, (.held | join(" ")), ([.results[] | .ticket + ":" + .log] | join(" "))] | map(tostring) | join("|")' "$L57/summary.json" 2>/dev/null)" \
+  "1|0|0|AIF-576 AIF-577|AIF-575:AIF-575.log AIF-575:AIF-575.2.log AIF-576:AIF-576.log AIF-577:AIF-577.log AIF-578:AIF-578.log"
+eq "…and its last lines name each run's log" \
+  "$(grep -c 'AIF-575 · [0-9]* min · built → Review · aif land AIF-575 · AIF-575.2.log$' "$OUT/run57a.out"),$(grep -c 'AIF-576 · [0-9]* min · not built — its worker exited 1 before it took the card · AIF-576.log$' "$OUT/run57a.out")" \
+  "1,1"
+
+# A process someone opened in a dead run's worktree — nothing but its
+# directory ties it to the run: never signalled, and the takeover refuses at
+# once, naming it. It used to get its TERM with the rest.
+"$AIF" board create tasks/AIF-579/ticket.md --column ready >/dev/null
+mkdir -p .aif/worktrees/AIF-579
+(cd .aif/worktrees/AIF-579 && exec sleep 52.7 >/dev/null 2>&1) &
+hand57=$!
+sleep 0 &
+dead57=$!
+wait "$dead57" 2>/dev/null
+mkdir -p .aif/state/runs/AIF-579
+printf '{ "ticket": "AIF-579", "pid": %s, "started_at": "2026-10-02T00:00:00Z" }\n' "$dead57" >.aif/state/runs/AIF-579/owner.json
+t0=$SECONDS
+rc=0
+"$AIF" work AIF-579 >"$OUT/run57d.out" 2>&1 || rc=$?
+secs=$((SECONDS - t0))
+eq "a process opened by hand in a dead run's worktree: never signalled — the takeover refuses at once, exit 3, naming it; the card untouched" \
+  "$rc,$(kill -0 "$hand57" 2>/dev/null && echo alive),$(grep -c "what it started still runs: pid $hand57 (sleep 52.7) in its worktree, never signalled" "$OUT/run57d.out"),$(col AIF-579),$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s")" \
+  "3,alive,1,ready,prompt"
+kill "$hand57" 2>/dev/null
+wait "$hand57" 2>/dev/null
+rm -rf .aif/worktrees/AIF-579 .aif/state/runs/AIF-579
+
+# ====== 58. a Ctrl-C in the Ready read, a stop in the preflight, one bad read ==
+# docs/DEFECTS.md 15.9 and 14.3. A Ctrl-C that lands while the loop reads
+# Ready kills the read with it, and the loop took that for the board: env 1
+# in its summary beside a 130. `aif work --loop --stop` against a loop still
+# probing the suite in its preflight was read only once the probe ended. And
+# a loop that is not idle ended 3 — the environment — on one Ready read the
+# board's own retries could not save, with nothing asked again: an exit 3 is
+# the machine only once the loop's preflight, asked again, fails too.
+printf '\n58. a Ctrl-C during the Ready read is not the board, a stop reaches a loop in its preflight, and one bad read is not the machine\n'
+fresh_project "$SANDBOX/p58"
+for t in AIF-580 AIF-581 AIF-582; do
+  ticket_for "$t"
+done
+git add -A && git commit -qm "three for the loop's edges" >/dev/null
+"$AIF" board create tasks/AIF-582/ticket.md --column backlog >/dev/null
+
+# The read held open by a FIFO among the board's card files, as scenario 50
+# holds it, and a Ctrl-C to the loop's group while it waits.
+L58a="$SANDBOX/p58-loop-a"
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L58a" launch "$OUT/run58a.out" --idle --no-tui
+l58=$loop
+IDLE_PIDS="$IDLE_PIDS $l58"
+wait_count "$L58a/loop.log" 'Ready is empty — idle' 1 30
+mkfifo .aif/board/AAA.json
+i=0
+while ! pgrep -f 'board/AAA.json' >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+read58="$(pgrep -f 'board/AAA.json' >/dev/null 2>&1 && echo held || echo free)"
+kill -INT -- "-$l58" 2>/dev/null
+rc=0
+wait_exit "$l58" 30 || rc=$?
+rm -f .aif/board/AAA.json
+eq "a Ctrl-C while the loop reads Ready: exit 130, the summary saying Ctrl-C, and env 0 — not the board" \
+  "$read58|$rc|$(jq -r '[.env, .ctrl_c, .why] | map(tostring) | join("|")' "$L58a/summary.json" 2>/dev/null)" \
+  "held|130|0|1|stopped by Ctrl-C — no new card taken"
+
+# A suite probe that takes its time: `aif work --loop --stop` while the loop
+# is still in it.
+tmp="$(mktemp)"
+jq '.test.command = "bash .aif/suite.sh; if [ -f .aif/tmp/slow58 ]; then : >.aif/tmp/probing58; sleep 25.8; fi"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+mkdir -p .aif/tmp
+: >.aif/tmp/slow58
+L58b="$SANDBOX/p58-loop-b"
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L58b" launch "$OUT/run58b.out" --idle --no-tui
+l58=$loop
+IDLE_PIDS="$IDLE_PIDS $l58"
+wait_file .aif/tmp/probing58 30
+t0=$SECONDS
+rc=0
+"$AIF" work --loop --stop >"$OUT/run58b2.out" 2>&1 || rc=$?
+secs=$((SECONDS - t0))
+rc1=0
+wait_exit "$l58" 40 || rc1=$?
+eq "aif work --loop --stop while the loop probes the suite in its preflight: the loop ends 143 in seconds, the probe with it, its lock gone, and the stop says so" \
+  "$rc,$rc1,$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(pgrep -f 'sleep 25.8' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released),$(grep -c "stopped the loop (pid $l58) — it stopped before taking a card" "$OUT/run58b2.out")" \
+  "0,143,prompt,0,released,1"
+rm -f .aif/tmp/slow58 .aif/tmp/probing58
+git checkout -- .aif/project.json
+
+# Not idle, Ready not read once — a card file that is not JSON, as a Trello
+# outage would fail it — then read again: the machine asked first, and it
+# passes; the card is built.
+"$AIF" board create tasks/AIF-580/ticket.md --column ready >/dev/null
+printf '{' >.aif/board/X.json
+L58c="$SANDBOX/p58-loop-c"
+AIF_WORK_LOOP_LOGDIR="$L58c" launch "$OUT/run58c.out" --no-tui --parallel 1
+l58=$loop
+IDLE_PIDS="$IDLE_PIDS $l58"
+wait_count "$L58c/loop.log" "the board's Ready column could not be read, but the machine checks out" 1 30
+rm -f .aif/board/X.json
+rc=0
+wait_exit "$l58" 90 || rc=$?
+eq "a Ready not read once, not idle: the machine asked again and passing, Ready read again, the card built — exit 0, env 0, one re-check" \
+  "$rc|$(col AIF-580)|$(jq -r '[.env, .rechecks, .why] | map(tostring) | join("|")' "$L58c/summary.json" 2>/dev/null)" \
+  "0|review|0|1|Ready is empty"
+"$AIF" board create tasks/AIF-581/ticket.md --column ready >/dev/null
+printf '{' >.aif/board/X.json
+rc=0
+AIF_WORK_LOOP_LOGDIR="$SANDBOX/p58-loop-d" "$AIF" work --loop --no-tui --parallel 1 >"$OUT/run58d.out" 2>&1 || rc=$?
+rm -f .aif/board/X.json
+eq "…and one that cannot be read three times in a row, the preflight passing each time: exit 3, the environment, two re-checks, the card untouched" \
+  "$rc|$(col AIF-581)|$(jq -r '[.env, .rechecks, .why] | map(tostring) | join("|")' "$SANDBOX/p58-loop-d/summary.json" 2>/dev/null)" \
+  "3|ready|1|2|the board's Ready column could not be read three times in a row, though the preflight passes — aif board check says why"
 
 # ----------------------------------------------------------------------------
 printf '\n'

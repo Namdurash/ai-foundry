@@ -309,10 +309,12 @@ project sets).
 
 Off by default because a ceiling that cannot fire is worse than none. Spend is
 the larger of the runner's own `total_cost_usd` and what `.aif/prices.json`
-prices the same tokens at — and under subscription auth the first is `0`
-(`docs/FINDINGS.md` #2) while the table ships empty on purpose, so on the
-commonest setup the total stays `0.0000` and no ceiling is ever crossed. It
-read as a guarantee and was not one. Before relying on a ceiling, put your
+prices the same tokens at — and under subscription auth the first is no charge
+at all: older CLIs reported `0`, and claude 2.1.226 reports what the tokens would
+cost at API prices, an estimate (`docs/FINDINGS.md` #2), while the table ships
+empty on purpose. So on the commonest setup the total is either `0.0000` or an
+estimate the subscription never bills, and a ceiling read off it was never a
+guarantee. Before relying on a ceiling, put your
 model in `.aif/prices.json` and check the report's Stations table: a row
 saying `tokens only` is a row contributing nothing to the total.
 
@@ -1300,8 +1302,8 @@ re-checks; a missing one produces `cost_usd: null` beside a complete token count
 which is obvious and fixable. Fill it in from your provider's pricing page.
 
 This replaced reading `total_cost_usd` off a `claude -p` envelope, and is better
-in three ways: it works under subscription auth, where that field is structurally
-`0`; it survives a station that failed, because the transcript is written as the
+in three ways: it works under subscription auth, where that field was `0` and is
+now, on claude 2.1.226, an estimate at API prices rather than anything charged; it survives a station that failed, because the transcript is written as the
 run happens rather than assembled at the end; and it is per-turn, so a station
 that ground through its turn budget looks like grinding instead of like one large
 number.

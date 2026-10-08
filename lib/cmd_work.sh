@@ -91,8 +91,9 @@ usage: aif work [<ticket>] [options]
   --budget USD       stop past this spend. OFF unless asked for: set it here
                      or as limits.run_budget_usd. Each station is priced from
                      its tokens where .aif/prices.json knows the model, else as
-                     the runner reported it — under subscription auth that is
-                     \$0, so an unpriced model contributes nothing to the total
+                     the runner reported it — under subscription auth that was
+                     \$0 and is, on claude 2.1.226, an estimate at API prices:
+                     never what a subscription is charged
   --no-budget        no dollar ceiling, whatever limits.run_budget_usd says
   --max-minutes N    stop past this wall clock (default limits.run_max_minutes, 120)
   --no-worktree      run in the current checkout instead of a worktree. Every
@@ -152,9 +153,9 @@ usage: aif work [<ticket>] [options]
 
 Two caps always apply — the wall clock and limits.run_dispatches_max (16
 station runs). The dollar ceiling is the third and is opt-in: under
-subscription auth the runner reports \$0 for every station and
-.aif/prices.json ships empty, so a ceiling nobody configured could not fire.
-Price your model there before relying on one.
+subscription auth the runner's figure is \$0 (older CLIs) or an estimate at API
+prices (claude 2.1.226) — never what the subscription bills — and
+.aif/prices.json ships empty. Price your model there before relying on one.
 
 A station the runner cut off is not the station's attempt. The account's
 usage limit pauses the run until it resets, when that is within 12 hours —
@@ -2869,8 +2870,9 @@ EOF
 # budget cap: the larger of the runner's own figure and the token-priced one.
 #
 # Two numbers exist for every station and they disagree. The runner's
-# total_cost_usd is 0 under subscription auth (docs/FINDINGS.md #2) — the auth
-# most users have. The ledger prices the same tokens from .aif/prices.json and
+# total_cost_usd is no charge under subscription auth — the auth most users
+# have: 0 on older CLIs, an estimate at API prices on claude 2.1.226
+# (docs/FINDINGS.md #2). The ledger prices the same tokens from .aif/prices.json and
 # that is what the report prints. The cap used to read the first, so on the
 # common auth it could not fire, while the report beside it showed dollars
 # (docs/DEFECTS.md 3.4). A guard against a runaway run takes the larger; a

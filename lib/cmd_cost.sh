@@ -11,8 +11,9 @@
 # Three rules, all of them about not producing a comfortable number:
 #
 #   - TOKENS ARE THE TOTAL, dollars are a derivation. lib/ledger.sh records
-#     tokens because total_cost_usd is structurally 0 under subscription auth
-#     (docs/FINDINGS.md #2), and sets/claude/prices.json ships EMPTY on purpose.
+#     tokens because total_cost_usd is no charge under subscription auth — 0 on
+#     older CLIs, an estimate at API prices on claude 2.1.226 (docs/FINDINGS.md
+#     #2) — and sets/claude/prices.json ships EMPTY on purpose.
 #     So the token columns are always complete and the usd column often is not.
 #   - AN INCOMPLETE TOTAL SAYS SO. A station whose model is absent from the price
 #     table contributes 0 dollars to the sum, which would read as cheap. Such a

@@ -284,6 +284,10 @@
 #      alias in another case is the alias, refused the same when unmapped;
 #      the aliases a refusal names include fable; a fable variable left in
 #      the shell routes nothing
+#  94  a Ctrl-C whose handler runs across the end of the dashboard's second
+#      is handled, and so is the next: the tick under a slow trap, a key
+#      still answered; the loop on a pty, its first Ctrl-C's event slow —
+#      the second stops the run, 130, the terminal back in icanon and echo
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -7362,6 +7366,181 @@ rc=0
 XDG_CONFIG_HOME="$X93" "$AIF" work AIF-930 --profile fable93 --no-worktree >"$OUT/run93d.out" 2>&1 || rc=$?
 eq "fable under a profile that sets ANTHROPIC_DEFAULT_FABLE_MODEL: built, the plan station asked for fable with the profile's variable exported" \
   "$rc,$(col AIF-930),$(cat .aif/tmp/fake-model-plan-1 2>/dev/null)" "0,review,fable routed-top"
+cd "$SANDBOX" || exit 1
+
+# ====== 94. a Ctrl-C's handler across the dashboard's second =================
+# docs/DEFECTS.md 11.1. The dashboard read its keys itself, `read -t 1`, and a
+# Ctrl-C landing as that read's second ended ran its handler inside the read,
+# where the read's timer went off through it: the handler abandoned where it
+# stood, and the INT trap marked as running for good — no Ctrl-C after it ran
+# anything (docs/FINDINGS.md #39). The loop's handler takes milliseconds, so
+# the window was that narrow: 4 lost and 16 hung in about 250 aimed at it.
+# Here a handler is made long on purpose, so that every Ctrl-C sent inside the
+# second has it running across the second's end: the tick itself, its frame
+# and keys stubbed, under a trap that sleeps 0.4 s, the Ctrl-C 0.8 s after a
+# frame; then the loop on a pty, whose first Ctrl-C writes an event with a
+# `date` made to take 1.5 s, sent 0.3 s after a frame. Each wait bounded.
+printf '\n94. a Ctrl-C whose handler runs across the dashboard'"'"'s second is handled, and so is the next\n'
+utf94="$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.UTF-?8$' | sed -n 1p)" || utf94=""
+cat >"$SANDBOX/tick94.sh" <<'TICK'
+# tick94.sh <root> <trace> — dashboard ticks, the frame and the keys stubbed: a
+# trace line for each frame, each key, each handler's start and end. Two
+# Ctrl-Cs end it.
+set -eu
+. "$1/lib/common.sh"
+. "$1/lib/cmd_work.sh"
+T="$2"
+n94=0
+done94=0
+_aif_work_loop_refresh() { :; }
+_aif_work_loop_draw() { printf 'frame\n' >>"$T"; }
+_aif_work_loop_key() { printf 'key %s\n' "$1" >>"$T"; }
+h94() {
+  n94=$((n94 + 1))
+  printf 'start %s\n' "$n94" >>"$T"
+  sleep 0.4
+  printf 'end %s\n' "$n94" >>"$T"
+  [ "$n94" -lt 2 ] || done94=1
+}
+trap h94 INT
+trap 'exit 143' TERM
+AIF_WORK_LOOP_TUI=1
+while [ "$done94" = 0 ]; do
+  _aif_work_loop_tick
+done
+aif_key_stop
+printf 'ended\n' >>"$T"
+TICK
+r94="$(python3 - "$ROOT" "$SANDBOX/tick94.sh" "$OUT/trace94" <<'PY3'
+import os, pty, select, signal, sys, time
+root, script, trace = sys.argv[1:4]
+open(trace, "w").close()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/bin/bash", ["/bin/bash", script, root, trace])
+def lines():
+    return [l for l in open(trace).read().split("\n") if l]
+def pump(secs):
+    end = time.time() + secs
+    while time.time() < end:
+        if select.select([fd], [], [], 0.02)[0]:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                return
+pump(1.5)
+os.write(fd, b"l")
+pump(0.5)
+frames = lines().count("frame")
+end = time.time() + 3
+while lines().count("frame") == frames and time.time() < end:
+    time.sleep(0.002)
+time.sleep(0.8)
+os.write(fd, b"\x03")
+pump(2.5)
+os.write(fd, b"\x03")
+status = None
+end = time.time() + 6
+while time.time() < end:
+    pump(0.1)
+    r, st = os.waitpid(pid, os.WNOHANG)
+    if r:
+        status = st
+        break
+if status is None:
+    os.killpg(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+print(" ".join(l for l in lines() if l != "frame") + " · " +
+      ("hung" if status is None else "exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status)))
+PY3
+)"
+eq "the tick under a handler that sleeps across its second's end: the key answered, both Ctrl-Cs handled to the end, the loop over" \
+  "$r94" "key l start 1 end 1 start 2 end 2 ended · exit 0"
+
+fresh_project "$SANDBOX/p94"
+ticket_for AIF-940
+git add -A && git commit -qm "one for the dashboard's Ctrl-C" >/dev/null
+"$AIF" board create tasks/AIF-940/ticket.md --column ready >/dev/null
+mkdir -p "$SANDBOX/p94-slow" "$SANDBOX/p94-marks"
+cat >"$SANDBOX/p94-slow/date" <<'SLOW'
+#!/bin/bash
+# The loop's own `date` slow once the harness says so; its workers', which
+# carry AIF_WORK_LOOP=1, never.
+[ "${AIF_WORK_LOOP:-}" = 1 ] || [ ! -e "$P94_SLOW" ] || sleep 1.5
+exec /bin/date "$@"
+SLOW
+chmod +x "$SANDBOX/p94-slow/date"
+r94="$(PATH="$SANDBOX/p94-slow:$PATH" P94_SLOW="$SANDBOX/p94-marks/slow" FAKE_SLEEP_IN="AIF-940:plan" \
+  FAKE_MARKS="$SANDBOX/p94-marks" FAKE_RELEASE="$SANDBOX/p94-marks/go" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p94-loop" \
+  python3 - "$AIF" "$SANDBOX/p94-marks" "$OUT/screen94" "$utf94" <<'PY3'
+import os, pty, re, select, signal, sys, time
+aif, marks, out, utf8 = sys.argv[1:5]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.environ["LANG"] = utf8 or "en_US.UTF-8"
+    os.execv("/bin/bash", ["/bin/bash", "-c", '"$0" "$@"; echo "RC=$?"; stty -a', aif, "work", "--loop"])
+buf = b""
+def pump(secs, until=None, since=0):
+    global buf
+    end = time.time() + secs
+    while time.time() < end:
+        if until is not None and until in buf[since:]:
+            return True
+        if select.select([fd], [], [], 0.01)[0]:
+            try:
+                c = os.read(fd, 65536)
+            except OSError:
+                return False
+            if not c:
+                return False
+            buf += c
+    return until is not None and until in buf[since:]
+end = time.time() + 40
+while not os.path.exists(marks + "/AIF-940-plan") and time.time() < end:
+    pump(0.2)
+pump(1.5)
+# A frame, then the first Ctrl-C 0.3 s into the second after it — with the
+# event it writes taking 1.5 s from now on. The screen is read all the while:
+# a frame the pty cannot take holds the loop in its print, not in its second.
+mark = buf.count(b"\x1b[H")
+end = time.time() + 3
+while buf.count(b"\x1b[H") == mark and time.time() < end:
+    pump(0.002)
+open(marks + "/slow", "w").close()
+pump(0.3)
+os.write(fd, b"\x03")
+since = len(buf)
+pump(10, b"^C again", since)
+pump(0.4)
+os.write(fd, b"\x03")
+status = None
+end = time.time() + 30
+while time.time() < end:
+    pump(0.1)
+    r, st = os.waitpid(pid, os.WNOHANG)
+    if r:
+        status = st
+        break
+if status is None:
+    open(marks + "/go", "w").close()
+    os.killpg(pid, signal.SIGTERM)
+    time.sleep(3)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+pump(0.5)
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.decode("utf-8", "replace")).replace("\r", "")
+open(out, "w").write(text)
+print("hung" if status is None else "exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status))
+PY3
+)"
+: >"$SANDBOX/p94-marks/go"
+modes94="$(tr -s ' \t;' '\n' <"$OUT/screen94" | grep -xE -- '-?(icanon|echo)' | sort | tr '\n' ' ')"
+eq "the loop on a pty, its first Ctrl-C's event slow across the second: the second Ctrl-C stops the run, 130, the terminal back in icanon and echo" \
+  "$r94,$(grep -c '^RC=130$' "$OUT/screen94"),${modes94% },$(col AIF-940)" "exit 0,1,echo icanon,needs_human"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

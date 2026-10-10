@@ -4761,6 +4761,8 @@ _aif_work_loop_event() {
 # else yellow; box drawing where the locale is UTF-8, ASCII where it is not —
 # and a UTF-8 locale to measure text in either way (lib/tui.sh). The screen is
 # the terminal's alternate one, so the summary lands where the loop started.
+# The terminal's modes are kept as they were found, for the stop to put back:
+# the key's reader sets its own, and a reader stopped mid-read leaves them.
 # The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
 # shellcheck disable=SC2034
 _aif_work_loop_tui_start() {
@@ -4768,6 +4770,7 @@ _aif_work_loop_tui_start() {
   AIF_WORK_LOOP_TUI=0
   [ "${1:-auto}" != off ] && [ "${AIF_NO_TUI:-}" != 1 ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] || return 0
   { : </dev/tty; } 2>/dev/null || return 0
+  AIF_WORK_LOOP_STTY="$({ stty -g </dev/tty; } 2>/dev/null)" || AIF_WORK_LOOP_STTY=""
   AIF_WORK_LOOP_TUI=1
   AIF_TUI_COLOR=1
   [ -z "${NO_COLOR:-}" ] || AIF_TUI_COLOR=0
@@ -4789,11 +4792,14 @@ _aif_work_loop_tui_start() {
   printf '\033[?1049h\033[?25l' >&2
 }
 
-# _aif_work_loop_tui_stop — the terminal as it was: the cursor back, the
+# _aif_work_loop_tui_stop — the terminal as it was: the key's reader stopped
+# and the modes it set put back (aif_key_stop), the cursor back, the
 # alternate screen left. Safe to call twice.
 _aif_work_loop_tui_stop() {
   [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ] || return 0
   AIF_WORK_LOOP_TUI=0
+  aif_key_stop
+  [ -z "${AIF_WORK_LOOP_STTY:-}" ] || { stty "$AIF_WORK_LOOP_STTY" </dev/tty; } 2>/dev/null || true
   printf '\033[?25h\033[?1049l' >&2
 }
 
@@ -4820,34 +4826,27 @@ _aif_work_loop_typical() {
 }
 
 # _aif_work_loop_tick — a second of the loop: with the dashboard, a frame and a
-# key (the key's read is the second); without, a wait. Neither may end the
-# loop: under set -e a command a Ctrl-C ended would end the loop with it.
+# key (the wait for the key's reader is the second); without, a wait. Neither
+# may end the loop: under set -e a command a Ctrl-C ended would end the loop
+# with it.
 #
-# Without the dashboard the second is spent in the `wait` builtin, on a
-# `sleep 1` put in the background — never in a foreground `sleep 1`, which
-# lost a Ctrl-C (docs/DEFECTS.md 11.1). bash 3.2 runs the INT trap for a
-# foreground child only when the child died of the INT, or the INT came while
-# the shell still waited for it; one that lands after waitpid returned and
-# before the shell put its own handler back is noted in a flag nobody reads
-# again. That is where a second Ctrl-C sent one tick after the first lands —
-# handling the first started the tick again — and on this loop it was lost
-# 10 times in 60, and 12 in 80 as the delay walked across the tick's end; the
-# same Ctrl-Cs sent to a loop waiting in the builtin, none (docs/FINDINGS.md
-# #33). A trapped signal that comes while the shell is inside `wait` makes the
-# builtin return at once, over 128, and the trap runs once it has. The sleep
-# ignores the INT — a background job of a script starts with it ignored
-# (docs/FINDINGS.md #23) — so an interrupted wait leaves it running: it is
-# ended here, by a TERM, which the loop traps, so the shell prints no notice
-# of its death; one that is missed ends within the second. A HUP's handler
-# runs after the builtin has put back its redirection, not inside it as in the
-# dashboard's read (probed, #33), so its move of fd 2 to loop.log stands.
+# Without the dashboard the second is spent in the `wait` builtin
+# (_aif_work_loop_second). With it, in the same builtin, on the key's reader:
+# a child that reads one key for a second at most (aif_key_wait,
+# lib/common.sh). The dashboard read its keys itself, `read -t 1`, until a
+# Ctrl-C landing within a few milliseconds of that read's timeout was lost, or
+# started the handler and never ended the loop: bash 3.2 ran the handler
+# inside the read's signal handler, the read's timer went off through it, and
+# the INT trap stayed marked as running, so no Ctrl-C after it ran anything —
+# 4 lost and 16 hung in about 250 aimed at that window (docs/DEFECTS.md 11.1;
+# docs/FINDINGS.md #39). A signal ends the wait with its handler run, and the
+# reader reads on into the next tick, which waits for the same one. A
+# terminal that answers at once with no key, or cannot be opened, has its
+# second waited out as a frame that could not be written does: the loop does
+# not spin on it.
 _aif_work_loop_tick() {
-  local key="" tick rc=0
   if [ "${AIF_WORK_LOOP_TUI:-0}" != 1 ]; then
-    sleep 1 &
-    tick=$!
-    wait "$tick" 2>/dev/null || rc=$?
-    [ "$rc" -le 128 ] || kill -TERM "$tick" 2>/dev/null || true
+    _aif_work_loop_second
     return 0
   fi
   _aif_work_loop_refresh
@@ -4865,29 +4864,58 @@ _aif_work_loop_tick() {
   # terminal gone without one cannot spin the loop.
   if ! _aif_work_loop_draw; then
     printf '\n' >/dev/null 2>&1 || true
-    if [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ]; then
-      sleep 1 &
-      tick=$!
-      wait "$tick" 2>/dev/null || rc=$?
-      [ "$rc" -le 128 ] || kill -TERM "$tick" 2>/dev/null || true
-    fi
+    [ "${AIF_WORK_LOOP_HUP:-0}" -ne 0 ] || _aif_work_loop_second
     [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] || _aif_work_loop_to_log
     return 0
   fi
-  IFS= read -r -t 1 -n 1 -s key </dev/tty 2>/dev/null || true
-  # A hang-up lands here nearly every time — the dashboard spends its
-  # seconds in this read — and bash runs the trap INSIDE the read's own
-  # redirections (docs/FINDINGS.md #28). The handler's `exec >>loop.log 2>&1`
-  # moved fd 1 and fd 2; then the read returned and bash put back the fd 2 it
-  # had saved for its `2>/dev/null` — the dead terminal. The next print to
-  # it failed (EIO), errexit ended the loop with 1, and the bytes it could
-  # not write, left in stdio's buffer, leaked into every `$(…)` after: the
-  # summary's results were not JSON, no summary.json, and the loop lock's pid
-  # read as `$$` plus text, so the lock stayed (docs/DEFECTS.md 14.8 — scenario
-  # 48 ran with --no-tui, and never saw it). So the redirection is made again
-  # here, once the read is done with its own.
+  if aif_key_wait; then
+    case "$AIF_KEY" in
+      none | enter) ;;
+      fast | gone) _aif_work_loop_second ;;
+      *) _aif_work_loop_key "$AIF_KEY" ;;
+    esac
+  fi
+  # A hang-up lands here nearly every time — the dashboard spends its seconds
+  # in this wait. When it read its keys itself, bash ran the trap INSIDE the
+  # read's own redirections (docs/FINDINGS.md #28): the handler's `exec
+  # >>loop.log 2>&1` moved fd 1 and fd 2, then the read returned and put back
+  # the fd 2 it had saved for its `2>/dev/null` — the dead terminal. The next
+  # print to it failed (EIO), errexit ended the loop with 1, and the bytes it
+  # could not write, left in stdio's buffer, leaked into every `$(…)` after:
+  # the summary's results were not JSON, no summary.json, and the loop lock's
+  # pid read as `$$` plus text, so the lock stayed (docs/DEFECTS.md 14.8 —
+  # scenario 48 ran with --no-tui, and never saw it). `wait` puts its
+  # redirection back before the handler runs (#33); the redirection is made
+  # again here all the same, once the wait is done with its own.
   [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] || _aif_work_loop_to_log
-  [ -z "$key" ] || _aif_work_loop_key "$key"
+  return 0
+}
+
+# _aif_work_loop_second — a second spent in the `wait` builtin, on a `sleep
+# 1` put in the background — never in a foreground `sleep 1`, which lost a
+# Ctrl-C (docs/DEFECTS.md 11.1). bash 3.2 runs the INT trap for a foreground
+# child only when the child died of the INT, or the INT came while the shell
+# still waited for it; one that lands after waitpid returned and before the
+# shell put its own handler back is noted in a flag nobody reads again. That
+# is where a second Ctrl-C sent one tick after the first lands — handling the
+# first started the tick again — and on this loop it was lost 10 times in 60,
+# and 12 in 80 as the delay walked across the tick's end; the same Ctrl-Cs
+# sent to a loop waiting in the builtin, none (docs/FINDINGS.md #33). A
+# trapped signal that comes while the shell is inside `wait` makes the builtin
+# return at once, over 128, and the trap runs once it has. The sleep ignores
+# the INT — a background job of a script starts with it ignored
+# (docs/FINDINGS.md #23) — so an interrupted wait leaves it running: it is
+# ended here, by a TERM, which the loop traps, so the shell prints no notice
+# of its death; one that is missed ends within the second. A HUP's handler
+# runs after the builtin has put back its redirection, not inside it as in a
+# read (probed, #33), so its move of fd 2 to loop.log stands.
+_aif_work_loop_second() {
+  local tick rc=0
+  sleep 1 &
+  tick=$!
+  wait "$tick" 2>/dev/null || rc=$?
+  [ "$rc" -le 128 ] || kill -TERM "$tick" 2>/dev/null || true
+  return 0
 }
 
 # _aif_work_loop_to_log — the loop's stdout and stderr to its own loop.log,
@@ -5064,10 +5092,11 @@ _aif_work_loop_signal() {
       # swallowed, and the loop's output goes where its events already go,
       # its own loop.log — or nowhere, should even that fail: nothing after
       # this can end the loop for want of a terminal, and
-      # `_aif_work_loop_tick` sleeps instead of reading keys, at once, from a
-      # tty that is no longer there. When the hang-up lands inside the
-      # dashboard's key read, the read undoes half of this on its way out;
-      # the tick makes it again (_aif_work_loop_tick).
+      # `_aif_work_loop_tick` sleeps instead of waiting for keys, at once,
+      # from a tty that is no longer there. The dashboard's key reader is
+      # stopped with it (_aif_work_loop_tui_stop); and should a builtin the
+      # hang-up landed in put back a redirection of its own on its way out,
+      # the tick makes this one again (_aif_work_loop_tick).
       _aif_work_loop_tui_stop 2>/dev/null || true
       AIF_WORK_LOOP_TUI=0
       _aif_work_loop_to_log

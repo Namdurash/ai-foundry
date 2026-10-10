@@ -75,6 +75,135 @@ aif_trap_disarm() {
   aif_trap_restore
 }
 
+# A key from the terminal, for a shell that traps signals — the shift's
+# control point (lib/cmd_start.sh) and the loop's dashboard (lib/cmd_work.sh):
+# a child reads one key, for a second at most, and the shell waits for it in
+# the `wait` builtin. aif_key_wait starts the child when none is reading;
+# aif_key_stop ends one that is.
+#
+# Never `read -t` in the shell that traps. On bash 3.2 a trapped signal that
+# lands while `read` waits runs its handler inside the signal handler, and the
+# read's timer — alarm() and a longjmp back into the read — goes off through
+# it: the handler is abandoned wherever it stood, and the shell keeps that
+# signal's trap marked as running, so it never runs again. A Ctrl-C landing
+# within a handler's length of a read's timeout was lost, with every Ctrl-C
+# after it: the dashboard's — a few milliseconds, a `date` and a `sed` —
+# lost or hung about one second Ctrl-C in twelve aimed at that stretch, and
+# the shift's, which writes its summary and exits, left the shift running
+# (docs/DEFECTS.md 11.1; docs/FINDINGS.md #39). In the child the timer cuts
+# nothing: it traps nothing, and as an async job of a script it ignores INT.
+# The shell runs its trap once `wait` returns (#33). Started with `set -m`
+# off, as every caller is between its children: the child is then of the
+# shell's own process group, the terminal's foreground, and may read it.
+#
+# The child reads the terminal as its stdin: bash 3.2's `read -s -n 1` sets
+# the terminal's modes on fd 0, whatever -u names, so a read of another
+# descriptor with stdin not the terminal echoed the key and never took it
+# (#39). Killed, it leaves the terminal as the read set it — `-icanon
+# -echo` — so whoever stops it puts the terminal back.
+#
+# aif_key_wait returning 0 sets AIF_KEY: the key — one printable ASCII
+# character; a Cyrillic letter typed where a Latin key is read as that key
+# (aif_key_layout); `?` for any other byte — or `enter`, `none` (the second
+# passed), `fast` (the read gave up at once with no key: a terminal that
+# answers end of file), `gone` (no terminal to open). Returning 1, the wait
+# was cut by a trapped signal whose handler has run: the child reads on, and
+# the next aif_key_wait waits for the same one, so that no two read at once.
+# shellcheck disable=SC2034  # read by the modules that source this file
+AIF_KEY=""
+AIF_KEY_PID=""
+
+aif_key_wait() {
+  local p rc=0 o
+  AIF_KEY=""
+  if [ -z "$AIF_KEY_PID" ]; then
+    _aif_key_read &
+    AIF_KEY_PID=$!
+  fi
+  p="$AIF_KEY_PID"
+  wait "$p" 2>/dev/null || rc=$?
+  if [ "$rc" -gt 128 ]; then
+    # A trap's signal while the child reads on — or the child's own end. A
+    # handler that stopped the child has taken it already.
+    [ "$AIF_KEY_PID" = "$p" ] || return 1
+    if kill -0 "$p" 2>/dev/null; then
+      return 1
+    fi
+    rc=0
+    wait "$p" 2>/dev/null || rc=$?
+  fi
+  AIF_KEY_PID=""
+  case "$rc" in
+    0) AIF_KEY=enter ;;
+    2) AIF_KEY=gone ;;
+    3) AIF_KEY=fast ;;
+    3[2-9] | [4-9][0-9] | 1[01][0-9] | 12[0-6])
+      printf -v o '%03o' "$rc"
+      # shellcheck disable=SC2059  # the format is the octal escape of the key
+      printf -v AIF_KEY "\\$o"
+      ;;
+    *) AIF_KEY=none ;;
+  esac
+  return 0
+}
+
+# aif_key_stop — the child ended, if one reads; the terminal is the caller's
+# to put back. A TERM: the callers trap it, so bash says nothing of the death.
+aif_key_stop() {
+  local p="$AIF_KEY_PID"
+  AIF_KEY_PID=""
+  [ -n "$p" ] || return 0
+  kill -TERM "$p" 2>/dev/null || true
+  wait "$p" 2>/dev/null || true
+  return 0
+}
+
+# _aif_key_read — the child: one key from the terminal, or a second without
+# one, said as its exit code — 0 Enter, 1 no key, 2 no terminal, 3 a read
+# that gave up at once, 32–126 the key's own code.
+#
+# bash 3.2 reads one BYTE, in every locale (probed: C, en_US.UTF-8,
+# uk_UA.UTF-8), and a person who just wrote Ukrainian in a session types the
+# keys on that layout: q is й, two bytes, neither a key — the control point's
+# countdown ran on to the default, and `s` on a demo posted the rework it was
+# pressed to stop. A Cyrillic lead byte takes the next one, and the letter is
+# read as the key in its place (aif_key_layout).
+_aif_key_read() {
+  local k="" k2="" c=63 t0=$SECONDS
+  { exec </dev/tty; } 2>/dev/null || exit 2
+  if ! IFS= read -r -t 1 -n 1 -s k; then
+    [ "$SECONDS" -ne "$t0" ] || exit 3
+    exit 1
+  fi
+  [ -n "$k" ] || exit 0
+  if [ "$k" = $'\xd0' ] || [ "$k" = $'\xd1' ]; then
+    IFS= read -r -t 1 -n 1 -s k2 || true
+    aif_key_layout "$k$k2"
+    k="$AIF_KEY_LATIN"
+  fi
+  printf -v c '%d' "'$k" 2>/dev/null || c=63
+  [ "$c" -ge 32 ] && [ "$c" -le 126 ] || c=63
+  exit "$c"
+}
+
+# aif_key_layout <bytes> — AIF_KEY_LATIN: the key on the Latin layout that
+# types this Cyrillic letter on the Ukrainian and Russian ЙЦУКЕН layouts (й q,
+# і or ы s, з p, д l, к r, н y, и b), or `?` for any other — which the
+# control point takes as a key it does not know, and pauses on. Quoted
+# patterns, matched whole: the same in C and in a UTF-8 locale (probed).
+aif_key_layout() {
+  case "$1" in
+    $'\xd0\xb9') AIF_KEY_LATIN=q ;;
+    $'\xd1\x96' | $'\xd1\x8b') AIF_KEY_LATIN=s ;;
+    $'\xd0\xb7') AIF_KEY_LATIN=p ;;
+    $'\xd0\xb4') AIF_KEY_LATIN=l ;;
+    $'\xd0\xba') AIF_KEY_LATIN=r ;;
+    $'\xd0\xbd') AIF_KEY_LATIN=y ;;
+    $'\xd0\xb8') AIF_KEY_LATIN=b ;;
+    *) AIF_KEY_LATIN='?' ;;
+  esac
+}
+
 # The last error said, kept for a handler that has to say why a command
 # stopped after the fact: the worker's exit handler puts it on the card, where
 # the human looks, instead of leaving it in the scrollback of whoever ran it.

@@ -1033,26 +1033,27 @@ _aif_start_watch_off() {
 # <prefix><seconds left><suffix> is redrawn each second; with no timeout it
 # is printed once, <prefix><suffix>.
 #
-# One read a second (bash 3.2's `read -t` takes whole seconds), on a fresh
-# open of /dev/tty, which works when stdin is not the terminal (#28) — opened
-# on a descriptor of its own (6) and read with `read -u`, never as a
-# redirection of the read itself: bash runs a trap in the middle of the
-# builtin it interrupts, inside that builtin's redirections, so a Ctrl-C
-# during `{ read … </dev/tty; } 2>/dev/null` ran the shift's INT handler with
-# its stderr on /dev/null, and the summary it printed reached nobody (probed
-# on /bin/bash 3.2, a pty; writes to /dev/tty arrived, writes to fd 2 did
-# not). The open is the one grouped under 2>/dev/null, and it lasts past the
-# group because it is an exec.
+# One key or one second at a time, read by a child on a fresh open of
+# /dev/tty while the shift waits for it in the `wait` builtin (aif_key_wait,
+# lib/common.sh) — never a `read -t` of the shift's own. The read's timer
+# went off through the INT handler a Ctrl-C ran inside the read: the summary
+# half written, the lock perhaps gone, no exit — the shift went on to the
+# countdown's default, and no later Ctrl-C ran a handler at all
+# (docs/DEFECTS.md 11.1; docs/FINDINGS.md #39). And the read was of fd 6
+# with `-u`, while bash 3.2 sets the terminal's modes on fd 0: with stdin not
+# the terminal, a key was echoed and never read. A handler that runs once
+# `wait` returns has its own stderr, which a trap inside a read's
+# redirections did not: a Ctrl-C during `{ read … </dev/tty; } 2>/dev/null`
+# ran the shift's INT handler with its stderr on /dev/null, and the summary
+# it printed reached nobody (probed on /bin/bash 3.2, a pty).
 #
-# On 3.2 a timeout is rc 1 with the variable left as it was, and Enter is rc
-# 0 with it empty: the variable is emptied before every read and the rc
-# decides first. A terminal that is gone answers at once — the open fails, or the
-# read returns rc 1 without waiting — and a countdown counted in reads would
-# run out in milliseconds and act on its default, a pause would spin; so the
-# open is tried before each read, the countdown is wall time (SECONDS), and
-# three reads in a row that return without a second passing are the
-# terminal gone too (critics operations-14). A typed Ctrl-C during the read
-# runs the INT trap, which exits.
+# A terminal that is gone answers at once — the open fails, or the read
+# gives up without waiting — and a countdown counted in reads would run out
+# in milliseconds and act on its default, a pause would spin; so each reader
+# opens the terminal anew, the countdown is wall time (SECONDS), and three
+# reads in a row that give up without a second passing are the terminal gone
+# too (critics operations-14). A typed Ctrl-C during the wait runs the INT
+# trap, which stops the reader, puts the terminal back and exits.
 #
 # The seam: with AIF_START_KEYS set, its first character is the key and is
 # taken off — `.` Enter, `_` no key (the timeout, after <secs> seconds; in a
@@ -1066,7 +1067,7 @@ _aif_start_watch_off() {
 # mid-wait (docs/DEFECTS.md 15.9). A wait that never ends holds a `*` for
 # good: the harness's own bound is what stops it then.
 _aif_start_key() {
-  local secs="$1" pre="${2:-}" suf="${3:-}" key k2 rc fast=0 t0 left deadline c
+  local secs="$1" pre="${2:-}" suf="${3:-}" fast=0 left deadline c
   AIF_START_KEY=""
   if [ -n "${AIF_START_KEYS+x}" ]; then
     if [ -n "$pre$suf" ]; then
@@ -1112,61 +1113,30 @@ _aif_start_key() {
       fi
       printf '\r\033[K%s%s%s' "$pre" "$left" "$suf" >&2 2>/dev/null || _aif_start_flush
     fi
-    if ! { exec 6</dev/tty; } 2>/dev/null; then
-      AIF_START_KEY=gone
-      return 0
-    fi
-    key=""
-    rc=0
-    t0=$SECONDS
-    IFS= read -r -u 6 -t 1 -n 1 -s key || rc=$?
-    # bash 3.2 reads one BYTE, in every locale (probed: C, en_US.UTF-8,
-    # uk_UA.UTF-8), and a person who just wrote Ukrainian in a session types
-    # the control point's keys on that layout: q is й, two bytes, neither a
-    # key — the countdown ran on to the default, and `s` on a demo posted the
-    # rework it was pressed to stop. A Cyrillic lead byte takes the next one,
-    # and the letter is read as the key in its place (_aif_start_layout).
-    if [ "$rc" -eq 0 ] && { [ "$key" = $'\xd0' ] || [ "$key" = $'\xd1' ]; }; then
-      k2=""
-      IFS= read -r -u 6 -t 1 -n 1 -s k2 || true
-      _aif_start_layout "$key$k2"
-      key="$AIF_START_LATIN"
-    fi
-    exec 6<&-
-    if [ "$rc" -eq 0 ]; then
-      [ "$secs" -eq 0 ] || printf '\n' >&2 2>/dev/null || _aif_start_flush
-      if [ -z "$key" ]; then AIF_START_KEY=enter; else AIF_START_KEY="$key"; fi
-      _aif_start_log "key: ${AIF_START_KEY}"
-      return 0
-    fi
-    if [ "$rc" -eq 1 ] && [ "$SECONDS" -eq "$t0" ]; then
-      fast=$((fast + 1))
-      if [ "$fast" -ge 3 ]; then
+    # A trap's signal ends the wait with its handler run — INT, TERM and HUP
+    # end the shift there — and the reader reads on: wait for it again.
+    aif_key_wait || continue
+    case "$AIF_KEY" in
+      none) fast=0 ;;
+      fast)
+        fast=$((fast + 1))
+        if [ "$fast" -ge 3 ]; then
+          AIF_START_KEY=gone
+          return 0
+        fi
+        ;;
+      gone)
         AIF_START_KEY=gone
         return 0
-      fi
-    else
-      fast=0
-    fi
+        ;;
+      *)
+        [ "$secs" -eq 0 ] || printf '\n' >&2 2>/dev/null || _aif_start_flush
+        AIF_START_KEY="$AIF_KEY"
+        _aif_start_log "key: ${AIF_START_KEY}"
+        return 0
+        ;;
+    esac
   done
-}
-
-# _aif_start_layout <bytes> — AIF_START_LATIN: the key on the Latin layout
-# that types this Cyrillic letter on the Ukrainian and Russian ЙЦУКЕН layouts
-# (й q, і or ы s, з p, д l, к r, н y, и b), or `?` for any other — which the
-# control point takes as a key it does not know, and pauses on. Quoted
-# patterns, matched whole: the same in C and in a UTF-8 locale (probed).
-_aif_start_layout() {
-  case "$1" in
-    $'\xd0\xb9') AIF_START_LATIN=q ;;
-    $'\xd1\x96' | $'\xd1\x8b') AIF_START_LATIN=s ;;
-    $'\xd0\xb7') AIF_START_LATIN=p ;;
-    $'\xd0\xb4') AIF_START_LATIN=l ;;
-    $'\xd0\xba') AIF_START_LATIN=r ;;
-    $'\xd0\xbd') AIF_START_LATIN=y ;;
-    $'\xd0\xb8') AIF_START_LATIN=b ;;
-    *) AIF_START_LATIN='?' ;;
-  esac
 }
 
 # _aif_start_gone — the terminal is gone and no hang-up said so (an emulator
@@ -2408,8 +2378,10 @@ _aif_start_finish() {
 #
 # INT and TERM arrive between units — inside a session, a land or the loop
 # the child has the terminal, and the person's Ctrl-C is the child's. The
-# terminal first: a trap that exits in the middle of the control point's read
-# leaves it -icanon -echo (#28). Then the summary, the lock, 130 or 143. HUP:
+# key's reader first, on every way here — it would read on for up to a
+# second after the shift, and take a key typed at the prompt — then the
+# terminal: a reader stopped in the middle of its read leaves it -icanon
+# -echo (#28, aif_key_wait). Then the summary, the lock, 130 or 143. HUP:
 # the terminal is gone, so the summary goes to shift.log as the loop does it
 # (lib/cmd_work.sh), and summary.json says hup; bash runs it once a
 # foreground session returns, before the next line, so no next unit is
@@ -2420,6 +2392,7 @@ _aif_start_finish() {
 _aif_start_signal() {
   local rc_in=$? sig="${1:-EXIT}"
   _aif_start_watch_off || true
+  aif_key_stop || true
   case "$sig" in
     INT | TERM)
       set +m

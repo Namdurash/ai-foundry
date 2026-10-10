@@ -35,107 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 11.1 The loop's shell can lose a Ctrl-C that lands as a tick ends — probed
-
-Found 2026-10-03 on `main` after `807215b` (0.12.0), running
-`scripts/check-work.sh` whole: scenarios 39 and 40 send a loop two interrupts a
-second apart — the first takes no new card, the second is to stop the runs in
-flight — and twice in two full runs the second one did nothing. The loop's
-output had the first ("Ctrl-C — no new card; the runs in flight finish on their
-own. Ctrl-C again stops them.") and never the second ("stopping every run in
-flight (INT)"); the worker ran its station to the end and built, 35–39 seconds
-later, and the card went to Review. The same scenarios pass on the untouched
-`807215b` checkout, pass in isolation on the same tree (scenario 39 alone,
-eight trials of the exact timing, zero lost), and fail at a different
-alignment of the harness's clock against the loop's. Reproduced with the
-loop's handler and tick traced (bash 3.2.57, macOS 26.6.2), two of six trials:
-
-```
-TRACE 21:04:45.228959 signal INT running=[71696:AIF-44:…]      ← the first, handled
-loop      Ctrl-C — no new card; the runs in flight finish on their own. Ctrl-C again stops them.
-TRACE 21:04:45.234448 tick woke
-TRACE 21:04:45.236994 tick sleep                                ← sleep 1 begins
-TRACE  tick woke                                                ← the second, 1.0046 s later: the `date` in the trace line died of it, the handler never ran
-TRACE 21:04:46.249309 tick sleep
-```
-
-The empty timestamp is the tell: the interrupt reached the process group as
-the tick's `sleep 1` ended and the shell was between commands — reaping the
-child, or already forking the next — and bash 3.2 ran no trap for it. In
-isolation no construct loses a trapped SIGINT on this bash — plain children,
-command substitutions, `set -e`, `set -m` toggled around a background job, two
-interrupts a second apart over a 1-second `sleep || true` tick: 60 of 60 every
-time. The loss needs the signal inside the few microseconds between `waitpid`
-returning and the shell's wait-time SIGINT handler being taken down, where the
-received signal is noted in a flag nobody reads again. That is where a second
-Ctrl-C sent exactly one tick after the first lands, because handling the first
-realigned the tick to the first.
-
-Two things made the harness hit it where a person rarely will: the second
-interrupt sent a measured second after the first, on the boundary; and a
-loop whose tick is one second. A person's second Ctrl-C is not on the tick,
-and a lost one is pressed again. The run in flight is never harmed; it builds.
-
-The same race, measured on its own: a bash 3.2 script holding in a loop of
-`sleep 0.1` survived a SIGINT to its process group **10 times in 200** — the
-signal landing as a sleep ends, noted by the shell's wait-time handler and
-never acted on. The harness's stub station held that way, so a forwarded stop
-that should have ended it at once sometimes waited out the hold (33 s for one
-of two workers, scenario 40). With `trap 'exit 130' INT TERM` in the script,
-0 of 200; `read -t` on a pipe and `sleep … & wait $!` also 0 of 200. A real
-station is `claude -p`, not a bash loop, and dies of the signal; the stub now
-traps.
-
-What was tried and does not fix it: replacing the tick's `sleep 1` with a
-wait the shell does itself — `read -t 1` on a pipe nobody writes — which on
-bash 3.2 behaved worse (the loop's own interrupt went unhandled every time,
-and the stop reached the worker by a route not understood). Left as it was.
-
-#### Progress
-
-On `main` after 0.16.0, the half of the second direction that needs no
-signal: a loop can be stopped without catching anything. `aif work --loop
---drain` (no new card; the runs in flight finish) and `aif work --loop
---stop` (the runs in flight stopped too, as a second Ctrl-C would) leave a
-file in the loop's lock, `drain` or `stop`, naming who asked — and the loop
-reads it at the top of every iteration with builtins only (`[ -f … ]`,
-`read <file`), so there is no fork and no new window for the race. `--stop`
-writes the same name into each running ticket's run lock before it forwards
-the TERM, so every card says who stopped it — a person's stop, which `aif
-start` never retries — then waits up to 90 s for the loop to end and prints
-its summary's why (`_aif_work_loop_tell`, lib/cmd_work.sh; scenario 50).
-That is how a person in another terminal ends a loop; ending `aif start`
-does not — a loop in another terminal runs on, and the shift's summary says
-so with `aif work --loop --drain`. The race itself is unchanged: a second
-Ctrl-C typed on the tick can still be lost, and the harness's workaround
-below stays.
-
-After 0.16.0 the plain tick waits in the `wait` builtin on a backgrounded
-`sleep 1`, where a trapped INT always runs its trap (`_aif_work_loop_tick`,
-lib/cmd_work.sh; docs/FINDINGS.md #33): a second Ctrl-C sent a tick after the
-first, lost 10 times in 60 on 0.16.0, was lost 0 times in 147 by an
-independent check of the fix (scenario 56). The dashboard — the default on a
-terminal — still waits for its keys in `read -t 1`, and there the race moved
-rather than went: a second Ctrl-C landing within about ±3 ms of that read's
-timeout is lost, or starts the handler and never ends the loop — on a pty, 4
-lost and 16 hung in about 250 trials aimed at the window (each hung loop
-killed after 90 s), the same shape on every commit since.
-
-#### Directions
-
-- `scripts/check-work.sh` sends the second Ctrl-C only after the loop has said
-  what the first meant, and 0.4 s after that, off the tick; so what the
-  harness holds is the loop as a person uses it, not the race.
-- Probe the dashboard's half first. A hypothesis to test: bash 3.2's `read`
-  runs a trapped signal's handler from inside the signal handler, and the
-  SIGALRM longjmp at the read's timeout abandons it mid-way.
-- The dashboard's tick takes no timer read while a trap can fire: its time the
-  plain tick's way (`sleep … & wait $!`), its keys read without `read -t`
-  (termios `min 0 time N`, or a reader nothing can cut mid-handler), the
-  terminal restored on every exit.
-- Measured as it was found: at least 250 trials aimed at the read's end, 0
-  lost and 0 hung, keys still answered.
-
 ### 15.5 A request's progress is read from the tickets that name it, and old tickets name none — probed on a copy of `opes`
 
 `aif_requests_json` (lib/requests.sh) derives a request's state from the
@@ -584,7 +483,7 @@ hold them.
 
 ### Log 11 — 0.12.0, the harness run whole (2026-10-03)
 
-- *(11.1 is open, above: its plain tick closed after 0.16.0, its dashboard's not.)*
+- **11.1** The loop's shell lost a Ctrl-C that landed as a tick ended — probed, twice. The plain tick: a trapped INT landing after the foreground `sleep 1` was reaped and before bash put its handler back was dropped (10 in 60); the second is spent in the `wait` builtin (`_aif_work_loop_second`; docs/FINDINGS.md #33; scenario 56). The dashboard: bash 3.2 ran the handler inside `read -t 1`'s signal handler, the read's timer longjmp'ed out of it, and the INT trap stayed marked as running — that Ctrl-C and every one after it ran nothing (4 lost and 16 hung in about 250 aimed at the read's end). Its key is read by a child the loop waits for, and the terminal's modes are put back from the `stty -g` taken at the start (`aif_key_wait`, lib/common.sh; docs/FINDINGS.md #39; scenario 94): 0 lost and 0 hung in 252 aimed at the end of the reader's second, 116 of them within 5 ms of it. A loop is also ended with no signal at all: `aif work --loop --drain` or `--stop` leaves a file in its lock that it reads with builtins (scenario 50). The harness still sends its second Ctrl-C once the loop has said what the first meant (`ctrl_c_twice`). On `main` after 0.16.0.
 
 ### Log 12 — 0.12.1, the analyst on `opes` (2026-10-04)
 
@@ -679,13 +578,22 @@ every entry but 15.5 and 15.9 closed, with three found on the way
 Each fix of logs 11–15 was checked once it was committed, by a verifier that
 had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
-held. What gave way — a fix in part (11.1, 15.5, 15.9, above), a hole a fix
+held. What gave way — a fix in part (15.5, 15.9, above; 11.1, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
 with it, 16.4–16.15 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
 - **16.3** A station whose final `result` was `""` read as a runner that did not answer — three tries, then `blocked: environment` — probed (13.7's classifier: `"" | split("\n")[0]` is null, and the whole read failed). The first-line helper cannot fail: a success with an empty result is ok, an error is read by its fields (lib/runner_claude.sh). On `main` after 0.16.0; scenario 88.
+
+### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
+
+The read 11.1's dashboard lost its Ctrl-Cs in was not the loop's alone: the
+shift read its keys the same way, and so met the same timer — with a handler
+long enough to meet it often.
+
+- **17.1** A Ctrl-C at the shift's control point, its countdown or a pause ran the shift's INT handler inside the shift's own `read -t 1`, and the read's timer went off through it — the handler (stty, the summary's jq and date, the unlock, `exit 130`) takes tens to hundreds of milliseconds, so a Ctrl-C in that much of a second's end was abandoned half way: the shift went on to the countdown's default, and no later Ctrl-C ran a handler — probed (the handler's `date` slowed: on 89be0ea the shift counted on and the harness timed out; docs/FINDINGS.md #39). The key is read by the loop's child (`_aif_start_key`, `aif_key_wait`); the handler stops it before it puts the terminal back. On `main` after 0.16.0; check-start layer D.
+- **17.2** With the shift's stdin not the terminal, no key was ever read: the shift read fd 6 with `-u`, and bash 3.2's `read -s -n 1` sets the terminal's modes on fd 0 — the key echoed, the countdown ran on to its default — probed (#39). The child reads the terminal as its stdin. On `main` after 0.16.0; check-start layer D.
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

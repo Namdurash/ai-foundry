@@ -93,7 +93,9 @@
 #      person's comment on a card the loop left in Ready offers no build
 #      again (15.9)
 #   D  a real terminal (a pty): a Ctrl-C at the control point ends 130 with
-#      the terminal as it was; a Ctrl-C inside a session ends the session, not
+#      the terminal as it was, and so does one whose handler runs across the
+#      end of the key's second (11.1); a key typed with the shift's stdin not
+#      the terminal is read; a Ctrl-C inside a session ends the session, not
 #      the shift, which pauses; a closed window at the control point and in a
 #      pause ends 129 with the summary in shift.log; a key typed on the
 #      Ukrainian layout read as its Latin key, and a key no unit has a
@@ -2749,6 +2751,10 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 # construction — each only once the `next:` line is on the screen. Modes:
 #   ctrlc         under `bash -c '…; echo RC=$?; stty -a'`: Ctrl-C at the
 #                 control point
+#   ctrlcslow     the same wrapper and Ctrl-C, the file $D_SLOW made just
+#                 before it — what slows the shift's `date` from then on
+#   stdinnull     the same wrapper, the shift's stdin /dev/null: q at the
+#                 control point
 #   sessionctrlc  the same wrapper: Enter (a held session opens), Ctrl-C in
 #                 the session, then q at the pause it leaves
 #   ua            the same wrapper: і — the s key on the Ukrainian layout —
@@ -2815,7 +2821,8 @@ if pid == 0:
         os.write(w, b"x")
         os.waitpid(c, 0)
         os._exit(0)
-    os.execve("/bin/bash", ["/bin/bash", "-c", '"$0" "$@"; echo "RC=$?"; stty -a'] + argv, env)
+    wrap = '"$0" "$@" </dev/null' if mode == "stdinnull" else '"$0" "$@"'
+    os.execve("/bin/bash", ["/bin/bash", "-c", wrap + '; echo "RC=$?"; stty -a'] + argv, env)
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
 buf = b""
 live = True
@@ -2850,6 +2857,11 @@ pump(30, rb"next: ")
 time.sleep(0.5)
 if mode == "ctrlc":
     send(b"\x03")
+elif mode == "ctrlcslow":
+    open(os.environ["D_SLOW"], "w").close()
+    send(b"\x03")
+elif mode == "stdinnull":
+    send(b"q")
 elif mode == "sessionctrlc":
     send(b"\r")
     opens()
@@ -2937,6 +2949,36 @@ eq "a Ctrl-C at the control point: the shift ends 130, the terminal back in ican
   "exit 0,1,1,0,1,0,gone,$n0"
 eq "…and said why, the summary on the screen" \
   "$(grep -c 'shift ended — stopped by Ctrl-C · exit 130' "$OUT/d-ctrlc.out")" "1"
+
+# The shift read its keys itself, `read -t 1`, and a Ctrl-C there ran its
+# handler inside the read, where the read's timer went off through it: the
+# summary half written, no exit, the countdown on to its default — and no
+# Ctrl-C after it ran a handler at all (docs/DEFECTS.md 11.1;
+# docs/FINDINGS.md #39). The handler's `date` takes 1.5 s here, so that a
+# Ctrl-C anywhere in the key's second has it running across the second's end.
+mkdir -p "$SANDBOX/d-slow"
+cat >"$SANDBOX/d-slow/date" <<'SLOW'
+#!/bin/bash
+# Slow once the harness says so.
+[ ! -e "$D_SLOW" ] || sleep 1.5
+exec /bin/date "$@"
+SLOW
+chmod +x "$SANDBOX/d-slow/date"
+n0="$(sessions_n)"
+r="$(PATH="$SANDBOX/d-slow:$PATH" D_SLOW="$SANDBOX/d-slow/on" python3 "$SANDBOX/terminal.py" ctrlcslow "$OUT/d-ctrlcslow.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+rm -f "$SANDBOX/d-slow/on"
+eq "a Ctrl-C at the control point whose handler runs across the key's second: still 130, said, the terminal back in icanon and echo, the lock gone, no session" \
+  "$r,$(grep -c '^RC=130$' "$OUT/d-ctrlcslow.out"),$(grep -c 'shift ended — stopped by Ctrl-C · exit 130' "$OUT/d-ctrlcslow.out"),$(words "$OUT/d-ctrlcslow.out" | grep -cx icanon),$(words "$OUT/d-ctrlcslow.out" | grep -cx echo),$(lock_gone),$(sessions_n)" \
+  "exit 0,1,1,1,1,gone,$n0"
+
+# The key read with the shift's stdin not the terminal: it read fd 6 with
+# `-u`, and bash 3.2 sets the terminal's modes on fd 0 — the key was echoed
+# and never read, and the countdown ran on to its default (#39).
+n0="$(sessions_n)"
+r="$(python3 "$SANDBOX/terminal.py" stdinnull "$OUT/d-stdin.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+eq "the shift's stdin /dev/null: q at the control point is read — 0, no session, the lock gone, the terminal back in icanon and echo" \
+  "$r,$(grep -c '^RC=0$' "$OUT/d-stdin.out"),$(sessions_n),$(lock_gone),$(words "$OUT/d-stdin.out" | grep -cx icanon),$(words "$OUT/d-stdin.out" | grep -cx echo)" \
+  "exit 0,1,$n0,gone,1,1"
 
 hold="$SANDBOX/hold-d-never"
 r="$(FAKE_SESSION_HOLD="$hold" python3 "$SANDBOX/terminal.py" sessionctrlc "$OUT/d-session.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"

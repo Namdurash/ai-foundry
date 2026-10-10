@@ -12,8 +12,9 @@
 # authority on whether a yes is allowed at all.
 #
 #   refuse      not the main checkout, another land running here, no branch,
-#               the card not in Review, the run record not `built`, a worker
-#               on the ticket, a worktree of another repository or off its
+#               the card not in Review, the run record not `built`, on Trello
+#               a card whose text is not the ticket the run built (15.12), a
+#               worker on the ticket, a worktree of another repository or off its
 #               branch, uncommitted changes to files the land changes, an
 #               untracked file of the developer's that it would write over,
 #               --prepare with no "prepare" to run — nothing touched
@@ -91,8 +92,9 @@ usage: aif land <ticket> [options]
   names it — from Backlog to Ready.
 
   Refused, touching nothing, unless this is the main checkout, no other land
-  runs here, the branch exists, the card is in Review, the run ended built, no
-  worker is on it, and nothing uncommitted here is a file the land changes —
+  runs here, the branch exists, the card is in Review, the run ended built —
+  on Trello, of the card's text as it is now — no worker is on it, and nothing
+  uncommitted here is a file the land changes —
   your other uncommitted work stays as it is. The ticket's own files that the
   analyst left uncommitted here are taken aside to .aif/tmp/ rather than
   written over, and a conflict in aif's own files — the ticket's record under
@@ -876,8 +878,12 @@ _aif_land_stopped() {
   esac
 }
 
-# _aif_land_column <root> <ticket> — the card's column, or empty when there is
-# no card; rc 3, the reason said, when the board could not answer.
+# _aif_land_column <root> <ticket> [<sha-file>] — the card's column, or empty
+# when there is no card; rc 3, the reason said, when the board could not
+# answer. On Trello <sha-file>, when named, gets the hash of the card's text
+# as the pull writes it, from the same read (aif_board_card_column's
+# AIF_BOARD_CARD_SHA_TO): what the land holds the build against
+# (docs/DEFECTS.md 15.12).
 #
 # The column alone, never through `show`: a comments read that failed for
 # good — three 500s on the actions call — makes `show` die (docs/DEFECTS.md
@@ -888,7 +894,7 @@ _aif_land_stopped() {
 # in, not a verdict on the ticket.
 _aif_land_column() {
   local col rc=0
-  col="$(aif_board_card_column "$1" "$2" 2>&1)" || rc=$?
+  col="$(AIF_BOARD_CARD_SHA_TO="${3:-}" aif_board_card_column "$1" "$2" 2>&1)" || rc=$?
   case "$rc" in
     0) printf '%s\n' "$col" ;;
     1) ;;
@@ -1332,8 +1338,16 @@ aif_cmd_land() {
     aif_err "the board is not reachable as configured — fix that first (aif board check)"
     exit 3
   fi
-  local column
-  column="$(_aif_land_column "$root" "$ticket")" || exit 3
+  local column shaf card_sha=""
+  shaf="$(mktemp "${TMPDIR:-/tmp}/aif-land-card-XXXXXX")" || shaf=""
+  column="$(_aif_land_column "$root" "$ticket" "$shaf")" || {
+    [ -z "$shaf" ] || rm -f "$shaf"
+    exit 3
+  }
+  if [ -n "$shaf" ]; then
+    card_sha="$(sed -n 1p "$shaf" 2>/dev/null)" || card_sha=""
+    rm -f "$shaf"
+  fi
   case "$column" in
     review) ;;
     done)
@@ -1348,11 +1362,25 @@ aif_cmd_land() {
 
   # The run record travels on the branch. A card in Review whose run did not
   # end `built` is a card somebody moved by hand.
-  local status
-  status="$(git -C "$root" show "$branch:$AIF_TASKS_DIR/$ticket/run.json" 2>/dev/null |
-    jq -r '.status // empty' 2>/dev/null)" || status=""
+  local runrec status built_sha
+  runrec="$(git -C "$root" show "$branch:$AIF_TASKS_DIR/$ticket/run.json" 2>/dev/null)" || runrec=""
+  status="$(printf '%s' "$runrec" | jq -r '.status // empty' 2>/dev/null)" || status=""
   [ "$status" = "built" ] ||
     aif_die "the run on $branch did not end built (status: ${status:-no run record}) — nothing to land"
+
+  # On Trello the card is the ticket, and a person may edit it in the browser
+  # after its build — after the review's demo, even: the land merged the build
+  # of the text before, the criterion added since in no test, and the card
+  # went to Done as if it had been built (docs/DEFECTS.md 15.12). The card as
+  # it is now — read above for its column, hashed as the pull writes it, no
+  # request more — is held against the ticket the run built (its
+  # ticket_sha256), as the shift holds it before it offers the land: another
+  # text is refused, nothing touched, the card left in Review. A record with
+  # no hash says nothing, and the land goes on as before.
+  built_sha="$(printf '%s' "$runrec" | jq -r '.ticket_sha256 // empty | strings' 2>/dev/null)" || built_sha=""
+  if [ -n "$card_sha" ] && [ -n "$built_sha" ] && [ "$card_sha" != "$built_sha" ]; then
+    aif_die "$ticket's card changed after its build — $branch is a build of the card's earlier text, and a land would merge that. Nothing was touched, and the card stays in Review; build it from the card as it is now: aif work $ticket"
+  fi
 
   # A worker on the ticket owns its worktree until it ends: a card in Review
   # with a live worker is one somebody just sent back.

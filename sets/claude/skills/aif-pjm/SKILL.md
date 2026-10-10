@@ -126,12 +126,13 @@ on the kind:
   (`aif board move <ID> review && aif land <ID>`, with `--prepare` when they say so).
   It is for the human; say what the comment names, and do not move it.
 
-A `taken: <host> pid <pid> at <time> — aif work` line is the worker's claim on the card
-when it took it — which machine, which process, when; `· alive at <time>` after it is the
-last time its worker said it was alive — and never a reason to route: the report or the
-`blocked:` line after it is what says how the run ended. A `not taken: …` line is a
-claim withdrawn by a worker that lost the card to another machine's earlier claim:
-nothing to route either.
+A `taken: <host>:<checkout> pid <pid> at <time> — aif work` line is the worker's claim
+on the card when it took it — which machine and which checkout of it (an older claim
+names the host alone), which process, when; `· alive at <time>` after it is the last time
+its worker said it was alive — and never a reason to route: the report or the `blocked:`
+line after it is what says how the run ended. A `not taken: …` line is a claim withdrawn
+by a worker that lost the card to another checkout's earlier claim: nothing to route
+either.
 
 A comment with no `blocked:` line is from before the worker wrote one: read it, and
 route a ticket problem as rework and anything else to the human, as above.

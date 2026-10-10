@@ -87,7 +87,8 @@ _aif_start_board() {
 # _aif_start_facts <root> — the facts of one tick, one compact JSON object on
 # stdout:
 #
-#   { now (epoch), shift_started_at (ISO UTC), host, board_kind, ticket_re,
+#   { now (epoch), shift_started_at (ISO UTC), host, clone (this checkout's
+#     name in a claim, aif_clone_id), board_kind, ticket_re,
 #     wall_clock_min (limits.run_max_minutes: how long a run can last),
 #     fresh_margin_s (AIF_START_FRESH_MARGIN_SECS, 120: what a head's time is
 #                     allowed against the shift's start, another clock's),
@@ -101,8 +102,10 @@ _aif_start_board() {
 #                entry (on Trello, a Ready card's moved_at when the shift
 #                       first saw it there, kept while it stays: R12's key),
 #                unread_looks (looks in a row its head failed; 0 once read),
-#                head: { line, at, body, after, heads: [ { line, at } ],
-#                        card_sha256 }|null,
+#                head: { line, at, body, after,
+#                        heads: [ { line, at, edited_at } ], more, read,
+#                        card_sha256, deep (read further back for R17:
+#                        _aif_start_deeper) }|null,
 #                local: <_aif_work_status_json>|null,
 #                kept_block: { path }|null,
 #                ticket_file, meta: { depends_on, request, slice }|null,
@@ -240,7 +243,7 @@ _aif_start_facts_in() {
   jq -n -c --argjson now "$(date +%s)" --argjson pause "$pausej" \
     --arg started "${AIF_START_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}" \
     --argjson wall "$wall" --argjson margin "$margin" --argjson installed "$gate" \
-    --arg host "$(aif_host_short)" --arg kind "$kind" --arg re "$re" \
+    --arg host "$(aif_host_short)" --arg clone "$(aif_clone_id "$root")" --arg kind "$kind" --arg re "$re" \
     --slurpfile build "$tmp/build.json" \
     --arg po "${AIF_START_FLAG_PO:-0}" --arg pjm "${AIF_START_FLAG_PJM:-1}" \
     --arg rr "${AIF_START_FLAG_RETRY_RUNS:-0}" \
@@ -260,7 +263,7 @@ _aif_start_facts_in() {
       ($x | map({ key: .ticket, value: . }) | from_entries) as $e
     | ($g | map({ key: .ticket, value: .rc }) | from_entries) as $gate
     | $all[0] as $a
-    | { now: $now, shift_started_at: $started, host: $host, board_kind: $kind, ticket_re: $re,
+    | { now: $now, shift_started_at: $started, host: $host, clone: $clone, board_kind: $kind, ticket_re: $re,
         wall_clock_min: $wall, fresh_margin_s: $margin, ready_gate_installed: $installed,
         pause: $pause,
         build: $build[0],
@@ -288,21 +291,86 @@ _aif_start_facts_in() {
         requests: $req[0],
         memory: { done: [ $donekeys | split("\n")[] | select(length > 0) | split("\t")
                           | { key: .[0], note: (.[1:] | join("\t")) } ],
-                  retried_env: ($renv | words), retried_run: ($rrun | words) } }' || {
+                  retried_env: ($renv | words), retried_run: ($rrun | words) } }' >"$tmp/facts.json" || {
     aif_err "could not put the shift's facts together (jq)"
     return 1
   }
+  _aif_start_deeper "$root" "$tmp" "$kind"
+  cat "$tmp/facts.json"
 }
 
-# _aif_start_claim_due <column> <cache file> <head JSON> <host> <minutes> — rc
-# 0 when a cached head of an In Progress card is another machine's claim and
-# the cache is older than <minutes>: read it again (_aif_start_cards says why).
+# _aif_start_deeper <root> <tmp> <kind> — the heads R17 needs read further
+# back than the first page that held a head, read so, into <tmp>/facts.json.
+#
+# R17 retries a run's block under --retry-runs unless the card was blocked
+# twice in a row — counted among the heads read, and on Trello the read stops
+# at the first page of twenty comments that holds a head: a block with
+# twenty-odd replies under the one before it read as the first, and the card
+# was retried a third time (docs/DEFECTS.md 15.6, probed). A head is not
+# settled when its read stopped with older comments unread (`more`) and holds
+# fewer than two heads that are not a claim or a release. Only a card the
+# oracle would retry on such a count is read further back, within the same
+# five pages, until it holds two (aif_board_head_json's <want>): the oracle
+# itself is asked — over these facts, those heads taken as settled — which it
+# would move, its rule and not a copy of it here. The deeper head is marked
+# `deep`: R17 says, instead of retrying, that the pages ran out before the
+# head before the block. A read that fails leaves the head as it was, which
+# R17 does not retry either. On a shift the deeper head is cached in the
+# shallow one's place, under the same key: read again only when the card
+# changes. Nothing on the local board, which reads every comment.
+_aif_start_deeper() {
+  local root="$1" tmp="$2" kind="$3" ids id hj hrc cards
+  [ "$kind" = trello ] && [ "${AIF_START_FLAG_RETRY_RUNS:-0}" = 1 ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+  ids="$(jq -r --arg pass "$AIF_BOARD_PASSING" '
+    .cards[] | select(.column == "needs_human" and .unread != true)
+    | select(.head.more == true and .head.deep != true)
+    | select((.head.line // "") | test("^blocked: (run|stopped) — "))
+    | select([ (.head.heads // [])[] | (.line // "") | select(test($pass) | not) ] | length < 2)
+    | .ticket' "$tmp/facts.json" 2>/dev/null)" || ids=""
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+  jq -c --arg ids "$ids" '($ids | split("\n")) as $l
+    | .cards |= map(if (.ticket as $t | any($l[]; . == $t)) then .head.more = false else . end)' \
+    "$tmp/facts.json" >"$tmp/probe.json" 2>/dev/null || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+  ids="$( (_aif_start_oracle "$tmp/probe.json") 2>/dev/null | jq -r --arg ids "$ids" '($ids | split("\n")) as $l
+    | .moves[] | select(.rule == "R17" and .kind == "retry-run") | .ticket | select(. as $t | any($l[]; . == $t))' 2>/dev/null)" || ids=""
+  cards="${AIF_START_SHIFT_DIR:-}"
+  [ -z "$cards" ] || cards="$cards/cards"
+  for id in $ids; do
+    hrc=0
+    hj="$(aif_board_head_json "$root" "$id" 2 2>/dev/null </dev/null)" || hrc=$?
+    [ "$hrc" -le 1 ] || continue
+    hj="$(printf '%s' "$hj" | jq -c 'objects | . + { deep: true }' 2>/dev/null)" || hj=""
+    [ -n "$hj" ] || continue
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+    if ! jq -c --arg t "$id" --argjson h "$hj" '.cards |= map(if .ticket == $t then .head = $h else . end)' \
+      "$tmp/facts.json" >"$tmp/facts.json.tmp" 2>/dev/null; then
+      rm -f "$tmp/facts.json.tmp"
+      continue
+    fi
+    mv "$tmp/facts.json.tmp" "$tmp/facts.json" || continue
+    case "$id" in
+      *[!A-Za-z0-9._-]*) ;;
+      *) [ -z "$cards" ] || [ ! -f "$cards/$id.key" ] || { printf '%s\n' "$hj" >"$cards/$id.head"; } 2>/dev/null || true ;;
+    esac
+  done
+  return 0
+}
+
+# _aif_start_claim_due <column> <cache file> <head JSON> <host> <clone>
+# <minutes> — rc 0 when a cached head of an In Progress card is another
+# checkout's claim — neither `taken: <host>:<clone> ` nor, from before
+# checkouts were named, `taken: <host> ` (docs/DEFECTS.md 14.4) — and the cache
+# is older than <minutes>: read it again (_aif_start_cards says why).
 _aif_start_claim_due() {
   [ "$1" = in_progress ] || return 1
-  [ -n "$(find "$2" -mmin +"$5" 2>/dev/null)" ] || return 1
-  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
-  printf '%s' "$3" | jq -e --arg h "$4" \
-    '(.line // "") | startswith("taken: ") and (startswith("taken: " + $h + " ") | not)' >/dev/null 2>&1
+  [ -n "$(find "$2" -mmin +"$6" 2>/dev/null)" ] || return 1
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  printf '%s' "$3" | jq -e --arg h "$4" --arg k "$5" \
+    '(.line // "") | startswith("taken: ")
+     and (startswith("taken: " + $h + " ") | not) and (startswith("taken: " + $h + ":" + $k + " ") | not)' >/dev/null 2>&1
 }
 
 # _aif_start_cards <root> <tmp> <kind> — for every card the shift considers,
@@ -329,8 +397,9 @@ _aif_start_claim_due() {
 # anybody wrote. rc 2 is a card not read, its first line why: never an empty
 # head (research R1).
 #
-# One exception to the cache: a head that is another machine's claim is read
-# again once its cache is AIF_START_CLAIM_REREAD_MIN (10) minutes old. Its
+# One exception to the cache: a head that is another checkout's claim —
+# another machine's, or another clone's on this one — is read again once its
+# cache is AIF_START_CLAIM_REREAD_MIN (10) minutes old. Its
 # worker beats by editing that comment (lib/cmd_work.sh _aif_work_heartbeat),
 # and whether an edit moves the card's last activity on Trello is not known —
 # a cache keyed on it could hold a live worker's claim at its first beat for
@@ -342,10 +411,11 @@ _aif_start_claim_due() {
 # a card whose blocked: line the board refused has the file it was kept in
 # named (`kept_block`), for the oracle to post it (14.2).
 _aif_start_cards() {
-  local root="$1" tmp="$2" kind="$3" main shiftdir cap reads=0 tab host reread
+  local root="$1" tmp="$2" kind="$3" main shiftdir cap reads=0 tab host clone reread
   local id col key cache cached hj hrc unread why loc meta tf f sha kept looks
   main="$(aif_main_root "$root")"
   host="$(aif_host_short)"
+  clone="$(aif_clone_id "$root")"
   reread="${AIF_START_CLAIM_REREAD_MIN:-10}"
   case "$reread" in
     '' | *[!0-9]*) reread=10 ;;
@@ -404,10 +474,10 @@ _aif_start_cards() {
             '' | *[!0-9]*) looks=0 ;;
           esac
         fi
-        # A cached head stands, unless it is another machine's claim due to
+        # A cached head stands, unless it is another checkout's claim due to
         # be read again (above) and this tick still has a read to spend.
         if [ -n "$cached" ] && { { [ "$cap" -gt 0 ] && [ "$reads" -ge "$cap" ]; } ||
-          ! _aif_start_claim_due "$col" "$cache.head" "$cached" "$host" "$reread"; }; then
+          ! _aif_start_claim_due "$col" "$cache.head" "$cached" "$host" "$clone" "$reread"; }; then
           hj="$cached"
         elif [ "$cap" -gt 0 ] && [ "$reads" -ge "$cap" ]; then
           hj=null
@@ -1476,7 +1546,8 @@ _aif_start_move() {
 }
 
 # _aif_start_env_retries <root> <moves, one JSON a line> — R16: cards the
-# environment blocked during this shift go back to Ready, once each — after
+# environment blocked during this shift, or in the margin before its start
+# (lib/start.jq r16), go back to Ready, once each — after
 # ONE preflight for all of them, the worker's own (_aif_work_preflight), in a
 # subshell because it exits, with AIF_WORK_LOOP=1 because the suite probe is
 # the loop's to run, not a supervisor's in the developer's checkout. A
@@ -1485,7 +1556,7 @@ _aif_start_move() {
 _aif_start_env_retries() {
   local root="$1" list="$2" m id key n rc=0 head
   n="$(printf '%s' "$list" | grep -c . || true)"
-  _aif_start_say "preflight" "$n card(s) blocked by the environment during this shift — the machine is checked once before they go back to Ready (its lines in shift.log)"
+  _aif_start_say "preflight" "$n card(s) blocked by the environment since around the shift's start — the machine is checked once before they go back to Ready (its lines in shift.log)"
   (AIF_WORK_LOOP=1 _aif_work_preflight "$root" "$AIF_START_PROFILE") >>"$AIF_START_SHIFT_DIR/shift.log" 2>&1 </dev/null || rc=$?
   if [ "$rc" -ne 0 ]; then
     while IFS= read -r m; do
@@ -1496,7 +1567,7 @@ _aif_start_env_retries() {
     done <<EOF
 $list
 EOF
-    _aif_start_finish 3 "the environment blocked cards during this shift, and the preflight fails again (exit $rc) — the machine, not the cards; shift.log has its lines"
+    _aif_start_finish 3 "the environment blocked cards since around the shift's start, and the preflight fails again (exit $rc) — the machine, not the cards; shift.log has its lines"
   fi
   while IFS= read -r m; do
     [ -n "$m" ] || continue

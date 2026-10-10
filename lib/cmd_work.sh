@@ -45,8 +45,9 @@
 # say why) · 3 the environment cannot run a ticket (nothing was spent; a card
 # already taken is in Needs Human saying what), or the card is not this
 # worker's to take — a dead run's process still runs there, or on Trello
-# another machine's worker has claimed it (nothing spent, the card left as it
-# is; the loop reads which from the line it said) · 130 / 143 stopped by Ctrl-C,
+# another checkout's worker has claimed it — another machine's, or another
+# clone on this one (nothing spent, the card left as it is; the loop reads
+# which from the line it said) · 130 / 143 stopped by Ctrl-C,
 # by `aif work <ID> --stop` or by a TERM (the card says which) · 129 stopped
 # by a hang-up — the terminal closed over it.
 
@@ -83,9 +84,11 @@ usage: aif work [<ticket>] [options]
   says why: blocked: ticket | run | environment | stopped. One worker builds
   a ticket at a time on this machine; a second is refused, nothing spent.
   The worker's taken: comment on the card beats (· alive at <time>) at every
-  station it starts; on a Trello board two machines share, a card another
-  machine's live worker has claimed is skipped and said (exit 3), and of two
-  that take one card at once the earlier claim builds it.
+  station it starts; on a Trello board two checkouts share — two machines,
+  or two clones on one — a card another checkout's live worker has claimed
+  is skipped and said (exit 3), and of two that take one card at once the
+  earlier claim builds it. A claim names its host and its checkout:
+  taken: <host>:<checkout> pid <pid> at <time>.
 
   --profile P        which (set, runner, model) profile; default: the project's
   --budget USD       stop past this spend. OFF unless asked for: set it here
@@ -387,7 +390,11 @@ _aif_work_refuse() {
 }
 
 # _aif_work_claim <root> <ticket> — stamp the card with who took it: one
-# comment whose first line is `taken: <host> pid <pid> at <time> — aif work`.
+# comment whose first line is `taken: <host>:<clone> pid <pid> at <time> — aif
+# work`, <clone> this checkout's name (aif_clone_id): the host alone named the
+# machine, and two checkouts of one host — or two hosts of one short name —
+# each read the other's claim as its own (docs/DEFECTS.md 14.4). A claim
+# written before the name, `taken: <host> pid …`, is read as the host's.
 #
 # The move to In Progress says that work is happening; it does not say
 # where. On a Trello board shared by two machines that is the whole
@@ -410,13 +417,14 @@ _aif_work_refuse() {
 # first (_aif_work_claim_race) — both through the comment's id, so neither
 # finds the card again (docs/DEFECTS.md 14.4).
 _aif_work_claim() {
-  local root="$1" ticket="$2" host f idf
+  local root="$1" ticket="$2" host clone f idf
   host="$(aif_host_short)"
+  clone="$(aif_clone_id "$root")"
   f="$(mktemp "${TMPDIR:-/tmp}/aif-taken-XXXXXX")"
   idf="$(mktemp "${TMPDIR:-/tmp}/aif-taken-id-XXXXXX")"
   {
-    printf 'taken: %s pid %s at %s — aif work\n' "${host:-?}" "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf '\nThe worker on %s has this card; its run lock there records the same pid. A claim, not a reason to route — the comment that follows says how the run ended. While the run lives its first line says when the worker was last alive.\n' "${host:-?}"
+    printf 'taken: %s:%s pid %s at %s — aif work\n' "${host:-?}" "$clone" "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '\nThe worker of checkout %s on %s has this card; its run lock there records the same pid. A claim, not a reason to route — the comment that follows says how the run ended. While the run lives its first line says when the worker was last alive.\n' "$clone" "${host:-?}"
   } >"$f"
   if (AIF_BOARD_BY="aif work" AIF_BOARD_COMMENT_ID_TO="$idf" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
     if [ -n "${AIF_WORK_LOCK:-}" ] && [ -d "$AIF_WORK_LOCK" ]; then
@@ -456,27 +464,53 @@ _aif_work_heartbeat() {
   return 0
 }
 
-# _aif_work_claim_life <head-json> — the claims among a card's heads, one JSON
-# object a line, oldest first: `{ i, host, pid, life }`, where i is the head's
-# place and life the epoch of the last time its worker said it was alive — the
-# heartbeat (`· alive at`), else the time the claim names, else the
-# comment's own. A jq library of one function, shared by the claim check and
-# the race below so that the two read a claim the same way.
+# _aif_work_claim_life <root> <head-json> — the claims among a card's heads,
+# one JSON object a line, oldest first: `{ i, line, who, host, clone, pid,
+# mine, life }` — i the head's place, who what the claim names
+# (`<host>[:<clone>]`), mine whether that is this checkout, life the epoch of
+# the last time its worker was seen alive. A jq library of one function,
+# shared by the claim check and the race below so that the two read a claim
+# the same way.
+#
+# Mine: this host and this checkout (aif_clone_id), or, for a claim written
+# before checkouts were named (`taken: <host> pid …`), this host — the host
+# alone let two checkouts of one host each take the other's claim for its own
+# (docs/DEFECTS.md 14.4).
+#
+# Alive by the board's own clock on Trello: the comment's date, and the date
+# the board stamps on a comment when it is edited (`dateLastEdited`, which
+# every beat moves) — never the times in its text, which are the other
+# machine's clock: a claim whose time ran a day ahead held its card for a day
+# after its worker was gone (docs/DEFECTS.md 14.4, probed). The board's clock
+# against this one is 15.6's skew — seconds, against a wall clock of hours.
+# The local board is one machine, its text's times this machine's own: the
+# heartbeat, the time the claim names, the comment's.
 _aif_work_claim_life() {
-  printf '%s' "$1" | jq -c '
+  local kind
+  kind="$(aif_board_kind "$1")"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  printf '%s' "$2" | jq -c --arg host "$(aif_host_short)" --arg clone "$(aif_clone_id "$1")" \
+    --argjson board "$([ "$kind" = trello ] && printf true || printf false)" '
     def epoch: if type == "string" then (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null) else null end;
+    def nz: if . == null or . == "" then null else . end;
     (.heads // []) as $h
     | range(0; $h | length) as $i
     | ($h[$i].line // "") as $l
     | select($l | startswith("taken: "))
-    | ($l | capture("^taken: (?<host>[^ ]+) pid (?<pid>[0-9]+) at (?<at>[^ ]+)") // {}) as $c
+    | ($l | capture("^taken: (?<host>[^ :]+)(:(?<clone>[^ ]+))? pid (?<pid>[0-9]+) at (?<at>[^ ]+)") // {}) as $c
     | ($l | capture(" · alive at (?<alive>[^ ]+)$") // {}) as $a
-    | { i: $i, line: $l, host: ($c.host // null), pid: ($c.pid // null),
-        life: ([ ($a.alive | epoch), ($c.at | epoch), ($h[$i].at | epoch) ] | map(select(. != null)) | max) }' 2>/dev/null
+    | ($c.host | nz) as $ho
+    | ($c.clone | nz) as $cl
+    | { i: $i, line: $l, host: $ho, clone: $cl, pid: ($c.pid // null),
+        who: (if $cl == null then $ho else "\($ho):\($cl)" end),
+        mine: ($ho != null and $ho == $host and ($cl == null or $cl == $clone)),
+        life: ((if $board then [] else [ ($a.alive | epoch), ($c.at | epoch) ] end)
+               + [ ($h[$i].at | epoch), ($h[$i].edited_at | epoch) ]
+               | map(select(. != null)) | max) }' 2>/dev/null
 }
 
 # _aif_work_claim_check <root> <ticket> — before a take, on Trello: rc 1 when
-# the card's newest head is another machine's claim whose worker said it was
+# the card's newest head is another checkout's claim whose worker was seen
 # alive within a run's wall clock (limits.run_max_minutes), AIF_WORK_CLAIMED
 # naming it; else rc 0.
 #
@@ -484,12 +518,14 @@ _aif_work_claim_life() {
 # machines on one board that read the same card both moved it and both built
 # it; and once it was In Progress, a live worker elsewhere and a card a
 # person dragged back to Ready looked the same (docs/DEFECTS.md 14.4). The
-# claim says which: a card another machine claimed, and whose worker has said
-# since that it lives, is that machine's — skipped, and said. A claim older
-# than a run can last is a worker gone (14.1's machine is not this one), and
-# the card is taken. A head that cannot be read is no claim: the race after
-# the take (_aif_work_claim_race) is the second look. The local board is one
-# machine's, and its run lock says all of this already.
+# claim says which: a card another checkout claimed — another machine's, or
+# another clone on this one — and whose worker has been seen alive since, is
+# that checkout's: skipped, and said. A claim older than a run can last, by
+# the board's clock (_aif_work_claim_life), is a worker gone (14.1's machine
+# is not this one), and the card is taken. A head that cannot be read is no
+# claim: the race after the take (_aif_work_claim_race) is the second look.
+# The local board is one checkout's, and its run lock says all of this
+# already.
 _aif_work_claim_check() {
   local root="$1" ticket="$2" hj wall last
   AIF_WORK_CLAIMED=""
@@ -505,29 +541,32 @@ _aif_work_claim_check() {
     '' | *[!0-9]*) wall=120 ;;
   esac
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-  last="$(_aif_work_claim_life "$hj" | jq -rs --arg host "$(aif_host_short)" --argjson now "$(date +%s)" --argjson wall "$wall" '
-    last // empty | select(.host != null and .host != $host and .life != null and ($now - .life) < $wall * 60)
-    | "\(.host) (pid \(.pid // "?"), its worker last said it was alive \((($now - .life) / 60) | floor) min ago — within the wall clock of a run, \($wall) min)"' 2>/dev/null)" || last=""
+  last="$(_aif_work_claim_life "$root" "$hj" | jq -rs --argjson now "$(date +%s)" --argjson wall "$wall" '
+    last // empty | select((.mine | not) and .host != null and .life != null and ($now - .life) < $wall * 60)
+    | "\(.who) (pid \(.pid // "?"), its worker last said it was alive \((($now - .life) / 60) | floor) min ago — within the wall clock of a run, \($wall) min)"' 2>/dev/null)" || last=""
   [ -n "$last" ] || return 0
   AIF_WORK_CLAIMED="$last"
   return 1
 }
 
 # _aif_work_claim_race <root> <ticket> — after this worker's own claim, on
-# Trello: rc 1 when another machine claimed the card first, AIF_WORK_CLAIMED
+# Trello: rc 1 when another checkout claimed the card first, AIF_WORK_CLAIMED
 # naming it; else rc 0.
 #
-# Two machines that read the card before either claimed it both pass the
+# Two checkouts that read the card before either claimed it both pass the
 # check above, both move it and both post a claim. The earliest claim since
 # the card's last head that is not a claim wins — the board's order, the one
-# both machines read — counting only a claim whose worker lives by the check's
-# own rule: a claim gone silent is not a rival (a card a person moved back
-# after its worker died is taken, and must stay taken). The loser says so,
+# both read — counting only a claim whose worker lives by the check's own
+# rule: a claim gone silent is not a rival (a card a person moved back after
+# its worker died is taken, and must stay taken). The loser says so,
 # withdraws its claim — edited into a first line no reader routes on, so the
 # winner's is the newest `taken:` again, which a shift reads to tell whose
 # card it is — and takes nothing: no worktree, the card left to the winner
-# (docs/DEFECTS.md 14.4). A read that fails, or a claim this worker could not
-# post, is no race found: the build goes on, as it did before.
+# (docs/DEFECTS.md 14.4). Another checkout, not only another host: two clones
+# on one machine raced like two machines, and with the host alone each read
+# the other's claim as its own and both built. A read that fails, or a claim
+# this worker could not post, is no race found: the build goes on, as it did
+# before.
 _aif_work_claim_race() {
   local root="$1" ticket="$2" hj mine wall winner f
   AIF_WORK_CLAIMED=""
@@ -542,7 +581,7 @@ _aif_work_claim_race() {
     '' | *[!0-9]*) wall=120 ;;
   esac
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-  winner="$(_aif_work_claim_life "$hj" | jq -rs --arg mine "$mine" --arg host "$(aif_host_short)" \
+  winner="$(_aif_work_claim_life "$root" "$hj" | jq -rs --arg mine "$mine" \
     --argjson now "$(date +%s)" --argjson wall "$wall" '
     . as $claims
     | ([ $claims[] | select(.line == $mine or (.line | startswith($mine + " · alive at "))) | .i ] | last) as $me
@@ -550,8 +589,8 @@ _aif_work_claim_race() {
         # The claims right before this one, back to the last head that is not one.
         ([ range(0; $me) ] | map(. as $k | select(any($claims[]; .i == $k) | not)) | max // -1) as $stop
         | [ $claims[] | select(.i > $stop and .i < $me)
-            | select(.host != null and .host != $host and .life != null and ($now - .life) < $wall * 60) ]
-        | .[0] // empty | "\(.host) (pid \(.pid // "?"))"
+            | select((.mine | not) and .host != null and .life != null and ($now - .life) < $wall * 60) ]
+        | .[0] // empty | "\(.who) (pid \(.pid // "?"))"
       end' 2>/dev/null)" || winner=""
   [ -n "$winner" ] || return 0
   AIF_WORK_CLAIMED="$winner"
@@ -559,10 +598,10 @@ _aif_work_claim_race() {
   mine="${mine#taken: }"
   {
     printf 'not taken: %s — aif work · %s claimed this card first\n' "${mine% — aif work}" "$winner"
-    printf '\nTwo machines took this card at once; the earlier claim stands, and this worker took nothing.\n'
+    printf '\nTwo checkouts took this card at once; the earlier claim stands, and this worker took nothing.\n'
   } >"$f"
   (aif_board_comment_edit "$root" "$ticket" "$(sed -n 1p "$AIF_WORK_LOCK/claim.id")" "$f" >/dev/null 2>&1) ||
-    aif_warn "could not withdraw this worker's claim on $ticket — its taken: line names this host while $winner builds it"
+    aif_warn "could not withdraw this worker's claim on $ticket — its taken: line names this checkout while $winner builds it"
   rm -f "$f"
   return 1
 }
@@ -576,18 +615,20 @@ _aif_work_claim_race() {
 # route on, the reason on one machine's disk, until someone ran the command
 # the warning named (docs/DEFECTS.md 14.2). Posted now when the card is still
 # in Needs Human with nothing after the run's own claim on it — its newest
-# head this machine's `taken:`, or none — comment only, the move made long
-# since; the file removed once the line is up. A card with any other head
-# there has moved on (the line posted by hand, a later block, a land), and
+# head this checkout's `taken:` (its host and its name, aif_clone_id; or the
+# host alone, a claim from before the name), or none — comment only, the move
+# made long since; the file removed once the line is up. A card with any other
+# head there has moved on (the line posted by hand, a later block, a land), and
 # one in Review or Done is past it: the file is stale and removed. In
 # Progress is the shift's to settle with the file (lib/start.jq R3c), and
 # Ready or Backlog a card a person moved on — left. Taken aside first, so
 # that two workers starting at once post it once. A board that does not
 # answer keeps every file for the next run. Never a stop.
 _aif_work_repost_kept() {
-  local root="$1" main host f id col head rc aside
+  local root="$1" main host clone f id col head rc aside
   main="$(aif_main_root "$root")"
   host="$(aif_host_short)"
+  clone=""
   for f in "$main/.aif/tmp"/blocked-*.md; do
     [ -f "$f" ] || continue
     id="${f##*/blocked-}"
@@ -618,8 +659,9 @@ _aif_work_repost_kept() {
     rc=0
     head="$( (aif_board_last_line "$root" "$id") 2>/dev/null)" || rc=$?
     [ "$rc" -le 1 ] || continue
+    [ -n "$clone" ] || clone="$(aif_clone_id "$root")"
     case "$head" in
-      "" | "taken: $host "*) ;;
+      "" | "taken: $host:$clone "* | "taken: $host "*) ;;
       *)
         rm -f "$f"
         _aif_work_say "board" "$id — its card says \"$head\" since: the kept blocked: line is stale, removed"
@@ -1359,8 +1401,11 @@ _aif_work_status_json() {
     esac
   fi
 
+  # The host and this checkout's name, as its worker's claim writes them
+  # (`taken: <host>:<clone> …`, aif_clone_id): what tells this checkout's
+  # claim from another's on a board two share (docs/DEFECTS.md 14.4).
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-  jq -n -c --arg t "$id" --arg host "$(aif_host_short)" \
+  jq -n -c --arg t "$id" --arg host "$(aif_host_short)" --arg clone "$(aif_clone_id "$root")" \
     --argjson held "$held" --argjson live "$live" --arg pid "$pid" --argjson alive "$alive" \
     --argjson owner "$owner" --argjson lj "$livej" --arg phase "$phase" --arg stopby "$stopby" \
     --argjson ack "$ack" --argjson orphans "$orphans" --arg station "$station" \
@@ -1439,7 +1484,7 @@ _aif_work_status_json() {
        elif $class == "no_record" then
          (if $wtx then "a worktree" else "branch \($b)" end) + ", but no run record — its worker stopped before its intake; nothing was spent"
        else "nothing of it on this machine" end) as $why
-    | { ticket: $t, host: $host,
+    | { ticket: $t, host: $host, clone: $clone,
         lock: { held: $held, live: $live, pid: $p, pid_alive: $alive, pgid: ($o.pgid // null),
                 station: ($station | num),
                 started_at: ($o.started_at // null), started: ($l.started // null),
@@ -4189,11 +4234,12 @@ EOF
           # 14.1, 13.8). Held instead, its why published (15.3); the exit codes
           # stay the documented contract.
           held_by="$(sed -n 's/.* last worker is gone, and what it started still runs: \(.*\) — not taken over\..*/\1/p' "$logdir/$log" 2>/dev/null | tail -1)" || held_by=""
-          # And a card another machine's worker has — its claim live, read
+          # And a card another checkout's worker has — its claim live, read
           # before the take or found earlier than this worker's own after it
-          # (_aif_work_claim_check, _aif_work_claim_race): that machine's, and
-          # nothing about this one (docs/DEFECTS.md 14.4).
-          taken_on="$(sed -n "s/.* is taken on \(.*\) — skipped: another machine's worker has it\..*/\1/p" "$logdir/$log" 2>/dev/null | tail -1)" || taken_on=""
+          # (_aif_work_claim_check, _aif_work_claim_race): that checkout's —
+          # another machine's, or another clone on this one — and nothing
+          # about this one (docs/DEFECTS.md 14.4).
+          taken_on="$(sed -n "s/.* is taken on \(.*\) — skipped: another checkout's worker has it\..*/\1/p" "$logdir/$log" 2>/dev/null | tail -1)" || taken_on=""
           # And a card an `aif land` of it holds in this checkout: the land's
           # until it ends, and nothing about the machine — its fixed line read
           # back the same way (docs/DEFECTS.md 15.1, 13.8).
@@ -4204,10 +4250,10 @@ EOF
             AIF_LS_RESULT[slot]=held
             _aif_work_loop_event yellow "$id not taken over — what its last worker started still runs ($held_by); the card is held, the loop goes on · aif work --status $id"
           elif [ -n "$taken_on" ]; then
-            what="not taken (exit 3) — another machine's worker has it"
-            why_now="taken on $taken_on — another machine's worker has it"
+            what="not taken (exit 3) — another checkout's worker has it"
+            why_now="taken on $taken_on — another checkout's worker has it"
             AIF_LS_RESULT[slot]=held
-            _aif_work_loop_event yellow "$id is taken on another machine — $taken_on; the card is held, the loop goes on"
+            _aif_work_loop_event yellow "$id is taken in another checkout — $taken_on; the card is held, the loop goes on"
           elif [ -n "$land_pid" ]; then
             what="not taken (exit 3) — aif land $id runs on it here"
             why_now="aif land $id runs in this checkout (pid $land_pid) — its worktree is the land's until it ends"
@@ -4717,7 +4763,29 @@ _aif_work_loop_tick() {
     return 0
   fi
   _aif_work_loop_refresh
-  _aif_work_loop_draw
+  # The frame can meet the hang-up too — little of the second goes to it, but
+  # under load more: the terminal closed while its print was writing, the
+  # print failed (EIO), and errexit ended the loop with 1 — the hang-up's
+  # handler had run, the runs were sent their TERM and none was waited for,
+  # the card left In Progress (docs/DEFECTS.md 14.8; scenario 48's dashboard
+  # row failed so 1 to 4 times in 15 with every core busy, on each of three
+  # commits before this). A frame that could not be written is no end: what
+  # the failed print left in stdio's buffer goes to /dev/null, not into the
+  # next capture; after a hang-up the output goes to loop.log again, whatever
+  # the print's own redirection put back; and with no hang-up yet the second
+  # is waited out, not read from a terminal that answers at once, so a
+  # terminal gone without one cannot spin the loop.
+  if ! _aif_work_loop_draw; then
+    printf '\n' >/dev/null 2>&1 || true
+    if [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ]; then
+      sleep 1 &
+      tick=$!
+      wait "$tick" 2>/dev/null || rc=$?
+      [ "$rc" -le 128 ] || kill -TERM "$tick" 2>/dev/null || true
+    fi
+    [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] || _aif_work_loop_to_log
+    return 0
+  fi
   IFS= read -r -t 1 -n 1 -s key </dev/tty 2>/dev/null || true
   # A hang-up lands here nearly every time — the dashboard spends its
   # seconds in this read — and bash runs the trap INSIDE the read's own
@@ -5539,8 +5607,8 @@ aif_cmd_work() {
 
   # No ticket named: the board decides. The top of Ready is the project
   # manager's order, and the worker consumes it — queue policy is theirs, the
-  # queue is not. On Trello, past the cards another machine's live worker has
-  # claimed (_aif_work_claim_check), each said.
+  # queue is not. On Trello, past the cards another checkout's live worker
+  # has claimed (_aif_work_claim_check), each said.
   if [ -z "$ticket" ]; then
     if [ "$(aif_board_kind "$root")" = trello ]; then
       local cand cands
@@ -5552,16 +5620,16 @@ aif_cmd_work() {
         fi
         _aif_work_say "board" "$cand is taken on $AIF_WORK_CLAIMED — skipped"
       done
-      [ -n "$ticket" ] || aif_die "nothing in the board's Ready column that another machine's worker has not claimed — write a ticket with /aif-ba, or name one: aif work <ticket>"
+      [ -n "$ticket" ] || aif_die "nothing in the board's Ready column that another checkout's worker has not claimed — write a ticket with /aif-ba, or name one: aif work <ticket>"
     else
       ticket="$(aif_board_next_ready "$root")"
       [ -n "$ticket" ] || aif_die "nothing in the board's Ready column — write a ticket with /aif-ba, or name one: aif work <ticket>"
     fi
     _aif_work_say "board" "next in Ready: $ticket"
   elif ! _aif_work_claim_check "$root" "$ticket"; then
-    # The loop reads this line back (_aif_work_loop): a card another machine
-    # builds is held, not the environment. Its words are fixed.
-    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another machine's worker has it. Nothing was spent here, and its card was not touched"
+    # The loop reads this line back (_aif_work_loop): a card another
+    # checkout builds is held, not the environment. Its words are fixed.
+    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another checkout's worker has it. Nothing was spent here, and its card was not touched"
     exit 3
   fi
 
@@ -5631,7 +5699,7 @@ aif_cmd_work() {
   # reads back.
   if ! _aif_work_claim_race "$root" "$ticket"; then
     AIF_WORK_SETTLED=1
-    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another machine's worker has it. It claimed the card a moment before this worker did, and both moved it to In Progress; this claim was withdrawn, nothing was spent here, and the card was left to it"
+    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another checkout's worker has it. It claimed the card a moment before this worker did, and both moved it to In Progress; this claim was withdrawn, nothing was spent here, and the card was left to it"
     exit 3
   fi
 

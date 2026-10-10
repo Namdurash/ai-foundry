@@ -112,7 +112,8 @@
 #      in Review saying so; the station unable to settle it, or a test
 #      file in conflict, and the ticket is built again from the target,
 #      the first build kept; a target that moved elsewhere merged clean
-#  48  the worker's claim on the card it takes — taken: host, pid, time —
+#  48  the worker's claim on the card it takes — taken: host and checkout,
+#      pid, time —
 #      under which the report is still the head; a rework committed in the
 #      checkout reaches a branch that already carries a ticket, the ticket
 #      alone, and the run restarts on it; the loop writes summary.json where
@@ -120,7 +121,8 @@
 #      as the board; a hang-up to a worker's group ends it in 129 with the
 #      card saying so; and the loop whose own terminal closes over it — every
 #      line it prints failing from then on — stops its runs, writes its
-#      summary, releases its lock and ends in 129, its dashboard on or off
+#      summary, releases its lock and ends in 129, its dashboard on or off,
+#      the hang-up in its key read or cutting a frame
 #  49  aif board release moves the Backlog cards whose every dependency is
 #      Done and landed to the bottom of Ready, with a comment; holds one on a
 #      rework: head or a parked label; names a Done dependency with no land
@@ -4068,8 +4070,10 @@ eq "the branch holds main, and the report says it merged clean" \
 # Progress said that work was happening, not where, and on a Trello board
 # shared by two machines a live remote worker looked exactly like a card
 # dragged by hand — the run lock that knows the pid is in one machine's .aif
-# (docs/DEFECTS.md 14.4). The card's first comment is now `taken: <host> pid
-# <pid> at <time> — aif work`, and the report after it is still the head. The
+# (docs/DEFECTS.md 14.4). The card's first comment is now `taken:
+# <host>:<clone> pid <pid> at <time> — aif work` — the host and this
+# checkout's name, the one `aif work --status` gives — and the report after it
+# is still the head. The
 # carry-in: on the local board the checkout is canonical for the ticket's
 # text, as the card is on Trello, and a rework committed there never reached
 # a branch that already carried a ticket — round two resumed at done and the
@@ -4095,8 +4099,8 @@ rc=0
 "$AIF" work AIF-100 >"$OUT/run48a.out" 2>&1 || rc=$?
 eq "built in a worktree, the card in Review" "$rc,$(col AIF-100)" "0,review"
 eq "two comments: the claim, then the report" "$(n_comments AIF-100)" "2"
-eq "the claim: taken on this host, a pid, a UTC time, by the worker" \
-  "$(first_line AIF-100 0 | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work( · alive at [0-9T:Z-]+)?$'),$(first_line AIF-100 0 | grep -c "^taken: ${host48:-?} pid "),$("$AIF" board show AIF-100 --json | jq -r '.comments[0].by')" "1,1,aif work"
+eq "the claim: taken on this host and this checkout, a pid, a UTC time, by the worker" \
+  "$(first_line AIF-100 0 | grep -cE '^taken: [^ ]+ pid [0-9]+ at [0-9T:Z-]+ — aif work( · alive at [0-9T:Z-]+)?$'),$(first_line AIF-100 0 | grep -c "^taken: ${host48:-?}:$("$AIF" work --status AIF-100 --json | jq -r '.clone // "?"') pid "),$("$AIF" board show AIF-100 --json | jq -r '.comments[0].by')" "1,1,aif work"
 eq "…and the report after it is still the head" "$(first_line AIF-100 1),$("$AIF" board head AIF-100)" "# AIF-100 — built,# AIF-100 — built"
 
 # The analyst adds a criterion in the checkout and commits it; the card goes
@@ -4271,6 +4275,58 @@ eq "the dashboard on: the terminal closes over an idle loop whose run holds a st
 eq "…the run stopped and its card settled, its line and the loop's last words in its loop.log" \
   "$(col AIF-105),$(grep -c 'AIF-105 stopped (exit 143)' "$SANDBOX/p48-hup-tui/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup-tui/loop.log"),$(pgrep -f 'fake-station.sh plan AIF-105' | wc -l | tr -d ' ')" \
   "needs_human,1,1,0"
+
+# And the hang-up that cuts a frame: the row above closes the terminal while
+# the dashboard waits in its key read, where it spends most of a second —
+# and under load the close came, now and then, while a frame was being
+# written: the print failed with EIO, errexit ended the loop with 1, its run
+# TERMed and never waited for (docs/DEFECTS.md 14.8; 1 to 4 times in 15 on a
+# machine with every core busy). Here every time: the harness stops reading
+# once the station holds, so the next frame blocks on a full terminal, and
+# the master is closed under it.
+ticket_for AIF-106
+git add -A && git commit -qm "one for the frame the hang-up cuts" >/dev/null
+"$AIF" board create tasks/AIF-106/ticket.md --column ready >/dev/null
+rm -rf "$SANDBOX/p48-hup-frame"
+rc="$(FAKE_SLEEP_IN="AIF-106:plan" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-hup-frame" AIF_WORK_LOOP_POLL=1 TERM=xterm-256color \
+  python3 - "$AIF" .aif/worktrees/AIF-106/.aif/tmp/fake-running-AIF-106-plan <<'PY3'
+import fcntl, os, pty, select, signal, struct, sys, termios, time
+aif, mark = sys.argv[1:3]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(aif, [aif, "work", "--loop", "--idle"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 200, 0, 0))
+deadline = time.time() + 60
+while not os.path.exists(mark) and time.time() < deadline:
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            os.read(fd, 65536)
+        except OSError:
+            break
+time.sleep(2.5)
+os.close(fd)
+status = None
+end = time.time() + 90
+while time.time() < end:
+    r, st = os.waitpid(pid, os.WNOHANG)
+    if r:
+        status = st
+        break
+    time.sleep(0.1)
+if status is None:
+    os.killpg(pid, signal.SIGKILL)
+    print("timeout")
+else:
+    print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY3
+)"
+S48f="$SANDBOX/p48-hup-frame/summary.json"
+eq "the dashboard on, its terminal no longer read: the hang-up comes while a frame is being written — exit 129, the summary written, the lock gone" \
+  "$rc,$(jq -r '[.hup, .taken, .stopped, .killed, .idle] | map(tostring) | join(",")' "$S48f" 2>/dev/null),$(test -d .aif/state/loop && echo held || echo released)" \
+  "129,1,1,1,TERM,1,released"
+eq "…the run stopped and its card settled, nothing of it left" \
+  "$(col AIF-106),$(grep -c 'AIF-106 stopped (exit 143)' "$SANDBOX/p48-hup-frame/loop.log"),$(pgrep -f 'fake-station.sh plan AIF-106' | wc -l | tr -d ' ')" \
+  "needs_human,1,0"
 
 # ====== 49. aif board release: Backlog cards whose dependencies are Done and landed
 #
@@ -5482,7 +5538,7 @@ during69="$("$AIF" board show AIF-690 --json | jq -r --arg c "$cid69" '[.comment
 rc=0
 wait_exit "$w69" 90 || rc=$?
 eq "while the tests station runs: the lock names the claim's comment and keeps its words, and on the card its first line says the worker is alive" \
-  "$(printf '%s' "$cid69" | grep -cE '^c[0-9]+$'),$(printf '%s' "$md69" | grep -cE "^taken: ${host68:-?} pid [0-9]+ at [0-9T:Z-]+ — aif work$"),$(printf '%s' "$during69" | grep -cE "^taken: ${host68:-?} pid [0-9]+ at [0-9T:Z-]+ — aif work · alive at [0-9T:Z-]+$")" \
+  "$(printf '%s' "$cid69" | grep -cE '^c[0-9]+$'),$(printf '%s' "$md69" | grep -cE "^taken: ${host68:-?}:[0-9a-f]{6} pid [0-9]+ at [0-9T:Z-]+ — aif work$"),$(printf '%s' "$during69" | grep -cE "^taken: ${host68:-?}:[0-9a-f]{6} pid [0-9]+ at [0-9T:Z-]+ — aif work · alive at [0-9T:Z-]+$")" \
   "1,1,1"
 eq "built: the claim edited in place at every dispatch — still its comment, no comment added — the report the head, the lock gone" \
   "$rc|$(col AIF-690)|$("$AIF" board show AIF-690 --json | jq -r --arg c "$cid69" '[(.comments | length), ([.comments[] | select(.id == $c)][0] | (.edited_at != null), (.text | split("\n")[0] | test(" · alive at [0-9T:Z-]+$")))] | map(tostring) | join(",")')|$("$AIF" board head AIF-690)|$(test -d .aif/state/runs/AIF-690 && echo held || echo gone)" \

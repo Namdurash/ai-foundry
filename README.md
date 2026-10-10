@@ -174,7 +174,9 @@ fast-forwards your branch to it, moves the card to Done, removes the worktree an
 branch, and releases the tickets whose `depends_on` names it from Backlog to Ready —
 which is how a request's slices flow without the project manager touching each one.
 Your own uncommitted work stays as it is, staged or not, unless the land changes those
-very files: then it refuses, naming them, and touches nothing. The verdict is the
+very files: then it refuses, naming them, and touches nothing. On Trello it refuses too
+a card whose text changed after its build — the branch is a build of the text before —
+naming `aif work <ID>`, and the shift offers no land of it. The verdict is the
 worker's own when it judged that very tree — the target moved only in `tasks/` or
 `requests/` since, under the same test command and checks — and otherwise the suite
 and the checks bound to green run in the worktree, where the worker installed what
@@ -227,14 +229,16 @@ needs cutting into slices first (`--po` opens `/aif-po` when nothing else is
 left). The board moves on its own only on fixed first lines: `wrong:` goes back
 to Backlog as `rework:` for the analyst, `cancel:` to Done, a slice whose
 dependencies have landed to Ready, and a `blocked: environment` posted during
-the shift back to Ready once the preflight passes again — on a shared Trello
-board only a block this machine's worker posted. It also finishes, without
+the shift (or stamped in the two minutes before it, said so) back to Ready once
+the preflight passes again — on a shared Trello board only a block this
+checkout's worker posted. It also finishes, without
 asking, what a worker on this machine left half-done: a built run's report and
 its move to Review, a stopped run's `blocked:` line and its move to Needs Human,
 a `rework:`, `cancelled:` or landed card's lost move. Everything else is a line
 with the command that would do it; a stopped run is never put back in Ready
 behind your back (`--retry-runs` retries one an instrument stopped, once a
-shift). Each unit waits at a control point — `next: review AIF-61 — built,
+shift, and not one blocked twice in a row — on Trello read back past the replies
+under the block before it). Each unit waits at a control point — `next: review AIF-61 — built,
 branch aif/AIF-61 — Enter: open · s: skip · p: pause · q: end the shift (10)` —
 and after the countdown acts on its own where acting is safe — a review opens; a
 card whose worker died has what it left running sent a TERM and goes to the top
@@ -596,14 +600,16 @@ Backlog → Ready → In Progress → Review → Done
 
 The analyst puts a ready ticket in **Ready**. `aif work` — with no argument —
 takes the card at the top and moves it to **In Progress** before anything else,
-says who took it — one `taken: <host> pid <pid> at <time>` comment, so a board two
-machines share can tell a live worker elsewhere from a card dragged there by hand —
+says who took it — one `taken: <host>:<checkout> pid <pid> at <time>` comment, the
+host and a short name of this checkout, so a board two machines share — or two clones
+on one — can tell a live worker elsewhere from a card dragged there by hand —
 builds, and moves it to **Review** with the report as a comment. The claim beats:
 the worker edits it to `… · alive at <time>` at every station it starts, and on
-Trello it reads a card's claim before it takes one — another machine's claim
-whose worker has said within a run's wall clock that it lives is that machine's
-card, skipped and said; two machines that take one card at once leave it to the
-earlier claim, and the later withdraws its own. Every other way out
+Trello it reads a card's claim before it takes one — another checkout's claim
+whose worker the board has seen alive within a run's wall clock (the comment's own
+dates on the board, never the times in its text) is that checkout's card, skipped
+and said; two that take one card at once leave it to the earlier claim, and the
+later withdraws its own. Every other way out
 ends in **Needs Human** with a comment whose first line says whose problem it is —
 `blocked: ticket` (back to the analyst), `blocked: run`, `blocked: environment` (this
 machine, nothing spent — or, mid-run, the runner: a usage limit past what a run waits,

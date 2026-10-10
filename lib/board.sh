@@ -752,13 +752,25 @@ _aif_trello_status_json() {
 # 15.6). Each next page is the 20 before the oldest comment read
 # (`before=<its action id>`, anchored on a comment, so one posted between two
 # pages shifts nothing); a page short of 20 is the last there is.
+#
+# <want> (default: none): read on, within the same pages, until the comments
+# read hold <want> heads that are not a claim or a release
+# (AIF_BOARD_PASSING) — what a reader that counts the card's blocks in a row
+# needs, where the first head is not enough (`aif start`'s R17; 15.6). `more`
+# in the answer says the read stopped with older comments unread: its last
+# page was full. A comment edited since it was posted carries `edited_at`, the
+# date Trello stamps on it (`dateLastEdited`, in the action's data): the
+# board's own time for a claim that beats (docs/DEFECTS.md 14.4).
 _aif_trello_show_json() {
-  local root="$1" id="$2" pages="${3:-1}" card cid comments col page before n=0
+  local root="$1" id="$2" pages="${3:-1}" want="${4:-}" card cid comments col page before n=0 more=false
   card="$(_aif_trello_require_card "$root" "$id")" || return 1
   cid="$(printf '%s' "$card" | jq -r '.id')"
   col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
   case "$pages" in
     '' | *[!0-9]* | 0) pages=1 ;;
+  esac
+  case "$want" in
+    *[!0-9]*) want="" ;;
   esac
   comments='[]'
   before=""
@@ -770,20 +782,30 @@ _aif_trello_show_json() {
     comments="$(printf '%s' "$comments" | jq -c --argjson p "$page" '. + $p' 2>/dev/null)" ||
       aif_die "Trello: the comments of $id did not read as JSON"
     n=$((n + 1))
+    more=false
+    ! printf '%s' "$page" | jq -e 'length >= 20' >/dev/null 2>&1 || more=true
+    [ "$more" = true ] || break
     [ "$n" -lt "$pages" ] || break
-    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
-    printf '%s' "$page" | jq -e --arg re "$AIF_BOARD_HEADS" \
-      'length >= 20 and all(.[]; ((.data.text // "") | split("\n")[0] | test($re)) | not)' >/dev/null 2>&1 || break
+    if [ -n "$want" ] && [ "$want" -gt 0 ]; then
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+      ! printf '%s' "$comments" | jq -e --arg re "$AIF_BOARD_HEADS" --arg pass "$AIF_BOARD_PASSING" --argjson w "$want" '
+        [ .[] | (.data.text // "") | split("\n")[0] | select(test($re) and (test($pass) | not)) ]
+        | length >= $w' >/dev/null 2>&1 || break
+    else
+      # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+      printf '%s' "$page" | jq -e --arg re "$AIF_BOARD_HEADS" \
+        'all(.[]; ((.data.text // "") | split("\n")[0] | test($re)) | not)' >/dev/null 2>&1 || break
+    fi
     before="$(printf '%s' "$page" | jq -r 'last | .id // empty | strings' 2>/dev/null)" || before=""
     case "$before" in
       '' | *[!A-Za-z0-9]*) break ;;
     esac
   done
-  printf '%s' "$card" | jq --arg col "${col:-other}" --argjson c "$comments" '
+  printf '%s' "$card" | jq --arg col "${col:-other}" --argjson c "$comments" --argjson more "$more" '
     { ticket: (.name | split(" ")[0]), title: (.name | sub("^[^ ]+ *[—:-]+ *"; "")),
-      column: $col, url: .shortUrl, description: .desc,
+      column: $col, url: .shortUrl, description: .desc, more: $more,
       comments: [ $c[] | { at: .date, by: (.memberCreator.username // .memberCreator.fullName // "?"),
-                           text: .data.text } ] | reverse }'
+                           text: .data.text, edited_at: (.data.dateLastEdited // .dateLastEdited // null) } ] | reverse }'
 }
 
 # The column alone, from the card's own read — by its cached id, else one
@@ -802,6 +824,11 @@ _aif_trello_card_column() {
     return 2
   }
   col="$(_aif_trello_column_of_list "$root" "$(printf '%s' "$card" | jq -r '.idList')")"
+  # The card's text, hashed as the pull writes it, for a caller that names a
+  # file for it (aif_board_card_column): the read it already made, no other.
+  if [ -n "${AIF_BOARD_CARD_SHA_TO:-}" ] && printf '%s' "$card" | jq -e '(.desc | type) == "string"' >/dev/null 2>&1; then
+    { printf '%s' "$card" | jq -j '.desc' | tr -d '\r' | aif_sha256_stdin >"$AIF_BOARD_CARD_SHA_TO"; } 2>/dev/null || true
+  fi
   printf '%s\n' "${col:-other}"
 }
 
@@ -835,7 +862,7 @@ aif_board_move() { "_aif_board_$(aif_board_kind "$1")_move" "$1" "$2" "$3" "${4:
 aif_board_comment() { "_aif_board_$(aif_board_kind "$1")_comment" "$1" "$2" "$3"; }
 aif_board_create() { "_aif_board_$(aif_board_kind "$1")_create" "$1" "$2" "$3"; }
 aif_board_status_json() { "_aif_board_$(aif_board_kind "$1")_status_json" "$1"; }
-aif_board_show_json() { "_aif_board_$(aif_board_kind "$1")_show_json" "$1" "$2" "${3:-}"; }
+aif_board_show_json() { "_aif_board_$(aif_board_kind "$1")_show_json" "$1" "$2" "${3:-}" "${4:-}"; }
 aif_board_label() { "_aif_board_$(aif_board_kind "$1")_label" "$1" "$2" "$3"; }
 
 # aif_board_comment_edit <root> <ID> <comment id> <file> — a comment already
@@ -864,6 +891,12 @@ aif_board_comment_edit() { "_aif_board_$(aif_board_kind "$1")_comment_edit" "$1"
 # listing of the board's cards), on the local board the card file — and a
 # board that cannot answer is rc 2, said, not an empty answer
 # (docs/DEFECTS.md 14.7, 13.8).
+#
+# AIF_BOARD_CARD_SHA_TO, when it names a file: on Trello the sha-256 of the
+# card's description as `aif work` pulls it into ticket.md (CR taken out) is
+# written there, from the same read — the land's, which holds the build
+# against the card as it is now (lib/cmd_land.sh; docs/DEFECTS.md 15.12).
+# Nothing is written on the local board, whose card holds no text.
 aif_board_card_column() { "_aif_board_$(aif_board_kind "$1")_card_column" "$1" "$2"; }
 
 # The trello functions are named _aif_trello_*; alias them under the interface's
@@ -927,6 +960,13 @@ _aif_board_trello_comment_edit() { _aif_trello_comment_edit "$@"; }
 # on purpose: see aif_board_last_line.
 AIF_BOARD_HEADS='^(blocked: (ticket|run|environment|stopped) — |sync: |rework: |cancelled: |cancel: |wrong: |land: |demo: (as expected|not as expected)|released by aif |taken: |# [A-Za-z0-9-]+ — (built|stopped|landed|not landed))'
 
+# AIF_BOARD_PASSING — the heads that only pass a card on, a claim and a
+# release, which sit between every two blocks of a card built again: what a
+# reader counting what happened to the card steps over (lib/start.jq R17, which
+# skips the same two), and what a read back for a count of heads does not count
+# (_aif_trello_show_json's <want>; docs/DEFECTS.md 15.6).
+AIF_BOARD_PASSING='^(taken: |released by aif )'
+
 # aif_board_last_line <root> <ID> — the first line of the NEWEST comment whose
 # first line matches AIF_BOARD_HEADS, on either backend. Prints it.
 # rc 0 found · 1 no such comment · 2 the card could not be read, the reason on
@@ -959,13 +999,15 @@ aif_board_last_line() {
 # is the last asked for.
 AIF_BOARD_HEAD_PAGES=5
 
-# _aif_board_show_or_why <root> <ID> — the card's show JSON on stdout; or rc 2
-# and the reason on stderr as one bare line — no `error:`, no colour — which
-# is what both head readers (aif_board_last_line, aif_board_head_json)
-# promise their callers. Read back as far as the head (AIF_BOARD_HEAD_PAGES).
+# _aif_board_show_or_why <root> <ID> [<want>] — the card's show JSON on
+# stdout; or rc 2 and the reason on stderr as one bare line — no `error:`, no
+# colour — which is what both head readers (aif_board_last_line,
+# aif_board_head_json) promise their callers. Read back as far as the head
+# (AIF_BOARD_HEAD_PAGES), or as far as <want> heads that are not a claim or a
+# release (_aif_trello_show_json).
 _aif_board_show_or_why() {
   local json esc
-  json="$(aif_board_show_json "$1" "$2" "$AIF_BOARD_HEAD_PAGES" 2>&1)" || {
+  json="$(aif_board_show_json "$1" "$2" "$AIF_BOARD_HEAD_PAGES" "${3:-}" 2>&1)" || {
     esc="$(printf '\033')"
     printf '%s\n' "$json" | sed -n 1p | sed "s/$esc\[[0-9;]*m//g; s/^error: //" >&2
     return 2
@@ -973,12 +1015,12 @@ _aif_board_show_or_why() {
   printf '%s\n' "$json"
 }
 
-# aif_board_head_json <root> <ID> — the head as a supervisor needs it, not
-# only its line: rc 0 a head · 1 no head · 2 the card could not be read (the
-# reason bare on stderr, as aif_board_last_line). On 0 and 1 it prints one
-# compact object:
+# aif_board_head_json <root> <ID> [<want>] — the head as a supervisor needs
+# it, not only its line: rc 0 a head · 1 no head · 2 the card could not be
+# read (the reason bare on stderr, as aif_board_last_line). On 0 and 1 it
+# prints one compact object:
 #
-#   { line, at, body, after, heads: [ { line, at } ] }
+#   { line, at, body, after, heads: [ { line, at, edited_at } ], more, read }
 #
 # `line` is aif_board_last_line's (null when there is none); `at` its time,
 # ISO UTC to the second on both backends (Trello's milliseconds taken off, so
@@ -993,7 +1035,18 @@ _aif_board_show_or_why() {
 # On Trello the comments are read back 20 at a time until a page holds a head,
 # five pages at most (AIF_BOARD_HEAD_PAGES): `heads` holds what those pages
 # do, so the newest head is found under a hundred replies, and an older one
-# only when it is among them (docs/DEFECTS.md 15.6).
+# only when it is among them (docs/DEFECTS.md 15.6). <want> reads on, within
+# the same five pages, until <want> heads that are not a claim or a release
+# are among them (_aif_trello_show_json) — for a reader that counts blocks in
+# a row and needs the one before the newest, `aif start`'s R17. `more` is true
+# when the read stopped with older comments unread (on Trello; never on the
+# local board, which holds them all), and `read` how many comments were read.
+#
+# Each head's `edited_at`: when the board says its comment was last edited —
+# Trello's `dateLastEdited`, the local board's own stamp — or null. A claim
+# beats by an edit, and the board's time for it is what another machine can
+# trust, where the time in the claim's text is its writer's clock
+# (docs/DEFECTS.md 14.4).
 #
 # `card_sha256`, on Trello: the sha-256 of the card's description as `aif
 # work` pulls it into ticket.md (_aif_trello_pull: the same bytes, CR taken
@@ -1002,12 +1055,13 @@ _aif_board_show_or_why() {
 # board, whose card holds no text.
 aif_board_head_json() {
   local root="$1" id="$2" json out sha=""
-  json="$(_aif_board_show_or_why "$root" "$id")" || return 2
+  json="$(_aif_board_show_or_why "$root" "$id" "${3:-}")" || return 2
   if printf '%s' "$json" | jq -e '(.description | type) == "string"' >/dev/null 2>&1; then
     sha="$(printf '%s' "$json" | jq -j '.description' | tr -d '\r' | aif_sha256_stdin)" || sha=""
   fi
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   out="$(printf '%s' "$json" | jq -c --arg re "$AIF_BOARD_HEADS" --arg sha "$sha" '
+    def second: if type == "string" then sub("\\.[0-9]+Z$"; "Z") else null end;
     (.comments // []) as $c
     | [ range(0; $c | length) | select((($c[.].text // "") | split("\n")[0]) | test($re)) ] as $ix
     | ($ix | last) as $i
@@ -1016,7 +1070,9 @@ aif_board_head_json() {
         body: (if $i == null then null else ($c[$i].text | split("\n")[1:] | join("\n")) end),
         after: (if $i == null then ($c | length) else (($c | length) - $i - 1) end),
         heads: [ $ix[] | { line: ($c[.].text | split("\n")[0]),
-                           at: (($c[.].at // "") | sub("\\.[0-9]+Z$"; "Z")) } ],
+                           at: (($c[.].at // "") | sub("\\.[0-9]+Z$"; "Z")),
+                           edited_at: ($c[.].edited_at | second) } ],
+        more: (.more == true), read: ($c | length),
         card_sha256: (if $sha == "" then null else $sha end) }' 2>/dev/null)" || {
     printf '%s\n' "the card's comments did not read as JSON" >&2
     return 2

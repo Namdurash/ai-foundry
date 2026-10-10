@@ -143,6 +143,53 @@ aif_host_short() {
   printf '%s' "${h:-?}"
 }
 
+# aif_clone_id <root> — the name of this checkout beside its host's in a claim
+# (`taken: <host>:<clone> pid …`): six hex characters, made once for the main
+# checkout and kept in its .aif/state/, in a file named for the checkout's
+# physical path.
+#
+# The host alone named the machine and not the checkout: two clones of one
+# project on one machine — and two machines with one short name, as two Macs
+# left at their default names are — wrote the same `taken: <host>`, and each
+# read the other's claim as its own: the check skipped nothing, the race found
+# no rival, and both built the card (docs/DEFECTS.md 14.4; probed, 2 of 2
+# built twice). A random name tells apart what a path cannot — one path on
+# two machines of one name — and the file it is kept in is named for the
+# path, so a copy of a checkout, .aif/state and all, names itself anew rather
+# than take the original's. Every worktree and every process of the checkout
+# reads the one file; the first to make it links it into place whole (`ln`
+# fails on a name that exists), so two that make it at once both read the one
+# that won. A checkout moved elsewhere names itself anew too — a claim it
+# posted before the move reads as another checkout's until its worker's wall
+# clock has passed. A state directory that cannot be written falls back on
+# the path's own checksum: stable, and blind to one path on two machines.
+aif_clone_id() {
+  local main key f id tmp
+  main="$(aif_main_root "$1")"
+  key="$(printf '%s' "$main" | cksum | cut -d' ' -f1)"
+  f="$main/.aif/state/clone-$key"
+  id="$(sed -n 1p "$f" 2>/dev/null)" || id=""
+  if ! _aif_clone_ok "$id"; then
+    id="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || id=""
+    if _aif_clone_ok "$id" && [ -d "$main/.aif" ] && mkdir -p "$main/.aif/state" 2>/dev/null &&
+      tmp="$(mktemp "$main/.aif/state/.clone-XXXXXX" 2>/dev/null)"; then
+      { printf '%s\n' "$id" >"$tmp" && ln "$tmp" "$f"; } 2>/dev/null || true
+      rm -f "$tmp"
+    fi
+    id="$(sed -n 1p "$f" 2>/dev/null)" || id=""
+    _aif_clone_ok "$id" || id="$(printf '%06x' "$((key % 16777216))")"
+  fi
+  printf '%s' "$id"
+}
+
+# _aif_clone_ok <id> — rc 0 for a clone id as aif_clone_id makes one.
+_aif_clone_ok() {
+  case "$1" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+  esac
+  return 1
+}
+
 # aif_meta_json <file> — the JSON out of the FIRST aif:meta HTML comment.
 #
 # Only the first: a station prompt legitimately contains an example aif:meta

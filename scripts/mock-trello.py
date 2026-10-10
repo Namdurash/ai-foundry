@@ -54,9 +54,11 @@ The request log. Every request is logged twice in /_state: `log` as
 string too (`before=`, `fields=` — what a check reads a page or a lookup by).
 GET /_mark/<name> is logged and answered 200 with nothing else: a check's own
 marker in the log, between two requests it wants to tell apart (a session's
-start and end). POST /_plant/<card id> (`text`, `date`) puts a comment on the
-card dated when the check says: another machine's claim posted hours ago,
-which no request of the real API can make.
+start and end). POST /_plant/<card id> (`text`, `date`, and `edited`) puts a
+comment on the card dated when the check says — another machine's claim
+posted hours ago, which no request of the real API can make — and, with
+`edited`, last edited then: `data.dateLastEdited`, where Trello puts the time
+of a comment's last edit, as PUT /actions/<id>/text writes it below.
 
 What the adapter reads one card by (docs/DEFECTS.md 13.8, 15.6, 14.4): GET
 /cards/<id>; a card's `closed` (archived — PUT closed=true), which every
@@ -222,8 +224,11 @@ class Handler(BaseHTTPRequestHandler):
             # A comment posted at a time of the check's choosing — another
             # machine's claim from hours ago, as that machine posted it then.
             p = self._params()
+            data = {"text": p.get("text", "")}
+            if p.get("edited"):
+                data["dateLastEdited"] = p["edited"]
             STATE["comments"].setdefault(m.group(1), []).append(
-                {"id": new_id("a"), "date": p.get("date") or stamp(), "data": {"text": p.get("text", "")},
+                {"id": new_id("a"), "date": p.get("date") or stamp(), "data": data,
                  "memberCreator": {"username": p.get("who") or "other", "fullName": "Another Machine"}})
             card = STATE["cards"].get(m.group(1))
             if REAL_TIME and card is not None:

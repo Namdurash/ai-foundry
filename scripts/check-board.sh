@@ -48,9 +48,11 @@
 #      comments read fails lands from the card's column, and one whose board
 #      cannot say where the card is exits 3, nothing landed; two machines on
 #      one board (14.4): a card another machine's live worker claimed is
-#      skipped, a claim past a run's wall clock is not, two takes racing leave
-#      the card to the earlier claim — through the mock and for real across
-#      two checkouts — and the loop holds such a card, not the machine
+#      skipped, a claim past a run's wall clock is not — its age the board's
+#      clock, never the times in its text — two takes racing leave the card
+#      to the earlier claim — through the mock and for real across two
+#      checkouts, of two hosts and of one, a claim naming its checkout — and
+#      the loop holds such a card, not the machine
 #
 # Run by `make check`. Requires git, jq, curl and python3.
 
@@ -766,32 +768,55 @@ eq "a card a person edited before its build: built from the card, and --status s
 # Ready and a move with no compare-and-set: two machines that read the same
 # card both moved it and both built it, and once it was In Progress a live
 # worker elsewhere looked like a card a person had dragged there. Now a worker
-# reads the card's newest head before it takes it — another machine's claim
-# whose worker has said within a run's wall clock that it lives is that
-# machine's, skipped and said — and after its own claim it reads the heads
+# reads the card's newest head before it takes it — another checkout's claim
+# whose worker the board has seen alive within a run's wall clock is that
+# checkout's, skipped and said — and after its own claim it reads the heads
 # again: the earlier of two live claims builds, the later withdraws its claim
 # and takes nothing. The other machine is the mock (its comments, posted as
 # that machine's worker would) and, for the race run for real, a second
-# checkout whose `hostname -s` is another's.
-printf '  · two machines on one board: a live claim skipped, a stale one taken, the race either way\n'
+# checkout whose `hostname -s` is another's — and a third on this host: a
+# claim names the checkout as well as the host (`taken: <host>:<clone> …`),
+# for with the host alone two clones of one machine each read the other's
+# claim as its own and both built the card. A claim's age is the board's
+# clock — the comment's date and its last edit, which every beat moves —
+# never the times in its text, the other machine's clock. So the mock keeps
+# the real time here, as Trello does: its fixed moment of section 3 would be
+# a board three weeks behind, every claim on it gone.
+printf '  · two machines on one board: a live claim skipped, a stale one taken, the race either way; two checkouts of one host; the board'"'"'s clock\n'
+kill "$MOCK_PID" 2>/dev/null
+wait "$MOCK_PID" 2>/dev/null
+rm -f "$OUT/mock.port"
+MOCK_REAL_TIME=1 MOCK_FAULT_FILE="$FAULT" MOCK_INJECT_FILE="$INJECT" python3 "$ROOT/scripts/mock-trello.py" 0 >"$OUT/mock.port" 2>"$OUT/mock.err" &
+MOCK_PID=$!
+i=0
+while [ ! -s "$OUT/mock.port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+PORT="$(head -1 "$OUT/mock.port")"
+[ -n "$PORT" ] || { bad "the real-time mock server did not start ($(head -2 "$OUT/mock.err"))"; exit 1; }
+export AIF_TRELLO_API="http://127.0.0.1:$PORT/1"
 fresh_project "$SANDBOX/p3e"
-"$AIF" board init trello --board b1 >/dev/null 2>&1
-for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46; do ticket_for "$t"; done
-git add -A && git commit -qm "seven for two machines" >/dev/null
-for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46; do "$AIF" board create "tasks/$t/ticket.md" >/dev/null; done
+"$AIF" board init trello --board b1 --create-lists >/dev/null 2>&1
+for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46 AIF-47 AIF-48 AIF-49 AIF-50; do ticket_for "$t"; done
+git add -A && git commit -qm "eleven for two machines" >/dev/null
+for t in AIF-40 AIF-41 AIF-42 AIF-43 AIF-44 AIF-45 AIF-46 AIF-47 AIF-48 AIF-49 AIF-50; do "$AIF" board create "tasks/$t/ticket.md" >/dev/null; done
 # The second checkout, before this one builds anything: the same project and
 # board, its own .aif/state, and a `hostname` that says another machine's name.
+# The third: the same, on this host.
 cp -R "$SANDBOX/p3e/." "$SANDBOX/p3f/"
 rm -rf "$SANDBOX/p3f/.aif/state"
+cp -R "$SANDBOX/p3e/." "$SANDBOX/p3g/"
+rm -rf "$SANDBOX/p3g/.aif/state"
 mkdir -p "$SANDBOX/hostb"
 printf '#!/bin/sh\necho hostb\n' >"$SANDBOX/hostb/hostname"
 chmod +x "$SANDBOX/hostb/hostname"
+HOST="$(hostname -s 2>/dev/null | tr -d '[:space:]')"
 iso_ago() { python3 -c 'import sys, datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
-claim_by() { # <ID> <host> <seconds ago> — that machine's claim, in its worker's words, posted then
-  local at
+claim_by() { # <ID> <host> <seconds ago> [<its first line's tail>] [<seconds ago last edited>] — that machine's claim, posted then
+  local at edited=""
   at="$(iso_ago "$3")"
+  [ -z "${5:-}" ] || edited="$(iso_ago "$5")"
   curl -s -X POST "http://127.0.0.1:$PORT/_plant/$(card_id "$1")" \
-    --data-urlencode "text=taken: $2 pid 4242 at $at — aif work" --data-urlencode "date=${at%Z}.000Z" >/dev/null
+    --data-urlencode "text=taken: $2 pid 4242 at ${4:-$at — aif work}" --data-urlencode "date=${at%Z}.000Z" \
+    ${edited:+--data-urlencode "edited=${edited%Z}.000Z"} >/dev/null
 }
 claims_on() { # <ID> — the first lines of its claims, one per line, oldest first
   mock | jq -r --arg n "$1 " '[.cards[] | select(.name | startswith($n))][0].id as $c
@@ -811,24 +836,43 @@ claim_by AIF-41 hostb 10800
 "$AIF" board move AIF-41 ready >/dev/null
 rc=0
 "$AIF" work AIF-41 >"$OUT/take-stale.out" 2>&1 || rc=$?
-eq "a card whose claim is three hours old — past a run's wall clock, its worker gone: taken and built, this machine's claim after it" \
-  "$rc,$(column_of AIF-41),$(claims_on AIF-41 | sed -n 2p | grep -c "^taken: $(hostname -s) pid ")" "0,review,1"
+eq "a card whose claim is three hours old — past a run's wall clock, its worker gone: taken and built, this machine's claim after it, naming its checkout" \
+  "$rc,$(column_of AIF-41),$(claims_on AIF-41 | sed -n 2p | grep -cE "^taken: $HOST:[0-9a-f]{6} pid [0-9]+ at ")" "0,review,1"
+# The board's clock, not the other machine's (14.4): a claim posted three
+# hours ago whose time runs a day ahead, and one whose text says its worker
+# was alive five minutes ago though the board has seen no edit of it for
+# three hours, are workers gone — taken. One the board saw edited five
+# minutes ago is alive, whatever its text says.
+claim_by AIF-48 hostb 10800 "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))') — aif work"
+claim_by AIF-49 hostb 10800 "$(iso_ago 10800) — aif work · alive at $(iso_ago 300)"
+claim_by AIF-50 hostb 10800 "$(iso_ago 10800) — aif work · alive at $(iso_ago 300)" 300
+for t in AIF-48 AIF-49 AIF-50; do "$AIF" board move "$t" ready >/dev/null; done
+rc48=0
+"$AIF" work AIF-48 >"$OUT/take-ahead.out" 2>&1 || rc48=$?
+rc49=0
+"$AIF" work AIF-49 >"$OUT/take-said.out" 2>&1 || rc49=$?
+rc50=0
+"$AIF" work AIF-50 >"$OUT/take-edited.out" 2>&1 || rc50=$?
+eq "a claim's age by the board's clock: posted three hours ago with its time a day ahead — taken; saying alive five minutes ago, the board's last edit three hours old — taken; edited by the board five minutes ago — skipped" \
+  "$rc48,$(column_of AIF-48),$rc49,$(column_of AIF-49),$rc50,$(column_of AIF-50),$(grep -c '^error: AIF-50 is taken on hostb (pid 4242, its worker last said it was alive 5 min ago' "$OUT/take-edited.out")" \
+  "0,review,0,review,3,ready,1"
 "$AIF" board move AIF-42 ready >/dev/null
 inject before "taken: hostb pid 4343 at $(iso_ago 0) — aif work"
 rc=0
 "$AIF" work AIF-42 >"$OUT/take-lost.out" 2>&1 || rc=$?
 eq "two takes racing, the other machine's claim first: this one loses — exit 3, said, its claim withdrawn, nothing built, the card left In Progress to the winner" \
-  "$rc|$(grep -c '^error: AIF-42 is taken on hostb (pid 4343) — skipped: another machine.s worker has it. It claimed the card a moment before' "$OUT/take-lost.out")|$(claims_on AIF-42 | sed -n 1p | grep -c '^taken: hostb pid 4343 ')|$(claims_on AIF-42 | sed -n 2p | grep -cE "^not taken: $(hostname -s) pid [0-9]+ at [0-9T:Z-]+ — aif work · hostb \(pid 4343\) claimed this card first$")|$(column_of AIF-42)|$(test -d .aif/worktrees/AIF-42 && echo worktree || echo none)|$("$AIF" board head AIF-42 | sed 's/ at .*//')" \
+  "$rc|$(grep -c '^error: AIF-42 is taken on hostb (pid 4343) — skipped: another checkout.s worker has it. It claimed the card a moment before' "$OUT/take-lost.out")|$(claims_on AIF-42 | sed -n 1p | grep -c '^taken: hostb pid 4343 ')|$(claims_on AIF-42 | sed -n 2p | grep -cE "^not taken: $HOST:[0-9a-f]{6} pid [0-9]+ at [0-9T:Z-]+ — aif work · hostb \(pid 4343\) claimed this card first$")|$(column_of AIF-42)|$(test -d .aif/worktrees/AIF-42 && echo worktree || echo none)|$("$AIF" board head AIF-42 | sed 's/ at .*//')" \
   "3|1|1|1|in_progress|none|taken: hostb pid 4343"
 "$AIF" board move AIF-43 ready >/dev/null
 inject after "taken: hostb pid 4444 at $(iso_ago 0) — aif work"
 rc=0
 "$AIF" work AIF-43 >"$OUT/take-won.out" 2>&1 || rc=$?
 eq "…the race the other way, this machine's claim first: it builds, the other's claim after it" \
-  "$rc,$(column_of AIF-43),$(claims_on AIF-43 | sed -n 1p | grep -c "^taken: $(hostname -s) pid "),$(claims_on AIF-43 | sed -n 2p | grep -c '^taken: hostb pid 4444')" "0,review,1,1"
+  "$rc,$(column_of AIF-43),$(claims_on AIF-43 | sed -n 1p | grep -cE "^taken: $HOST:[0-9a-f]{6} pid "),$(claims_on AIF-43 | sed -n 2p | grep -c '^taken: hostb pid 4444')" "0,review,1,1"
 # The loop holds a card another machine has, and is not the worse for it:
 # not the environment, no re-check, the next card built.
 "$AIF" board move AIF-40 backlog >/dev/null
+"$AIF" board move AIF-50 backlog >/dev/null
 "$AIF" board move AIF-44 ready >/dev/null
 claim_by AIF-44 hostb 60
 "$AIF" board move AIF-45 ready >/dev/null
@@ -836,7 +880,7 @@ rc=0
 AIF_WORK_LOOP_LOGDIR="$SANDBOX/p3e-loop" "$AIF" work --loop --no-tui --parallel 1 >"$OUT/loop-claimed.out" 2>&1 || rc=$?
 eq "a loop over a card another machine has and one it can take: the first held, not the machine — env 0, no re-check — the second built" \
   "$rc|$(jq -r '[.env, .rechecks, (.held | join(" ")), ([.results[] | .ticket + ": " + .what] | join("; "))] | map(tostring) | join("|")' "$SANDBOX/p3e-loop/summary.json" 2>/dev/null)|$(column_of AIF-44),$(column_of AIF-45)" \
-  "1|0|0|AIF-44|AIF-44: not taken (exit 3) — another machine's worker has it; AIF-45: built → Review|ready,review"
+  "1|0|0|AIF-44|AIF-44: not taken (exit 3) — another checkout's worker has it; AIF-45: built → Review|ready,review"
 # The race run for real: this checkout and the second, on the same card at
 # the same moment. Whichever way the board orders them, one builds and the
 # other takes nothing and says so.
@@ -852,6 +896,31 @@ wait "$pb" || rb=$?
 eq "two machines take one card at once: one builds it, the other takes nothing and says the card is the other's — one live claim on the card" \
   "$(printf '%s\n%s\n' "$ra" "$rb" | sort | tr '\n' ','),$(cat "$OUT/race-a.out" "$OUT/race-b.out" | grep -c '^error: AIF-46 is taken on '),$(column_of AIF-46),$(claims_on AIF-46 | grep -c '^taken: ')" \
   "0,3,,1,review,1"
+# …and two checkouts of ONE host, the same `hostname -s`: with the host alone
+# in the claim each read the other's as its own, and both built the card. Now
+# each names its checkout, the two claims are two, and one builds.
+"$AIF" board move AIF-47 ready >/dev/null
+"$AIF" work AIF-47 >"$OUT/race-c.out" 2>&1 &
+pa=$!
+(cd "$SANDBOX/p3g" && "$AIF" work AIF-47) >"$OUT/race-d.out" 2>&1 &
+pb=$!
+ra=0
+wait "$pa" || ra=$?
+rb=0
+wait "$pb" || rb=$?
+eq "two checkouts of one host take one card at once: built once — the other takes nothing, naming this host and the winner's checkout — one live claim on the card, this host's" \
+  "$(printf '%s\n%s\n' "$ra" "$rb" | sort | tr '\n' ','),$(mock | jq -r --arg n "AIF-47 " '[.cards[] | select(.name | startswith($n))][0].id as $c | [.comments[$c][]? | select(.data.text | startswith("# AIF-47 — built"))] | length'),$(cat "$OUT/race-c.out" "$OUT/race-d.out" | grep -cE "^error: AIF-47 is taken on $HOST:[0-9a-f]{6} \(pid [0-9]+[,)].* — skipped: another checkout.s worker has it"),$(claims_on AIF-47 | grep -cE "^taken: $HOST:[0-9a-f]{6} pid "),$(column_of AIF-47)" \
+  "0,3,,1,1,1,review"
+# Each checkout's name is its own, and stays: `aif work --status` says it as
+# the claims write it; a copy of a checkout, .aif/state and all, names itself
+# anew; the original keeps its name.
+name_e="$("$AIF" work --status AIF-47 --json | jq -r '.clone // empty')"
+name_g="$(cd "$SANDBOX/p3g" && "$AIF" work --status AIF-47 --json | jq -r '.clone // empty')"
+cp -R "$SANDBOX/p3g/." "$SANDBOX/p3h/"
+name_h="$(cd "$SANDBOX/p3h" && "$AIF" work --status AIF-47 --json | jq -r '.clone // empty')"
+eq "a checkout's name: six hex characters, the one its claims carry; another checkout's another; a copy of one, its state and all, a name of its own; the original's unchanged" \
+  "$(printf '%s' "$name_e" | grep -cE '^[0-9a-f]{6}$'),$(claims_on AIF-41 | sed -n 2p | grep -c "^taken: $HOST:$name_e pid "),$([ -n "$name_g" ] && [ "$name_g" != "$name_e" ] && echo apart),$([ -n "$name_h" ] && [ "$name_h" != "$name_g" ] && echo own),$(cd "$SANDBOX/p3g" && "$AIF" work --status AIF-47 --json | jq -r '.clone // empty' | grep -c "^$name_g$")" \
+  "1,1,apart,own,1"
 
 fresh_project "$SANDBOX/p5"
 unset AIF_TRELLO_API

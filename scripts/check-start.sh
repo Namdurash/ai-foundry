@@ -25,10 +25,14 @@
 #      wait — for a loop not started yet too, never for the cards a loop
 #      elsewhere holds, each a line — and the end; a requeue that stops only
 #      what is the dead run's, never a process in its worktree nothing else
-#      ties to it; another machine's claim silent past a run's wall clock, a
-#      card changed after its build, a block stamped inside the margin before
-#      the start, a refused blocked: line posted where it was kept (14.4,
-#      15.12, 15.6, 14.2); a ready gate's 3 the environment, a card unread
+#      ties to it; another machine's claim silent past a run's wall clock —
+#      by the board's clock, not its text's — a claim naming this checkout
+#      against another clone's on this host, a card changed after its build
+#      offered neither a review nor a land, a block stamped inside the margin
+#      before the start retried and said to be around it, R17's count not
+#      settled by what was read not retried, a refused blocked: line posted
+#      where it was kept (14.4, 15.12, 15.6, 14.2); a ready gate's 3 the
+#      environment, a card unread
 #      three looks in a row a line nothing waits on, the held build offered
 #      as "build again", R12 on Trello keyed on a card's entry into Ready
 #      (15.8, 15.9); R7 warning of the uncommitted files the card's branch
@@ -76,9 +80,13 @@
 #      is read again when a comment moves its last activity, and a block by
 #      the environment during the shift goes back to Ready behind one
 #      preflight — and, on a board whose clock is 30 s behind, one posted in
-#      the shift's first seconds too (15.6); a session costs no request
-#      before it and three after (15.6); a card edited after its build is not
-#      offered for review (15.12); another machine's claim silent past a
+#      the shift's first seconds too, said to be around the shift's start
+#      (15.6); a session costs no request before it and three after (15.6); a
+#      card edited after its build is not offered for review, nor for a land
+#      after its demo, and `aif land` refuses it on its one read of the card
+#      (15.12); --retry-runs counts two blocks twenty-five replies apart as
+#      two, reading back only then, and says so of a block whose five pages
+#      read back hold no head before it (15.6); another machine's claim silent past a
 #      run's wall clock is a line, read again when it beats (14.4); a
 #      blocked: line the board refused is posted by the shift (14.2); a card
 #      whose comments fail on every look waited for twice, then a line; a
@@ -724,8 +732,35 @@ JSON
 
 fx "R4 on Trello: the same claim, its worker alive five minutes ago — built there, nothing to do here" '(.moves | length) == 0 and .lines[0].rule == "R4" and (.lines[0].text | endswith("— built there; nothing to do here")) and .lines[0].command == null' <<JSON
 {$S,"now":1791367200,"wall_clock_min":120,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
- {"ticket":"AIF-17","column":"in_progress","pos":1,"head":{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:01Z","after":0,"heads":[{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:01Z"}]},
+ {"ticket":"AIF-17","column":"in_progress","pos":1,"head":{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:01Z","after":0,"heads":[{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:01Z","edited_at":"2026-10-07T09:55:00Z"}]},
   "local":{"class":"none","why":"nothing of it on this machine","lock":{"held":false,"live":false}}}]}
+JSON
+
+# A claim's life by the board's clock, not by the times in its text, which
+# are the other machine's (docs/DEFECTS.md 14.4): Trello stamps the comment
+# when it is posted and when it is edited — every beat — and a claim whose
+# text says its worker was alive five minutes ago, or whose time runs a day
+# ahead, but which the board has seen nothing of for three hours, is a worker
+# likely gone.
+fx "R4 on Trello: a claim whose text says alive five minutes ago and whose time runs a day ahead, the board's last word on either three hours old — likely gone, both" '(.moves | length) == 0 and ([.lines[] | select(.rule == "R4") | [.ticket, (.text | contains("its worker has said nothing for 180 min")), .command]] == [["AIF-18",true,"aif board move AIF-18 ready"],["AIF-19",true,"aif board move AIF-19 ready"]])' <<JSON
+{$S,"now":1791367200,"wall_clock_min":120,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-18","column":"in_progress","pos":1,"head":{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:00Z","after":0,"heads":[{"line":"taken: other pid 9 at 2026-10-07T07:00:00Z — aif work · alive at 2026-10-07T09:55:00Z","at":"2026-10-07T07:00:00Z","edited_at":null}]},
+  "local":{"class":"none","why":"nothing of it on this machine","lock":{"held":false,"live":false}}},
+ {"ticket":"AIF-19","column":"in_progress","pos":2,"head":{"line":"taken: other pid 9 at 2026-10-08T07:00:00Z — aif work","at":"2026-10-07T07:00:00Z","after":0,"heads":[{"line":"taken: other pid 9 at 2026-10-08T07:00:00Z — aif work","at":"2026-10-07T07:00:00Z"}]},
+  "local":{"class":"none","why":"nothing of it on this machine","lock":{"held":false,"live":false}}}]}
+JSON
+
+# A claim names its checkout as well as its host (`taken: <host>:<clone> …`,
+# docs/DEFECTS.md 14.4): two clones on one machine read each other's claims as
+# their own while it named the host alone. This checkout's claim (the facts'
+# clone) is this checkout's to settle; another clone's on the same host is
+# that checkout's, a line, as another machine's is.
+fx "R3b and R4 on Trello: this checkout's own claim — host and name — requeued; another checkout's on the same host a line, never this one's to move" '([.units[] | [.rule, .ticket]] == [["R3b","AIF-20"]]) and ([.lines[] | [.rule, .ticket, (.text | startswith("taken by mac:bbbbbb pid 7 at "))]] == [["R4","AIF-21",true]])' <<JSON
+{$S,"clone":"aaaaaa","now":1791367200,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-20","column":"in_progress","pos":1,"head":{"line":"taken: mac:aaaaaa pid 6000 at 2026-10-07T09:50:00Z — aif work","at":"2026-10-07T09:50:01Z","after":0,"heads":[{"line":"taken: mac:aaaaaa pid 6000 at 2026-10-07T09:50:00Z — aif work","at":"2026-10-07T09:50:01Z"}]},
+  "local":{"class":"interrupted","lock":{"held":true,"live":false,"pid":6000,"pid_alive":false,"phase":"run","stage":"plan","started":1},"run":{"status":"running","stage":"plan"}}},
+ {"ticket":"AIF-21","column":"in_progress","pos":2,"head":{"line":"taken: mac:bbbbbb pid 7 at 2026-10-07T09:50:00Z — aif work","at":"2026-10-07T09:50:01Z","after":0,"heads":[{"line":"taken: mac:bbbbbb pid 7 at 2026-10-07T09:50:00Z — aif work","at":"2026-10-07T09:50:01Z"}]},
+  "local":{"class":"interrupted","lock":{"held":true,"live":false,"pid":7,"pid_alive":false,"phase":"run","stage":"plan","started":2},"run":{"status":"running","stage":"plan"}}}]}
 JSON
 
 # ----------------------------------------------------------------- Review
@@ -748,6 +783,19 @@ JSON
 fx "R6: demo as expected — a land unit, skipped by default" '.units[0].rule == "R6" and .units[0].kind == "land" and .units[0].default == "skip" and .units[0].ticket == "AIF-23"' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-23","column":"review","pos":1,"head":{"line":"demo: as expected — the user sees the allowance","at":"2026-10-07T10:12:00Z","body":"to see by hand: x","after":0,"heads":[]}}]}
+JSON
+
+# A land only for a build of the card as it is (docs/DEFECTS.md 15.12): a card
+# edited after its demo — on Trello in the browser, its text hashed as the pull
+# writes it against the run's ticket_sha256 — was still offered "land", the
+# build of its earlier text. R8's line instead, as for a build in Review; the
+# same build with the card as it was is still a land.
+fx "R6 on Trello: the card changed after its build — no land offered, R8's line naming aif work; unchanged, the land" '([.units[] | [.rule, .ticket]] == [["R6","AIF-27"]]) and ([.lines[] | [.rule, .ticket, .text, .command]] == [["R8","AIF-26","the card changed after this build — a land would merge the build of its earlier text; aif work AIF-26 builds it again","aif work AIF-26"]])' <<JSON
+{$S,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-26","column":"review","pos":1,"head":{"line":"demo: as expected — the user sees the allowance","at":"2026-10-07T10:12:00Z","body":"","after":0,"heads":[],"card_sha256":"b"},
+  "local":{"class":"settled_running","branch":{"exists":true},"lock":{"held":false,"live":false},"run":{"status":"built","branch_status":"built","ticket_sha256":"a","ticket_changed":true}}},
+ {"ticket":"AIF-27","column":"review","pos":2,"head":{"line":"demo: as expected — the user sees the allowance","at":"2026-10-07T10:12:00Z","body":"","after":0,"heads":[],"card_sha256":"a"},
+  "local":{"class":"built","branch":{"exists":true},"lock":{"held":false,"live":false},"run":{"status":"built","branch_status":"built","ticket_sha256":"a","ticket_changed":false}}}]}
 JSON
 
 fx "R7: built here — the review session" '.units[0].rule == "R7" and .units[0].kind == "session" and .units[0].role == "review" and .units[0].prompt == "/aif-review AIF-24" and .units[0].name == "aif review AIF-24" and .units[0].default == "open" and .units[0].warn == null and .units[0].key == "R7 AIF-24 2026-10-07T09:30:02Z"' <<JSON
@@ -992,6 +1040,16 @@ fx "R16 with a clock skew: a block stamped a minute before the shift's start, in
  {"ticket":"AIF-116","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T09:59:00Z","after":0,"heads":[]}}]}
 JSON
 
+# Retried, a block stamped inside the margin is not said to be "during this
+# shift": it may have come just before it (docs/DEFECTS.md 15.6). The move,
+# the card's comment and a usage limit's line say what is known — around the
+# shift's start — and a block stamped after the start is still "during".
+fx "R16 inside the margin, before the start: retried, the move and the comment saying around the shift's start, never during it; one after the start still during" '([.moves[] | [.ticket, .text, .comment]] == [["AIF-114","blocked by the environment around the shift'"'"'s start — retried once, if the preflight passes again","released by aif start: blocked by the environment around the shift'"'"'s start; the preflight passes again — retried once"],["AIF-115","blocked by the environment during this shift — retried once, if the preflight passes again","released by aif start: blocked by the environment during this shift; the preflight passes again — retried once"]])' <<JSON
+{$S,"fresh_margin_s":120,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-114","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T09:59:00Z","after":0,"heads":[]}},
+ {"ticket":"AIF-115","column":"needs_human","pos":2,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T10:00:05Z","after":0,"heads":[]}}]}
+JSON
+
 fx "R16 with the margin: a block stamped three minutes before the start — a line, old" '(.moves | length) == 0 and (.lines[0].text | startswith("blocked by the environment before this shift"))' <<JSON
 {$S,"fresh_margin_s":120,"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-117","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T09:57:00Z","after":0,"heads":[]}}]}
@@ -1073,12 +1131,35 @@ fx "R17: retried once this shift already — a line" '(.moves | length) == 0 and
  {"ticket":"AIF-86","column":"needs_human","pos":1,"head":{"line":"blocked: run — x","at":"t5","after":0,"heads":[{"line":"blocked: run — x","at":"t5"}]}}]}
 JSON
 
-fx "R16 and R17 on a shared Trello board, blocked on another machine — lines: that machine's to retry, never this one's preflight" '(.moves | length) == 0 and ([.lines[] | [.rule, .ticket, .command]] == [["R16","AIF-118","aif board move AIF-118 ready"],["R17","AIF-119","aif board move AIF-119 ready"]]) and (.lines[0].text | endswith("— blocked on otherhost, not here: that machine'"'"'s to retry"))' <<JSON
-{$S,"board_kind":"trello","flags":{"retry_runs":true},"build":{"mode":"none","parallel":2},"cards":[
+# The count R17 retries by is only what was read (docs/DEFECTS.md 15.6). A
+# head whose read stopped with older comments unread (`more`) and fewer than
+# two heads that are not a claim or a release is not settled: the facts read
+# such a card further back (`deep`), and when even that ran out of pages, or
+# failed, the card is not retried — the line says why. Settled by the read
+# back — the block before it found — it is two in a row.
+fx "R17 with --retry-runs, a count not settled by what was read — no retry: the pages read back ran out, or the read back failed; settled by it, two in a row" '(.moves | length) == 0 and ([.lines[] | [.ticket, (.text | split(" · ")[1])]] == [["AIF-120","not retried: no head before this block in the 100 comments read back — how many times in a row it was blocked lies past them"],["AIF-121","not retried: the comments before this block could not be read, and how many times in a row it was blocked is not known"],["AIF-122","not retried: blocked 2 times in a row"]])' <<JSON
+{$S,"flags":{"retry_runs":true},"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-120","column":"needs_human","pos":1,"head":{"line":"blocked: run — x","at":"t5","after":0,"more":true,"read":100,"deep":true,
+  "heads":[{"line":"taken: mac pid 2 at b — aif work","at":"t4"},{"line":"blocked: run — x","at":"t5"}]}},
+ {"ticket":"AIF-121","column":"needs_human","pos":2,"head":{"line":"blocked: run — x","at":"t5","after":0,"more":true,"read":20,
+  "heads":[{"line":"released by aif start: x — retried once (--retry-runs)","at":"t3"},{"line":"taken: mac pid 2 at b — aif work","at":"t4"},{"line":"blocked: run — x","at":"t5"}]}},
+ {"ticket":"AIF-122","column":"needs_human","pos":3,"head":{"line":"blocked: run — x","at":"t5","after":0,"more":true,"read":40,"deep":true,
+  "heads":[{"line":"blocked: run — x","at":"t2"},{"line":"released by aif start: x — retried once (--retry-runs)","at":"t3"},{"line":"taken: mac pid 2 at b — aif work","at":"t4"},{"line":"blocked: run — x","at":"t5"}]}}]}
+JSON
+
+# Another checkout is another machine's — or another clone's on this host,
+# its claim naming the host and a checkout that is not this one's (14.4);
+# this checkout's own claim, host and name, makes the block this shift's.
+fx "R16 and R17 on a shared Trello board, blocked in another checkout — another machine's or another clone's on this host — lines: that checkout's to retry, never this one's preflight; under this checkout's own claim, retried" '([.moves[] | [.rule, .ticket]] == [["R16","AIF-124"]]) and ([.lines[] | [.rule, .ticket, .command]] == [["R16","AIF-118","aif board move AIF-118 ready"],["R17","AIF-119","aif board move AIF-119 ready"],["R16","AIF-123","aif board move AIF-123 ready"]]) and (.lines[0].text | endswith("— blocked on otherhost, not here: that checkout'"'"'s to retry")) and (.lines[2].text | endswith("— blocked on mac:bbbbbb, not here: that checkout'"'"'s to retry"))' <<JSON
+{$S,"clone":"aaaaaa","board_kind":"trello","flags":{"retry_runs":true},"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-118","column":"needs_human","pos":1,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z","after":0,
   "heads":[{"line":"taken: otherhost pid 9 at 2026-10-07T10:00:00Z — aif work","at":"2026-10-07T10:00:01Z"},{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z"}]}},
  {"ticket":"AIF-119","column":"needs_human","pos":2,"head":{"line":"blocked: stopped — by a TERM signal, during plan","at":"2026-10-07T10:06:00Z","after":0,
-  "heads":[{"line":"taken: otherhost pid 9 at 2026-10-07T10:01:00Z — aif work","at":"2026-10-07T10:01:01Z"},{"line":"blocked: stopped — by a TERM signal, during plan","at":"2026-10-07T10:06:00Z"}]}}]}
+  "heads":[{"line":"taken: otherhost pid 9 at 2026-10-07T10:01:00Z — aif work","at":"2026-10-07T10:01:01Z"},{"line":"blocked: stopped — by a TERM signal, during plan","at":"2026-10-07T10:06:00Z"}]}},
+ {"ticket":"AIF-123","column":"needs_human","pos":3,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z","after":0,
+  "heads":[{"line":"taken: mac:bbbbbb pid 9 at 2026-10-07T10:00:00Z — aif work","at":"2026-10-07T10:00:01Z"},{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z"}]}},
+ {"ticket":"AIF-124","column":"needs_human","pos":4,"head":{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z","after":0,
+  "heads":[{"line":"taken: mac:aaaaaa pid 9 at 2026-10-07T10:00:00Z — aif work","at":"2026-10-07T10:00:01Z"},{"line":"blocked: environment — the install failed","at":"2026-10-07T10:05:00Z"}]}}]}
 JSON
 
 fx "R18: land:, no head, not landed — lines with the command each names" '(.moves | length) == 0 and (.units | length) == 0 and .lines[0].command == "aif board move AIF-87 review && aif land AIF-87" and .lines[1].command == "aif work --status AIF-88" and (.lines[1].text | startswith("no blocked: line")) and .lines[2].text == "# AIF-89 — not landed"' <<JSON
@@ -1104,6 +1185,12 @@ fx "R18 with a kept line, the card moved on — another machine's claim on Trell
 {$S,"board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-96","column":"needs_human","pos":1,"head":{"line":"taken: other pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z","after":0,"heads":[{"line":"taken: other pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z"}]},"kept_block":{"path":"/p/.aif/tmp/blocked-AIF-96.md"}},
  {"ticket":"AIF-97","column":"needs_human","pos":2,"head":{"line":"land: the merge conflicted","at":"t","after":0,"heads":[]},"kept_block":{"path":"/p/.aif/tmp/blocked-AIF-97.md"}}]}
+JSON
+
+fx "R18 with a kept line on Trello: under this checkout's own claim — host and name — posted; under another clone's on this host, not" '([.moves[] | [.rule, .ticket, .where]] == [["R18","AIF-98","file"]]) and ([.lines[] | .ticket] == ["AIF-99"])' <<JSON
+{$S,"clone":"aaaaaa","board_kind":"trello","build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-98","column":"needs_human","pos":1,"head":{"line":"taken: mac:aaaaaa pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z","after":0,"heads":[{"line":"taken: mac:aaaaaa pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z"}]},"kept_block":{"path":"/p/.aif/tmp/blocked-AIF-98.md"}},
+ {"ticket":"AIF-99","column":"needs_human","pos":2,"head":{"line":"taken: mac:bbbbbb pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z","after":0,"heads":[{"line":"taken: mac:bbbbbb pid 9 at 2026-10-07T09:10:00Z — aif work","at":"2026-10-07T09:10:01Z"}]},"kept_block":{"path":"/p/.aif/tmp/blocked-AIF-99.md"}}]}
 JSON
 
 fx "R18a: a person answered under blocked: — a unit, r back to Ready" '.units[0].rule == "R18a" and .units[0].kind == "answered" and .units[0].default == "skip" and .units[0].keys.r == "ready" and .units[0].to == "ready" and .units[0].key == "R18a AIF-90 t1" and (.moves | length) == 0' <<JSON
@@ -2405,8 +2492,10 @@ else
   kill -TERM "$tshift" 2>/dev/null
   wait_exit "$tshift" 20 || true
   started="$(jq -r '.started_at // empty' "$(newest_shift)/summary.json" 2>/dev/null)"
-  eq "Trello, the board's clock 30 s behind: a block posted in the shift's first seconds, stamped before its start — retried within the margin, not left as one from before" \
-    "$(jq -n --arg a "$stamped" --arg s "$started" '($a | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < ($s | fromdateiso8601)' 2>/dev/null),$(col AIF-11),$(card_head AIF-11 | grep -c '^released by aif start: blocked by the environment during this shift; the preflight passes again'),$(grep -c 'AIF-11 needs_human · blocked by the environment before this shift' "$OUT/t2-skew.out")" "true,ready,1,0"
+  # Retried, and said to be around the shift's start: its stamp is before
+  # the start, and what is known is no more than that (15.6).
+  eq "Trello, the board's clock 30 s behind: a block posted in the shift's first seconds, stamped before its start — retried within the margin, not left as one from before, and said to be around the shift's start, not during it" \
+    "$(jq -n --arg a "$stamped" --arg s "$started" '($a | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < ($s | fromdateiso8601)' 2>/dev/null),$(col AIF-11),$(card_head AIF-11 | grep -c '^released by aif start: blocked by the environment around the shift.s start; the preflight passes again'),$(grep -c 'AIF-11 needs_human · blocked by the environment before this shift' "$OUT/t2-skew.out"),$(grep -c 'blocked by the environment during this shift' "$OUT/t2-skew.out")" "true,ready,1,0,0"
   "$AIF" board move AIF-11 backlog >/dev/null
 
   # A session's requests (15.6): its before is taken from the tick it was
@@ -2442,6 +2531,7 @@ else
   run_bg "$OUT/t2-dry14a.out" 30 "$AIF" start --dry-run --no-build || rc2=$?
   c14="$(cid2 AIF-14)"
   mock2 | jq -j --arg c "$c14" '.cards[$c].desc' >"$OUT/desc14.md"
+  cp "$OUT/desc14.md" "$OUT/desc14-built.md"
   printf '\nA criterion a person added on the card after its build.\n' >>"$OUT/desc14.md"
   curl -s -X PUT "$AIF_TRELLO_API/cards/$c14" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
     --data-urlencode "desc@$OUT/desc14.md" >/dev/null
@@ -2450,6 +2540,33 @@ else
   eq "Trello: a build in Review is offered for review; its card edited since, it is not — the line says the card changed after the build" \
     "$rc,$(col AIF-14),$rc2,$(grep -c 'review AIF-14 — built' "$OUT/t2-dry14a.out"),$rc3,$(grep -c 'review AIF-14 — built' "$OUT/t2-dry14b.out"),$(grep -c 'AIF-14 review · the card changed after this build — a land would merge the build of its earlier text; aif work AIF-14 builds it again · yours: aif work AIF-14' "$OUT/t2-dry14b.out")" \
     "0,review,0,1,0,0,1"
+  # …and no land of it either (15.12): the review's demo said as expected of
+  # the edited card, and the shift offers R8's line, not the land (R6 behind
+  # R7's check); `aif land AIF-14` itself refuses — exit 1, the card left in
+  # Review, nothing merged, aif work named — on the card's own read it makes
+  # for its column, no request more. Put back as it was built, it lands.
+  say AIF-14 "aif review" "demo: as expected — the export writes the marker"
+  rc=0
+  run_bg "$OUT/t2-dry14c.out" 30 "$AIF" start --dry-run --no-build || rc=$?
+  curl -s "$MOCK2/_mark/land14-a" >/dev/null
+  rc2=0
+  "$AIF" land AIF-14 >"$OUT/t2-land14.out" 2>&1 || rc2=$?
+  curl -s "$MOCK2/_mark/land14-b" >/dev/null
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flag
+  reads14="$(mock2 | jq -r --arg c "$c14" '
+    .log as $l
+    | ([ range(0; $l | length) | select($l[.] == "GET /_mark/land14-a") ] | last) as $a
+    | ([ range(0; $l | length) | select($l[.] == "GET /_mark/land14-b") ] | last) as $b
+    | [ $l[($a + 1):$b][] | select(startswith("GET /1/cards/" + $c)) ] | length')"
+  eq "Trello: a demo as expected on a card edited after its build — no land offered, R8's line; aif land refuses it, exit 1, still in Review, nothing merged, naming aif work, on its one read of the card" \
+    "$rc,$(grep -c 'land AIF-14 — the demo says as expected' "$OUT/t2-dry14c.out"),$(grep -c 'AIF-14 review · the card changed after this build — a land would merge the build of its earlier text; aif work AIF-14 builds it again · yours: aif work AIF-14' "$OUT/t2-dry14c.out"),$rc2,$(col AIF-14),$(git log --oneline --fixed-strings --grep 'aif: land AIF-14 — ' | wc -l | tr -d ' '),$(grep -c "AIF-14's card changed after its build — aif/AIF-14 is a build of the card's earlier text.*aif work AIF-14" "$OUT/t2-land14.out"),$reads14" \
+    "0,0,1,1,review,0,1,1"
+  curl -s -X PUT "$AIF_TRELLO_API/cards/$c14" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+    --data-urlencode "desc@$OUT/desc14-built.md" >/dev/null
+  rc=0
+  "$AIF" land AIF-14 >"$OUT/t2-land14b.out" 2>&1 || rc=$?
+  eq "…its card put back to the text it was built from, the same land lands it" \
+    "$rc,$(col AIF-14),$(git log --oneline --fixed-strings --grep 'aif: land AIF-14 — ' | wc -l | tr -d ' ')" "0,done,1"
   "$AIF" board move AIF-14 "done" >/dev/null
 
   # Another machine's claim silent for three hours (14.4): its worker is
@@ -2491,6 +2608,60 @@ else
   eq "Trello: a blocked: line the board refused, kept here — the shift posts it, the card left in Needs Human, the file gone" \
     "$rc,$(grep -c 'AIF-16 → needs_human — its blocked: line, refused by the board when it was blocked, kept on this machine — posted now; the card stays in Needs Human (R18)' "$OUT/t2-dry16.out"),$(card_head AIF-16),$(col AIF-16),$(test -f .aif/tmp/blocked-AIF-16.md && echo kept || echo gone)" \
     "0,1,blocked: run — the worker exited (code 1) during plan,needs_human,gone"
+
+  # R17's count of blocks in a row, past the first page that holds a head
+  # (15.6): a block, twenty-five replies, the shift's release, a claim, a
+  # block again read as one block in a row — the read had stopped at the
+  # newest twenty comments — and --retry-runs retried the card a third time.
+  # The facts read such a card further back, and only when R17 could retry
+  # it: not without --retry-runs. A block with no head before it in the five
+  # pages read back is not retried either, and its line says so.
+  for t in AIF-20 AIF-21; do
+    ticket_for "$t"
+    card "$t" needs_human
+  done
+  person() { # <card id> <text> — a person's comment, straight to the board
+    curl -s -X POST "$AIF_TRELLO_API/cards/$1/actions/comments" -H 'Authorization: OAuth oauth_consumer_key="k", oauth_token="t"' \
+      --data-urlencode "text=$2" >/dev/null
+  }
+  c20="$(cid2 AIF-20)"
+  c21="$(cid2 AIF-21)"
+  say AIF-20 "aif work" "blocked: run — the worker exited (code 1) during plan"
+  i=1
+  while [ "$i" -le 25 ]; do
+    person "$c20" "a person's reply $i"
+    i=$((i + 1))
+  done
+  say AIF-20 "aif start" "released by aif start: the worker exited (code 1) during plan — retried once (--retry-runs)"
+  i=1
+  while [ "$i" -le 110 ]; do
+    person "$c21" "an old reply $i"
+    i=$((i + 1))
+  done
+  for t in AIF-20 AIF-21; do
+    say "$t" "aif work" "taken: $HOST pid 1 at $(now) — aif work"
+    say "$t" "aif work" "blocked: run — the worker exited (code 1) during plan"
+  done
+  curl -s "$MOCK2/_mark/r17-a" >/dev/null
+  run_bg "$OUT/t2-r17-plain.out" 30 "$AIF" start --dry-run --no-build || true
+  curl -s "$MOCK2/_mark/r17-b" >/dev/null
+  run_bg "$OUT/t2-r17.out" 30 "$AIF" start --dry-run --no-build --retry-runs || true
+  curl -s "$MOCK2/_mark/r17-c" >/dev/null
+  pages() { # <mark> <mark> <card id> — reads of the card's comments between the two, and how many of them asked for older ones
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+    mock2 | jq -r --arg a "/_mark/$1" --arg b "/_mark/$2" --arg c "$3" '
+      .qlog as $l
+      | ([ range(0; $l | length) | select($l[.] | endswith($a)) ] | last) as $s
+      | ([ range(0; $l | length) | select($l[.] | endswith($b)) ] | last) as $e
+      | [ $l[($s + 1):$e][] | select(startswith("GET /1/cards/" + $c + "/actions?")) ]
+      | "\(length)/\([ .[] | select(contains("before=")) ] | length)"'
+  }
+  eq "Trello, --retry-runs: two blocks twenty-five replies apart read as two — not retried a third time; a block with no head before it in the five pages read back, not retried, said so; without --retry-runs no page read back" \
+    "$(grep -c 'AIF-20 → ready' "$OUT/t2-r17.out"),$(grep -c 'AIF-20 needs_human · blocked: run — the worker exited (code 1) during plan · not retried: blocked 2 times in a row' "$OUT/t2-r17.out"),$(grep -c 'AIF-21 needs_human · blocked: run — the worker exited (code 1) during plan · not retried: no head before this block in the 100 comments read back' "$OUT/t2-r17.out"),$(pages r17-a r17-b "$c20"),$(pages r17-a r17-b "$c21"),$(pages r17-b r17-c "$c20"),$(pages r17-b r17-c "$c21")" \
+    "0,1,1,1/0,1/0,3/1,6/4"
+  for t in AIF-20 AIF-21; do
+    "$AIF" board move "$t" "done" >/dev/null
+  done
 
   # A card whose comments the board will not give, look after look (the
   # mock's fault file: every read of AIF-17's comments a 500). It was work in

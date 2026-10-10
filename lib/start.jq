@@ -83,24 +83,46 @@ def hkey($rule): "\($rule) \(.ticket) \(.head.at | nz)";
 # for anything else — a fixture's "t1" included.
 def epoch: if type == "string" then (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null) else null end;
 
-# On a card: the NEWEST `taken:` claim among its heads — host, pid and time as
-# the worker wrote them (`taken: <host> pid <pid> at <ISO> — aif work`,
-# lib/cmd_work.sh _aif_work_claim), the time the board gave the comment, and
-# when its worker last said it was alive (`· alive at <ISO>`, the heartbeat
-# it edits into that first line at every dispatch, docs/DEFECTS.md 14.4) —
-# or null when no take is on it. A claim another machine withdrew after a
-# race (`not taken: …`) is no head, and so no claim.
+# On a card: the NEWEST `taken:` claim among its heads — host, checkout, pid
+# and time as the worker wrote them (`taken: <host>:<clone> pid <pid> at <ISO>
+# — aif work`, lib/cmd_work.sh _aif_work_claim; `clone` null on a claim from
+# before checkouts were named), the times the board gave the comment — posted
+# and last edited — and when its worker last said it was alive (`· alive at
+# <ISO>`, the heartbeat it edits into that first line at every dispatch,
+# docs/DEFECTS.md 14.4) — or null when no take is on it. A claim another
+# checkout withdrew after a race (`not taken: …`) is no head, and so no claim.
 def claim:
   ([ (.head.heads // [])[] | select((.line // "") | startswith("taken: ")) ] | last) as $t
   | if $t == null then null
-    else (($t.line | capture("^taken: (?<host>[^ ]+) pid (?<pid>[0-9]+) at (?<at>[^ ]+)"))
-          // { host: null, pid: null, at: null })
-         + { head_at: $t.at, alive: (($t.line | capture(" · alive at (?<a>[^ ]+)$") | .a) // null) }
+    else (($t.line | capture("^taken: (?<host>[^ :]+)(:(?<clone>[^ ]+))? pid (?<pid>[0-9]+) at (?<at>[^ ]+)"))
+          // { host: null, clone: null, pid: null, at: null })
+         | .clone = (if (.clone // "") == "" then null else .clone end)
+         | . + { head_at: $t.at, edited_at: ($t.edited_at // null),
+                 alive: (($t.line | capture(" · alive at (?<a>[^ ]+)$") | .a) // null) }
     end;
 
-# On a claim: the epoch of the last time its worker said it was alive — the
-# heartbeat, else the time the claim names, else the comment's own — or null.
-def claim_life: [ (.alive | epoch), (.at | epoch), (.head_at | epoch) ] | map(select(. != null)) | max;
+# On a claim: what it names, as the card says it — `<host>:<clone>`, or the
+# host alone — and where that is, in a sentence.
+def claim_who: if .clone == null then (.host // "?") else "\(.host // "?"):\(.clone)" end;
+def claim_where: (.host // "that machine") + (if .clone == null then "" else ", checkout \(.clone)" end);
+
+# On a claim: this checkout's — this host, and this checkout's name; a claim
+# from before checkouts were named, this host alone. The host alone made two
+# checkouts of one host — or two hosts of one short name — read each other's
+# claims as their own (docs/DEFECTS.md 14.4).
+def mine($host; $clone): .host == $host and (.clone == null or .clone == $clone);
+
+# On a claim: the epoch of the last time its worker was seen alive, or null.
+# On Trello by the board's own clock alone — the comment's date and the date
+# it was last edited, which every beat moves — never the times in its text,
+# which are the other machine's clock: a claim whose time ran a day ahead held
+# its card for a day after its worker was gone (docs/DEFECTS.md 14.4, probed).
+# On the local board, one machine's, the heartbeat, the time the claim names
+# and the comment's own.
+def claim_life($board):
+  (if $board then [ (.head_at | epoch), (.edited_at | epoch) ]
+   else [ (.alive | epoch), (.at | epoch), (.head_at | epoch), (.edited_at | epoch) ] end)
+  | map(select(. != null)) | max;
 
 # On a card: the first of the hold labels it carries, or null. A person put it
 # aside (lib/release.sh, AIF_RELEASE_HOLD_LABELS): it gets a line, never a move.
@@ -108,6 +130,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
 . as $f
 | ($f.host // "") as $host
+| ($f.clone // null) as $clone
 | (($f.board_kind // "local") == "trello") as $trello
 | ($f.hold_labels // []) as $holds
 | ($f.memory.done // []) as $done
@@ -275,21 +298,22 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                 else "being built here (pid \($k.pid), \($k.stage // $k.phase // "its claim")"
                      + (if $k.attempt == null then "" else " attempt \($k.attempt)" end) + ")" end);
                null) ]
-      # A shared board: only a card whose newest take names this machine is
-      # this machine's to move (docs/DEFECTS.md 14.4; critics operations-9).
-      # Its worker beats on the claim at every dispatch; a claim silent for
-      # longer than a run can last, and ten minutes more, is a worker likely
-      # gone — said with what finds out, never a move: the run lock that
-      # knows is on that machine.
-      elif $trello and $cl != null and $cl.host != $host then
-        ($cl | claim_life) as $life
+      # A shared board: only a card whose newest take names this checkout —
+      # this host, and this checkout's name, not another clone's on the same
+      # host — is this checkout's to move (docs/DEFECTS.md 14.4; critics
+      # operations-9). Its worker beats on the claim at every dispatch; a
+      # claim silent for longer than a run can last, and ten minutes more, by
+      # the board's clock, is a worker likely gone — said with what finds
+      # out, never a move: the run lock that knows is in that checkout.
+      elif $trello and $cl != null and (($cl | mine($host; $clone)) | not) then
+        ($cl | claim_life($trello)) as $life
         | ($f.wall_clock_min // 120) as $wall
         | if $life != null and (($f.now // null) | type) == "number" and ($f.now - $life) > ($wall + 10) * 60 then
             [ line("R4"; $c;
-                   "taken by \($cl.host // "?") pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — its worker has said nothing for \((($f.now - $life) / 60) | floor) min, past the wall clock of a run (\($wall) min) and ten more: likely gone. On \($cl.host // "that machine"): aif work --status \($c.ticket); once nothing runs it there, back to Ready from here";
+                   "taken by \($cl | claim_who) pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — its worker has said nothing for \((($f.now - $life) / 60) | floor) min, past the wall clock of a run (\($wall) min) and ten more: likely gone. On \($cl | claim_where): aif work --status \($c.ticket); once nothing runs it there, back to Ready from here";
                    "aif board move \($c.ticket) ready") ]
           else
-            [ line("R4"; $c; "taken by \($cl.host // "?") pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — built there; nothing to do here"; null) ]
+            [ line("R4"; $c; "taken by \($cl | claim_who) pid \($cl.pid // "?") at \($cl.at // $cl.head_at // "?") — built there; nothing to do here"; null) ]
           end
       # R4: nothing of it here — another machine, or a worker gone before it
       # wrote anything.
@@ -427,9 +451,16 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
             + { ticket: $c.ticket, column: $c.column, default: "rework", keys: { l: "land" }, to: "backlog",
                 comment: ("rework: " + (if $gap == "" then "the demo found the build not as expected" else $gap end) + $tail) } ]
       # R6: the review left the yes to the human; the default is to leave it.
+      # Only for a build of the ticket as it is, as R7 is: a card edited after
+      # its demo — on Trello in the browser, its text hashed as the pull
+      # writes it — was offered a land of the build of its earlier text, the
+      # criterion added since in no test (docs/DEFECTS.md 15.12). R8's line
+      # instead, as for a build in Review; `aif land` refuses it the same way.
       elif ($h | startswith("demo: as expected")) then
-        [ unit("R6"; ($c | hkey("R6")); "land"; "land \($c.ticket) — the demo says as expected")
-          + { ticket: $c.ticket, column: $c.column, default: "skip" } ]
+        (if $l != null and $l.run.ticket_changed == true then [ r8_built($c) ]
+         else
+           [ unit("R6"; ($c | hkey("R6")); "land"; "land \($c.ticket) — the demo says as expected")
+             + { ticket: $c.ticket, column: $c.column, default: "skip" } ] end)
       # R7, and R25 as its warning: a land refuses while files its branch
       # changes are uncommitted here — those, and no others (lib/cmd_land.sh;
       # docs/DEFECTS.md 13.5) — so a review that ends in one would be refused.
@@ -471,22 +502,27 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   # fresh_margin_s (120) before the start (docs/DEFECTS.md 15.6): a block in
   # the two minutes before a shift is retried once too, the cheaper mistake.
   # A time that is not one (a fixture's) is compared as the string it is.
+  # Retried, a block stamped before the start is not said to be "during this
+  # shift" — it may have come before it, and the card and the line say what
+  # is known: around the shift's start.
   def r16($c):
     (($c.head.at | epoch) as $h | ($f.shift_started_at | epoch) as $s
-     | if $h != null and $s != null then $h >= $s - ($f.fresh_margin_s // 0)
-       else ($c.head.at // "") >= ($f.shift_started_at // "") end) as $fresh
+     | if $h != null and $s != null then [ ($h >= $s - ($f.fresh_margin_s // 0)), ($h >= $s) ]
+       else [ (($c.head.at // "") >= ($f.shift_started_at // "")), (($c.head.at // "") >= ($f.shift_started_at // "")) ] end)
+      as [$fresh, $during]
+    | (if $during then "during this shift" else "around the shift's start" end) as $when
     | any(($f.memory.retried_env // [])[]; . == $c.ticket) as $again
     | ($c.head.line | ltrimstr("blocked: environment — ")) as $why
     # A block by the runner's usage limit is retried once the limit is over,
     # not while it holds: the retry would meet it at its first station
     # (docs/DEFECTS.md 13.7).
     | if $fresh and ($again | not) and $pause != null and ($why | startswith("the runner's usage limit")) then
-        [ line("R16"; $c; "blocked by the runner's usage limit during this shift — \($why); not retried while that limit holds";
+        [ line("R16"; $c; "blocked by the runner's usage limit \($when) — \($why); not retried while that limit holds";
                "aif board move \($c.ticket) ready") ]
       elif $fresh and ($again | not) then
         [ move("R16"; ($c | hkey("R16")); $c; "env-retry"; "ready";
-               "blocked by the environment during this shift — retried once, if the preflight passes again")
-          + { comment: "released by aif start: blocked by the environment during this shift; the preflight passes again — retried once" } ]
+               "blocked by the environment \($when) — retried once, if the preflight passes again")
+          + { comment: "released by aif start: blocked by the environment \($when); the preflight passes again — retried once" } ]
       elif $fresh then
         [ line("R16"; $c; "blocked by the environment again after its retry this shift — \($why)"; "aif board move \($c.ticket) ready") ]
       else
@@ -498,7 +534,19 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   # never a cap, a rejection, a person's Ctrl-C or --stop. `was already gone`
   # is tested first — that text carries `--stop` too. The bounce count skips
   # the `taken:` and `released by aif` heads that sit between every two
-  # blocks on a real card, or it could never reach two (critics operations-6).
+  # blocks on a real card, or it could never reach two (critics operations-6)
+  # — the same two lib/board.sh names AIF_BOARD_PASSING.
+  #
+  # And it counts only what was read. On Trello the read stops at the first
+  # page of twenty comments that holds a head, so a block with twenty-odd
+  # replies under the one before it read as the first, and the card was
+  # retried a third time (docs/DEFECTS.md 15.6, probed). A count is settled
+  # when the heads read hold the head before the newest that is not a claim
+  # or a release, or the read reached the card's first comment (`more` not
+  # true); the facts read further back, within the same five pages, a card
+  # this rule would retry on an unsettled count (_aif_start_deeper), and mark
+  # what they read `deep`. Unsettled still — the pages ran out, or the read
+  # back failed — it is not retried, and the line says why.
   def r17($c):
     $c.head.line as $h
     | ($h | startswith("blocked: run — ")) as $isrun
@@ -510,11 +558,12 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
        elif ($why | contains(" --stop)")) or ($why | startswith("by Ctrl-C")) then false
        elif ($why | contains("by a TERM signal")) or ($why | contains("by a hang-up")) then true
        else false end) as $retriable
-    | ([ ($c.head.heads // [])[] | (.line // "")
-         | select((startswith("taken: ") or startswith("released by aif ")) | not) ]
-       | reverse | leading(test("^blocked: (run|stopped) — "))) as $bounces
+    | [ ($c.head.heads // [])[] | (.line // "")
+        | select((startswith("taken: ") or startswith("released by aif ")) | not) ] as $counted
+    | ($counted | reverse | leading(test("^blocked: (run|stopped) — "))) as $bounces
+    | ($c.head.more == true and ($counted | length) < 2) as $unsettled
     | any(($f.memory.retried_run // [])[]; . == $c.ticket) as $again
-    | if $flags.retry_runs == true and ($again | not) and $retriable and $bounces < 2 then
+    | if $flags.retry_runs == true and ($again | not) and $retriable and ($unsettled | not) and $bounces < 2 then
         [ move("R17"; ($c | hkey("R17")); $c; "retry-run"; "ready"; "\($why) — retried once (--retry-runs)")
           + { comment: "released by aif start: \($why) — retried once (--retry-runs)" } ]
       else
@@ -524,6 +573,10 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                      elif ($retriable | not) then
                        (if $isrun then " · not retried: a cap or a rejection is for a person"
                         else " · not retried: a person stopped it" end)
+                     elif $unsettled and $c.head.deep == true then
+                       " · not retried: no head before this block in the \($c.head.read // "") comments read back — how many times in a row it was blocked lies past them"
+                     elif $unsettled then
+                       " · not retried: the comments before this block could not be read, and how many times in a row it was blocked is not known"
                      else " · not retried: blocked \($bounces) times in a row" end);
                "aif board move \($c.ticket) ready") ]
       end;
@@ -542,16 +595,17 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
         [ unit("R18a"; ($c | hkey("R18a")); "answered"; "answered \($c.ticket) — a person wrote under \"\($h)\"")
           + { ticket: $c.ticket, column: $c.column, default: "skip", keys: { r: "ready" }, to: "ready",
               comment: "released by aif start: a person answered under the blocked: line" } ]
-      # A shared board: a block another machine's worker posted is that
-      # machine's to retry, as In Progress is (docs/DEFECTS.md 14.4). R16's
-      # "the preflight passes again" is this machine's preflight, which says
-      # nothing of the machine whose environment blocked it; a retry here
-      # only hands that machine's loop one more failed run toward its stop.
-      elif $trello and $h != null and $cl != null and $cl.host != $host
+      # A shared board: a block another checkout's worker posted — another
+      # machine's, or another clone's on this one — is that checkout's to
+      # retry, as In Progress is (docs/DEFECTS.md 14.4). R16's "the preflight
+      # passes again" is this checkout's preflight, which says nothing of the
+      # one whose environment blocked it; a retry here only hands that
+      # checkout's loop one more failed run toward its stop.
+      elif $trello and $h != null and $cl != null and (($cl | mine($host; $clone)) | not)
            and (($h | startswith("blocked: environment — ")) or ($h | startswith("blocked: run — "))
                 or ($h | startswith("blocked: stopped — "))) then
         [ line((if ($h | startswith("blocked: environment — ")) then "R16" else "R17" end); $c;
-               "\($h) — blocked on \($cl.host // "?"), not here: that machine's to retry";
+               "\($h) — blocked on \($cl | claim_who), not here: that checkout's to retry";
                "aif board move \($c.ticket) ready") ]
       elif $h != null and ($h | startswith("blocked: environment — ")) then r16($c)
       elif $h != null and (($h | startswith("blocked: run — ")) or ($h | startswith("blocked: stopped — "))) then r17($c)
@@ -559,10 +613,10 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
       # (lib/cmd_work.sh _aif_work_block), posted now that the board answers
       # — a move that does not move, its comment the file: the card is where
       # it belongs, and only its first line was missing (docs/DEFECTS.md
-      # 14.2). Only over this run's own claim, or nothing: any other head
-      # since means the card moved on, and the file is stale.
+      # 14.2). Only over this run's own claim — this checkout's — or nothing:
+      # any other head since means the card moved on, and the file is stale.
       elif $c.kept_block != null
-           and ($h == null or (($h | startswith("taken: ")) and ($cl == null or $cl.host == $host))) then
+           and ($h == null or (($h | startswith("taken: ")) and ($cl == null or ($cl | mine($host; $clone))))) then
         [ move("R18"; "R18k \($c.ticket) \($c.head.at | nz)"; $c; "blocked"; "needs_human";
                "its blocked: line, refused by the board when it was blocked, kept on this machine — posted now; the card stays in Needs Human")
           + { where: "file", file: $c.kept_block.path } ]

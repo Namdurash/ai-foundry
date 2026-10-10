@@ -96,6 +96,15 @@ it maps to a ticket is not on the table again. A request written before the line
 existed has none: derive it from every `tasks/*/ticket.md` whose `request` names this
 file, and write it when you mark the request (step 5).
 
+A ticket cut before tickets named their request names nothing, and still may be one of
+its slices: by what it says — its title, its narrative, the request it cites. Read
+`tasks/` for those before you propose a cut. A ticket that names the slice among its
+`non_goals`, or says it was not cut from the request, is one the slice stands on, not
+the slice. Show the user each ticket you would count and the slice it is; on their
+yes, the slice is cut — list it under `## Status` (step 5) and do not cut it again.
+That list is the only way the shift (`aif start`) learns of it: until it is written,
+the shift reads the request as not cut and offers it to you again.
+
 **The cut gives out rules.** Before proposing it, read the map (step 2, first bullet)
 for the request's words, write the rules the request needs — a sentence each — and
 sort each one against the map: this request's own, a change to a rule in force, or
@@ -329,9 +338,11 @@ cut in part
 
 `cut` when every slice has at least one ticket; `cut in part` when some do; `not cut`
 when none does, and then there is no list — a conversation that made no ticket leaves
-the line as it was. Recompute it from the tickets that name the request every time
-you touch one, so the line says what `tasks/` says. Nothing machine-side reads it: it
-is for the human who opens `requests/`, and for you the next time.
+the line as it was. Recompute it every time you touch one — from the tickets that name
+the request, and the older ones the list already places — so the line says what
+`tasks/` says. The shift reads the list: a ticket it names whose meta names no request
+counts for its slice, under what the tickets that do name the request say. It is also
+for the human who opens `requests/`, and for you the next time.
 
 **End by saying where everything you made is, in plain paths.** A conversation that
 ends "I created the ticket" leaves the one concrete thing it produced for the user to

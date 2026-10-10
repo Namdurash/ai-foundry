@@ -35,47 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 15.5 A request's progress is read from the tickets that name it, and old tickets name none — probed on a copy of `opes`
-
-`aif_requests_json` (lib/requests.sh) derives a request's state from the
-tickets whose meta has a `request` naming it, and falls back to the first
-line of its `## Status`, a cache, when none does — with `next_slice` 1
-whatever that line says: the `- slice N → <ID>` list under it is not
-parsed. Tickets cut before the shift carry no `request` in their meta. On a
-copy of `opes` — four requests, 24 tickets, none naming a request — all four
-requests came out `effective: not cut`, so under its threshold the shift
-would offer each again — the two with `## Slices` to the analyst, the two
-old-format ones to the owner (R20) — a request whose first slice landed
-among them (research §2.3); and a request whose cache says `cut in part` is
-offered from slice 1. And the scan knows indented fences only: a fence
-at column 0 holding a `## ` line or a `1. ` line reads it as a heading or a
-slice (read).
-
-What a fix has to decide: where an old ticket's request comes from — the
-status list parsed as a second source under the tickets, a one-time
-backfill of `request` and `slice` into old tickets' meta (tracked files: the
-analyst's, with a person's yes), or the analyst asked once by the shift; and
-fences at column 0 in the scan.
-
-#### Progress
-
-After 0.16.0 `aif_requests_json` reads the analyst's `- slice N → <IDs|not
-cut>` list under the last `## Status` as a second source under the tickets: an
-id the project's pattern matches counts for its slice unless its ticket's meta
-places it, which wins; `cut in part` with no list leaves the next slice
-unguessed; a fence at column 0 hides what it holds (lib/requests.sh;
-check-start layer A, Opes-shaped fixtures). The case it was probed on is
-unchanged: `opes`'s four requests carry no such list, so on a copy all four
-still read `not cut`, next slice 1 — an independent check of the fix.
-
-#### Directions
-
-- Where an old request's slices come from — the analyst writes the list once
-  (a `/aif-ba` pass with a person's yes), or the shift asks — decided before
-  `opes`'s first shift; then `aif start --dry-run` on `opes`, read against it.
-- A fence indented one to three spaces at the top level is read as text;
-  CommonMark reads it as a fence (minor).
-
 ### 15.9 Smaller seams found building the shift — read unless said
 
 Eleven seams. After 0.16.0 most are closed: `aif _ready` exits 3 for a gate
@@ -562,6 +521,7 @@ every entry but 15.5 and 15.9 closed, with three found on the way
 - **15.2** `.aif/start.local` was not ignored in a project set up before the shift, and only the shift's header said so — read. `aif doctor` holds the managed `.gitignore` block against the one `aif init` writes — one list, `aif_gitignore_block` (lib/paths.sh), which init writes byte for byte as before — and names each line it lacks with `aif init`, writing nothing (`_aif_doctor_gitignore_missing`, lib/doctor.sh); the header's warning stays. On `main` after 0.16.0; check-start layer C. Its reading of the block's text is 16.10.
 - **15.3** A card an idle loop held stayed in Ready, and a shift beside it waited for it for good — read; reproduced. `owner.json` says `held: [{ticket, why}]` as it changes (`_aif_work_loop_held_publish`); the idle line says "Ready holds only cards this loop will not take again"; start.jq leaves held cards out of the wait and the pull slots, a line each, and a Ready of nothing else ends the shift. On `main` after 0.16.0; scenario 57; check-start layers A and C.
 - **15.4** Another clone's station building the same id was listed by its prompt as this clone's orphan, and a requeue TERMed it — read. The prompt counts only for a process whose cwd is this clone's worktree or checkout; the group — when the dead worker led it (16.1) — and the station pid name the rest. On `main` after 0.16.0; scenarios 54, 91; check-start layer C.
+- **15.5** A request's progress was read from the tickets that name it, and old tickets name none — probed on a copy of `opes`. The analyst's `- slice N → <IDs|not cut>` list under the last `## Status` is a second source under the tickets' meta, `cut in part` with no list guesses no next slice, and what a fence holds is prose: one at column 0, or indented one to three spaces when a fence further down closes it — an indented one nobody closed is text, not the rest of the request hidden (lib/requests.sh; check-start layer A). Where an older ticket's slice comes from is the analyst's to say: `/aif-ba` reads `tasks/` for slices that name no request and lists them, on the person's yes (sets/claude/skills/aif-ba). On `opes` itself nothing had been cut — OPES-69 and OPES-74 name the requests' slices among their non-goals, the ground those slices stand on — so `not cut`, next slice 1, is right for all four; the "first slice landed" the phase-1 spec cited read more into research §2.3 than it says. On `main` after 0.16.0.
 - **15.6** On Trello the shift read the newest 20 comments, compared another clock to its own, and spent six requests a session — read. Head reads page back to a head, 5 pages at most, and a card R17 would retry on a count its read did not settle is read further back (`aif_board_head_json`'s `<want>`, `_aif_start_deeper`) — two blocks 25 replies apart had read as one, and earned a third retry — a count still unsettled not retried, its line saying why; R16 counts from 120 s before the start (`AIF_START_FRESH_MARGIN_SECS`), a block in that margin said to be "around the shift's start"; a session's before-snapshot is the tick's facts, 3 requests a session. On `main` after 0.16.0; check-board, check-start layers A and T.
 - **15.7** An idle loop that took a card twice wrote the second worker's log over the first — read; reproduced. One log per take, `<ID>.2.log` onward (`_aif_work_loop_take_log`), named in each `summary.json` results row and on the run's lines. On `main` after 0.16.0; scenario 57. Under a dotted ticket pattern that name is another ticket's: 16.11.
 - **15.8** In this terminal a held build with Ready still holding cards ended the shift, though its line said `b` — read. It is a unit, *build again* (R13): its default is to leave it, Enter or `b` builds under its own key and lets the hold go; passed by, it is a line naming `aif work --loop --parallel N`, and the shift may end; behind a review, the line it was (lib/start.jq, `_aif_start_offer`, `_aif_start_run_build`). On `main` after 0.16.0; check-start layers A and C.
@@ -578,7 +538,7 @@ every entry but 15.5 and 15.9 closed, with three found on the way
 Each fix of logs 11–15 was checked once it was committed, by a verifier that
 had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
-held. What gave way — a fix in part (15.5, 15.9, above; 11.1, closed since), a hole a fix
+held. What gave way — a fix in part (15.9, above; 11.1 and 15.5, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
 with it, 16.4–16.15 open above.
 

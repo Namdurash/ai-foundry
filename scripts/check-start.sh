@@ -41,7 +41,8 @@
 #      the tickets that name the request overrule, a blank line before it,
 #      a fenced block in a slice, two old-format requests with no status; the
 #      analyst's list under the status read under the tickets, and fences at
-#      column 0 (15.5)
+#      column 0 or indented and closed, an indented one nobody closed text
+#      (15.5)
 #   B  the start refuses before it touches anything — a Claude Code session,
 #      a worker's checkout, a profile that does not load, a board that fails
 #      its check, no terminal and no seam, a shift already open (named by its
@@ -1543,13 +1544,66 @@ reqticket2 AIF-71 '"request": "requests/other.md", "slice": 1'
 reqticket2 AIF-72 '"request": "requests/daily-allowance.md", "slice": 2'
 eq "requests (15.5): fences at column 0 — the ## and 1. lines inside one are neither a heading nor a slice" \
   "$(facts3 "$R2/requests/quoted.md")" "not cut|2|slices"
+# Fences a person indented one to three spaces, as CommonMark reads them: one
+# that a fence further down closes hides what it holds, and a fence at column
+# 0 is closed by an indented one too; one nobody closed is text — read as a
+# fence, it would hide the rest of the request, its `## Status` with it.
+cat >"$R2/requests/indented.md" <<'REQ'
+# Fences a person indented
+
+## Slices
+1. The first.
+
+  ```
+## Later, maybe
+1. not a slice
+  ```
+
+2. The second.
+
+```
+## Not this
+   ```
+
+3. The third.
+
+## Status
+not cut
+
+## Watch out
+- what the team pasted, indented by two:
+
+  ```
+## Status
+cut
+  ```
+REQ
+cat >"$R2/requests/unclosed.md" <<'REQ'
+# A fence nobody closed
+
+## Slices
+1. One.
+
+   ```
+   a sample left open
+
+2. Two.
+
+## Status
+cut in part
+- slice 1 → AIF-9
+REQ
+eq "requests (15.5): fences indented one to three spaces and closed, a column-0 fence closed by an indented one — what they hold is neither a heading nor a slice" \
+  "$(facts3 "$R2/requests/indented.md")" "not cut|3|slices"
+eq "requests (15.5): an indented fence nobody closed is text — the slices and the status after it still read" \
+  "$(facts3 "$R2/requests/unclosed.md")" "cut in part|2|slices"
 eq "requests (15.5): the list under ## Status read under the tickets — a ticket naming the request wins its slice, an id placed by its own meta counts for nothing, the next slice 3" \
   "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "daily-allowance") | .derived, .next_slice, .effective,
       ([ .tickets[] | .ticket + ":" + (.slice | tostring) ] | join(" ")), ([ .listed[] | "\(.slice):\(.tickets | join(","))" ] | join(" ")) ]')" \
   '["cut in part",3,"cut in part","AIF-72:2","1:AIF-69"]'
 sed '/^- slice 3 /d' "$R2/requests/daily-allowance.md" >"$OUT/daily-allowance.md" && cp "$OUT/daily-allowance.md" "$R2/requests/daily-allowance.md"
 rm -rf "$R2/tasks/AIF-72"
-eq "requests (15.5): opes's daily allowance, slice 1 a ticket that names no request — cut in part, the next slice 2" \
+eq "requests (15.5): a daily allowance shaped like opes's, slice 1 a ticket that names no request — cut in part, the next slice 2" \
   "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "daily-allowance") | .derived, .next_slice, .effective ]')" \
   '["cut in part",2,"cut in part"]'
 eq "requests (15.5): cut in part with no list and no ticket naming it — the analyst opened on the request, no slice guessed" \

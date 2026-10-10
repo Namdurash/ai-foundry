@@ -21,10 +21,14 @@
 # edited in a browser comes back with CRLF, docs/DEFECTS.md 3.10), and a
 # section runs from its `## ` heading to the next `## ` heading or the end of
 # the file. When a heading appears twice — a careless rewrite left the old one
-# above the new — the LAST one is the request's. And a fenced block that
-# starts at column 0 is the request's prose, not its structure: a `## ` line
-# or a `1. ` line inside one — a request that quotes a template, a log, a
-# list it was sent — is neither a heading nor a slice (docs/DEFECTS.md 15.5).
+# above the new — the LAST one is the request's. And a fenced block is the
+# request's prose, not its structure: a `## ` line or a `1. ` line inside one
+# — a request that quotes a template, a log, a list it was sent — is neither
+# a heading nor a slice (docs/DEFECTS.md 15.5). A fence opens at column 0, as
+# CommonMark has it, or indented one to three spaces when a fence further
+# down closes it: an indented fence nobody closed is read as text, not as
+# hiding the rest of the request — `## Status` with it — which is what
+# CommonMark would do to one a slice opened and its list item ended.
 
 # _aif_request_scan <file> [list] — the three facts of one request, in one
 # read, as one line `<status>|<slices>|<shape>` (none of the three can hold a
@@ -42,56 +46,74 @@
 _aif_request_scan() {
   [ -r "$1" ] || return 1
   awk -v want_list="${2:-}" '
-    { sub(/\r$/, "") }
-    # Inside a fence opened at column 0: only the fence that closes it — the
-    # same character, at least as many, nothing after it — means anything
-    # (CommonMark). An indented fence needs none of this: its lines are
-    # indented too, and neither rule below reads an indented line.
-    fence != "" {
-      if (substr($0, 1, 1) == fence && match($0, /^(`+|~+)[[:space:]]*$/)) {
-        closer = $0
-        sub(/[[:space:]]+$/, "", closer)
-        if (length(closer) >= flen) fence = ""
-      }
-      next
+    # A fence that closes one of character <ch> and length <n>: the same
+    # character, at least as many, indented three spaces at most, nothing
+    # after it (CommonMark).
+    function closes(t, ch, n) {
+      sub(/^ ? ? ?/, "", t)
+      if (substr(t, 1, 1) != ch || !match(t, /^(`+|~+)[[:space:]]*$/)) return 0
+      sub(/[[:space:]]+$/, "", t)
+      return length(t) >= n
     }
-    /^(```|~~~)/ {
-      fence = substr($0, 1, 1)
-      match($0, /^(`+|~+)/)
-      flen = RLENGTH
-      next
-    }
-    /^## / {
-      sec = ""
-      if ($0 ~ /^## Status[[:space:]]*$/) { sec = "status"; has_status = 1; status = ""; status_seen = 0; list = "" }
-      else if ($0 ~ /^## Slices[[:space:]]*$/) { sec = "slices"; has_slices = 1; n = 0 }
-      else if ($0 ~ /^## Scope[[:space:]]*$/) { has_scope = 1 }
-      next
-    }
-    # The first line with anything on it: the analyst writes the value right
-    # under the heading, and a real request has a blank line between them.
-    sec == "status" && !status_seen && /[^[:space:]]/ {
-      status = $0
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", status)
-      status_seen = 1
-    }
-    # The analyst lists every slice under the status, one a line, with the
-    # tickets it became or `not cut`; the arrow as written or as typed.
-    sec == "status" && /^[-*][[:space:]]+[Ss]lice[[:space:]]+[0-9]+[[:space:]]*(→|->)/ {
-      entry = $0
-      sub(/^[-*][[:space:]]+[Ss]lice[[:space:]]+/, "", entry)
-      match(entry, /^[0-9]+/)
-      num = substr(entry, 1, RLENGTH)
-      entry = substr(entry, RLENGTH + 1)
-      sub(/^[[:space:]]*(→|->)[[:space:]]*/, "", entry)
-      gsub(/\t/, " ", entry)
-      list = list num "\t" entry "\n"
-    }
-    # A slice is a numbered item at column 0. Its continuation paragraphs and
-    # the fenced block a slice may carry are indented under it, and a line
-    # in them that starts with a number is not a new slice.
-    sec == "slices" && /^[0-9]+[.)][[:space:]]/ { n++ }
+    # The whole file first: whether an indented fence opens is read from the
+    # lines after it.
+    { sub(/\r$/, ""); line[++nl] = $0 }
     END {
+      for (i = 1; i <= nl; i++) {
+        $0 = line[i]
+        # Inside a fence: only the fence that closes it means anything.
+        if (fence != "") {
+          if (closes($0, fence, flen)) fence = ""
+          continue
+        }
+        # A fence at column 0 opens, closed or not; an indented one only when
+        # a fence further down closes it.
+        if (match($0, /^ ? ? ?(```|~~~)/)) {
+          t = $0
+          sub(/^ +/, "", t)
+          ch = substr(t, 1, 1)
+          match(t, /^(`+|~+)/)
+          len = RLENGTH
+          open = (t == $0)
+          for (j = i + 1; !open && j <= nl; j++) if (closes(line[j], ch, len)) open = 1
+          if (open) {
+            fence = ch
+            flen = len
+            continue
+          }
+        }
+        if ($0 ~ /^## /) {
+          sec = ""
+          if ($0 ~ /^## Status[[:space:]]*$/) { sec = "status"; has_status = 1; status = ""; status_seen = 0; list = "" }
+          else if ($0 ~ /^## Slices[[:space:]]*$/) { sec = "slices"; has_slices = 1; n = 0 }
+          else if ($0 ~ /^## Scope[[:space:]]*$/) { has_scope = 1 }
+          continue
+        }
+        # The first line with anything on it: the analyst writes the value
+        # right under the heading, and a real request has a blank line
+        # between them.
+        if (sec == "status" && !status_seen && $0 ~ /[^[:space:]]/) {
+          status = $0
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", status)
+          status_seen = 1
+        }
+        # The analyst lists every slice under the status, one a line, with
+        # the tickets it became or `not cut`; the arrow as written or as typed.
+        if (sec == "status" && $0 ~ /^[-*][[:space:]]+[Ss]lice[[:space:]]+[0-9]+[[:space:]]*(→|->)/) {
+          entry = $0
+          sub(/^[-*][[:space:]]+[Ss]lice[[:space:]]+/, "", entry)
+          match(entry, /^[0-9]+/)
+          num = substr(entry, 1, RLENGTH)
+          entry = substr(entry, RLENGTH + 1)
+          sub(/^[[:space:]]*(→|->)[[:space:]]*/, "", entry)
+          gsub(/\t/, " ", entry)
+          list = list num "\t" entry "\n"
+        }
+        # A slice is a numbered item at column 0. Its continuation paragraphs
+        # and the fenced block a slice may carry are indented under it, and a
+        # line in them that starts with a number is not a new slice.
+        if (sec == "slices" && $0 ~ /^[0-9]+[.)][[:space:]]/) n++
+      }
       if (!has_status) st = "none"
       else if (status == "cut in part") st = "cut in part"
       else if (status == "not cut") st = "not cut"
@@ -163,18 +185,19 @@ aif_request_shape() {
 # a shift offers one version of it once.
 #
 # Why the tickets win over the request's own line: `## Status` is a cache the
-# analyst rewrites by hand when it cuts, and nothing checks it — on a real
-# project it said `not cut` for a request whose first slice had already
-# landed (docs/AUTOPILOT-RESEARCH.md §2.3). A ticket that names its request
+# analyst rewrites by hand when it cuts, and nothing checks it — a cut that
+# forgot it leaves `not cut` over slices that exist (docs/AUTOPILOT-RESEARCH.md
+# §2.3: read the state from the tickets). A ticket that names its request
 # and slice in its meta is the cut itself. So `effective` is the derived
 # status whenever something derives it, the line only when nothing does, and
 # `not cut` when the line says neither of the three.
 #
 # The list is the second source, under the tickets. Tickets cut before the
 # analyst recorded `request` in their meta name nothing, and a project that
-# had cut its requests that way read every one as `not cut` — on a copy of a
-# real one, four requests and 24 tickets, all four would have been offered to
-# be cut again (docs/DEFECTS.md 15.5). The analyst's list under the status —
+# had cut its requests that way reads every one as `not cut` — on a copy of a
+# real one, four requests and 24 tickets, not one ticket named its request,
+# and only the tickets' prose said none of the four had been cut
+# (docs/DEFECTS.md 15.5). The analyst's list under the status —
 # `- slice 2 → OPES-62, OPES-63` — says which ticket each slice became. A
 # slice counts as cut by the list when an id it names (a word that matches the
 # project's ticket pattern; `not cut` names none) is a ticket that names no

@@ -761,6 +761,22 @@ _aif_work_land_live() {
   AIF_WORK_LANDING="$(_aif_work_lock_pid "$lock")"
 }
 
+# _aif_work_lock_mark <lock-dir> — the takeover mark, `<lock>/takeover`, made
+# by this process: rc 0 it is this process's now · 1 another holds it. A mark
+# two minutes old is nobody's — its taker died holding it (docs/FINDINGS.md
+# #29) — and is made again. One rule for a takeover (_aif_work_lock_take) and
+# for a --stop of a worker that is gone (_aif_work_stop): whatever looks for a
+# dead run's leftovers to TERM them holds it first (docs/DEFECTS.md 14.5,
+# 14.1).
+_aif_work_lock_mark() {
+  local mark="$1/takeover"
+  mkdir "$mark" 2>/dev/null && return 0
+  if [ -d "$mark" ] && [ -n "$(find "$mark" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    rmdir "$mark" 2>/dev/null || true
+  fi
+  mkdir "$mark" 2>/dev/null
+}
+
 # _aif_work_lock_take <lock-dir> <glob> [<before-takeover>] — take one of the
 # three locks — a run's (aif_run_lock_dir), the loop's, the shift's — or say
 # why not. rc 0 taken: AIF_LOCK_DEAD is the gone holder's pid when the lock
@@ -777,17 +793,19 @@ _aif_work_land_live() {
 # The order now makes one taker win and every other one know it lost:
 #
 #   1. the mark: `mkdir <lock>/takeover` inside the dead lock's own directory,
-#      which only one taker gets. A lock replaced meanwhile by a fresh one
-#      takes the mark into the fresh one, and step 2 lets it go again;
+#      which only one taker gets (_aif_work_lock_mark). A lock replaced
+#      meanwhile by a fresh one takes the mark into the fresh one, and step 2
+#      lets it go again;
 #   2. under the mark, the lock read again: still signed by the pid read as
 #      gone, and still dead — else someone took it over first;
-#   3. the dead lock moved aside (`mv`, a rename, atomic), and the copy
+#   3. <before-takeover>, under the mark, and the lock read again after it;
+#   4. the dead lock moved aside (`mv`, a rename, atomic), and the copy
 #      checked to be the one read as dead and to carry this taker's mark —
 #      else a --stop or a loop's tell removed it under the mark and the path
 #      held another, which is put back while the path is free;
-#   4. the `mkdir` again: a fresh taker that came in between steps 3 and 4
+#   5. the `mkdir` again: a fresh taker that came in between steps 4 and 5
 #      wins it, and this one refuses — exactly one holds the lock either way;
-#   5. the copy removed.
+#   6. the copy removed.
 #
 # The move first and the check after it would move a fresh lock aside too: a
 # second taker whose look came after the first one's mkdir renames the new
@@ -798,12 +816,20 @@ _aif_work_land_live() {
 # in a dead lock: a mark two minutes old is nobody's (find's -mmin +1 on
 # macOS: two minutes and more, #29).
 #
-# <before-takeover> <lock-dir> <dead-pid> runs once the lock is known dead and
-# before the mark: the run lock stops what its dead worker left running there
-# (_aif_work_lock_orphans), and a takeover with something still running is no
-# takeover — the dead lock stays, and says what it left.
+# <before-takeover> <lock-dir> <dead-pid> runs once this taker holds the mark
+# on the lock it read as dead: the run lock stops what its dead worker left
+# running there (_aif_work_lock_orphans), and a takeover with something still
+# running is no takeover — the mark goes, the dead lock stays, and says what
+# it left (rc 3); a hook that finds the lock no longer the dead one returns 2
+# (rc 2). It ran before the mark, and every taker of one dead lock ran it: one
+# that lost the race and looked slowly — lsof is the better part of a second
+# — found the winner's station at work in the worktree it had just taken, by
+# the very rules that name a dead run's leftovers, and TERMed it
+# (docs/DEFECTS.md 14.5, 14.1: 3–4 races of 4 with the look slowed by 2–4 s).
+# Under the mark only the taker that holds it looks, and only at the lock it
+# read as dead.
 _aif_work_lock_take() {
-  local lock="$1" glob="$2" hook="${3:-}" pid mark aside
+  local lock="$1" glob="$2" hook="${3:-}" pid mark aside hrc
   AIF_LOCK_HELD=""
   AIF_LOCK_DEAD=""
   mkdir -p "$(dirname "$lock")" 2>/dev/null || true
@@ -820,23 +846,33 @@ _aif_work_lock_take() {
     return 2
   fi
   pid="$(_aif_work_lock_pid "$lock")" || pid=""
-  if [ -n "$hook" ] && ! "$hook" "$lock" "$pid"; then
-    return 3
-  fi
   mark="$lock/takeover"
-  if ! mkdir "$mark" 2>/dev/null; then
-    if [ -d "$mark" ] && [ -n "$(find "$mark" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-      rmdir "$mark" 2>/dev/null || true
-    fi
-    if ! mkdir "$mark" 2>/dev/null; then
-      AIF_LOCK_HELD="another is taking it over just now"
-      return 2
-    fi
+  if ! _aif_work_lock_mark "$lock"; then
+    AIF_LOCK_HELD="another is taking it over just now"
+    return 2
   fi
   if [ "$(_aif_work_lock_pid "$lock")" != "$pid" ] || _aif_work_lock_live_as "$lock" "$glob"; then
     rmdir "$mark" 2>/dev/null || true
     AIF_LOCK_HELD="another took it just now"
     return 2
+  fi
+  if [ -n "$hook" ]; then
+    hrc=0
+    "$hook" "$lock" "$pid" || hrc=$?
+    if [ "$hrc" -ne 0 ]; then
+      rmdir "$mark" 2>/dev/null || true
+      if [ "$hrc" -eq 2 ]; then
+        AIF_LOCK_HELD="another took it just now"
+        return 2
+      fi
+      return 3
+    fi
+    # The look may have taken the better part of a minute: the lock read
+    # once more, before anything is moved.
+    if [ ! -d "$mark" ] || [ "$(_aif_work_lock_pid "$lock")" != "$pid" ] || _aif_work_lock_live_as "$lock" "$glob"; then
+      AIF_LOCK_HELD="another took it just now"
+      return 2
+    fi
   fi
   aside="$(dirname "$lock")/.${lock##*/}.dead.$$"
   rm -rf "${aside:?}" 2>/dev/null || true
@@ -914,7 +950,8 @@ _aif_work_lock() {
 
 # _aif_work_lock_orphans <lock-dir> <dead-pid> — before a dead run lock is
 # taken over: what its worker left running, stopped. rc 0 nothing of it runs
-# now · 1 something still does after the wait, named in AIF_LOCK_HELD.
+# now · 1 something still does after the wait, named in AIF_LOCK_HELD · 2 the
+# lock is not the dead one any more — taken just now — and nothing was sent.
 #
 # A worker killed outright runs no handler, and its station goes on writing in
 # the worktree; the takeover used to look at nothing but the lock, and resumed
@@ -937,6 +974,14 @@ _aif_work_lock() {
 # signalled, and while it runs there is no takeover (docs/DEFECTS.md 14.1).
 # Once nothing but such processes is left, the refusal comes at once: no wait
 # makes a process go that nothing asked to.
+#
+# Called holding the takeover mark (_aif_work_lock_mark), by the one process
+# that holds it; and every round, right before its TERMs, the lock is read
+# again — still the dead one, signed by <dead-pid>, nobody alive behind it —
+# else rc 2, nothing sent: a look that took long enough for a winner's fresh
+# lock and station to stand there would name that station by the worktree it
+# works in (docs/DEFECTS.md 14.5, 14.1). The mark is touched each round, so a
+# long wait never reads as a mark two minutes old.
 _aif_work_lock_orphans() {
   local lock="$1" lp="$2" main="${AIF_WORK_LOCKING_MAIN:-}" id="${AIF_WORK_LOCKING_ID:-}"
   local orph n nc rows pid pgid why sent=" " deadline wait_s said=0 led=0 grp ours
@@ -949,7 +994,12 @@ _aif_work_lock_orphans() {
   # that pid gone, nobody else can lead it.
   [ -z "$lp" ] || _aif_work_pid_alive "$lp" || led=1
   while :; do
+    touch "$lock/takeover" 2>/dev/null || true
     orph="$(_aif_work_status_orphans "$main" "$id" "$lock")" || orph='[]'
+    if [ "$(_aif_work_lock_pid "$lock")" != "$lp" ] || _aif_work_lock_live "$lock"; then
+      AIF_LOCK_HELD="another took it just now"
+      return 2
+    fi
     n="$(printf '%s' "$orph" | jq 'length' 2>/dev/null)" || n=0
     case "$n" in
       '' | *[!0-9]*) n=0 ;;
@@ -1067,9 +1117,27 @@ _aif_work_stop() {
     # lock removed over a live station let the next `aif work` take the
     # ticket as fresh and dispatch into the tree that station still edits
     # (docs/DEFECTS.md 14.1). Something that will not stop keeps the lock.
+    # Under the takeover mark, as a takeover looks: a worker taking the lock
+    # over meanwhile would have its own station named by the worktree it
+    # works in, and TERMed (docs/DEFECTS.md 14.5, 14.1).
+    if ! _aif_work_lock_mark "$lock"; then
+      aif_err "$ticket's lock is being taken over just now — nothing was stopped; run this again (aif work --status $ticket)"
+      return 1
+    fi
+    if [ "$(_aif_work_lock_pid "$lock")" != "$pid" ] || _aif_work_lock_live "$lock"; then
+      rmdir "$lock/takeover" 2>/dev/null || true
+      aif_err "$ticket was taken over just now by a worker that runs — nothing was stopped; run this again to stop it"
+      return 1
+    fi
     AIF_WORK_LOCKING_MAIN="$(aif_main_root "$root")"
     AIF_WORK_LOCKING_ID="$ticket"
-    if ! _aif_work_lock_orphans "$lock" "$pid"; then
+    rc=0
+    _aif_work_lock_orphans "$lock" "$pid" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      aif_err "$ticket was taken over just now — nothing was stopped; run this again to stop it"
+      return 1
+    elif [ "$rc" -ne 0 ]; then
+      rmdir "$lock/takeover" 2>/dev/null || true
       aif_err "the worker on $ticket (pid ${pid:-?}) is gone, and what it started still runs: $AIF_LOCK_HELD — the lock is kept and the card untouched; aif work --status $ticket lists it"
       return 1
     fi
@@ -1148,15 +1216,21 @@ _aif_work_pid_alive() {
 # things still name it, each tied to THIS clone:
 #
 #   group    its process group is the one the lock records (owner.json's
-#            pgid; its pid for a lock from before the field), and that
-#            group's leader is gone — a group's id is not handed out again
-#            while it has a member, so with its leader gone the group can only
-#            be the dead worker's: the loop starts each worker as a group
-#            leader, the station stays in it, and so does a child that left
-#            the worktree with no prompt in its argv. A leader alive — a pid
-#            reused by some other program, or the script that started the
-#            worker without job control — and the group is someone else's,
-#            never listed;
+#            pgid; its pid for a lock from before the field), that group was
+#            the dead worker's OWN — its id is the worker's pid — and its
+#            leader, the worker, is gone: a group's id is not handed out
+#            again while it has a member, so the group can only be the dead
+#            worker's: the loop starts each worker as a group leader, the
+#            station stays in it, and so does a child that left the worktree
+#            with no prompt in its argv. A leader alive — a pid reused by some
+#            other program — and the group is someone else's, never listed.
+#            So is a group the worker only belonged to: a script that started
+#            `aif work A & aif work B &` without job control and exited left
+#            both workers in its group with its leader gone, and A's takeover
+#            listed B's live worker and station by it and TERMed them, B's
+#            card to Needs Human (docs/DEFECTS.md 15.4) — a worker that led
+#            no group of its own is found by its station's pid and by its
+#            worktree, never by a group;
 #   station  the pid the station wrote into <lock>/station as it started
 #            (_aif_work_dispatch), alive and still running a station's
 #            command — its argv carries the prompt's opening, `Ticket <ID>. `;
@@ -1229,7 +1303,7 @@ _aif_work_status_orphans() {
         }
       }
       gone = 0
-      if (grp != "") { gone = 1; if ((grp in S) && S[grp] !~ /Z/) gone = 0 }
+      if (grp != "" && grp == lp) { gone = 1; if ((grp in S) && S[grp] !~ /Z/) gone = 0 }
       for (i = 1; i <= n; i++) {
         p = P[i]
         if (p == "" || (p in skip) || p == lp || S[p] ~ /Z/) continue
@@ -1643,7 +1717,7 @@ _aif_work_preflight() {
   local unmapped
   unmapped="$(aif_profile_export_env && _aif_work_station_models "$root")" || unmapped=""
   if [ -n "$unmapped" ]; then
-    aif_err "the profile $profile does not map the model a station asks for — $(printf '%s' "$unmapped" | paste -sd ';' - | sed 's/;/; /g') (it maps $(aif_profile_export_env && aif_profile_mapped_aliases)) — name one of those in the station's model: line under .claude/agents/, or a full model id. Nothing was spent, and its card was not touched"
+    aif_err "the profile $profile does not map the model a station asks for — $(printf '%s' "$unmapped" | paste -sd ';' - | sed 's/;/; /g') (it maps $(aif_profile_export_env && aif_profile_mapped_aliases)) — name one of those in the station's model: line under .claude/agents/, or a full model id, or route the alias in the profile (ANTHROPIC_DEFAULT_<ALIAS>_MODEL — fable's is ANTHROPIC_DEFAULT_FABLE_MODEL). Nothing was spent, and its card was not touched"
     exit 3
   fi
 
@@ -2589,12 +2663,18 @@ _aif_work_dispatch() {
   [ -n "$model" ] || model="sonnet"
   [ -n "$tools" ] || tools="Read,Grep,Glob,Write,Edit"
   # The alias the station asks for, and what the profile maps it to — what
-  # actually answered replaces that once the envelope says (below).
-  local resolved=""
-  case "$model" in
+  # actually answered replaces that once the envelope says (below). Read as
+  # the CLI reads an alias — any case, a `[1m]` suffix off — and fable among
+  # them, which a profile routes too since claude 2.1.226 (docs/DEFECTS.md
+  # 14.6). The pause's scope is matched against the same word: `Fable` is
+  # held by a fable limit as `fable` is.
+  local resolved="" alias
+  alias="$(aif_profile_alias "$model")"
+  case "$alias" in
     opus) resolved="${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ;;
     sonnet) resolved="${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ;;
     haiku) resolved="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ;;
+    fable) resolved="${ANTHROPIC_DEFAULT_FABLE_MODEL:-}" ;;
   esac
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   _aif_work_live '.model = $m | .model_id = ((.models // {})[$s] // (if $r == "" then null else $r end))' \
@@ -2690,7 +2770,7 @@ $complaint"
   # worker of this checkout (_aif_work_pause_write) — is waited out before
   # the station is said to start, and before each try after it (below).
   AIF_WORK_WAIT_PENDING=0
-  _aif_work_pause_wait "$model" "$resolved" "$station"
+  _aif_work_pause_wait "$alias" "$resolved" "$station"
   _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns$knows"
   # THIS aif first on the station's PATH: `aif _verify` inside the tests
   # station must reach the aif that dispatched it, not whatever Homebrew
@@ -2754,7 +2834,7 @@ $complaint"
   t0_disp="$SECONDS"
   while :; do
     if [ "$tries" -gt 0 ]; then
-      _aif_work_pause_wait "$model" "$resolved" "$station"
+      _aif_work_pause_wait "$alias" "$resolved" "$station"
       [ "${AIF_WORK_WAIT_PENDING:-0}" != 1 ] || _aif_work_wait_waited "$AIF_WORK_PAUSE_WAITED"
       AIF_WORK_WAIT_PENDING=0
     fi
@@ -2891,7 +2971,8 @@ EOF
     '' | *[!0-9]*) turns=0 ;;
   esac
   subtype="$("aif_runner_${AIF_PROFILE_RUNNER}_result_subtype" "$out")" || subtype=""
-  summary="$(jq -r '(.result // "") | split("\n")[0] | .[0:200]' "$out" 2>/dev/null)" || summary=""
+  # An empty final message splits to no line, `null` to jq (docs/DEFECTS.md 13.7).
+  summary="$(jq -r '(.result // "") | (split("\n")[0] // "") | .[0:200]' "$out" 2>/dev/null)" || summary=""
   model_ran="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
   [ -n "$model_ran" ] || model_ran="$model"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
@@ -4053,7 +4134,7 @@ _aif_work_loop() {
   local idle="${10:-0}" profile_name="${11:-}"
   local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0
   local now n list pick id pid rc entry left what kind mins results="" slot st i
-  local poll idling=0 unread=0 read_ok env_in_a_row=0 rechecks=0 envhit rc2
+  local poll idling=0 unread=0 read_ok env_in_a_row=0 rechecks=0 envhit rc2 started
   local who drained=0 abs log held_by why_now err rl unread_n=0 taken_on land_pid
 
   set --
@@ -4213,6 +4294,7 @@ EOF
       err="$(sed -n 's/^error: //p' "$logdir/$log" 2>/dev/null | tail -1)" || err=""
       kind=""
       envhit=""
+      started="could not start"
       case "$rc" in
         0)
           AIF_TUI_BUILT=$((AIF_TUI_BUILT + 1))
@@ -4301,8 +4383,14 @@ EOF
             # the intake — before any station ran: the machine, as an exit 3
             # is, and asked again the same way below. Not two in a row: that
             # stop reads the cards, and this was not about the card
-            # (docs/DEFECTS.md 13.8).
-            envhit="$id could not start — the environment, not the card"
+            # (docs/DEFECTS.md 13.8). And the runner's: a worker that ran a
+            # station — its dispatch line in its log — and stopped when the
+            # runner did not answer, or on a limit it could not wait out,
+            # did start, and was said not to have (docs/DEFECTS.md 13.8).
+            if grep -q ' · aif-[a-z-]* · ' "$logdir/$log" 2>/dev/null; then
+              started="stopped on the environment after a station ran"
+            fi
+            envhit="$id $started — the environment, not the card"
           else
             env_in_a_row=0
             in_a_row=$((in_a_row + 1))
@@ -4327,21 +4415,21 @@ EOF
           env=1
           _aif_work_loop_event red "$envhit; the third in a row, so the loop takes no new card — its log says what"
         elif [ -z "$AIF_WORK_LOOP_STOP" ]; then
-          _aif_work_loop_event red "$id could not start (exit $rc) — checking the machine again"
+          _aif_work_loop_event red "$id $started (exit $rc) — checking the machine again"
           rc2=0
           (AIF_WORK_LOOP=1 _aif_work_preflight "$root" "$profile_name") >>"$logdir/loop.log" 2>&1 || rc2=$?
           if [ "$rc2" -eq 0 ]; then
             rechecks=$((rechecks + 1))
-            _aif_work_loop_event yellow "$id could not start, but the machine checks out (preflight passed) — the loop goes on ($env_in_a_row of 3)"
+            _aif_work_loop_event yellow "$id $started, but the machine checks out (preflight passed) — the loop goes on ($env_in_a_row of 3)"
             # Idle, the card is the loop's again should it come back to
             # Ready: what stopped it was not the card, and the machine now
             # passes. Three in a row bound a card that fails each time.
             [ "$idle" -eq 0 ] || _aif_work_loop_forget "$id"
           elif [ "$rc2" -le 128 ]; then
             [ -n "$AIF_WORK_LOOP_STOP" ] ||
-              AIF_WORK_LOOP_STOP="$id could not start, and the preflight fails again — the environment, not the card; the loop takes no new card"
+              AIF_WORK_LOOP_STOP="$id $started, and the preflight fails again — the environment, not the card; the loop takes no new card"
             env=1
-            _aif_work_loop_event red "$id could not start, and the preflight fails again (exit $rc2) — the environment, not the card; loop.log has what it said"
+            _aif_work_loop_event red "$id $started, and the preflight fails again (exit $rc2) — the environment, not the card; loop.log has what it said"
           fi
           # rc2 above 128: the preflight was interrupted — a Ctrl-C reaches
           # this subshell as it reaches the loop — and the loop's handler has

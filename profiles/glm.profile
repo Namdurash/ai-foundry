@@ -35,11 +35,16 @@ aif_profile_env() {
   #         the older, weaker model.
   #   HAIKU is the current name for the small-model slot;
   #         ANTHROPIC_SMALL_FAST_MODEL is deprecated.
+  #   FABLE routes the `fable` alias (claude 2.1.226 reads it): without it a
+  #         station that asks for fable is refused before its card is taken —
+  #         the endpoint has never heard of the name (docs/DEFECTS.md 14.6).
+  #         The top slot, as opus's.
   cat <<'EOF'
 ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
 ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]
 ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]
 ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7
+ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.2[1m]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
 API_TIMEOUT_MS=3000000
 EOF

@@ -2609,7 +2609,7 @@ _aif_start_number() {
 # handler.
 aif_cmd_start() {
   local no_build=0 parallel="" model="" m_review="" m_ba="" m_po="" m_pjm="" profile="" profile_arg
-  local retry_runs=0 po=0 pjm=1 max_units=0 dry=0 root main shiftdir cfg role pick mdl src mapped err out
+  local retry_runs=0 po=0 pjm=1 max_units=0 dry=0 root main shiftdir cfg role pick mdl src mapped err out var
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2805,7 +2805,10 @@ aif_cmd_start() {
       if [ -z "$mdl" ]; then
         aif_die "--model-$role: none named, so the CLI's default — which the profile $profile does not map (it maps $mapped; the default resolves to opus or sonnet, and no ANTHROPIC_MODEL names it) — name one of those or a full model id"
       fi
-      aif_die "$src: the profile $profile does not map $mdl (it maps $mapped) — name one of those or a full model id"
+      # The variable that would route it, named: fable has one since claude
+      # 2.1.226 (docs/DEFECTS.md 14.6).
+      var="$(aif_profile_alias_var "$mdl")"
+      aif_die "$src: the profile $profile does not map $mdl (it maps $mapped) — name one of those or a full model id${var:+, or route it in the profile: $var}"
     fi
     case "$role" in
       review) AIF_START_MODEL_REVIEW="$mdl" ;;

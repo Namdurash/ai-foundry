@@ -1627,6 +1627,21 @@ refused "no terminal and no session seam: 3, before anything is opened" 3 "aif s
 refused "--model-ba fable under a profile that maps only the three aliases: 1, naming what it maps" 1 \
   "--model-ba fable: the profile routed does not map fable (it maps opus, sonnet, haiku)" \
   env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --no-build --profile routed --model-ba fable
+# The alias in another case is the alias — the CLI lowercases a model before
+# it matches one (claude 2.1.226, read) — and a profile routes fable through
+# ANTHROPIC_DEFAULT_FABLE_MODEL, the variable the CLI reads for it
+# (docs/DEFECTS.md 14.6): `Fable` was let through unmapped as a full id, and
+# fable refused under every routed profile.
+refused "--model-ba Fable — fable in another case — under the same profile: 1, refused as fable is, naming the variable that routes it" 1 \
+  "--model-ba Fable: the profile routed does not map Fable (it maps opus, sonnet, haiku) — name one of those or a full model id, or route it in the profile: ANTHROPIC_DEFAULT_FABLE_MODEL" \
+  env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --no-build --profile routed --model-ba Fable
+sed 's/^ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small$/&\
+ANTHROPIC_DEFAULT_FABLE_MODEL=routed-top/; s/maps opus, sonnet and haiku/maps the four aliases/' \
+  "$SANDBOX/xdg/aif/profiles/routed.profile" >"$SANDBOX/xdg/aif/profiles/routedfable.profile"
+rc=0
+run_bg "$OUT/b-fable.out" 30 env XDG_CONFIG_HOME="$SANDBOX/xdg" "$AIF" start --dry-run --no-build --profile routedfable --model-ba fable || rc=$?
+eq "--model-ba fable under a profile that sets ANTHROPIC_DEFAULT_FABLE_MODEL: not refused — the dry run goes on, exit 0" \
+  "$rc,$(grep -c 'does not map' "$OUT/b-fable.out"),$(grep -c 'a dry run — nothing was posted, moved, opened or locked' "$OUT/b-fable.out")" "0,0,1"
 
 # `default` and no model at all are one thing, the CLI's own default, and one
 # rule (aif_profile_maps_model; docs/DEFECTS.md 14.6): under a profile that

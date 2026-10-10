@@ -208,7 +208,7 @@
 #      pre-commit's refusal is a land: line, nothing landed — while the
 #      worker's own git ran none of them
 #  67  a target that moves while the land runs: nothing landed, the card left
-#      in Review, said
+#      in Review, said; a checkout switched to another branch is said as that
 #  68  a blocked: line the board refused, kept on this machine, is posted by
 #      the next worker run before it takes a card — over its run's own claim
 #      only; a card whose head moved on, or in Review, has its stale file
@@ -263,6 +263,27 @@
 #  87  a station's model the profile does not map is refused before the claim,
 #      naming it and what the profile maps; default passes where opus and
 #      sonnet are both mapped
+#  88  a station whose final message is empty is its own run — ok and built,
+#      or an error the gate judges — never the runner not answering
+#  89  claude's Bash-tool interrupt — TERM to the land's group and to every
+#      process under it, KILL 1.5 s later — sent inside the land's
+#      fast-forward, while git writes or before it starts: none of it reaches
+#      the fast-forward, which finishes; the land says so when it lives to,
+#      and the next land finishes the bookkeeping
+#  90  a fast-forward whose git is killed half way: nothing is put back and
+#      nothing says that nothing landed — the marker stays for aif doctor and
+#      the next land, which names git's lock, then puts the target back and
+#      lands
+#  91  workers a script started in the background and left: one's takeover
+#      leaves the other's worker and station alone — a group is the dead
+#      worker's only when it led it
+#  92  two takers on one dead lock, one of them slow to look for what the
+#      dead run left: one builds, the other refuses, and the loser never
+#      stops the winner's station
+#  93  fable routed by the profile's ANTHROPIC_DEFAULT_FABLE_MODEL builds; an
+#      alias in another case is the alias, refused the same when unmapped;
+#      the aliases a refusal names include fable; a fable variable left in
+#      the shell routes nothing
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -937,13 +958,28 @@ case " ${FAKE_FLAKE_PRE:-} " in
   *" $station "*) : >"$wt/.aif/tmp/flake-t0" ;;
 esac
 [ -z "${FAKE_TIMELINE:-}" ] || printf 'end %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
+# The model the worker asked for, and what the profile exported to route
+# fable (docs/DEFECTS.md 14.6): `<model> <ANTHROPIC_DEFAULT_FABLE_MODEL>`.
+printf '%s %s' "${6:-}" "${ANTHROPIC_DEFAULT_FABLE_MODEL:-}" >"$wt/.aif/tmp/fake-model-$station-$n"
 cost=0.01
 [ "${FAKE_ZERO_COST:-0}" = 1 ] && cost=0
-jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "$prompt" \
-  '{type:"result",subtype:"success",is_error:false,result:("fake " + $st + " done\n" + $prompt),
+# FAKE_EMPTY_RESULT=<ID>:<st>[:error]: the station's work is done and its run
+# ends on an empty final message, "result": "" — with :error, a run that
+# ended in an error (its turns used up), what it left for the gate to judge
+# (docs/DEFECTS.md 13.7, scenario 88).
+empty=""
+if knob "${FAKE_EMPTY_RESULT:-}"; then
+  empty="$(knob_arg "$FAKE_EMPTY_RESULT")"
+  [ -n "$empty" ] || empty=ok
+fi
+jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "$prompt" --arg empty "$empty" \
+  '{type:"result",subtype:(if $empty == "error" then "error_max_turns" else "success" end),
+    is_error:($empty == "error"),
+    result:(if $empty == "" then ("fake " + $st + " done\n" + $prompt) else "" end),
     num_turns:2,total_cost_usd:$cost,duration_ms:5,
     usage:{input_tokens:10,output_tokens:(20*$n),cache_read_input_tokens:0,cache_creation_input_tokens:0},
-    modelUsage:{"fake-model":{}}}' >"$out"
+    modelUsage:{"fake-model":{}}}
+   | if $empty == "error" then .terminal_reason = "max_turns" else . end' >"$out"
 FAKE
 chmod +x "$SANDBOX/fake-station.sh"
 export AIF_WORK_STATION_CMD="$SANDBOX/fake-station.sh"
@@ -6053,6 +6089,22 @@ eq "the branch moved during the land: exit 1, the card in Review, main at that c
   "$rc,$(col AIF-185),$(git log --format=%s -1),$(git log --format=%s | grep -c '^aif: land AIF-185')" "1,review,a commit made meanwhile,0"
 eq "…said, and the worktree back on its branch" \
   "$(grep -c 'moved while the land ran' "$OUT/land67.out"),$(git -C .aif/worktrees/AIF-185 symbolic-ref --short HEAD 2>/dev/null)" "1,aif/AIF-185"
+# The checkout switched to another branch while the land ran — the same hook,
+# a `git checkout -b` this time: the target did not move, and was said to
+# have, the other branch's tip given as where it is now.
+cat >.git/hooks/pre-commit <<HOOK
+#!/bin/sh
+cd "$main67" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git checkout -q -b side67 >/dev/null 2>&1
+exit 0
+HOOK
+target67="$(git symbolic-ref --short HEAD)"
+rc=0
+"$AIF" land AIF-185 >"$OUT/land67b.out" 2>&1 || rc=$?
+eq "the checkout switched to another branch during the land: exit 1, the card in Review, said as a switch, not as $target67 moving" \
+  "$rc,$(col AIF-185),$(grep -c "this checkout was switched to side67 while the land ran — it lands on $target67" "$OUT/land67b.out"),$(grep -c 'moved while the land ran' "$OUT/land67b.out")" \
+  "1,review,1,0"
+git checkout -q "$target67"
+rm -f .git/hooks/pre-commit
 
 # ====== 70. a rule that replaces another's: its test goes, the rest stand =====
 # A rule with `changes` has the plan declare the older ticket's test file, so
@@ -6691,7 +6743,7 @@ rc=0
 FAKE_NOENVELOPE=AIF-832:plan AIF_TRANSIENT_BACKOFF=0 AIF_WORK_LOOP_LOGDIR="$SANDBOX/p83-loop" \
   "$AIF" work --loop --parallel 1 --no-tui >"$OUT/run83c.out" 2>&1 || rc=$?
 eq "in a loop, a card whose runner never answered is the machine's: the machine asked again, and the next card built — one re-check, not one of two in a row" \
-  "$rc,$(col AIF-832),$(col AIF-833),$(grep -c 'AIF-832 could not start (exit 1) — checking the machine again' "$OUT/run83c.out"),$(jq -r '.rechecks' "$SANDBOX/p83-loop/summary.json" 2>/dev/null)" \
+  "$rc,$(col AIF-832),$(col AIF-833),$(grep -c 'AIF-832 stopped on the environment after a station ran (exit 1) — checking the machine again' "$OUT/run83c.out"),$(jq -r '.rechecks' "$SANDBOX/p83-loop/summary.json" 2>/dev/null)" \
   "1,needs_human,review,1,1"
 
 # ====== 84. the pause is shared ===============================================
@@ -6879,6 +6931,437 @@ XDG_CONFIG_HOME="$X87" "$AIF" work AIF-870 --profile routed87 --no-worktree >"$O
 eq "default — the CLI's own, which resolves to opus or sonnet: refused under a profile that maps neither, the card left in Ready; built under one that maps both, as a station that names no model is" \
   "$rc,$(grep -c 'aif-plan asks for default' "$OUT/run87b.out"),$(grep -c '(it maps haiku)' "$OUT/run87b.out"),$c87|$rc2,$(col AIF-870)" \
   "3,1,1,ready|0,review"
+cd "$SANDBOX" || exit 1
+
+# ====== 88. a station whose final message is empty ============================
+# docs/DEFECTS.md 13.7. The classifier's one line of reasons read an empty
+# final message — `"result": ""` — as no line at all, jq failed on it, and
+# the whole read fell back to "not JSON": a station that had done its work
+# was dispatched again after each backoff and the run ended blocked:
+# environment, the runner said not to answer; an error with an empty message
+# the same, its class never read. Both are the station's own run now.
+printf '\n88. a station whose final message is empty: its own run — ok, or an error the gate judges — never the runner not answering\n'
+fresh_project "$SANDBOX/p88"
+ticket_for AIF-880
+ticket_for AIF-881
+git add -A && git commit -qm "two" >/dev/null
+for t in AIF-880 AIF-881; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+rc=0
+FAKE_EMPTY_RESULT=AIF-880:plan AIF_TRANSIENT_BACKOFF="0 0" "$AIF" work AIF-880 >"$OUT/run88a.out" 2>&1 || rc=$?
+eq "a plan station that did its work and ended on an empty message: ok — built, the plan dispatched once, nothing waited on the runner" \
+  "$rc,$(col AIF-880),$(cat .aif/worktrees/AIF-880/.aif/tmp/fake-plan.count 2>/dev/null),$(jq -r '(.runner_waits // []) | length' .aif/worktrees/AIF-880/tasks/AIF-880/run.json 2>/dev/null)" \
+  "0,review,1,0"
+rc=0
+FAKE_EMPTY_RESULT=AIF-881:tests:error AIF_TRANSIENT_BACKOFF="0 0" "$AIF" work AIF-881 >"$OUT/run88b.out" 2>&1 || rc=$?
+eq "a tests station whose run ended in an error with an empty message: the station's error, said as such, and the gate judges what it left — built, dispatched once, nothing waited" \
+  "$rc,$(col AIF-881),$(cat .aif/worktrees/AIF-881/.aif/tmp/fake-tests.count 2>/dev/null),$(jq -r '(.runner_waits // []) | length' .aif/worktrees/AIF-881/tasks/AIF-881/run.json 2>/dev/null),$(grep -c 'tests ended with an error: an empty final message' "$OUT/run88b.out")" \
+  "0,review,1,0,1"
+cd "$SANDBOX" || exit 1
+
+# ====== 89. claude's interrupt inside the land's fast-forward ==================
+# docs/DEFECTS.md 15.1. A review session's Ctrl-C reaches `aif land` through
+# claude's Bash tool, which sends TERM to the command's process group AND to
+# every process under it, found by parent pid, then KILL to both 1.5 s later
+# unless the group and its leader are gone (read from claude 2.1.226; the
+# emulation below is that code — the walk made before each signal). The
+# fast-forward ran in a group of its own, but as the land's child: the walk
+# found it and its git, and the land said "nothing landed" over the merge's
+# files half written in the developer's checkout. It is nobody's child now
+# (docs/FINDINGS.md #38). The fast-forward is held inside git — a smudge
+# filter on the last file it writes waits, in the developer's checkout only,
+# for a file — or before git starts, and the interrupt is sent there.
+#
+# ff_hold <name> — this checkout holds its fast-forward inside git: the
+# smudge filter of zzz/** waits here, and not in a worktree, until
+# $SANDBOX/<name>.go exists, git's pid written to $SANDBOX/<name>.at.
+ff_hold() {
+  local main
+  main="$(pwd -P)"
+  cat >"$SANDBOX/$1-hold.sh" <<HOLD
+#!/bin/sh
+if [ "\$(pwd -P)" = "$main" ] && [ ! -f "$SANDBOX/$1.go" ]; then
+  printf '%s\n' "\$PPID" >"$SANDBOX/$1.at.tmp" && mv "$SANDBOX/$1.at.tmp" "$SANDBOX/$1.at"
+  i=0
+  while [ ! -f "$SANDBOX/$1.go" ] && [ "\$i" -lt 600 ]; do
+    sleep 0.1
+    i=\$((i + 1))
+  done
+fi
+exec cat
+HOLD
+  git config filter.hold.smudge "sh '$SANDBOX/$1-hold.sh'"
+  git config filter.hold.clean cat
+  rm -f "$SANDBOX/$1.at" "$SANDBOX/$1.go"
+}
+# ff_branch <ticket> — its branch gains 120 files and, last in git's order,
+# zzz/held.txt, which a hold's filter holds: committed in its worktree.
+ff_branch() {
+  python3 -c 'import os, sys
+d = sys.argv[1]
+os.makedirs(d + "/big", exist_ok=True)
+for i in range(120):
+    open("%s/big/f%03d.txt" % (d, i), "w").write("%d\n" % i)
+os.makedirs(d + "/zzz", exist_ok=True)
+open(d + "/zzz/held.txt", "w").write("held\n")
+open(d + "/.gitattributes", "w").write("zzz/** filter=hold\n")' ".aif/worktrees/$1"
+  git -C ".aif/worktrees/$1" add -A &&
+    git -C ".aif/worktrees/$1" -c core.hooksPath=/dev/null commit -qm "120 files, and one a checkout may hold" >/dev/null
+}
+# land_interrupted <ticket> <at-file> <go-file> <release-after|-> <out> — `aif
+# land` as claude's Bash tool runs a command, a session of its own; once
+# <at-file> exists, its interrupt: the processes under the land found by
+# parent pid, TERM to its group and to each, then, every 100 ms for 1.5 s,
+# whether the group and its leader are gone — else the walk again and KILL to
+# both. <go-file> is made <release-after> seconds after the TERM (`-`: not by
+# this). The land's exit code goes to <out>.rc. [<dir>]: first on the land's
+# PATH.
+land_interrupted() {
+  python3 -c '
+import os, signal, subprocess, sys, time
+aif, ticket, at, go, after, out, first = sys.argv[1:8]
+def pre():
+    os.setsid()
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(s, signal.SIG_DFL)
+env = dict(os.environ)
+if first:
+    env["PATH"] = first + ":" + env.get("PATH", "")
+p = subprocess.Popen([aif, "land", ticket], preexec_fn=pre, stdin=subprocess.DEVNULL, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT)
+t = time.time()
+while not os.path.exists(at) and p.poll() is None and time.time() - t < 120:
+    time.sleep(0.01)
+def under(root):
+    o = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True).stdout
+    ch = {}
+    for l in o.splitlines():
+        f = l.split()
+        if len(f) == 2:
+            ch.setdefault(int(f[1]), []).append(int(f[0]))
+    res, q = [], [root]
+    while q:
+        for c in ch.get(q.pop(0), []):
+            if c > 1 and c != root and c not in res:
+                res.append(c); q.append(c)
+    return res
+def tree(sig):
+    d = under(p.pid)
+    try: os.killpg(p.pid, sig)
+    except OSError: pass
+    for x in d:
+        try: os.kill(x, sig)
+        except OSError: pass
+def gone():
+    if p.poll() is None: return False
+    try: os.killpg(p.pid, 0); return False
+    except ProcessLookupError: return True
+    except OSError: return False
+if p.poll() is None:
+    tree(signal.SIGTERM)
+    t1 = time.time(); freed = False
+    while True:
+        if after != "-" and not freed and time.time() - t1 >= float(after):
+            open(go, "w").close(); freed = True
+        if gone(): break
+        if time.time() - t1 >= 1.5:
+            tree(signal.SIGKILL); break
+        time.sleep(0.1)
+rc = p.wait()
+open(out + ".rc", "w").write(str(128 - rc if rc < 0 else rc))' "$AIF" "$1" "$2" "$3" "$4" "$5" "${6:-}"
+}
+# ff_over — the fast-forward a land left running is over: its word written,
+# or its pid gone; 60 s at most.
+ff_over() {
+  local sec i=0
+  sec="$(cat .aif/state/land.section 2>/dev/null)"
+  while [ ! -f .aif/state/land.section.rc ] && [ -n "$sec" ] && kill -0 "$sec" 2>/dev/null && [ "$i" -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+printf '\n89. claude'"'"'s Bash-tool interrupt inside the land'"'"'s fast-forward: it reaches no part of it\n'
+land_built "$SANDBOX/p89" AIF-890
+ff_hold p89
+ff_branch AIF-890
+eq "built, in Review; its branch has grown since" "$(col AIF-890)" "review"
+copy_project "$SANDBOX/p89" "$SANDBOX/p89b" AIF-890
+ff_hold p89b
+copy_project "$SANDBOX/p89" "$SANDBOX/p89c" AIF-890
+git config --unset filter.hold.smudge
+cd "$SANDBOX/p89" || exit 1
+head89="$(git rev-parse HEAD)"
+land_interrupted AIF-890 "$SANDBOX/p89.at" "$SANDBOX/p89.go" - "$OUT/land89a.out"
+touch "$SANDBOX/p89.go"
+ff_over
+eq "the interrupt while git writes, git held past the KILL: the land killed waiting for it (137), and the fast-forward it ran finished — main at the land's merge, nothing left over, the marker at landed" \
+  "$(cat "$OUT/land89a.out.rc"),$(git log --format=%s -1),$(git status --porcelain --untracked-files=all | wc -l | tr -d ' '),$(jq -r .state .aif/state/land.json 2>/dev/null)" \
+  "137,aif: land AIF-890 — one-command user export,0,landed"
+rc=0
+"$AIF" land AIF-890 >"$OUT/land89a2.out" 2>&1 || rc=$?
+eq "…and the next land finishes the bookkeeping: Done, one land commit" \
+  "$rc,$(col AIF-890),$(grep -c 'finishing the land of AIF-890' "$OUT/land89a2.out"),$(git log --format=%s "$head89..HEAD" | grep -c '^aif: land AIF-890 — ')" "0,done,1,1"
+cd "$SANDBOX/p89b" || exit 1
+land_interrupted AIF-890 "$SANDBOX/p89b.at" "$SANDBOX/p89b.go" 0.3 "$OUT/land89b.out"
+ff_over
+eq "the interrupt while git writes, git let go before the KILL: the land lives to see its fast-forward end, says it landed and what is left, exit 143, no KILL needed" \
+  "$(cat "$OUT/land89b.out.rc"),$(grep -c 'terminated — after the fast-forward: AIF-890 is landed at' "$OUT/land89b.out"),$(grep -c 'nothing landed' "$OUT/land89b.out"),$(git log --format=%s -1),$(git status --porcelain --untracked-files=all | wc -l | tr -d ' ')" \
+  "143,1,0,aif: land AIF-890 — one-command user export,0"
+rc=0
+"$AIF" land AIF-890 >"$OUT/land89b2.out" 2>&1 || rc=$?
+eq "…and the next land finishes it" "$rc,$(col AIF-890)" "0,done"
+# Before git: a shim on the land's PATH holds `merge --ff-only` in the
+# section, the interrupt is sent there, and the fast-forward is let go
+# after the KILL.
+cd "$SANDBOX/p89c" || exit 1
+mkdir -p "$SANDBOX/shim89"
+cat >"$SANDBOX/shim89/git" <<SHIM
+#!/bin/sh
+case " \$* " in
+  *" merge -q --ff-only "*)
+    : >"$SANDBOX/p89c.at"
+    i=0
+    while [ ! -f "$SANDBOX/p89c.go" ] && [ "\$i" -lt 600 ]; do
+      sleep 0.1
+      i=\$((i + 1))
+    done
+    ;;
+esac
+exec "$(command -v git)" "\$@"
+SHIM
+chmod +x "$SANDBOX/shim89/git"
+land_interrupted AIF-890 "$SANDBOX/p89c.at" "$SANDBOX/p89c.go" - "$OUT/land89c.out" "$SANDBOX/shim89"
+touch "$SANDBOX/p89c.go"
+ff_over
+eq "the interrupt in the fast-forward before its git starts: the land killed waiting (137), the fast-forward untouched by it — main at the merge, the marker at landed" \
+  "$(cat "$OUT/land89c.out.rc"),$(git log --format=%s -1),$(jq -r .state .aif/state/land.json 2>/dev/null)" \
+  "137,aif: land AIF-890 — one-command user export,landed"
+cd "$SANDBOX" || exit 1
+
+# ====== 90. a fast-forward whose git is killed half way ========================
+# docs/DEFECTS.md 15.1. git killed while it writes the fast-forward — an OOM
+# kill, a kill -9 — leaves its index.lock and part of the merge's files in the
+# developer's checkout. The land read git's failure as a refusal: it put the
+# worktree back, dropped its marker and said "nothing landed", and the next
+# land refused the files git had written as the developer's. Now a land that
+# ran its fast-forward says that nothing landed only when the checkout shows
+# git wrote nothing; else the marker stays, aif doctor names it, and the next
+# land settles it — git's lock named first, then the target put back as it
+# was found, then the land.
+printf '\n90. a fast-forward whose git is killed half way: nothing put back, nothing said to have landed or not — the next land settles it\n'
+land_built "$SANDBOX/p90" AIF-900
+ff_hold p90
+ff_branch AIF-900
+head90="$(git rev-parse HEAD)"
+python3 -c '
+import os, signal, subprocess, sys, time
+aif, ticket, at, go, out = sys.argv[1:6]
+def pre():
+    os.setsid()
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen([aif, "land", ticket], preexec_fn=pre, stdin=subprocess.DEVNULL,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT)
+t = time.time()
+while not os.path.exists(at) and p.poll() is None and time.time() - t < 120:
+    time.sleep(0.01)
+try:
+    os.kill(int(open(at).read().split()[0]), signal.SIGKILL)
+except (OSError, ValueError, IndexError):
+    pass
+time.sleep(0.2)
+open(go, "w").close()
+t = time.time()
+while p.poll() is None and time.time() - t < 60:
+    time.sleep(0.1)
+if p.poll() is None:
+    p.kill()
+rc = p.wait()
+open(out + ".rc", "w").write(str(128 - rc if rc < 0 else rc))' "$AIF" AIF-900 "$SANDBOX/p90.at" "$SANDBOX/p90.go" "$OUT/land90.out"
+lpid90="$(jq -r .pid .aif/state/land.json 2>/dev/null)"
+eq "git killed half way through the fast-forward: exit 1, the card in Review, the marker kept in its fast-forward, the next land named — and not a word that nothing landed" \
+  "$(cat "$OUT/land90.out.rc"),$(col AIF-900),$(jq -r .state .aif/state/land.json 2>/dev/null),$(grep -c 'aif land AIF-900 settles it' "$OUT/land90.out"),$(grep -c 'nothing landed' "$OUT/land90.out")" \
+  "1,review,ff,1,0"
+eq "…aif doctor names the land that stopped in its fast-forward" \
+  "$("$AIF" doctor 2>&1 | grep -c "a land of AIF-900 (pid $lpid90, gone) stopped in its fast-forward")" "1"
+rc=0
+"$AIF" land AIF-900 >"$OUT/land90b.out" 2>&1 || rc=$?
+eq "the next land names git's lock left in the checkout: exit 3, nothing touched" \
+  "$rc,$(grep -c 'rm .git/index.lock, then aif land AIF-900' "$OUT/land90b.out"),$(git rev-parse HEAD),$(jq -r .state .aif/state/land.json 2>/dev/null)" \
+  "3,1,$head90,ff"
+rm -f .git/index.lock
+rc=0
+"$AIF" land AIF-900 >"$OUT/land90c.out" 2>&1 || rc=$?
+eq "the lock gone: the next land puts main back as the land found it, says so, and lands — Done, nothing left over" \
+  "$rc,$(col AIF-900),$(grep -c 'stopped in its fast-forward — .* is back at .*, as it was' "$OUT/land90c.out"),$(git log --format=%s -1),$(git status --porcelain --untracked-files=all | wc -l | tr -d ' ')" \
+  "0,done,1,aif: land AIF-900 — one-command user export,0"
+cd "$SANDBOX" || exit 1
+
+# ====== 91. a script's workers: a group is the dead worker's only if it led it ==
+# docs/DEFECTS.md 15.4 (14.1). A script that runs `aif work A & aif work B &`
+# without job control and exits leaves both workers in its process group,
+# its leader gone. A's takeover named every member of that group as A's
+# leftovers — B's live worker and station among them — and TERMed them, B's
+# card to Needs Human. A group is named only when the dead worker led it.
+printf '\n91. two workers a script started and left: one'"'"'s takeover leaves the other'"'"'s build alone\n'
+fresh_project "$SANDBOX/p91"
+ticket_for AIF-910
+ticket_for AIF-911
+git add -A && git commit -qm "two" >/dev/null
+for t in AIF-910 AIF-911; do
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+done
+p91="$(pwd -P)"
+cat >"$SANDBOX/launcher91.sh" <<LAUNCH
+#!/bin/bash
+cd "$p91" || exit 1
+FAKE_SLEEP_IN="AIF-910:plan" FAKE_SLEEP_SECS=40 "$AIF" work AIF-910 >"$OUT/run91a.out" 2>&1 &
+FAKE_SLEEP_IN="AIF-911:plan" FAKE_RELEASE="$SANDBOX/rel91" "$AIF" work AIF-911 >"$OUT/run91b.out" 2>&1 &
+exit 0
+LAUNCH
+python3 -c '
+import os, signal, sys
+os.setpgrp()
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+    signal.signal(s, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' /bin/bash "$SANDBOX/launcher91.sh" >"$OUT/launcher91.out" 2>&1
+i=0
+while { [ ! -f .aif/worktrees/AIF-910/.aif/tmp/fake-running-AIF-910-plan ] ||
+  [ ! -f .aif/worktrees/AIF-911/.aif/tmp/fake-running-AIF-911-plan ]; } && [ "$i" -lt 600 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+w910="$(jq -r .pid .aif/state/runs/AIF-910/owner.json 2>/dev/null)"
+w911="$(jq -r .pid .aif/state/runs/AIF-911/owner.json 2>/dev/null)"
+s910="$(cat .aif/state/runs/AIF-910/station 2>/dev/null)"
+s911="$(cat .aif/state/runs/AIF-911/station 2>/dev/null)"
+eq "both workers in the script's group, its leader gone, each station running" \
+  "$([ "$(ps -o pgid= -p "$w910" | tr -d ' ')" = "$(ps -o pgid= -p "$w911" | tr -d ' ')" ] && echo same),$([ "$(ps -o pgid= -p "$w910" | tr -d ' ')" != "$w910" ] && echo led-by-another),$(kill -0 "$s910" 2>/dev/null && kill -0 "$s911" 2>/dev/null && echo running)" \
+  "same,led-by-another,running"
+# AIF-910's worker and its station die outright, the station's own child
+# (its held sleep, in the worktree) with them: nothing of AIF-910's run is
+# left for a takeover to find.
+kids910="$(pgrep -P "$s910" 2>/dev/null | tr '\n' ' ')"
+# shellcheck disable=SC2086  # the children, one word each
+kill -9 "$w910" "$s910" $kids910 2>/dev/null
+sleep 0.5
+eq "aif work --status AIF-910 names nothing of AIF-911's build" \
+  "$("$AIF" work --status AIF-910 --json 2>/dev/null | jq --argjson a "$w911" --argjson b "$s911" '[ .lock.orphans[]? | select(.pid == $a or .pid == $b) ] | length')" "0"
+rc=0
+AIF_WORK_TAKEOVER_WAIT=5 "$AIF" work AIF-910 >"$OUT/run91c.out" 2>&1 || rc=$?
+eq "AIF-910 taken over and built, AIF-911's worker and station still running" \
+  "$rc,$(col AIF-910),$(kill -0 "$w911" 2>/dev/null && echo alive),$(kill -0 "$s911" 2>/dev/null && echo alive)" "0,review,alive,alive"
+touch "$SANDBOX/rel91"
+wait_gone91=0
+while kill -0 "$w911" 2>/dev/null && [ "$wait_gone91" -lt 600 ]; do
+  sleep 0.1
+  wait_gone91=$((wait_gone91 + 1))
+done
+eq "…and AIF-911 builds" "$(col AIF-911)" "review"
+cd "$SANDBOX" || exit 1
+
+# ====== 92. two takers, one slow to look ======================================
+# docs/DEFECTS.md 14.5 × 14.1. Every taker of a dead lock looked for what its
+# dead run left, and TERMed it, before the mark that decides which taker wins:
+# one that lost and looked slowly — lsof slowed here by a shim on its PATH —
+# found the winner's station at work in the worktree it had just taken, and
+# TERMed it. Only the taker holding the mark looks now. A dead run made the
+# way a crash makes one: its worker's group killed whole, mid-plan.
+printf '\n92. two takers on one dead lock, one slow to look: the loser never stops the winner'"'"'s station\n'
+fresh_project "$SANDBOX/p92"
+mkdir -p "$SANDBOX/shim92"
+printf '#!/bin/sh\nsleep 2\nexec %s "$@"\n' "$(command -v lsof 2>/dev/null || echo /usr/sbin/lsof)" >"$SANDBOX/shim92/lsof"
+chmod +x "$SANDBOX/shim92/lsof"
+hurt92=""
+for t in AIF-920 AIF-921; do
+  ticket_for "$t"
+  git add -A && git commit -qm "$t" >/dev/null
+  "$AIF" board create "tasks/$t/ticket.md" --column ready >/dev/null
+  FAKE_SLEEP_IN="$t:plan" FAKE_SLEEP_SECS=30 python3 -c '
+import os, signal, sys
+os.setpgrp()
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+    signal.signal(s, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$AIF" work "$t" >"$OUT/run92-$t-dead.out" 2>&1 &
+  d92=$!
+  i=0
+  while [ ! -f ".aif/worktrees/$t/.aif/tmp/fake-running-$t-plan" ] && [ "$i" -lt 300 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -9 -- "-$d92" 2>/dev/null
+  wait "$d92" 2>/dev/null
+  rm -f ".aif/worktrees/$t/.aif/tmp/fake-running-$t-plan"
+  n0="$(cat ".aif/worktrees/$t/.aif/tmp/fake-plan.count" 2>/dev/null || echo 0)"
+  FAKE_SLEEP_IN="$t:plan" FAKE_SLEEP_SECS=4 AIF_TRANSIENT_BACKOFF=0 AIF_WORK_TAKEOVER_WAIT=5 \
+    "$AIF" work "$t" >"$OUT/run92-$t-a.out" 2>&1 &
+  a92=$!
+  PATH="$SANDBOX/shim92:$PATH" FAKE_SLEEP_IN="$t:plan" FAKE_SLEEP_SECS=4 AIF_TRANSIENT_BACKOFF=0 AIF_WORK_TAKEOVER_WAIT=5 \
+    "$AIF" work "$t" >"$OUT/run92-$t-b.out" 2>&1 &
+  b92=$!
+  ra=0
+  wait_exit "$a92" 120 || ra=$?
+  rb=0
+  wait_exit "$b92" 120 || rb=$?
+  n1="$(cat ".aif/worktrees/$t/.aif/tmp/fake-plan.count" 2>/dev/null || echo 0)"
+  got="$(printf '%s\n%s\n' "$ra" "$rb" | sort -n | paste -sd' ' -),$(col "$t"),$((n1 - n0)),$(jq -r '(.runner_waits // []) | length' ".aif/worktrees/$t/tasks/$t/run.json" 2>/dev/null)"
+  [ "$got" = "0 3,review,1,0" ] || hurt92="$hurt92 $t:$got"
+done
+eq "each time: one taker builds, the other refuses (exit 3), the plan station dispatched once and never stopped — nothing waited on the runner" \
+  "${hurt92:-none}" "none"
+cd "$SANDBOX" || exit 1
+
+# ====== 93. fable, routed by the profile; an alias in any case ================
+# docs/DEFECTS.md 14.6. claude 2.1.226 resolves the `fable` alias through
+# ANTHROPIC_DEFAULT_FABLE_MODEL, as the other three through theirs, and it
+# trims and lowercases a model before it matches an alias (both read from the
+# binary). The worker refused fable under every routed profile, and took
+# `Fable` for a full model id and sent it unmapped. A profile that sets the
+# variable routes fable; `Fable` is fable, refused the same when unmapped; a
+# refusal names fable among the aliases mapped; and a fable variable left in
+# the shell routes nothing — a profile owns the variable, cleared before it
+# is applied.
+printf '\n93. fable routed by the profile; an alias in any case is the alias\n'
+fresh_project "$SANDBOX/p93"
+ticket_for AIF-930
+git add -A && git commit -qm "one" >/dev/null
+"$AIF" board create tasks/AIF-930/ticket.md --column ready >/dev/null
+X93="$SANDBOX/xdg93"
+mkdir -p "$X93/aif/profiles"
+profile93() { # <name> <the alias lines> — a profile of the developer's own, routed to another endpoint
+  {
+    printf 'AIF_PROFILE_DESC="routed (check-work 93)"\nAIF_PROFILE_RUNNER="claude"\nAIF_PROFILE_SET="claude"\n'
+    printf 'AIF_PROFILE_SECRET_VAR=""\nAIF_PROFILE_SECRET_TARGET=""\nAIF_PROFILE_ISOLATE_CONFIG="0"\n'
+    printf 'aif_profile_env() {\n  printf "%%s\\n" ANTHROPIC_BASE_URL=http://127.0.0.1:9/anthropic %s\n}\n' "$2"
+  } >"$X93/aif/profiles/$1.profile"
+}
+profile93 fable93 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small ANTHROPIC_DEFAULT_FABLE_MODEL=routed-top"
+profile93 three93 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
+profile93 small93 "ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small ANTHROPIC_DEFAULT_FABLE_MODEL=routed-top"
+model93() { # <model> — the plan station asks for it, committed
+  sed "s/^model: .*/model: $1/" .claude/agents/aif-plan.md >"$OUT/plan93.md" && cat "$OUT/plan93.md" >.claude/agents/aif-plan.md
+  git add -A && git commit -qm "the plan station on $1" >/dev/null
+}
+model93 Fable
+rc=0
+XDG_CONFIG_HOME="$X93" "$AIF" work AIF-930 --profile three93 --no-worktree >"$OUT/run93a.out" 2>&1 || rc=$?
+eq "Fable — the alias in another case — under a profile that routes the three: refused as fable is, exit 3, naming it, the card in Ready" \
+  "$rc,$(grep -c 'aif-plan asks for Fable (it maps opus, sonnet, haiku)' "$OUT/run93a.out"),$(col AIF-930)" "3,1,ready"
+model93 opus
+rc=0
+XDG_CONFIG_HOME="$X93" "$AIF" work AIF-930 --profile small93 --no-worktree >"$OUT/run93b.out" 2>&1 || rc=$?
+eq "a profile that maps haiku and fable: the refusal of opus names fable among what it maps" \
+  "$rc,$(grep -c 'aif-plan asks for opus' "$OUT/run93b.out"),$(grep -c '(it maps haiku, fable)' "$OUT/run93b.out")" "3,1,1"
+model93 fable
+rc=0
+ANTHROPIC_DEFAULT_FABLE_MODEL=left-in-the-shell XDG_CONFIG_HOME="$X93" "$AIF" work AIF-930 --profile three93 --no-worktree >"$OUT/run93c.out" 2>&1 || rc=$?
+eq "a fable variable left in the shell, under a profile that does not set it: no route — refused, exit 3" \
+  "$rc,$(grep -c 'aif-plan asks for fable' "$OUT/run93c.out"),$(col AIF-930)" "3,1,ready"
+rc=0
+XDG_CONFIG_HOME="$X93" "$AIF" work AIF-930 --profile fable93 --no-worktree >"$OUT/run93d.out" 2>&1 || rc=$?
+eq "fable under a profile that sets ANTHROPIC_DEFAULT_FABLE_MODEL: built, the plan station asked for fable with the profile's variable exported" \
+  "$rc,$(col AIF-930),$(cat .aif/tmp/fake-model-plan-1 2>/dev/null)" "0,review,fable routed-top"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

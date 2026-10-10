@@ -71,15 +71,20 @@
 # review session sends the land TERM and then SIGKILL 1.3–1.5 s later, and a
 # KILL runs no handler (docs/DEFECTS.md 15.1; docs/FINDINGS.md #28). So the
 # land writes down where it is (lib/integrate.sh, the land in flight), the
-# fast-forward itself runs where neither signal reaches it, and the next land
-# — or the worker, or aif doctor — reads what is left to undo or finish.
+# fast-forward itself runs where neither signal reaches it — no process of
+# the land's group or of its tree — and the next land — or the worker, or aif
+# doctor — reads what is left to undo or finish. A land that ran its
+# fast-forward and did not land says that nothing landed only when the
+# checkout shows git wrote nothing of it; else it leaves what git wrote to
+# the next land, and says so.
 #
 # It never runs a model and never starts a build. Exit: 0 landed · 1 refused,
 # or not landed (the card and the comment say why) · 3 the environment cannot
 # land anything (not a project, a worktree, the board unreachable, another
 # land here, git's own lock left by a land killed in its fast-forward) · 130,
 # 143 or 129 stopped by an INT, a TERM or a hang-up — before the fast-forward
-# nothing landed, after it the bookkeeping is left to the next aif land.
+# nothing landed, after it the bookkeeping is left to the next aif land, and
+# a fast-forward that did not finish is the next aif land's to settle.
 
 _aif_land_usage() {
   cat <<EOF
@@ -110,7 +115,8 @@ usage: aif land <ticket> [options]
   back to Review. The merge commit runs the project's git hooks, and a refusal
   is a human's. Stopped before the fast-forward — Ctrl-C, a TERM, the terminal
   closing over it — nothing has landed and the card stays in Review; a land
-  killed outright is put back, or finished, by the next aif land.
+  killed outright, or a fast-forward that did not finish, is put back, or
+  finished, by the next aif land.
 
   --no-suite         land without a verdict on the result (and no install)
   --keep             keep the worktree and the branch after landing
@@ -152,6 +158,19 @@ AIF_LAND_SIGNAL=""
 AIF_LAND_SECTION=""
 AIF_LAND_BACK_FAILED=0
 AIF_LAND_STOPPING=0
+# The fast-forward, once started (_aif_land_section): the starter that forks
+# it and is gone at once, the file the section's pid and word are kept in, the
+# word it ended with (`<rc> [<git's rc>]`, empty when it ended without one),
+# the commit the land found the target at, and what the land read of the
+# checkout when it was over — landed, or untouched by it (the only state in
+# which a land that did not land may say that nothing landed).
+AIF_LAND_STARTER=""
+AIF_LAND_SECFILE=""
+AIF_LAND_SEC_RC=""
+AIF_LAND_PRE=""
+AIF_LAND_FF_RAN=0
+AIF_LAND_LANDED=0
+AIF_LAND_UNTOUCHED=0
 # The ticket's own files that are untracked here and that the fast-forward
 # would write over, one path per line (_aif_land_clear); what was taken aside
 # of them, and where to; how many were not the bytes the branch carries (an
@@ -295,9 +314,15 @@ _aif_land_requeue() {
 }
 
 # _aif_land_refused <line>… — a refusal found once the worktree was touched:
-# put back, each line said as an error, the card left in Review, exit 1.
+# put back, each line said as an error, the card left in Review, exit 1. Once
+# the fast-forward has run, only when it is proven to have written nothing
+# here (_aif_land_ff_untouched); else nothing is put back and the next land
+# settles it (_aif_land_ff_left; docs/DEFECTS.md 15.1).
 _aif_land_refused() {
   local l ticket="$AIF_LAND_CARD" back
+  # Its lines say that nothing landed, which is not known then: not said.
+  [ "$AIF_LAND_FF_RAN" -ne 1 ] || [ "$AIF_LAND_UNTOUCHED" -eq 1 ] ||
+    _aif_land_ff_left "the fast-forward did not finish" 1
   _aif_land_unwind
   aif_trap_disarm
   [ -z "$AIF_LAND_OUT" ] || rm -f "$AIF_LAND_OUT" "$AIF_LAND_OUT".*
@@ -349,7 +374,8 @@ _aif_land_dirty() {
 _aif_land_clear() {
   local root="$1" from="$2" to="$3" ticket="$4" again="$5" p added untracked own="" theirs=""
   AIF_LAND_OWN=""
-  added="$(git -C "$root" -c core.quotePath=false diff --name-only --diff-filter=A "$from" "$to" 2>/dev/null)" || added=""
+  # --no-renames: a path the branch renames into is added there all the same.
+  added="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only --diff-filter=A "$from" "$to" 2>/dev/null)" || added=""
   untracked="$(git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)" || untracked=""
   [ -n "$added" ] && [ -n "$untracked" ] || return 0
   while IFS= read -r p; do
@@ -392,6 +418,53 @@ _aif_land_dirty_refusal() {
   aif_err "uncommitted changes to files this land changes — nothing was touched:"
   printf '%s\n' "$1" | sed '/^$/d; s/^/  - /' >&2
   aif_err "commit or stash them, then: $2"
+}
+
+# _aif_land_moved_line <root> <target> <pre> <ticket> <rerun> — why the land
+# found its target elsewhere than where it found it first, for a refusal: the
+# checkout switched to another branch, or the branch itself moved. A switch
+# was said as "main moved (it was at X, it is at Y)", Y the other branch's
+# tip, while main had not moved at all.
+_aif_land_moved_line() {
+  local root="$1" target="$2" pre="$3" ticket="$4" rerun="$5" on now
+  on="$(git -C "$root" symbolic-ref -q --short HEAD 2>/dev/null)" || on=""
+  if [ "$on" != "$target" ]; then
+    printf 'this checkout was switched to %s while the land ran — it lands on %s, which was checked out here when it started; nothing landed, and %s is still in Review: git checkout %s, then: %s' \
+      "${on:-a detached HEAD}" "$target" "$ticket" "$target" "$rerun"
+    return 0
+  fi
+  now="$(git -C "$root" rev-parse --short "refs/heads/$target" 2>/dev/null)" || now="?"
+  printf '%s moved while the land ran (it was at %s, it is at %s) — nothing landed; %s is still in Review: %s' \
+    "$target" "${pre:0:7}" "$now" "$ticket" "$rerun"
+}
+
+# _aif_land_recheck <root> <target> <pre> <merge> <ticket> <rerun> — the
+# land's exact checks against its merge, refused through _aif_land_refused:
+# the target still checked out at <pre>, no uncommitted change to a path the
+# fast-forward writes, no file of the developer's in its way (the ticket's
+# own are listed in AIF_LAND_OWN, for the aside). Once the merge exists, and
+# again right before the fast-forward: an edit made while the verdict ran
+# made git refuse the fast-forward, and only a checkout clear of the
+# developer's edits on those paths lets a fast-forward that did not finish be
+# told from one that wrote nothing (_aif_land_ff_untouched; docs/DEFECTS.md
+# 15.1).
+_aif_land_recheck() {
+  local root="$1" target="$2" pre="$3" merge="$4" ticket="$5" rerun="$6" now touched dirty hit
+  now="$(git -C "$root" rev-parse -q --verify "refs/heads/$target" 2>/dev/null)" || now=""
+  if [ "$now" != "$pre" ] || [ "$(git -C "$root" symbolic-ref -q HEAD 2>/dev/null)" != "refs/heads/$target" ]; then
+    _aif_land_refused "$(_aif_land_moved_line "$root" "$target" "$pre" "$ticket" "$rerun")"
+  fi
+  touched="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" 2>/dev/null)" || touched=""
+  dirty="$(_aif_land_dirty "$root")"
+  if [ -n "$dirty" ]; then
+    hit="$(printf '%s\n' "$touched" | _aif_land_both "$dirty")" || hit=""
+    if [ -n "$hit" ]; then
+      _aif_land_dirty_refusal "$hit" "$rerun"
+      _aif_land_refused "nothing landed; $ticket is still in Review"
+    fi
+  fi
+  _aif_land_clear "$root" "$pre" "$merge" "$ticket" "$rerun" ||
+    _aif_land_refused "nothing landed; $ticket is still in Review"
 }
 
 # _aif_land_aside <root> <branch> <ticket> — AIF_LAND_OWN taken aside, under
@@ -732,30 +805,235 @@ _aif_land_new_lines() {
   ' "$1"
 }
 
-# _aif_land_section <root> <target> <pre> <merge> <marker> <out> — the one step
-# that moves the developer's branch: from <pre> to the land's <merge>, by a
-# fast-forward and nothing else, and `landed` in the marker once it has.
+# _aif_land_section <root> <target> <pre> <merge> <marker> <out> <secfile> —
+# the one step that moves the developer's branch: from <pre> to the land's
+# <merge>, by a fast-forward and nothing else, and `landed` in the marker once
+# it has. Its word — `<rc> [<git's rc>]` — goes to <secfile>.rc as it ends.
 #
-# Run as a background job under `set -m`, a process group of its own
-# (docs/FINDINGS.md #24): the TERM a review session's Ctrl-C sends to the
-# land's group, and the KILL 1.4 s after it, do not reach it, and it finishes
-# whatever becomes of the land (docs/DEFECTS.md 15.1). Not by ignoring the
-# signals: git cleans up its own lock on a TERM it is sent, and failed the
-# fast-forward after writing every file (probed, docs/FINDINGS.md #35).
+# Out of reach of whatever stops the land. Not by ignoring the signals: git
+# cleans up its own lock on a TERM it is sent, and failed the fast-forward
+# after writing every file (probed, docs/FINDINGS.md #35). A process group of
+# its own kept a group's signals off it — the TERM a review session's Ctrl-C
+# sends to the land's group, and the KILL 1.5 s after it — but claude's Bash
+# tool sends both to every DESCENDANT of the command it ran as well, found by
+# parent pid (`ps -A -o pid= -o ppid=`, read from claude 2.1.226), and the
+# section and its git were the land's descendants: TERMed mid-way, they left
+# the merge's files half written in the developer's checkout, and the land
+# said that nothing landed (docs/DEFECTS.md 15.1). So it is nobody's child:
+# a starter forks it and is gone at once (_aif_land_section_start), and it
+# belongs to init from then on, in the starter's group, which is not the
+# land's — no group signal and no walk of the land's tree finds it. It starts
+# nothing until the starter is gone: a walk made while the starter lived
+# still lists it, and anything it ran then (docs/FINDINGS.md #38). In that
+# instant a TERM may reach it still, and its handler takes it and goes on.
 # Without the project's hooks: a post-merge `npm install` would be an install
 # in the developer's checkout, which is --prepare's to ask for.
 #
-# Exit: 0 the branch is at <merge> · 2 it was not at <pre>, or not checked out,
-# when the fast-forward was to be made · 3 git would not make it (<out> says
-# why) · 4 git said it did, and the branch is elsewhere.
+# Word: 0 the branch is at <merge> · 2 it was not at <pre>, or not checked
+# out, when the fast-forward was to be made — git never ran · 3 git would not
+# make it, or did not finish (<out> says why, its rc beside) · 4 git said it
+# did, and the branch is elsewhere.
 _aif_land_section() {
-  local root="$1" target="$2" pre="$3" merge="$4" marker="$5" out="$6"
-  [ "$(git -C "$root" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$target" ] || exit 2
-  [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$pre" ] || exit 2
-  aif_git_own "$root" merge -q --ff-only "$merge" >"$out" 2>&1 || exit 3
-  [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$merge" ] || exit 4
+  local root="$1" target="$2" pre="$3" merge="$4" marker="$5" out="$6" sec="$7" by="" i=0 grc=0
+  aif_trap_arm _aif_land_section_held
+  # The starter's pid comes from the land (<secfile>.by), which reaps it at
+  # once: gone, it is no longer a parent anything walks from. Bounded — a land
+  # killed before it wrote the file leaves nobody to walk from either.
+  while [ "$i" -lt 500 ]; do
+    if [ -z "$by" ]; then
+      { read -r by <"$sec.by"; } 2>/dev/null || by=""
+      case "$by" in
+        *[!0-9]*) by="" ;;
+      esac
+    fi
+    if [ -n "$by" ] && ! kill -0 "$by" 2>/dev/null; then
+      break
+    fi
+    sleep 0.01 2>/dev/null || true
+    i=$((i + 1))
+  done
+  [ "$(git -C "$root" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$target" ] || _aif_land_section_word "$sec" 2
+  [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$pre" ] || _aif_land_section_word "$sec" 2
+  aif_git_own "$root" merge -q --ff-only "$merge" >"$out" 2>&1 || grc=$?
+  [ "$grc" -eq 0 ] || _aif_land_section_word "$sec" 3 "$grc"
+  [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$merge" ] || _aif_land_section_word "$sec" 4
   aif_land_marker_set "$marker" '.state = "landed"' || true
+  _aif_land_section_word "$sec" 0
+}
+
+# _aif_land_section_held <EXIT|INT|TERM|HUP> — the handler of the section and
+# of its starter, each a process of its own: a signal is taken and nothing
+# done, the one handler here that does not end its process. Nothing is meant
+# to stop the fast-forward once it runs, and a TERM that a walk of the land's
+# tree made in the starter's instant still sends it would end git half way
+# (_aif_land_section; docs/DEFECTS.md 15.1). A KILL ends it all the same.
+_aif_land_section_held() {
+  return 0
+}
+
+# _aif_land_section_word <secfile> <rc> [<git's rc>] — the section's word,
+# written whole (a temp file and a rename: the land polls for it), and its
+# end.
+_aif_land_section_word() {
+  { printf '%s %s\n' "$2" "${3:-0}" >"$1.rc.tmp" && mv -f "$1.rc.tmp" "$1.rc"; } 2>/dev/null || true
+  exit "$2"
+}
+
+# _aif_land_section_start <section args…> — the starter: the section forked,
+# its pid in <secfile> (the seventh), and gone. Run under `set -m`, a group of
+# its own; the section stays in that group when it is gone (job control is
+# off in the starter, probed: docs/FINDINGS.md #38).
+_aif_land_section_start() {
+  # Its life is a fork and a write; a walk of the land's tree made in it
+  # would TERM it before it names the section, and the land would not know
+  # what to wait for.
+  aif_trap_arm _aif_land_section_held
+  _aif_land_section "$@" </dev/null &
+  printf '%s\n' "$!" >"$7" 2>/dev/null || true
   exit 0
+}
+
+# _aif_land_section_wait — the land waits the fast-forward out: the starter
+# reaped (it is this process's child, gone at once), then the section — which
+# is not, so it is polled: its word in <secfile>.rc, or its pid gone. Signals
+# meanwhile are noted by the handler (_aif_land_stopped); the very ones that
+# are noted end what the land runs in its own group, so the files are read
+# with builtins, and the one fork asked of the section — whether its pid is
+# still a land's, every five seconds, against a pid handed to another
+# program — counts only when it answered: a `ps` a Ctrl-C ended said nothing
+# of the section. Sets AIF_LAND_SECTION and AIF_LAND_SEC_RC — empty when the
+# section ended without a word: killed.
+_aif_land_section_wait() {
+  local sec="$AIF_LAND_SECFILE" n=0 cmd
+  if [ -n "$AIF_LAND_STARTER" ]; then
+    while kill -0 "$AIF_LAND_STARTER" 2>/dev/null && [ "$n" -lt 100 ]; do
+      wait "$AIF_LAND_STARTER" 2>/dev/null || true
+      n=$((n + 1))
+    done
+    AIF_LAND_STARTER=""
+  fi
+  AIF_LAND_SECTION=""
+  { read -r AIF_LAND_SECTION <"$sec"; } 2>/dev/null || true
+  case "$AIF_LAND_SECTION" in
+    *[!0-9]*) AIF_LAND_SECTION="" ;;
+  esac
+  n=0
+  while [ -n "$AIF_LAND_SECTION" ] && [ ! -f "$sec.rc" ] && kill -0 "$AIF_LAND_SECTION" 2>/dev/null; do
+    n=$((n + 1))
+    if [ $((n % 100)) -eq 0 ] && cmd="$(ps -o command= -p "$AIF_LAND_SECTION" 2>/dev/null)" && [ -n "$cmd" ]; then
+      case "$cmd" in
+        *"aif land"*) ;;
+        *) break ;;
+      esac
+    fi
+    sleep 0.05 2>/dev/null || true
+  done
+  AIF_LAND_SEC_RC=""
+  [ ! -f "$sec.rc" ] || { read -r AIF_LAND_SEC_RC <"$sec.rc"; } 2>/dev/null || AIF_LAND_SEC_RC=""
+}
+
+# _aif_land_ff_untouched <root> <target> <pre> <merge> — rc 0 when the
+# checkout is proven untouched by the fast-forward: git's index.lock not here
+# (git died holding it, or still runs), the branch checked out at <pre>, and
+# every path <pre>..<merge> touches as <pre> has it — in the index, in the
+# tree, and absent where <pre> has no such path. Tens of milliseconds at any
+# size: three git diffs and a test per path the merge adds. A land checks its
+# own files are clear of the developer's edits right before the fast-forward
+# (_aif_land_recheck), so a path changed here is git's. Proven, or not: a
+# command that did not answer — a Ctrl-C ends what the land runs in its
+# group — proves nothing, and an empty list read from it would.
+_aif_land_ff_untouched() {
+  local root="$1" target="$2" pre="$3" merge="$4" lockf touched cached tree added hit p
+  lockf="$(git -C "$root" rev-parse --git-path index.lock 2>/dev/null)" || return 1
+  case "$lockf" in
+    /*) ;;
+    *) lockf="$root/$lockf" ;;
+  esac
+  [ ! -e "$lockf" ] || return 1
+  [ "$(git -C "$root" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$target" ] || return 1
+  [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$pre" ] || return 1
+  touched="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" 2>/dev/null)" || return 1
+  [ -n "$touched" ] || return 0
+  cached="$(git -C "$root" -c core.quotePath=false diff --no-renames --cached --name-only "$pre" 2>/dev/null)" || return 1
+  tree="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" 2>/dev/null)" || return 1
+  added="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only --diff-filter=A "$pre" "$merge" 2>/dev/null)" || return 1
+  hit="$(printf '%s\n%s\n' "$cached" "$tree" | _aif_land_both "$touched")" || return 1
+  [ -z "$hit" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then
+      return 1
+    fi
+  done <<EOF
+$added
+EOF
+  return 0
+}
+
+# _aif_land_section_end — what the fast-forward came to, read off the
+# checkout once the section is over: AIF_LAND_LANDED 1 when the branch is at
+# the merge (a section stopped between its git and its word leaves the marker
+# behind it, written now); else AIF_LAND_UNTOUCHED 1 when nothing of the merge
+# was written here — git never ran (word 2), or it is proven by the checkout
+# (_aif_land_ff_untouched). Neither, and the land may not say that nothing
+# landed (docs/DEFECTS.md 15.1).
+_aif_land_section_end() {
+  local head on
+  AIF_LAND_LANDED=0
+  AIF_LAND_UNTOUCHED=0
+  head="$(git -C "$AIF_LAND_ROOT" rev-parse -q --verify HEAD 2>/dev/null)" || head=""
+  on="$(git -C "$AIF_LAND_ROOT" symbolic-ref -q HEAD 2>/dev/null)" || on=""
+  if [ -n "$head" ] && [ "$head" = "$AIF_LAND_MERGE" ] && [ "$on" = "refs/heads/$AIF_LAND_TARGET" ]; then
+    AIF_LAND_LANDED=1
+    [ "$(aif_land_marker_get "$AIF_LAND_MARKER" .state)" = landed ] ||
+      aif_land_marker_set "$AIF_LAND_MARKER" '.state = "landed"' || true
+    return 0
+  fi
+  case "${AIF_LAND_SEC_RC%% *}" in
+    2) AIF_LAND_UNTOUCHED=1 ;;
+    *)
+      ! _aif_land_ff_untouched "$AIF_LAND_ROOT" "$AIF_LAND_TARGET" "$AIF_LAND_PRE" "$AIF_LAND_MERGE" ||
+        AIF_LAND_UNTOUCHED=1
+      ;;
+  esac
+  return 0
+}
+
+# _aif_land_ff_left <why> <exit> — a land that ran its fast-forward and did not
+# land, with the checkout not proven untouched by it: git's lock left, files
+# of the merge written, the branch where it was. Nothing is put back here and
+# nothing says that nothing landed: the marker stays in state ff, the aside
+# and the worktree as they are, and the next aif land settles it from what the
+# checkout shows — finishes the land, or puts the target back as it found it,
+# or names git's lock (_aif_land_settle_ff); aif doctor names it meanwhile.
+# The lock is released, the card stays in Review. It used to put the worktree
+# back, drop the marker and say "nothing landed: main was never moved" over
+# 12 000 of the merge's files left untracked in the checkout, which the next
+# land refused as the developer's (docs/DEFECTS.md 15.1).
+_aif_land_ff_left() {
+  local why="$1" code="$2" target lockf state
+  set +e
+  trap '' INT TERM HUP
+  target="${AIF_LAND_TARGET:-the branch it lands on}"
+  lockf="$(git -C "$AIF_LAND_ROOT" rev-parse --git-path index.lock 2>/dev/null)" || lockf=".git/index.lock"
+  case "$lockf" in
+    /*) ;;
+    *) lockf="$AIF_LAND_ROOT/$lockf" ;;
+  esac
+  if [ -e "$lockf" ]; then
+    state="git's lock, ${lockf#"$AIF_LAND_ROOT"/}, is still here — git may still run, or died holding it"
+  else
+    state="$target is not at the land's merge, and what git wrote of it is left as it is"
+  fi
+  [ -z "$AIF_LAND_MARKER" ] || aif_land_marker_set "$AIF_LAND_MARKER" '.state = "ff"' || true
+  _aif_land_unlock
+  AIF_LAND_STATE=""
+  aif_trap_disarm
+  trap '' INT TERM HUP
+  printf '\n' >&2 || true
+  aif_err "$why — in the fast-forward of $AIF_LAND_CARD: $state. Nothing is put back here, and $AIF_LAND_CARD is still in Review: aif land $AIF_LAND_CARD settles it — it finishes the land, or puts $target back as the land found it (aif doctor names it until then)" || true
+  [ -z "$AIF_LAND_OUT" ] || rm -f "$AIF_LAND_OUT" "$AIF_LAND_OUT".* 2>/dev/null || true
+  exit "$code"
 }
 
 # _aif_land_left <marker> — what the bookkeeping has left to do, for a person:
@@ -792,7 +1070,10 @@ _aif_land_left() {
 #               touched: the lock goes, and a refusal keeps its own words
 #   merging,    the worktree back on its branch, the ticket's own files back
 #   judging,    from aside, the marker and the lock gone: nothing landed, and
-#   ff          the developer's branch was never moved — say so
+#   ff          the developer's branch was never moved — say so. Once the
+#               fast-forward has run, only when the checkout is proven
+#               untouched by it; else nothing is put back, the marker stays
+#               for the next land, and it is said so (_aif_land_ff_left)
 #   section     the fast-forward runs where the signal does not reach it: the
 #               signal is noted, and the land acts on it once the section
 #               ends (aif_cmd_land), as one of the others
@@ -803,7 +1084,7 @@ _aif_land_left() {
 # The card stays where it was: a stop decides nothing about the ticket. Armed
 # with aif_trap_arm once the lock is taken, disarmed when the land ends.
 _aif_land_stopped() {
-  local sig="${1:-EXIT}" why target short
+  local st=$? sig="${1:-EXIT}" why target short code
   if [ "$AIF_LAND_STATE" = section ]; then
     if [ "$sig" != EXIT ]; then
       AIF_LAND_SIGNAL="$sig"
@@ -812,10 +1093,9 @@ _aif_land_stopped() {
     # An exit with the fast-forward still out: what it did decides what is
     # said. It is git's — tens of milliseconds, seconds on a huge tree
     # (docs/FINDINGS.md #35).
-    while [ -n "$AIF_LAND_SECTION" ] && kill -0 "$AIF_LAND_SECTION" 2>/dev/null; do
-      sleep 0.05 2>/dev/null || true
-    done
-    if [ "$(git -C "$AIF_LAND_ROOT" rev-parse -q --verify HEAD 2>/dev/null)" = "$AIF_LAND_MERGE" ]; then
+    _aif_land_section_wait
+    _aif_land_section_end
+    if [ "$AIF_LAND_LANDED" -eq 1 ]; then
       AIF_LAND_STATE=landed
     else
       AIF_LAND_STATE=ff
@@ -828,10 +1108,14 @@ _aif_land_stopped() {
   set +e
   trap '' INT TERM HUP
   case "$sig" in
-    INT) why="interrupted" ;;
-    TERM) why="terminated" ;;
-    HUP) why="the terminal closed (HUP)" ;;
-    *) why="stopped by the error above" ;;
+    INT) why="interrupted" code=130 ;;
+    TERM) why="terminated" code=143 ;;
+    HUP) why="the terminal closed (HUP)" code=129 ;;
+    *)
+      why="stopped by the error above"
+      code="$st"
+      [ "$code" -ne 0 ] || code=1
+      ;;
   esac
   target="${AIF_LAND_TARGET:-}"
   [ -n "$target" ] || target="the branch it lands on"
@@ -844,6 +1128,9 @@ _aif_land_stopped() {
       }
       ;;
     merging | judging | ff)
+      if [ "$AIF_LAND_STATE" = ff ] && [ "$AIF_LAND_FF_RAN" -eq 1 ] && [ "$AIF_LAND_UNTOUCHED" -ne 1 ]; then
+        _aif_land_ff_left "$why" "$code"
+      fi
       _aif_land_unwind
       printf '\n' >&2
       aif_err "$why — nothing landed: $target was never moved"
@@ -1138,7 +1425,7 @@ _aif_land_settle_ff() {
 "
       fi
     done <<EOF
-$(git -C "$root" -c core.quotePath=false diff --name-only "$pre" "$merge" 2>/dev/null)
+$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" 2>/dev/null)
 EOF
     if [ "$all_m" -eq 1 ] && aif_git_own "$root" update-ref "refs/heads/$target" "$merge" "$pre" >/dev/null 2>&1; then
       _aif_land_say "settle" "the land of $id (pid ${pid:-?}) died in its fast-forward after git wrote it all but the branch's ref — the ref moved to it"
@@ -1236,7 +1523,8 @@ _aif_land_settle_dead() {
     sleep 0.1 2>/dev/null || true
     w=$((w + 1))
   done
-  rm -f "${m%.json}.section"
+  # The section's pid, its word and its starter's pid (_aif_land_section).
+  rm -f "${m%.json}.section" "${m%.json}.section.rc" "${m%.json}.section.by"
   state="$(aif_land_marker_get "$m" .state)"
   case "$state" in
     landed) _aif_land_finish "$root" "$m" ;;
@@ -1600,23 +1888,13 @@ aif_cmd_land() {
 
   # 5. exact now that the merge exists: the target where the land found it —
   #    a hook, or a person in another terminal, may have moved it — and the
-  #    checkout clear on every path the fast-forward writes.
-  local now touched
-  now="$(git -C "$root" rev-parse -q --verify "refs/heads/$target" 2>/dev/null)" || now=""
-  if [ "$now" != "$pre" ] || [ "$(git -C "$root" symbolic-ref -q HEAD 2>/dev/null)" != "refs/heads/$target" ]; then
-    _aif_land_refused "$target moved while the land ran (it was at ${pre:0:7}, it is at $(git -C "$root" rev-parse --short HEAD 2>/dev/null)) — nothing landed; $ticket is still in Review: $rerun"
-  fi
-  touched="$(git -C "$root" -c core.quotePath=false diff --name-only "$pre" "$merge" 2>/dev/null)" || touched=""
-  dirty="$(_aif_land_dirty "$root")"
-  if [ -n "$dirty" ]; then
-    hit="$(printf '%s\n' "$touched" | _aif_land_both "$dirty")" || hit=""
-    if [ -n "$hit" ]; then
-      _aif_land_dirty_refusal "$hit" "$rerun"
-      _aif_land_refused "nothing landed; $ticket is still in Review"
-    fi
-  fi
-  _aif_land_clear "$root" "$pre" "$merge" "$ticket" "$rerun" ||
-    _aif_land_refused "nothing landed; $ticket is still in Review"
+  #    checkout clear on every path the fast-forward writes. Asked again
+  #    right before the fast-forward (step 7), the verdict having taken its
+  #    seconds or minutes.
+  local touched
+  AIF_LAND_PRE="$pre"
+  _aif_land_recheck "$root" "$target" "$pre" "$merge" "$ticket" "$rerun"
+  touched="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" 2>/dev/null)" || touched=""
 
   # 6. the verdict.
   local project test_cmd suite="" j
@@ -1668,8 +1946,10 @@ aif_cmd_land() {
     _aif_land_say "prepare" "not run here — no dependency manifest or lockfile moved"
   fi
 
-  # 7. the fast-forward. The ticket's own untracked files go aside first —
-  #    git writes over no untracked file — then the section moves the branch.
+  # 7. the fast-forward. The checks of step 5 once more, after the verdict's
+  #    seconds; the ticket's own untracked files go aside — git writes over
+  #    no untracked file — then the section moves the branch.
+  _aif_land_recheck "$root" "$target" "$pre" "$merge" "$ticket" "$rerun"
   bullets="- merged \`$branch\` into \`$target\` at \`${merge:0:7}\` ($n_commits commits)"
   [ -z "$settled" ] || bullets="$bullets
 - conflicts in aif's own files, settled by owner: $settled"
@@ -1693,7 +1973,15 @@ aif_cmd_land() {
     aif_land_marker_set "$marker" '.note = $n' --arg n "$bullets" || true
   fi
 
-  local secfile="${marker%.json}.section" sec_rc=0 landed=0
+  # The section: forked by a starter that is gone at once, so that nothing
+  # in this land's tree reaches it (_aif_land_section, docs/DEFECTS.md 15.1);
+  # the starter under `set -m`, a group of its own, which the section stays
+  # in (docs/FINDINGS.md #24, #38). Its pid and its word in files beside the
+  # marker, where a later land waits for one this land did not live to see
+  # the end of (_aif_land_settle_dead).
+  AIF_LAND_SECFILE="${marker%.json}.section"
+  rm -f "$AIF_LAND_SECFILE" "$AIF_LAND_SECFILE.rc" "$AIF_LAND_SECFILE.by"
+  : >"$out"
   AIF_LAND_SIGNAL=""
   AIF_LAND_STATE=section
   [ -z "$AIF_LAND_SIGNAL" ] || {
@@ -1701,33 +1989,34 @@ aif_cmd_land() {
     _aif_land_stopped "$AIF_LAND_SIGNAL"
   }
   set -m
-  _aif_land_section "$root" "$target" "$pre" "$merge" "$marker" "$out" </dev/null &
-  AIF_LAND_SECTION=$!
+  _aif_land_section_start "$root" "$target" "$pre" "$merge" "$marker" "$out" "$AIF_LAND_SECFILE" </dev/null &
+  AIF_LAND_STARTER=$!
   set +m
-  printf '%s\n' "$AIF_LAND_SECTION" >"$secfile" 2>/dev/null || true
-  # Polled, then waited for once: the real exit code on bash 3.2, which has no
-  # wait -n (docs/FINDINGS.md #23). A signal meanwhile is only noted.
-  while kill -0 "$AIF_LAND_SECTION" 2>/dev/null; do
-    sleep 0.05 2>/dev/null || true
-  done
-  wait "$AIF_LAND_SECTION" 2>/dev/null || sec_rc=$?
-  rm -f "$secfile"
+  AIF_LAND_FF_RAN=1
+  printf '%s\n' "$AIF_LAND_STARTER" >"$AIF_LAND_SECFILE.by" 2>/dev/null || true
+  # A signal meanwhile is only noted (_aif_land_stopped).
+  _aif_land_section_wait
+  _aif_land_section_end
+  rm -f "$AIF_LAND_SECFILE" "$AIF_LAND_SECFILE.rc" "$AIF_LAND_SECFILE.by"
   AIF_LAND_SECTION=""
-  [ "$sec_rc" -eq 0 ] && [ "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" = "$merge" ] && landed=1
-  if [ "$landed" -eq 1 ]; then
+  if [ "$AIF_LAND_LANDED" -eq 1 ]; then
     AIF_LAND_STATE=landed
     AIF_LAND_ASIDE=""
   else
     AIF_LAND_STATE=ff
   fi
   [ -z "$AIF_LAND_SIGNAL" ] || _aif_land_stopped "$AIF_LAND_SIGNAL"
-  if [ "$landed" -eq 0 ]; then
-    now="$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" || now=""
-    if [ "$sec_rc" -eq 2 ] || [ "$now" != "$pre" ]; then
-      _aif_land_refused "$target moved while the land ran (it was at ${pre:0:7}, it is at ${now:0:7}) — nothing landed; $ticket is still in Review: $rerun"
+  if [ "$AIF_LAND_LANDED" -eq 0 ]; then
+    # What git said, whatever it came to.
+    if [ -s "$out" ]; then
+      aif_err "git did not fast-forward $target to the land's merge, in its own words:"
+      sed 's/\x1b\[[0-9;]*m//g' "$out" | sed -n '1,12p' | sed 's/^/  /' >&2
     fi
-    aif_err "git would not fast-forward $target to the land's merge, in its own words:"
-    sed 's/\x1b\[[0-9;]*m//g' "$out" | sed -n '1,12p' | sed 's/^/  /' >&2
+    [ "$AIF_LAND_UNTOUCHED" -eq 1 ] ||
+      _aif_land_ff_left "the fast-forward did not finish" 1
+    case "${AIF_LAND_SEC_RC%% *}" in
+      2) _aif_land_refused "$(_aif_land_moved_line "$root" "$target" "$pre" "$ticket" "$rerun")" ;;
+    esac
     _aif_land_refused "nothing landed; $ticket is still in Review: $rerun"
   fi
 

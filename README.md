@@ -203,8 +203,10 @@ after the fast-forward, when the land moved a manifest or a lockfile, and a fail
 there is said on the landed card. A land stopped before its fast-forward — Ctrl-C, a
 TERM, the terminal closing over it, an error on the way — has landed nothing and
 leaves the card in Review, since a stop decides nothing; the fast-forward itself runs
-where neither a session's Ctrl-C nor the KILL after it reaches, and a land killed
-outright is put back, or finished, by the next `aif land` (`aif doctor` names it).
+where neither a session's Ctrl-C nor the KILL after it reaches — no process of the
+land's group or under it — and a land killed outright, or a fast-forward whose git
+did not finish, is put back, or finished, by the next `aif land` (`aif doctor` names
+it); the land says that nothing landed only when your checkout shows it.
 
 **The shift: your half of the board, one session at a time.** The loop builds;
 everything around it — the review, the analyst on what came back, the product
@@ -381,7 +383,10 @@ be ignored, which puts you on a model you did not choose without telling you.
 The same export is how each station gets its engine: a station's agent file
 declares `model: opus`, and the profile decides what `opus` resolves to
 (`glm-5.2` on the `glm` profile). The set stays model-agnostic while a station
-still says how much engine it needs.
+still says how much engine it needs. A profile that routes to another endpoint
+maps each alias it serves — `ANTHROPIC_DEFAULT_OPUS_MODEL`, `_SONNET_`, `_HAIKU_`
+and `_FABLE_` — and a station asking for an alias it leaves unmapped, in any case
+(`Fable` is `fable`), is refused before its card is taken.
 
 Each profile clears routing before applying its own, so a leftover `ANTHROPIC_*`
 in your shell cannot redirect a run. A profile means the same thing on every

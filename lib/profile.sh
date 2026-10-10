@@ -137,11 +137,18 @@ aif_profile_secret() {
 # wrong base URL fails *silently*, by answering from a different model, while a
 # wrong token fails loudly with a 401. And the anthropic profile relies on
 # ambient credentials by design.
+#
+# ANTHROPIC_DEFAULT_FABLE_MODEL is the CLI's variable for the `fable` alias
+# (read from claude 2.1.226: the alias resolves to it when it is set, as
+# `opus` resolves to ANTHROPIC_DEFAULT_OPUS_MODEL) — a profile routes it like
+# the other three, and a leftover in the shell routes nothing (docs/DEFECTS.md
+# 14.6).
 AIF_ROUTING_VARS="ANTHROPIC_BASE_URL
 ANTHROPIC_MODEL
 ANTHROPIC_DEFAULT_OPUS_MODEL
 ANTHROPIC_DEFAULT_SONNET_MODEL
 ANTHROPIC_DEFAULT_HAIKU_MODEL
+ANTHROPIC_DEFAULT_FABLE_MODEL
 ANTHROPIC_SMALL_FAST_MODEL
 CLAUDE_CODE_AUTO_COMPACT_WINDOW
 API_TIMEOUT_MS"
@@ -189,17 +196,23 @@ EOF
 # untranslated. Call it after aif_profile_export_env; it reads only what that
 # exported.
 #
-# An alias (`opus`, `sonnet`, `haiku`) is the CLI's word, turned into a model
-# id by the CLI itself — or, under a profile that routes to another endpoint
-# (ANTHROPIC_BASE_URL set), by the profile's ANTHROPIC_DEFAULT_<ALIAS>_MODEL.
-# One the profile does not map is sent as it is to an endpoint that never
-# heard of it, and fails there, after a session was opened for a person,
-# instead of here (docs/DEFECTS.md 14.6: `fable` under glm). So: no base URL —
-# every alias is the CLI's and passes; with one, `opus`/`sonnet`/`haiku` pass
-# when their variable is set, `opusplan` (opus to plan, sonnet to build) when
-# both are, `fable` never (no profile variable routes it yet). A `[…]` suffix
-# (`opus[1m]`, the long-context variant) is the same alias. Anything else is a
-# full model id, the caller's own choice, and passes.
+# An alias (`opus`, `sonnet`, `haiku`, `fable`) is the CLI's word, turned into
+# a model id by the CLI itself — or, under a profile that routes to another
+# endpoint (ANTHROPIC_BASE_URL set), by the profile's
+# ANTHROPIC_DEFAULT_<ALIAS>_MODEL. One the profile does not map is sent as it
+# is to an endpoint that never heard of it, and fails there, after a session
+# was opened for a person, instead of here (docs/DEFECTS.md 14.6: `fable` under
+# glm). So: no base URL — every alias is the CLI's and passes; with one, each
+# of the four passes when its variable is set, `opusplan` (opus to plan,
+# sonnet to build) when both of those are. `fable` was refused always, the one
+# alias no profile variable routed; claude 2.1.226 resolves it through
+# ANTHROPIC_DEFAULT_FABLE_MODEL when that is set (read from the binary), so a
+# profile that sets it routes fable as the other three. A `[…]` suffix
+# (`opus[1m]`, the long-context variant) is the same alias, and so is any
+# case of it: the CLI trims and lowercases a model before it matches an alias
+# (read, 2.1.226) — `Fable` was taken for a full id and let through
+# unmapped, to the endpoint that never heard of it. Anything else is a full
+# model id, the caller's own choice, and passes.
 #
 # `default` and an empty model — no `--model` at all — are one thing, the
 # CLI's own default, and one rule: they pass when ANTHROPIC_MODEL says what it
@@ -208,15 +221,12 @@ EOF
 # always, so the same default was refused or let through by how it was
 # spelled (docs/DEFECTS.md 14.6).
 aif_profile_maps_model() {
-  local m="$1"
-  case "$m" in
-    *\]) m="${m%\[*}" ;;
-  esac
+  local m
+  m="$(aif_profile_alias "$1")"
   [ -n "${ANTHROPIC_BASE_URL:-}" ] || return 0
   case "$m" in
-    opus | sonnet | haiku) _aif_profile_alias_mapped "$m" ;;
+    opus | sonnet | haiku | fable) _aif_profile_alias_mapped "$m" ;;
     opusplan) _aif_profile_alias_mapped opus && _aif_profile_alias_mapped sonnet ;;
-    fable) return 1 ;;
     default | '')
       [ -n "${ANTHROPIC_MODEL:-}" ] && return 0
       _aif_profile_alias_mapped opus && _aif_profile_alias_mapped sonnet
@@ -225,25 +235,53 @@ aif_profile_maps_model() {
   esac
 }
 
+# aif_profile_alias <model> — the model as the CLI matches it against its
+# aliases: trimmed, lowercased, a `[…]` suffix off — `Opus[1m]` is opus
+# (claude 2.1.226 lowercases before it matches, read; docs/DEFECTS.md 14.6).
+# A full model id comes back lowercased too, which only the alias cases
+# read. Not `${m,,}`: bash 3.2.
+aif_profile_alias() {
+  local m
+  m="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  case "$m" in
+    *\]) m="${m%\[*}" ;;
+  esac
+  printf '%s' "$m"
+}
+
 # aif_profile_mapped_aliases — the aliases the exported profile maps, as a
-# person reads them: "opus, sonnet, haiku", or "no alias". What a refusal of
-# a model the profile does not map names beside it (the shift's, the
-# worker's).
+# person reads them: "opus, sonnet, haiku, fable", or "no alias". What a
+# refusal of a model the profile does not map names beside it (the shift's,
+# the worker's).
 aif_profile_mapped_aliases() {
   local mapped=""
   [ -z "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] || mapped="opus"
   [ -z "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ] || mapped="${mapped:+$mapped, }sonnet"
   [ -z "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ] || mapped="${mapped:+$mapped, }haiku"
+  [ -z "${ANTHROPIC_DEFAULT_FABLE_MODEL:-}" ] || mapped="${mapped:+$mapped, }fable"
   printf '%s' "${mapped:-no alias}"
 }
 
-# _aif_profile_alias_mapped <opus|sonnet|haiku> — is its variable set? A
-# `case`, because bash 3.2 has no `${v^^}` to build the name with.
+# aif_profile_alias_var <alias> — the profile variable that routes <alias>,
+# for a refusal to name: ANTHROPIC_DEFAULT_FABLE_MODEL for fable. Empty for
+# anything else.
+aif_profile_alias_var() {
+  case "$(aif_profile_alias "$1")" in
+    opus) printf 'ANTHROPIC_DEFAULT_OPUS_MODEL' ;;
+    sonnet) printf 'ANTHROPIC_DEFAULT_SONNET_MODEL' ;;
+    haiku) printf 'ANTHROPIC_DEFAULT_HAIKU_MODEL' ;;
+    fable) printf 'ANTHROPIC_DEFAULT_FABLE_MODEL' ;;
+  esac
+}
+
+# _aif_profile_alias_mapped <opus|sonnet|haiku|fable> — is its variable set?
+# A `case`, because bash 3.2 has no `${v^^}` to build the name with.
 _aif_profile_alias_mapped() {
   case "$1" in
     opus) [ -n "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ] ;;
     sonnet) [ -n "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ] ;;
     haiku) [ -n "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ] ;;
+    fable) [ -n "${ANTHROPIC_DEFAULT_FABLE_MODEL:-}" ] ;;
     *) return 1 ;;
   esac
 }

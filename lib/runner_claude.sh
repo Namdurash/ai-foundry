@@ -119,8 +119,12 @@ aif_runner_claude_result_ok() {
 aif_runner_claude_result_error() {
   # In jq, not `| head -1`: .result is the station's whole final message, the
   # caller assigns this under set -e, and a head that leaves early would end
-  # the worker right after "ended with an error" (docs/DEFECTS.md 5.3).
-  jq -r '(.result // "no result field") | split("\n")[0]' "$1" 2>/dev/null
+  # the worker right after "ended with an error" (docs/DEFECTS.md 5.3). An
+  # empty message splits to no line at all, which jq printed as `null`
+  # (docs/DEFECTS.md 13.7) — said as what it is.
+  jq -r 'if .result == null then "no result field"
+         elif .result == "" then "an empty final message"
+         else (.result | tostring | split("\n")[0] // "") end' "$1" 2>/dev/null
 }
 
 # aif_runner_claude_result_cost <result.json> — "cost_usd turns in_tok out_tok".
@@ -265,18 +269,28 @@ aif_runner_claude_classify() {
   fi
   jq -c -s '[ .[] | select(.type == "result") ] | last // empty' "$kept" >"$env_out" 2>/dev/null ||
     : >"$env_out" 2>/dev/null || true
+  # `oneline` is total, and the why takes the first of its sources that says
+  # something: an empty string splits to no lines at all, and `""` read as a
+  # first line was null, which gsub cannot take — the whole read failed, and
+  # a station that worked and ended on an empty final message, `"result":
+  # ""`, was read as transient not-json: dispatched again after a backoff,
+  # three times, then blocked: environment (docs/DEFECTS.md 13.7; an error
+  # with an empty result the same, its class never read). The class is
+  # decided on the fields, as it always was; an empty why is allowed.
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   line="$(jq -r -s --argjson empty "$empty" --arg first "$first" '
     def num: if type == "number" and . > 0
              then (if . > 100000000000 then . / 1000 else . end) | floor else 0 end;
-    def oneline: tostring | split("\n")[0] | gsub("\t"; " ") | .[0:300];
+    def oneline: tostring | (split("\n")[0] // "") | gsub("\t"; " ") | .[0:300];
+    def said: select(. != null and . != "");
     ([ .[] | select(.type == "result") ] | last) as $e
     | ([ .[] | select(.type == "rate_limit_event") | .rate_limit_info ] | last) as $r
     | ([ .[] | select(.type == "assistant") | .error | select(. != null) ] | last) as $a
     | ($e.api_error_status // null) as $st
     | (($r.rateLimitType // "") | if type == "string" then . else "" end) as $rt
     | (if $e == null then ""
-       else (($e.result // ($e.errors // [])[0] // $e.subtype // "") | oneline) end) as $why
+       else ((first(($e.result | said), (($e.errors // []) | arrays | .[0] | said), ($e.subtype | said)) // "")
+             | oneline) end) as $why
     | (if $e == null then
          [ "transient", 0, (if $empty == 1 then "no-envelope" else "not-json" end), (if $empty == 1 then "" else $first end) ]
        elif $e.is_error == false then [ "ok", 0, "-", $why ]
@@ -349,7 +363,7 @@ aif_runner_claude_probe() {
     printf 'answered in %s turn(s)' "$(printf '%s' "$out" | jq -r '.num_turns // 0')"
     return 0
   fi
-  err="$(printf '%s' "$out" | jq -r '(.result // empty) | split("\n")[0]' 2>/dev/null)"
+  err="$(printf '%s' "$out" | jq -r '(.result // empty) | (split("\n")[0] // "")' 2>/dev/null)"
   [ -n "$err" ] || err="$(printf '%s' "$out" | sed -n 1p)"
 
   # An authentication failure inside a Claude Code session is the one result
@@ -420,7 +434,7 @@ aif_runner_claude_guard_probe() {
   fi
   rm -f "$errfile"
   if ! printf '%s' "$out" | jq -e '.is_error == false' >/dev/null 2>&1; then
-    printf '%s' "$(printf '%s' "$out" | jq -r '(.result // "the run failed") | split("\n")[0]' 2>/dev/null)"
+    printf '%s' "$(printf '%s' "$out" | jq -r '(.result // "the run failed") | (split("\n")[0] // "the run failed")' 2>/dev/null)"
     return 1
   fi
   if printf '%s' "$out" | jq -r '.result // ""' | grep -q 'aif _verify'; then
@@ -431,7 +445,7 @@ aif_runner_claude_guard_probe() {
     return 0
   fi
   printf 'a spawned run with Bash was NOT denied by the guard — the hook did not fire, or did not reach the model: %s' \
-    "$(printf '%s' "$out" | jq -r '(.result // "") | split("\n")[0] | .[0:160]' 2>/dev/null)"
+    "$(printf '%s' "$out" | jq -r '(.result // "") | (split("\n")[0] // "") | .[0:160]' 2>/dev/null)"
   return 1
 }
 

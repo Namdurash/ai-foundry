@@ -150,6 +150,18 @@ aif_project_validate() {
       # the suite (npm ci, bundle install). git checks out tracked files only.
       (if ((.prepare // "") | type) != "string"
         then "prepare must be a string — a shell command, e.g. \"npm ci\"" else empty end),
+      # copies.leave_out — optional: the paths the copies of the tree a gate
+      # makes leave out, each while git ignores it — a directory a copy cannot read
+      # (the data of a database) stops a gate otherwise (docs/DEFECTS.md 16.6).
+      # Relative to the repository, and inside it.
+      (if ((.copies // {}) | type) != "object" then "copies must be an object" else empty end),
+      ( ((.copies // {}) | if type == "object" then (.leave_out // []) else [] end) as $lo
+        | if ($lo | type) != "array"
+            or ($lo | map(type == "string" and length > 0) | all | not)
+            then "copies.leave_out must be an array of paths, relative to the repository"
+          else ( $lo[] | select(startswith("/") or test("(^|/)\\.\\.(/|$)"))
+                 | "copies.leave_out \"" + . + "\" is not a path inside the repository — relative, no .." )
+          end ),
       (if (.failure_classes.legitimate | type) != "array"
         then "failure_classes.legitimate must be an array" else empty end),
       (if (.failure_classes.broken | type) != "array"
@@ -461,7 +473,9 @@ aif_project_drift() {
         | "limits." + $e.key + " is not set — the " + $kind + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" ),
       ( ($t.limits_retired // [])[] | . as $k
         | select(($p.limits // {}) | has($k))
-        | "limits." + $k + " is set, and nothing reads it any more — aif retired it, so it looks like a cap and is not one" )
+        | "limits." + $k + " is set, and nothing reads it any more — aif retired it, so it looks like a cap and is not one" ),
+      ( select((($t.copies // {}) | has("leave_out")) and ((($p.copies // {}) | has("leave_out")) | not))
+        | "copies.leave_out is not set — the paths the gates'"'"' copies of the tree leave out, each while git ignores it; a directory a copy cannot read stops the gate that copies until it is named there" )
     ] | .[]
   ' "$f" 2>/dev/null
 }

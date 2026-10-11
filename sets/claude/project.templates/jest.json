@@ -16,6 +16,9 @@
   },
   "prepare": "npm ci",
   "checks": [],
+  "copies": {
+    "leave_out": []
+  },
   "explain": {
     "auto": "ready"
   },

@@ -397,6 +397,20 @@ _aif_project_check() {
       done
   fi
 
+  # A path named under copies.leave_out is left out of the gates' copies only
+  # while git ignores it: what git tracks is the tree a suite judges, and the
+  # copies keep it (docs/DEFECTS.md 16.6). Said, not refused.
+  local lo
+  jq -r '(.copies.leave_out // [])[]? | strings' "$dest" 2>/dev/null |
+    while IFS= read -r lo; do
+      lo="${lo%/}"
+      lo="${lo#./}"
+      [ -n "$lo" ] && [ -e "$root/$lo" ] || continue
+      git -C "$root" check-ignore -q "$lo" 2>/dev/null && continue
+      printf '  %swarn:%s copies.leave_out names %s, which git does not ignore — the copies keep what git tracks; ignore it, or take it off the list\n' \
+        "$AIF_C_YELLOW" "$AIF_C_RESET" "$lo"
+    done
+
   # What has moved since the template this file was made from. Valid and
   # current are different answers: a project.json from 0.10.x validates and
   # still tells verify-red that a TypeError is a legitimate red
@@ -426,6 +440,8 @@ _aif_project_check() {
 #   limits                    keys the template sets and the file lacks, at the
 #                             template's value; a value the project set stays;
 #                             a key the template retired (limits_retired) goes
+#   copies.leave_out          set to [] where the file lacks it — the paths
+#                             the gates' copies leave out are the project's
 #
 # Idempotent: a current file is left alone and said to be current. What moved
 # is printed as the drift it closes; the file is the project's to review.
@@ -457,6 +473,8 @@ _aif_project_upgrade() {
         | select(($tb | index($x)) == null) ])
     | .limits = (($t.limits // {}) * ($p.limits // {}))
     | .limits |= with_entries(select(.key as $k | ($t.limits_retired // []) | index($k) | not))
+    | (if (($t.copies // {}) | has("leave_out")) and ((($p.copies // {}) | has("leave_out")) | not)
+       then .copies = (($p.copies // {}) + { leave_out: [] }) else . end)
     | .checks = [ ($p.checks // [])[]
         | if (((.name // "") | test("type"; "i")) or ((.command // "") | test("tsc|mypy|pyright")))
           then .phase = (["contract", "red", "green"] + [ (.phase // [])[] | . as $x
@@ -495,6 +513,8 @@ _aif_project_upgrade() {
     (($b.limits // {}) | to_entries[] | .key as $k
        | select((($a.limits // {}) | has($k)) | not)
        | "  limits." + $k + " removed — retired, nothing reads it"),
+    (if ((($b.copies // {}) | has("leave_out")) | not) and (($a.copies // {}) | has("leave_out"))
+       then "  copies.leave_out = " + ($a.copies.leave_out | tojson) else empty end),
     (($a.checks // []) | to_entries[] | .value as $c | .key as $i
        | select((($b.checks // [])[$i] // {}).phase != $c.phase)
        | "  check \"" + ($c.name // "?") + "\" → [" + ($c.phase | join(",")) + "]")

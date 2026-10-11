@@ -600,25 +600,118 @@ aif_g_dep_dirs() {
   done | git -C "$root" check-ignore --stdin 2>/dev/null || true
 }
 
-# _aif_g_copy_into <src> <dst> <rel> <links> <walk> — the entries of
-# <src>/<rel> into <dst>/<rel>: a directory in <links> as a symlink to the real
-# one, one in <walk> — an ancestor of something linked or skipped — entered
-# entry by entry, .aif/worktrees left behind, everything else `cp -R`, once.
-# rc 1 with the reason on stderr, the copy cut short.
+# aif_g_left_out <root> — the paths .aif/project.json names under
+# copies.leave_out, one repo-relative path a line, each only while it is there
+# and git ignores it. A directory a copy cannot read — a database's data,
+# owned by another user — stopped every ticket at the first gate that copies,
+# and nothing could leave it out (docs/DEFECTS.md 16.6); refusing a file the
+# copy cannot read is still the rule for everything else. What git tracks is
+# the tree a suite judges, and is never left out.
+aif_g_left_out() {
+  local root="$1" p
+  [ -f "$root/.aif/project.json" ] || return 0
+  jq -r '(.copies.leave_out // [])[]? | strings' "$root/.aif/project.json" 2>/dev/null |
+    while IFS= read -r p; do
+      p="${p%/}"
+      p="${p#./}"
+      [ -n "$p" ] || continue
+      if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then printf '%s\n' "$p"; fi
+    done | git -C "$root" check-ignore --stdin 2>/dev/null || true
+}
+
+# What a refusal to copy adds, wherever it is printed.
+AIF_G_LEAVE_OUT_HINT='a path git ignores is left out of every copy when .aif/project.json names it under "copies": { "leave_out": [...] }'
+
+# _aif_g_link_modules <real> <copy> <root> <copy-root> [<depth>] — <copy>, a
+# directory of its own, given the entries of the installed node_modules <real>
+# (docs/DEFECTS.md 16.6). Linked whole, it resolved a workspace's relative link
+# — @ws/pkg -> ../../packages/pkg — against the REAL node_modules, so every
+# copy imported the real tree's package: a contract that broke an older test
+# measured it red before the ticket, and a reverted copy stayed green. So an
+# entry that is a link is made again as the same link, and resolves in the
+# copy — an absolute one into the tree pointed at the same place in the copy;
+# an @scope directory and .bin are entered, one level, for the links in them;
+# a runner's cache (.cache, .vite, .vitest) is left out, the copy's own to
+# write, where a linked one took a copy's writes into the real tree; every
+# other entry is linked, in batches — one `ln` per entry is a second a
+# thousand. rc 1 with the reason on stderr.
+_aif_g_link_modules() {
+  local real="$1" copy="$2" root="$3" croot="$4" depth="${5:-0}" e n t kind rr
+  mkdir "$copy" 2>/dev/null || {
+    printf 'could not make %s in the copy\n' "${copy#"$croot"/}" >&2
+    return 1
+  }
+  rr="$(cd "$root" 2>/dev/null && pwd -P)" || rr="$root"
+  set --
+  for e in "$real"/* "$real"/.[!.]* "$real"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    n="${e##*/}"
+    kind=entry
+    if [ -L "$e" ]; then
+      kind='link'
+    elif [ "$depth" = 0 ]; then
+      case "$n" in
+        @* | .bin) [ ! -d "$e" ] || kind=enter ;;
+        .cache | .vite | .vitest) kind=cache ;;
+      esac
+    fi
+    case "$kind" in
+      link)
+        t="$(readlink "$e")" || t=""
+        case "$t" in
+          "$root"/*) t="$croot/${t#"$root"/}" ;;
+          "$rr"/*) t="$croot/${t#"$rr"/}" ;;
+        esac
+        if [ -z "$t" ] || ! ln -s "$t" "$copy/$n" 2>/dev/null; then
+          printf 'could not make the link %s again in the copy\n' "${copy#"$croot"/}/$n" >&2
+          return 1
+        fi
+        ;;
+      enter) _aif_g_link_modules "$e" "$copy/$n" "$root" "$croot" 1 || return 1 ;;
+      cache) ;;
+      *)
+        set -- "$@" "$e"
+        [ "$#" -ge 200 ] || continue
+        ln -s "$@" "$copy/" 2>/dev/null || {
+          printf 'could not link the entries of %s into the copy\n' "${copy#"$croot"/}" >&2
+          return 1
+        }
+        set --
+        ;;
+    esac
+  done
+  [ "$#" -eq 0 ] || ln -s "$@" "$copy/" 2>/dev/null || {
+    printf 'could not link the entries of %s into the copy\n' "${copy#"$croot"/}" >&2
+    return 1
+  }
+}
+
+# _aif_g_copy_into <src> <dst> <rel> <links> <walk> [<left>] — the entries of
+# <src>/<rel> into <dst>/<rel>: a node_modules in <links> made the copy's own,
+# its entries linked (_aif_g_link_modules), any other directory there as a
+# symlink to the real one, one in <walk> — an ancestor of something linked or
+# skipped — entered entry by entry, .aif/worktrees and each of <left> left
+# behind, everything else `cp -R`, once. rc 1 with the reason on stderr, the
+# copy cut short.
 _aif_g_copy_into() {
-  local src="$1" dst="$2" rel="$3" links="$4" walk="$5" p r d err
+  local src="$1" dst="$2" rel="$3" links="$4" walk="$5" left="${6:-}" p r d err
   for p in "$src${rel:+/$rel}"/* "$src${rel:+/$rel}"/.[!.]* "$src${rel:+/$rel}"/..?*; do
     [ -e "$p" ] || [ -L "$p" ] || continue
     r="${p#"$src"/}"
     [ "$r" != ".aif/worktrees" ] || continue
+    [ -z "$left" ] || ! _aif_g_listed "$r" "$left" || continue
     if _aif_g_listed "$r" "$links"; then
-      ln -s "$p" "$dst/$r" 2>/dev/null || {
-        printf 'could not link %s into the copy\n' "$r" >&2
-        return 1
-      }
+      if [ "${r##*/}" = node_modules ]; then
+        _aif_g_link_modules "$p" "$dst/$r" "$src" "$dst" || return 1
+      else
+        ln -s "$p" "$dst/$r" 2>/dev/null || {
+          printf 'could not link %s into the copy\n' "$r" >&2
+          return 1
+        }
+      fi
     elif _aif_g_below "$r" "$walk"; then
       mkdir -p "$dst/$r" || return 1
-      _aif_g_copy_into "$src" "$dst" "$r" "$links" "$walk" || return 1
+      _aif_g_copy_into "$src" "$dst" "$r" "$links" "$walk" "$left" || return 1
     else
       d="$dst"
       case "$r" in */*) d="$dst/${r%/*}" ;; esac
@@ -627,7 +720,7 @@ _aif_g_copy_into() {
       # judges a tree with a file missing, which `|| true` hid. A socket is
       # rc 0, "is a socket (not copied)"; a FIFO is copied (#36).
       if ! err="$(cp -R "$p" "$d/" 2>&1)"; then
-        printf 'could not copy %s: %s\n' "$r" "$(printf '%s' "$err" | grep -v 'is a socket (not copied)' | sed -n '1,4p' | paste -sd ';' -)" >&2
+        printf 'could not copy %s: %s — %s\n' "$r" "$(printf '%s' "$err" | grep -v 'is a socket (not copied)' | sed -n '1,4p' | paste -sd ';' -)" "$AIF_G_LEAVE_OUT_HINT" >&2
         return 1
       fi
     fi
@@ -643,10 +736,14 @@ _aif_g_copy_into() {
 # stands, because that is what a suite runs against — except the installed
 # dependencies (aif_g_dep_dirs), which are linked: a node_modules is most of a
 # JavaScript tree, copied once per gate per run, side by side with every other
-# worker's (docs/DEFECTS.md 13.9). A package that finds the project from its
-# own location reads the real tree through the link — `__dirname` there is
-# the real path (#36) — so AIF_G_COPY_DEPS=1 in the environment copies them
-# as before. `rm -rf` of the copy removes a link, never what it points at.
+# worker's (docs/DEFECTS.md 13.9). A node_modules is the copy's own directory,
+# its entries linked and its links made again, so a workspace's relative link
+# resolves in the copy (_aif_g_link_modules, 16.6). A package that finds the
+# project from its own location reads the real tree through the link —
+# `__dirname` there is the real path (#36) — so AIF_G_COPY_DEPS=1 in the
+# environment copies them as before. `rm -rf` of the copy removes a link,
+# never what it points at. A path the project names under copies.leave_out,
+# git ignoring it, is not in the copy at all (aif_g_left_out).
 #
 # rc 1, the reason on stderr, when the copy could not be made whole — an
 # unreadable file, a file the base could not give back: a suite judged in a
@@ -664,7 +761,7 @@ _aif_g_copy_into() {
 # worktree's index. green's revert-recheck did exactly that for as long as it
 # existed (docs/DEFECTS.md 6.4).
 aif_g_scratch_at() {
-  local root="$1" base="$2" scratch="${3:-}" made=0 links="" walk p changed
+  local root="$1" base="$2" scratch="${3:-}" made=0 links="" left walk p changed
   if [ -n "$scratch" ]; then
     mkdir -p "$scratch" || return 1
   else
@@ -677,12 +774,15 @@ aif_g_scratch_at() {
   # two runs' output then recognises as the copy.
   scratch="$(cd "$scratch" && pwd -P)" || return 1
   [ "${AIF_G_COPY_DEPS:-0}" = 1 ] || links="$(aif_g_dep_dirs "$root")"
+  left="$(aif_g_left_out "$root")"
   # A directory is entered rather than copied whole when something under it
-  # is linked, or left behind (.aif/worktrees): every line of <walk> below it.
-  walk="$links"
+  # is linked, or left behind (.aif/worktrees, copies.leave_out): every line
+  # of <walk> below it.
+  walk="$links
+$left"
   [ ! -d "$root/.aif/worktrees" ] || walk="$walk
 .aif/worktrees"
-  if ! _aif_g_copy_into "$root" "$scratch" "" "$links" "$walk"; then
+  if ! _aif_g_copy_into "$root" "$scratch" "" "$links" "$walk" "$left"; then
     [ "$made" -eq 0 ] || rm -rf "${scratch:?}"
     return 1
   fi
@@ -690,8 +790,10 @@ aif_g_scratch_at() {
     changed="$(aif_g_changed_since "$root" "$base")"
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      # Never through a link: what is under one is the real tree's.
+      # Never through a link: what is under one is the real tree's. Nor
+      # into what the copy leaves out.
       ! _aif_g_within "$p" "$links" || continue
+      ! _aif_g_within "$p" "$left" || continue
       rm -rf "${scratch:?}/${p:?}" 2>/dev/null || true
       git -C "$root" cat-file -e "$base:$p" 2>/dev/null || continue
       if ! mkdir -p "$scratch/$(dirname "$p")" 2>/dev/null ||
@@ -721,8 +823,10 @@ aif_g_base_key() {
       done
     printf '%s' "$3"
     # The kept run's format: since 16.4 its messages carry the copy's root
-    # folded, and one kept before that would read as another failure.
-    printf 'roots-folded'
+    # folded, and one kept before that would read as another failure; since
+    # 16.6 the copy's node_modules is its own, and one measured through a
+    # node_modules linked whole read the real tree's workspace packages.
+    printf 'roots-folded node-modules-own'
   } | aif_g_sha256 /dev/stdin | cut -c1-12)"
   printf '%s-%s' "$2" "$h"
 }

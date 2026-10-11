@@ -302,6 +302,12 @@
 #      the run as non-deterministic; one new with the ticket, unmarked, is
 #      still non-deterministic, and so is one the base could not be asked
 #      about, the rejection saying why
+#  97  a copy's node_modules is its own: a workspace's link resolves in the
+#      copy, at any depth and through .bin, an absolute one pointed into it,
+#      the caches left out — the worker's twin the same; a covering test that
+#      reads the code through such a link passes green's revert; an ignored
+#      directory a copy cannot read stops verify-red naming copies.leave_out,
+#      and named there it is left out and the ticket builds
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -467,7 +473,9 @@ body="$(row t0 tests/t0.py 1)<testcase classname=\"tests.t9\" name=\"t9\"><skipp
 # throwing the not-implemented marker (the plan's skeleton). Words after the
 # dash are the harness's switches: BUG is red whatever the code does, BROKEN a
 # syntax error, BADCALL a TypeError, FLAKY flips on every run, ONCE is red in
-# the one run after a station left .aif/tmp/flake-once (FAKE_FLAKE_ONCE).
+# the one run after a station left .aif/tmp/flake-once (FAKE_FLAKE_ONCE), VIA
+# reads the code through node_modules/@ws/app — a workspace's link — and not
+# src/ (FAKE_TESTS_VIA).
 fails() { # <id> <file> <message-attr> <message>
   printf '<testcase classname="%s" name="%s"><failure message="%s">%s\n    at %s/%s:1</failure></testcase>' "$(cn "$2")" "$1" "$3" "$4" "$PWD" "$2"
 }
@@ -481,7 +489,11 @@ for n in 1 2 3; do
     word="$(printf '%s' "$line" | sed -n 's/.*asserts \([a-z0-9]*\).*/\1/p')"
     g=0
     if [ "$word" = feat ]; then grep -q 'not implemented' src/feat.py 2>/dev/null || g=1
-    else grep -q "$word" src/app.py 2>/dev/null && g=1; fi
+    else
+      code=src/app.py
+      case "$line" in *" VIA"*) code=node_modules/@ws/app/app.py ;; esac
+      grep -q "$word" "$code" 2>/dev/null && g=1
+    fi
     case "$line" in
       *" BUG"*) body="$body$(fails "$id" "tests/t$n.py" 'wrong literal' 'AssertionError: wrong literal')" ;;
       *" BROKEN"*) body="$body$(fails "$id" "tests/t$n.py" 'invalid syntax' 'SyntaxError: invalid syntax')" ;;
@@ -846,6 +858,7 @@ PLAN
           BADCALL) suffix="$suffix BADCALL" ;;
         esac
         if [ "${FAKE_TESTS_FLAKY_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then suffix="$suffix FLAKY"; fi
+        [ "${FAKE_TESTS_VIA:-0}" != 1 ] || suffix="$suffix VIA"
         word="impl$i"
         [ "${FAKE_CREATE:-0}" = 1 ] && [ "$i" = 1 ] && word="feat"
         # The marker carries the ticket — `AIF-1 AC-001` — unless the harness
@@ -3029,7 +3042,7 @@ git add -A && git commit -qm init >/dev/null
 tmp="$(mktemp)"
 # As 0.10.x wrote it: no kind, the retired classes as legitimate, no loop
 # caps, the type-check on green only; the project's own answers beside them.
-jq 'del(.test.kind) | del(.failure_classes.retired)
+jq 'del(.test.kind) | del(.failure_classes.retired) | del(.copies)
     | .failure_classes.legitimate = ["AssertionError", "ModuleNotFoundError", "ImportError", "AttributeError", "NameError", "TypeError"]
     | del(.limits.run_dispatches_max) | del(.limits.repairs_max) | del(.limits.replans_max)
     | .test.roots = ["tests", "spec"] | .test.command = "python3 -m pytest -q --junitxml=.aif/tmp/report.xml -p no:cacheprovider"
@@ -3044,6 +3057,7 @@ eq "…a template class the file lacks" "$(grep -c 'lacks "aif: not implemented"
 eq "…the type-check bound to green alone" "$(grep -c 'check "typecheck" is a type-check bound to \[green\]' "$OUT/check37.out")" "1"
 eq "…a cap the file does not set, with the template value" "$(grep -c 'limits.run_dispatches_max is not set — the pytest template puts it at 16' "$OUT/check37.out")" "1"
 eq "…the runner not recorded, inferred from the command" "$(grep -c 'test.kind is not recorded' "$OUT/check37.out")" "1"
+eq "…the paths the copies leave out not set" "$(grep -c 'copies.leave_out is not set' "$OUT/check37.out")" "1"
 eq "…and the remedy" "$(grep -c '^aif project upgrade brings these forward' "$OUT/check37.out")" "1"
 eq "doctor: project.json is valid but behind its template" "$("$AIF" doctor 2>/dev/null | grep -c 'project.json .*behind its template')" "1"
 if command -v claude >/dev/null 2>&1; then
@@ -3056,6 +3070,8 @@ eq "the runner is recorded" "$(jq -r '.test.kind' .aif/project.json)" "pytest"
 eq "the failure classes are those of the template, the retired ones gone" \
   "$(jq -c '.failure_classes.legitimate' .aif/project.json)" '["AssertionError","assert ","NotImplementedError","aif: not implemented"]'
 eq "…said so" "$(grep -c 'retired: ModuleNotFoundError, ImportError, AttributeError, NameError, TypeError' "$OUT/upgrade37.out")" "1"
+eq "the paths the copies leave out: a list, empty — the project's to fill" \
+  "$(jq -c '.copies' .aif/project.json),$(grep -c '^  copies.leave_out = \[\]$' "$OUT/upgrade37.out")" '{"leave_out":[]},1'
 eq "the caps the stage was designed for are set" \
   "$(jq -c '[.limits.run_dispatches_max, .limits.repairs_max, .limits.replans_max, .limits.attempts_max]' .aif/project.json)" "[16,2,1,3]"
 eq "the type-check is bound to contract, red and green; lint as it was" \
@@ -6506,17 +6522,17 @@ c74="$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "$(git rev-pa
 what() { # <path> — link, dir or missing
   if [ -L "$1" ]; then printf link; elif [ -d "$1" ]; then printf dir; elif [ -e "$1" ]; then printf file; else printf missing; fi
 }
-eq "the ignored node_modules at both depths and the .venv linked, the force-added one copied, the socket skipped — rc 0" \
-  "$rc,$(what "$c74/node_modules"),$(what "$c74/packages/a/node_modules"),$(what "$c74/.venv"),$(what "$c74/vendor/node_modules"),$(what "$c74/app.sock")" \
-  "0,link,link,link,dir,missing"
+eq "the ignored node_modules at both depths the copy's own, their entries linked (docs/DEFECTS.md 16.6), the .venv linked, the force-added one copied, the socket skipped — rc 0" \
+  "$rc,$(what "$c74/node_modules"),$(what "$c74/node_modules/x"),$(what "$c74/packages/a/node_modules"),$(what "$c74/packages/a/node_modules/y"),$(what "$c74/.venv"),$(what "$c74/vendor/node_modules"),$(what "$c74/vendor/node_modules/z.js"),$(what "$c74/app.sock")" \
+  "0,dir,link,dir,link,link,dir,file,missing"
 [ -z "$c74" ] || rm -rf "${c74:?}"
 eq "…removing the copy leaves what it linked to" "$(cat node_modules/x/i.js 2>/dev/null)" "a"
 eq "the worker's own copy (a repair's) is made the same way, and so is the land's" \
   "$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"
      c="$(mktemp -d)"; _aif_work_copy_at "$PWD" "$(git rev-parse HEAD)" "$c" >/dev/null 2>&1
-     for p in node_modules packages/a/node_modules .venv vendor/node_modules; do
-       if [ -L "$c/$p" ]; then printf "link "; elif [ -d "$c/$p" ]; then printf "dir "; else printf "missing "; fi
-     done; rm -rf "$c"' _ "$ROOT")" "link link link dir "
+     for p in node_modules node_modules/x packages/a/node_modules .venv vendor/node_modules vendor/node_modules/z.js; do
+       if [ -L "$c/$p" ]; then printf "link "; elif [ -d "$c/$p" ]; then printf "dir "; elif [ -e "$c/$p" ]; then printf "file "; else printf "missing "; fi
+     done; rm -rf "$c"' _ "$ROOT")" "dir link dir link dir file "
 eq "…the two find the same dependencies — the gates' list and the worker's twin" \
   "$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_dep_dirs "$PWD"' | sort | paste -sd'|' -),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_dep_dirs "$PWD"' _ "$ROOT" | sort | paste -sd'|' -)" \
   ".venv|node_modules|packages/a/node_modules,.venv|node_modules|packages/a/node_modules"
@@ -7841,6 +7857,101 @@ rc=0
 FAKE_KEEP_WORDS=1 FAKE_FLAKE_ONCE=tests "$AIF" work AIF-70 --no-worktree >"$OUT/run96c.out" 2>&1 || rc=$?
 eq "…the tree before the ticket not measured: read as the ticket's, non-deterministic, the rejection saying what could not be measured" \
   "$rc,$(grep -c 'tests.t3::AIF-69 AC-002 t3 was failure then pass — a test whose verdict moves .*whether the tree before this ticket has this one could not be measured (the suite wrote no report there — no runner config before the ticket)' .aif/tmp/fake-prompt-tests-2 2>/dev/null)" \
+  "1,1"
+cd "$SANDBOX" || exit 1
+
+# ====== 97. a copy's node_modules is its own; what the copies leave out =====
+# Since 13.9 a copy linked node_modules whole, and a workspace's relative link
+# in it — @ws/app -> ../../src — resolved against the REAL node_modules: every
+# copy read the real tree's code (docs/DEFECTS.md 16.6). A reverted copy stayed
+# green, and correct work was rejected twice and stopped; the base was
+# measured with the ticket's package; a runner's cache written in a copy
+# landed in the real node_modules. A node_modules is the copy's own now, its
+# entries linked and its links made again, the caches left out. And an ignored
+# directory a copy cannot read stopped every ticket, with no way to leave it
+# out: .aif/project.json names it under copies.leave_out.
+printf '\n97. a copy'"'"'s node_modules is its own, its links resolved in the copy; the paths the copies leave out\n'
+fresh_project "$SANDBOX/p97"
+printf 'node_modules/\n' >>.gitignore
+mkdir -p packages/pkg packages/cli packages/b packages/a/node_modules/@ws node_modules/@ws node_modules/@babel/core \
+  node_modules/jest node_modules/.bin node_modules/.cache/babel node_modules/.vite node_modules/.vitest
+printf 'v1\n' >packages/pkg/value
+printf 'b1\n' >packages/b/value
+ln -s ../../packages/pkg node_modules/@ws/pkg
+ln -s "$PWD/packages/cli" node_modules/@ws/cli
+ln -s ../@ws/pkg node_modules/.bin/pkg
+ln -s ../../../b packages/a/node_modules/@ws/b
+git add -A && git commit -qm "a workspace, its packages linked in node_modules" >/dev/null
+printf 'v2\n' >packages/pkg/value
+printf 'b2\n' >packages/b/value
+l97() { # <copy> — what each path is in it
+  local p
+  for p in node_modules node_modules/@ws node_modules/@ws/pkg node_modules/@babel node_modules/@babel/core \
+    node_modules/jest node_modules/.bin node_modules/.bin/pkg node_modules/.cache node_modules/.vite \
+    node_modules/.vitest packages/a/node_modules packages/a/node_modules/@ws/b; do
+    printf '%s ' "$(what "$1/$p")"
+  done
+}
+rc=0
+c97="$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "$(git rev-parse HEAD)"' 2>"$OUT/c97.err")" || rc=$?
+eq "a copy's node_modules is a directory of its own: @scope and .bin entered, the links in them made again, every other entry linked, the caches left out — rc 0" \
+  "$rc,$(l97 "$c97")" "0,dir dir link dir link link dir link missing missing missing dir link "
+eq "…a workspace's relative link resolves in the copy — the package as it was at the base, not the real tree's — at both depths, and through .bin" \
+  "$(readlink "$c97/node_modules/@ws/pkg"),$(cat "$c97/node_modules/@ws/pkg/value"),$(cat "$c97/node_modules/.bin/pkg/value"),$(cat "$c97/packages/a/node_modules/@ws/b/value")" \
+  "../../packages/pkg,v1,v1,b1"
+eq "…an absolute link into the tree points at the same place in the copy; a package is the real one" \
+  "$([ "$(readlink "$c97/node_modules/@ws/cli")" = "$c97/packages/cli" ] && echo copy),$([ "$(cd "$c97/node_modules/jest" && pwd -P)" = "$(cd node_modules/jest && pwd -P)" ] && echo real)" \
+  "copy,real"
+mkdir -p "$c97/node_modules/.cache/babel" && : >"$c97/node_modules/.cache/babel/written-in-a-copy"
+eq "…a runner's cache written in the copy stays in the copy" "$(find node_modules/.cache -type f | wc -l | tr -d ' ')" "0"
+mkdir -p "$OUT/c97w"
+/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_copy_at "$PWD" "$(git rev-parse HEAD)" "$2"' _ "$ROOT" "$OUT/c97w" >/dev/null 2>&1
+eq "the worker's twin — a repair's copy, and the land's — makes node_modules the same way" \
+  "$(l97 "$OUT/c97w")$(cat "$OUT/c97w/node_modules/@ws/pkg/value"),$([ "$(readlink "$OUT/c97w/node_modules/@ws/cli")" = "$OUT/c97w/packages/cli" ] && echo copy)" \
+  "dir dir link dir link link dir link missing missing missing dir link v1,copy"
+[ -z "$c97" ] || rm -rf "${c97:?}"
+rm -rf "$OUT/c97w"
+
+# The ticket's code is a workspace package — node_modules/@ws/app -> ../../src
+# — and its covering test reads the code through that link: green's reverted
+# copy read the real, implemented src through the real node_modules, the test
+# stayed green with the implementation reverted, and the run stopped.
+fresh_project "$SANDBOX/p97b"
+printf 'node_modules/\n' >>.gitignore
+mkdir -p node_modules/@ws && ln -s ../../src node_modules/@ws/app
+ticket_for AIF-970
+git add -A && git commit -qm "src a workspace package, linked in node_modules; ticket 97" >/dev/null
+rc=0
+FAKE_TESTS_VIA=1 "$AIF" work AIF-970 --no-worktree >"$OUT/run97b.out" 2>&1 || rc=$?
+eq "a covering test that reads the code through a workspace's link: the reverted copy reads its own code — built, green passing at its first attempt" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-970.json)" "0,pass"
+
+# A database's data no one else may read, ignored by git, and t0 red before
+# the ticket — verify-red has to copy the tree to measure it there.
+leave97() { # <dir> [<leave-out-json>]
+  fresh_project "$1"
+  printf 'pgdata/\n' >>.gitignore
+  mkdir -p pgdata && printf 'x\n' >pgdata/base
+  [ -z "${2:-}" ] || { jq --argjson l "$2" '.copies.leave_out = $l' .aif/project.json >"$OUT/p97.json" && cp "$OUT/p97.json" .aif/project.json; }
+  t0_red_when 'true'
+  ticket_for AIF-971
+  git add -A && git commit -qm "a database's data; t0 red; ticket 97" >/dev/null
+  chmod 000 pgdata
+}
+leave97 "$SANDBOX/p97c"
+rc=0
+"$AIF" work AIF-971 --no-worktree >"$OUT/run97c.out" 2>&1 || rc=$?
+chmod 700 pgdata
+eq "an ignored directory a copy cannot read: verify-red stops on it, saying how to leave it out" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .result + ": " + .reason' .aif/state/ledgers/AIF-971.json | grep -c '^error: .*could not copy the tree to measure the suite before this ticket .*could not copy pgdata: .*"copies": { "leave_out": \[...\] }')" "1,1"
+leave97 "$SANDBOX/p97d" '["pgdata/"]'
+rc=0
+"$AIF" work AIF-971 --no-worktree >"$OUT/run97d.out" 2>&1 || rc=$?
+chmod 700 pgdata
+eq "…named under copies.leave_out: left out of the copy — t0 measured red before the ticket, let through, built" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-971.json | grep -c 'let through, 1 red before this ticket: tests.t0::t0')" "0,1"
+eq "aif project check: a leave_out path git tracks is said to be kept; one outside the repository is refused" \
+  "$(jq '.copies.leave_out = ["pgdata", "src"]' .aif/project.json >"$OUT/p97.json" && cp "$OUT/p97.json" .aif/project.json; "$AIF" project check 2>&1 | grep -c 'warn: copies.leave_out names src, which git does not ignore'),$(jq '.copies.leave_out = ["../elsewhere"]' .aif/project.json >"$OUT/p97.json" && cp "$OUT/p97.json" .aif/project.json; "$AIF" project check >/dev/null 2>&1; echo $?)" \
   "1,1"
 cd "$SANDBOX" || exit 1
 

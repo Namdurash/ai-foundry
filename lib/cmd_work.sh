@@ -3048,7 +3048,9 @@ _aif_work_guard_probed() {
 # _aif_work_copy_at <wt> <base> <copy> — <copy>, an empty directory, made a copy
 # of the worktree as it stood at <base>: every path changed since that commit
 # put back, every path added since it removed, what git ignores copied as it
-# is — but the installed dependencies, linked. The same copy the gates'
+# is — but the installed dependencies, linked (a node_modules the copy's own,
+# its links made again: docs/DEFECTS.md 16.6), and what the project names
+# under copies.leave_out, not there at all. The same copy the gates'
 # aif_g_scratch_at makes (which lib/ cannot source), for the same reasons: a
 # suite runs against installed dependencies, a node_modules copied once per
 # repair beside every other worker's is most of a JavaScript tree
@@ -3062,13 +3064,15 @@ _aif_work_guard_probed() {
 # unreadable file used to be left out in silence (cp -R … || true), and the
 # repaired tests were judged in another tree.
 _aif_work_copy_at() {
-  local wt="$1" base="$2" copy="$3" links="" walk p changed
+  local wt="$1" base="$2" copy="$3" links="" left walk p changed
   AIF_WORK_COPY_WHY=""
   [ "${AIF_G_COPY_DEPS:-0}" = 1 ] || links="$(_aif_work_dep_dirs "$wt")"
-  walk="$links"
+  left="$(_aif_work_left_out "$wt")"
+  walk="$links
+$left"
   [ ! -d "$wt/.aif/worktrees" ] || walk="$walk
 .aif/worktrees"
-  _aif_work_copy_into "$wt" "$copy" "" "$links" "$walk" || return 1
+  _aif_work_copy_into "$wt" "$copy" "" "$links" "$walk" "$left" || return 1
   changed="$({
     git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
     git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
@@ -3076,6 +3080,7 @@ _aif_work_copy_at() {
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     _aif_work_under "$p" "$links" && continue
+    _aif_work_under "$p" "$left" && continue
     rm -rf "${copy:?}/${p:?}" 2>/dev/null || true
     git -C "$wt" cat-file -e "$base:$p" 2>/dev/null || continue
     if ! mkdir -p "$copy/$(dirname "$p")" 2>/dev/null || ! git -C "$wt" show "$base:$p" >"$copy/$p" 2>/dev/null; then
@@ -3120,26 +3125,109 @@ EOF
   return 1
 }
 
-# _aif_work_copy_into <src> <dst> <rel> <links> <walk> — the gates'
-# _aif_g_copy_into: a directory in <links> linked, one with something of
-# <walk> below it entered, .aif/worktrees left behind, every other entry
-# `cp -R`, checked. rc 1 with AIF_WORK_COPY_WHY.
+# _aif_work_left_out <wt> — the paths .aif/project.json names under
+# copies.leave_out, there and ignored by git: the gates' aif_g_left_out
+# (docs/DEFECTS.md 16.6).
+_aif_work_left_out() {
+  local root="$1" p
+  [ -f "$root/.aif/project.json" ] || return 0
+  jq -r '(.copies.leave_out // [])[]? | strings' "$root/.aif/project.json" 2>/dev/null |
+    while IFS= read -r p; do
+      p="${p%/}"
+      p="${p#./}"
+      [ -n "$p" ] || continue
+      if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then printf '%s\n' "$p"; fi
+    done | git -C "$root" check-ignore --stdin 2>/dev/null || true
+}
+
+# _aif_work_link_modules <real> <copy> <root> <copy-root> [<depth>] — the
+# gates' _aif_g_link_modules: a node_modules the copy's own, a link in it made
+# again (an absolute one into the tree pointed into the copy), @scope and .bin
+# entered one level, .cache, .vite and .vitest left out, every other entry
+# linked in batches (docs/DEFECTS.md 16.6). rc 1 with AIF_WORK_COPY_WHY.
+_aif_work_link_modules() {
+  local real="$1" copy="$2" root="$3" croot="$4" depth="${5:-0}" e n t kind rr
+  mkdir "$copy" 2>/dev/null || {
+    AIF_WORK_COPY_WHY="could not make ${copy#"$croot"/} in the copy"
+    return 1
+  }
+  rr="$(cd "$root" 2>/dev/null && pwd -P)" || rr="$root"
+  set --
+  for e in "$real"/* "$real"/.[!.]* "$real"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    n="${e##*/}"
+    kind=entry
+    if [ -L "$e" ]; then
+      kind='link'
+    elif [ "$depth" = 0 ]; then
+      case "$n" in
+        @* | .bin) [ ! -d "$e" ] || kind=enter ;;
+        .cache | .vite | .vitest) kind=cache ;;
+      esac
+    fi
+    case "$kind" in
+      link)
+        t="$(readlink "$e")" || t=""
+        case "$t" in
+          "$root"/*) t="$croot/${t#"$root"/}" ;;
+          "$rr"/*) t="$croot/${t#"$rr"/}" ;;
+        esac
+        if [ -z "$t" ] || ! ln -s "$t" "$copy/$n" 2>/dev/null; then
+          AIF_WORK_COPY_WHY="could not make the link ${copy#"$croot"/}/$n again in the copy"
+          return 1
+        fi
+        ;;
+      enter) _aif_work_link_modules "$e" "$copy/$n" "$root" "$croot" 1 || return 1 ;;
+      cache) ;;
+      *)
+        set -- "$@" "$e"
+        [ "$#" -ge 200 ] || continue
+        ln -s "$@" "$copy/" 2>/dev/null || {
+          AIF_WORK_COPY_WHY="could not link the entries of ${copy#"$croot"/} into the copy"
+          return 1
+        }
+        set --
+        ;;
+    esac
+  done
+  [ "$#" -eq 0 ] || ln -s "$@" "$copy/" 2>/dev/null || {
+    AIF_WORK_COPY_WHY="could not link the entries of ${copy#"$croot"/} into the copy"
+    return 1
+  }
+}
+
+# _aif_work_copy_into <src> <dst> <rel> <links> <walk> [<left>] — the gates'
+# _aif_g_copy_into: a node_modules in <links> the copy's own, its entries
+# linked, any other directory there linked, one with something of <walk>
+# below it entered, .aif/worktrees and each of <left> left behind, every other
+# entry `cp -R`, checked. rc 1 with AIF_WORK_COPY_WHY.
 _aif_work_copy_into() {
-  local src="$1" dst="$2" rel="$3" links="$4" walk="$5" p r d err
+  local src="$1" dst="$2" rel="$3" links="$4" walk="$5" left="${6:-}" p r d err
   for p in "$src${rel:+/$rel}"/* "$src${rel:+/$rel}"/.[!.]* "$src${rel:+/$rel}"/..?*; do
     [ -e "$p" ] || [ -L "$p" ] || continue
     r="${p#"$src"/}"
     [ "$r" != ".aif/worktrees" ] || continue
+    case "
+$left
+" in
+      *"
+$r
+"*) continue ;;
+    esac
     case "
 $links
 " in
       *"
 $r
 "*)
-        ln -s "$p" "$dst/$r" 2>/dev/null || {
-          AIF_WORK_COPY_WHY="could not link $r into the copy"
-          return 1
-        }
+        if [ "${r##*/}" = node_modules ]; then
+          _aif_work_link_modules "$p" "$dst/$r" "$src" "$dst" || return 1
+        else
+          ln -s "$p" "$dst/$r" 2>/dev/null || {
+            AIF_WORK_COPY_WHY="could not link $r into the copy"
+            return 1
+          }
+        fi
         continue
         ;;
     esac
@@ -3148,14 +3236,14 @@ $walk" in
       *"
 $r/"*)
         mkdir -p "$dst/$r" || return 1
-        _aif_work_copy_into "$src" "$dst" "$r" "$links" "$walk" || return 1
+        _aif_work_copy_into "$src" "$dst" "$r" "$links" "$walk" "$left" || return 1
         continue
         ;;
     esac
     d="$dst"
     case "$r" in */*) d="$dst/${r%/*}" ;; esac
     if ! err="$(cp -R "$p" "$d/" 2>&1)"; then
-      AIF_WORK_COPY_WHY="could not copy $r: $(printf '%s' "$err" | grep -v 'is a socket (not copied)' | sed -n '1,4p' | paste -sd ';' -)"
+      AIF_WORK_COPY_WHY="could not copy $r: $(printf '%s' "$err" | grep -v 'is a socket (not copied)' | sed -n '1,4p' | paste -sd ';' -) — a path git ignores is left out of every copy when .aif/project.json names it under \"copies\": { \"leave_out\": [...] }"
       return 1
     fi
   done

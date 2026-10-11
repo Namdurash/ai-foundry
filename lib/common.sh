@@ -224,6 +224,34 @@ aif_die() {
   exit 1
 }
 
+# aif_ticket_match <pattern> <id> — true when the project's ticket pattern
+# matches <id>, read as jq's `test` reads it (Oniguruma). One engine for it
+# everywhere: the shift's facts and the board's cards were matched by jq, and
+# the release sweep, the land, the Trello Ready reads and the analyst's
+# ticket-init by `grep -E` — a pattern the two read differently (`\z`, which
+# POSIX has not) was a card the shift planned to release and the sweep never
+# did, and a land refused (docs/DEFECTS.md 15.9). A pattern jq cannot compile
+# matches nothing.
+aif_ticket_match() {
+  jq -en --arg re "$1" --arg t "$2" '$t | test($re)' >/dev/null 2>&1
+}
+
+# aif_shq <word> — <word> as a shell reads it back, for a command aif prints
+# for a person to paste: as it is when it is letters, digits and _./:=+@%,-
+# only, else in single quotes, each ' in it as '\''. A path with a space in
+# it, printed bare, was two words: the pasted `aif board comment <ID> <path>
+# && aif board move …` failed, and the `&&` kept the move from happening —
+# safe, and no use (docs/DEFECTS.md 15.9). The replacement is a variable:
+# bash 3.2 reads quotes inside `${…//…/…}` its own way.
+aif_shq() {
+  local q="'\\''"
+  case "$1" in
+    '') printf "''" ;;
+    *[!A-Za-z0-9_./:=+@%,-]*) printf "'%s'" "${1//\'/$q}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # aif_have <command> — true if the command is on PATH.
 aif_have() {
   command -v "$1" >/dev/null 2>&1

@@ -33,7 +33,8 @@
 #      settled by what was read not retried, a refused blocked: line posted
 #      where it was kept (14.4, 15.12, 15.6, 14.2); a ready gate's 3 the
 #      environment, a card unread
-#      three looks in a row a line nothing waits on, the held build offered
+#      three looks in a row a line nothing waits on — and with nothing else,
+#      the end 3, naming it — the held build offered
 #      as "build again", R12 on Trello keyed on a card's entry into Ready
 #      (15.8, 15.9); R7 warning of the uncommitted files the card's branch
 #      changes, and of no others (13.5) — and
@@ -68,11 +69,13 @@
 #      another terminal holding the one card in Ready — a line, no wait, the
 #      shift's end; the build held with Ready not empty offered as "build
 #      again", passed by to the end or built by Enter (15.8); the ticket
-#      pattern matched by one regex engine; a ready gate not installed — aif
-#      _ready 3, a line naming aif init; the seams the shift's own, and `*`
-#      the whole of a wait; a session that changed only another card is a
-#      change; a move never tried left with its comment and the commands
-#      that make it (15.9); an ignore block from before the shift — the
+#      pattern matched by one regex engine — the facts, the loose tickets,
+#      the release sweep, the land, ticket-init; a ready gate not installed —
+#      aif _ready 3, a line naming aif init; the seams the shift's own, and
+#      `*` the whole of a wait; a session that changed only another card, or
+#      only dragged one into Ready, is a change; a move never tried left with
+#      its comment and the commands that make it, pasted whole from a path
+#      with a space in it (15.9); an ignore block from before the shift — the
 #      header, and aif doctor naming its missing line and aif init (15.2);
 #      R7's warning read off the repository per card: an edit beside the
 #      branch none, an edit to a file it changes named (13.5)
@@ -90,9 +93,10 @@
 #      read back hold no head before it (15.6); another machine's claim silent past a
 #      run's wall clock is a line, read again when it beats (14.4); a
 #      blocked: line the board refused is posted by the shift (14.2); a card
-#      whose comments fail on every look waited for twice, then a line; a
-#      person's comment on a card the loop left in Ready offers no build
-#      again (15.9)
+#      whose comments fail on every look waited for twice, then a line, the
+#      end 3; a person's comment on a card the loop left in Ready offers no
+#      build again, a card that left Ready and came back between two looks
+#      does (15.9)
 #   D  a real terminal (a pty): a Ctrl-C at the control point ends 130 with
 #      the terminal as it was, and so does one whose handler runs across the
 #      end of the key's second (11.1); a key typed with the shift's stdin not
@@ -561,6 +565,11 @@ fi
 if [ -n "${FAKE_ALSO:-}" ]; then
   printf '%s\n' "${FAKE_ALSO#*:}" >"$FAKE_SB/also.txt"
   AIF_BOARD_BY="${FAKE_ALSO_BY:-reviewer}" "$FAKE_AIF" board comment "${FAKE_ALSO%%:*}" "$FAKE_SB/also.txt" >/dev/null
+fi
+# FAKE_ALSO_MOVE="<ID>:<column>": that card moved, with no comment, while the
+# session is open — a project manager who only drags a card.
+if [ -n "${FAKE_ALSO_MOVE:-}" ]; then
+  "$FAKE_AIF" board move "${FAKE_ALSO_MOVE%%:*}" "${FAKE_ALSO_MOVE#*:}" >/dev/null
 fi
 [ -z "${FAKE_SESSION_MARK:-}" ] || curl -s "$FAKE_SESSION_MARK/_mark/session-end" >/dev/null 2>&1
 exit "${FAKE_SESSION_RC:-0}"
@@ -1296,12 +1305,14 @@ JSON
 
 # A card whose comments fail on every look was waited for until q (docs/
 # DEFECTS.md 15.9): two looks in a row are still a wait; the third is a line
-# the shift does not wait on, and with nothing else, the end.
+# the shift does not wait on, and with nothing else, the end — the board's,
+# 3, naming the card: it was 0, "nothing left for the shift", over a card the
+# shift had never read (15.9).
 fx "a card unread two looks in a row — still waited for" '.wait.why == "1 card not read yet" and ."end" == null' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-120","column":"review","pos":1,"unread":true,"unread_why":"Trello: could not read the comments","unread_looks":2,"head":null}]}
 JSON
-fx "…three looks in a row — a line naming aif board head, no wait, the end" '.wait == null and ."end".rc == 0 and .lines[0].rule == "R1" and .lines[0].text == "its comments could not be read for 3 looks in a row — Trello: could not read the comments; the shift does not wait on it" and .lines[0].command == "aif board head AIF-120"' <<JSON
+fx "…three looks in a row — a line naming aif board head, no wait, the end: 3, the board, naming the card" '.wait == null and ."end" == {"rc":3,"why":"nothing else left, and the board would not give the comments of AIF-120 for three looks in a row — the board, not the cards"} and .lines[0].rule == "R1" and .lines[0].text == "its comments could not be read for 3 looks in a row — Trello: could not read the comments; the shift does not wait on it" and .lines[0].command == "aif board head AIF-120"' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-120","column":"review","pos":1,"unread":true,"unread_why":"Trello: could not read the comments","unread_looks":3,"head":null}]}
 JSON
@@ -2254,6 +2265,35 @@ eq "the ready gate not installed: aif _ready exits 3, the environment, and the s
   "3,1,0,1"
 mv "$OUT/ready.sh.px" .aif/gates/ready.sh
 
+# The same engine everywhere else the pattern is read (docs/DEFECTS.md 15.9):
+# the release sweep, the land and the analyst's ticket-init matched it with
+# grep -E, which reads `\z` — the end of the string to jq — as no match: the
+# shift planned "the sweep releases AIF-2" and the sweep released nothing,
+# the land refused the ticket and ticket-init refused to make one. (The
+# Trello Ready reads: check-board.)
+PZ="$SANDBOX/pZ"
+fresh_project "$PZ"
+jq '.ticket_pattern = "^[A-Z]{2,10}-[0-9]+\\z"' .aif/project.json >"$OUT/pz-project.json" && cp "$OUT/pz-project.json" .aif/project.json
+rc=0
+"$AIF" _ticket-init AIF-3 >"$OUT/z-init.out" 2>&1 || rc=$?
+eq "a pattern jq reads and grep -E does not (\\z): aif _ticket-init makes the ticket" \
+  "$rc,$(test -f tasks/AIF-3/ticket.md && echo made || echo none)" "0,made"
+ticket_for AIF-1
+ticket_for AIF-2 '["AIF-1"]'
+git add -A && git commit -qm "two tickets, the second on the first" >/dev/null
+git commit -q --allow-empty -m "aif: land AIF-1 — one-command user export"
+card AIF-1 "done"
+card AIF-2 backlog
+rc=0
+"$AIF" board release >"$OUT/z-release.out" 2>&1 || rc=$?
+eq "…the release sweep releases the card whose dependency landed" \
+  "$rc,$(col AIF-2),$(grep -c '^AIF-2  released' "$OUT/z-release.out")" "0,ready,1"
+rc=0
+"$AIF" land AIF-2 >"$OUT/z-land.out" 2>&1 || rc=$?
+eq "…and aif land does not refuse the ticket for its pattern" \
+  "$(grep -c 'does not match' "$OUT/z-land.out")" "0"
+cd "$PX" || exit 1
+
 # The runner's usage limit as a worker of this checkout left it
 # (docs/DEFECTS.md 13.7): .aif/state/pause — written here by hand, as the
 # worker writes it (lib/cmd_work.sh _aif_work_pause_write) — is in the
@@ -2342,6 +2382,27 @@ eq "a session that changed only another card is a change: no pause, the other ca
   "$rc|$(jq -r .why "$SD2/summary.json")|$(grep -c '^paused — the session changed nothing' "$OUT/d2-shift.out")|$(jq -r '.units[0].what | sub("^.* — rc 0, "; "")' "$SD2/summary.json")|$(col AIF-2)|$(card_head AIF-2)" \
   "0|ended at the control point (q)|0|changed the board or the repository|backlog|rework: the export misses the header row"
 
+# A session that only drags another card from Needs Human to Ready, with no
+# line on it (docs/DEFECTS.md 15.9): Ready was outside the after's read, and
+# the move read as "changed nothing" — the shift paused. A card that comes
+# into Ready from anywhere but In Progress is the session's: the loop takes
+# cards out of Ready and never puts one in.
+PD2="$SANDBOX/pD2"
+fresh_project "$PD2"
+ticket_for AIF-1
+ticket_for AIF-2
+git add -A && git commit -qm "two tickets" >/dev/null
+card AIF-1 needs_human
+say AIF-1 "aif work" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+card AIF-2 needs_human
+say AIF-2 "aif work" "blocked: run — the worker exited (code 1) during plan"
+rc=0
+run_bg "$OUT/d3-shift.out" 60 env AIF_START_KEYS=_ FAKE_SESSION_NOOP=1 FAKE_ALSO_MOVE="AIF-2:ready" "$AIF" start --no-build --max-units 1 || rc=$?
+SD3="$(newest_shift)"
+eq "a session that only dragged another card into Ready, no line on it, is a change: no pause" \
+  "$rc|$(grep -c '^paused — the session changed nothing' "$OUT/d3-shift.out")|$(jq -r '.units[0].what | sub("^.* — rc 0, "; "")' "$SD3/summary.json")|$(col AIF-2)" \
+  "0|0|changed the board or the repository|ready"
+
 # A move the shift never tried — it ended first — that carries a comment
 # other than rework: or cancelled: (docs/DEFECTS.md 15.9): it was left with
 # `aif start` as its command. A loop in another terminal blocks AIF-2 by the
@@ -2366,6 +2427,32 @@ mfile="$(printf '%s' "$mcmd" | sed -n 's/^aif board comment AIF-2 \([^ ]*\) && a
 eq "a move never tried, its comment kept in the shift's directory with the two commands that make it — not aif start" \
   "$rc|$(jq -r .why "$SM/summary.json" 2>/dev/null)|$(printf '%s' "$mfile" | grep -c '/\.aif/tmp/shift-[^/]*/comment-AIF-2\.md$')|$(sed -n 1p "$mfile" 2>/dev/null)|$(col AIF-2)" \
   "0|--max-units 1 reached|1|released by aif start: blocked by the environment during this shift; the preflight passes again — retried once|needs_human"
+
+# The same in a project whose path holds a space (docs/DEFECTS.md 15.9): the
+# kept comment's path was printed bare, the pasted line split it in two, and
+# its `&&` kept the move from happening. Quoted, the line pasted as the
+# summary has it posts the comment and makes the move — run with this aif as
+# the `aif` it names.
+PS="$SANDBOX/p S space"
+fresh_project "$PS"
+ticket_for AIF-1
+ticket_for AIF-2
+git add -A && git commit -qm "two tickets" >/dev/null
+card AIF-1 needs_human
+say AIF-1 "aif work" "blocked: ticket — not ready — the ready gate's questions are below, for the analyst"
+card AIF-2 needs_human
+say AIF-2 "aif work" "blocked: run — the worker exited (code 1) during plan"
+rc=0
+run_bg "$OUT/s-shift.out" 60 env AIF_START_KEYS=_ FAKE_SESSION_NOOP=1 FAKE_ALSO_BY="aif work" \
+  FAKE_ALSO="AIF-2:blocked: environment — the suite could not start (exit 7)" "$AIF" start --no-build --max-units 1 || rc=$?
+scmd="$(jq -r '[.left[] | select(.ticket == "AIF-2") | .command] | join(";")' "$(newest_shift)/summary.json" 2>/dev/null)"
+mkdir -p "$SANDBOX/aif-on-path"
+ln -sf "$AIF" "$SANDBOX/aif-on-path/aif"
+rcp=0
+PATH="$SANDBOX/aif-on-path:$PATH" bash -c "$scmd" >"$OUT/s-paste.out" 2>&1 || rcp=$?
+eq "…in a path with a space: the line from the summary, pasted as it is, posts the kept comment and makes the move" \
+  "$rc|$(printf '%s' "$scmd" | grep -c "^aif board comment AIF-2 '.*/p S space/\.aif/tmp/shift-[^/]*/comment-AIF-2\.md' && aif board move AIF-2 ready\$")|$rcp|$(col AIF-2)|$(card_head AIF-2)" \
+  "0|1|0|ready|released by aif start: blocked by the environment during this shift; the preflight passes again — retried once"
 
 # A project set up before the shift: its managed .gitignore block has no
 # .aif/start.local, and nothing but its next `aif init` rewrites the block —
@@ -2738,7 +2825,8 @@ else
   # mock's fault file: every read of AIF-17's comments a 500). It was work in
   # flight on every tick, and the shift waited on it until q (docs/DEFECTS.md
   # 15.9): two looks are waited for, the third is a line naming aif board head
-  # that nothing waits on — and with nothing else left, the end.
+  # that nothing waits on — and with nothing else left, the end: 3, the
+  # board's, not 0 over a card it never read.
   "$AIF" board move AIF-12 "done" >/dev/null
   ticket_for AIF-17
   "$AIF" board create tasks/AIF-17/ticket.md --column review >/dev/null
@@ -2747,9 +2835,9 @@ else
   run_bg "$OUT/t2-unread.out" 60 env AIF_START_KEYS="________" FAKE_SESSION_NOOP=1 "$AIF" start --no-build || rc=$?
   rm -f "$OUT/fault2"
   SU="$(newest_shift)"
-  eq "Trello: a card whose comments fail on every look — waited for twice, then a line naming aif board head; nothing else, so the end" \
+  eq "Trello: a card whose comments fail on every look — waited for twice, then a line naming aif board head; nothing else, so the end — 3, the board's" \
     "$rc|$(jq -r .why "$SU/summary.json" 2>/dev/null)|$(grep -c '^waiting — 1 card not read yet' "$OUT/t2-unread.out")|$(jq -r '[.left[] | select(.ticket == "AIF-17") | .command + " · " + (.text | sub(" — .*"; ""))] | join(";")' "$SU/summary.json" 2>/dev/null)" \
-    "0|nothing left for the shift|2|aif board head AIF-17 · its comments could not be read for 3 looks in a row"
+    "3|nothing else left, and the board would not give the comments of AIF-17 for three looks in a row — the board, not the cards|2|aif board head AIF-17 · its comments could not be read for 3 looks in a row"
   "$AIF" board move AIF-17 "done" >/dev/null
 
   # A comment moves a Trello card's last activity, the moved_at the build in
@@ -2787,6 +2875,51 @@ else
   eq "Trello: a person's comment on a card the loop left in Ready moves its last activity — the build here is not offered again" \
     "$(grep -c '^next: build' "$OUT/t2-entry.out"),$(find "$SE" -maxdepth 1 -name 'loop-*' | wc -l | tr -d ' '),$(col AIF-18)" "1,1,ready"
   for t in AIF-18 AIF-19; do
+    kill "$(cat "$OUT/f-$t.pid")" 2>/dev/null
+    rm -rf ".aif/state/runs/$t"
+    "$AIF" board move "$t" "done" >/dev/null
+  done
+
+  # A card that leaves Ready and comes back between two looks was never seen
+  # gone, and kept the stamp it first came in with: its build here was not
+  # offered again (docs/DEFECTS.md 15.9). Every move aif makes into Ready says
+  # so first — `released by aif …`, `sync:` — and a card whose head is one of
+  # those, newer than its stamp, came in again. Here it goes to Backlog and
+  # back with a release line, all of it right after a look, the looks eight
+  # seconds apart: the build is offered a second time.
+  ticket_for AIF-24
+  ticket_for AIF-25
+  "$AIF" board create tasks/AIF-24/ticket.md --column ready >/dev/null
+  "$AIF" board create tasks/AIF-25/ticket.md --column in_progress >/dev/null
+  for t in AIF-24 AIF-25; do
+    ( (exec -a "aif work $t" sleep 120) & printf '%s\n' "$!" >"$OUT/f-$t.pid" )
+    mkdir -p ".aif/state/runs/$t"
+    printf '{ "ticket": "%s", "pid": %s, "started_at": "%s" }\n' "$t" "$(cat "$OUT/f-$t.pid")" "$(now)" >".aif/state/runs/$t/owner.json"
+  done
+  start_bg "$OUT/t2-back.out" env AIF_START_KEYS="$keys" AIF_START_POLL=8 FAKE_SESSION_NOOP=1 "$AIF" start
+  tshift=$BG
+  wait_said "$OUT/t2-back.out" "^waiting — 1 being built" 90
+  n0="$(grep -c '^waiting — ' "$OUT/t2-back.out")"
+  i=0
+  while [ "$(grep -c '^waiting — ' "$OUT/t2-back.out")" -le "$n0" ] && [ "$i" -lt 200 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  "$AIF" board move AIF-24 backlog >/dev/null
+  say AIF-24 "aif start" "released by aif start: a person answered under the blocked: line"
+  "$AIF" board move AIF-24 ready >/dev/null
+  n0="$(grep -c '^waiting — ' "$OUT/t2-back.out")"
+  i=0
+  while [ "$(grep -c '^waiting — ' "$OUT/t2-back.out")" -lt $((n0 + 2)) ] && [ "$i" -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -TERM "$tshift" 2>/dev/null
+  wait_exit "$tshift" 30 || true
+  SE="$(newest_shift)"
+  eq "Trello: a card that left Ready and came back between two looks, a release line on it — the build here offered again" \
+    "$(grep -c '^next: build' "$OUT/t2-back.out"),$(find "$SE" -maxdepth 1 -name 'loop-*' | wc -l | tr -d ' '),$(col AIF-24)" "2,2,ready"
+  for t in AIF-24 AIF-25; do
     kill "$(cat "$OUT/f-$t.pid")" 2>/dev/null
     rm -rf ".aif/state/runs/$t"
     "$AIF" board move "$t" "done" >/dev/null

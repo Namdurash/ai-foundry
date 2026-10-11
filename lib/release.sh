@@ -116,7 +116,7 @@ aif_release_sweep() {
   for f in "$main/$AIF_TASKS_DIR"/*/ticket.md; do
     [ -f "$f" ] || continue
     t="$(basename "$(dirname "$f")")"
-    printf '%s\n' "$t" | grep -Eq -- "$re" || continue
+    aif_ticket_match "$re" "$t" || continue
     col="$(printf '%s' "$statuses" | jq -r --arg t "$t" '[ .[] | select(.ticket == $t) ] | .[0].column // empty')"
     [ "$col" = "backlog" ] || continue
     # A card with nothing to wait on is not this pass's: it is in Backlog

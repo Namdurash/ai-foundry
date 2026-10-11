@@ -499,36 +499,38 @@ _aif_trello_require_card() {
     aif_die "no card named $2 on the Trello board — create it: aif board create $AIF_TASKS_DIR/$2/ticket.md"
 }
 
+# The top card of Ready whose name is a ticket: its first word — a colon after
+# it taken off, as the card cache keys it — matched whole by the project's
+# pattern with jq's `test` (docs/DEFECTS.md 15.9). Not the pattern's anchors
+# cut off to match a prefix, then `grep -oE` to cut the id out: that read a
+# pattern jq reads (`\z`) as no card at all.
 _aif_trello_next_ready() {
   local root="$1" list out re
   list="$(_aif_trello_list_id "$root" ready)"
   [ -n "$list" ] || aif_die "project.json board.lists.ready is empty — run: aif board init trello"
-  re="$(aif_board_ticket_re "$root" | sed 's/^\^//; s/\$$//')"
+  re="$(aif_board_ticket_re "$root")"
   out="$(_aif_trello_call "$root" GET "/lists/$list/cards" -G --data-urlencode "fields=name,pos")" ||
     aif_die "Trello: could not read the Ready list — $out"
   # The ids it saw, for the move that follows (docs/DEFECTS.md 13.8).
   _aif_trello_cache_put "$root" "$out"
   printf '%s' "$out" | jq -r --arg re "$re" \
-    '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[0].name // empty' |
-    grep -oE "^$re" | sed -n 1p
+    '[ .[] | { id: ((.name // "") | split(" ")[0] | sub(":$"; "")), pos } | select(.id | test($re)) ] | sort_by(.pos) | .[0].id // empty'
 }
 
 # The whole Ready column, in the board's order — what a loop running several
-# workers chooses from, skipping the cards it has already taken. `|| true` at
-# the end: grep with nothing to print exits 1, and under pipefail an empty
-# column would read as a failed call.
+# workers chooses from, skipping the cards it has already taken. Its tickets
+# read as _aif_trello_next_ready reads them.
 _aif_trello_ready_list() {
   local root="$1" list out re
   list="$(_aif_trello_list_id "$root" ready)"
   [ -n "$list" ] || aif_die "project.json board.lists.ready is empty — run: aif board init trello"
-  re="$(aif_board_ticket_re "$root" | sed 's/^\^//; s/\$$//')"
+  re="$(aif_board_ticket_re "$root")"
   out="$(_aif_trello_call "$root" GET "/lists/$list/cards" -G --data-urlencode "fields=name,pos")" ||
     aif_die "Trello: could not read the Ready list — $out"
   # The ids it saw, for the takes that follow (docs/DEFECTS.md 13.8).
   _aif_trello_cache_put "$root" "$out"
   printf '%s' "$out" | jq -r --arg re "$re" \
-    '[ .[] | select(.name | test("^" + $re)) ] | sort_by(.pos) | .[].name' |
-    grep -oE "^$re" || true
+    '[ .[] | { id: ((.name // "") | split(" ")[0] | sub(":$"; "")), pos } | select(.id | test($re)) ] | sort_by(.pos) | .[].id'
 }
 
 # _aif_trello_pull <root> <ID> — the card's description becomes ticket.md.

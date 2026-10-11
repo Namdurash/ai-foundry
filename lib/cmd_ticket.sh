@@ -27,7 +27,7 @@ aif_cmd_ticket_init() {
 
   pattern="$(jq -r '.ticket_pattern // "^[A-Z]{2,10}-[0-9]+$"' \
     "$(aif_project_config "$root")" 2>/dev/null)"
-  if ! printf '%s' "$ticket" | grep -qE "$pattern"; then
+  if ! aif_ticket_match "$pattern" "$ticket"; then
     aif_die "ticket '$ticket' does not match $pattern (from project.json)"
   fi
 

@@ -21,7 +21,9 @@
 #      head, printed on exit 1 too
 #   3  trello: init maps the columns it can and creates the rest only when
 #      told; check refuses a missing token loudly; create writes the ticket as
-#      the card's description and pull reads it back byte for byte; a card the
+#      the card's description and pull reads it back byte for byte; next-ready
+#      matches the ticket pattern as jq reads it, a pattern grep -E does not
+#      read (`\z`) too (15.9); a card the
 #      analyst did not write is refused at pull; comment, label, status, show,
 #      head, head --json with Trello's milliseconds taken off; a comment is
 #      held to Trello's 16384 characters counted as Trello counts them — a
@@ -418,6 +420,14 @@ ticket_for AIF-2
 "$AIF" board create tasks/AIF-2/ticket.md --column ready >/dev/null
 "$AIF" board move AIF-2 ready --top >/dev/null
 eq "--top on trello, and next-ready follows" "$("$AIF" board next-ready)" "AIF-2"
+# The Ready reads match the ticket pattern with jq, as the shift's facts do
+# (docs/DEFECTS.md 15.9): they cut its anchors off and cut the id out with
+# grep -oE, and a pattern jq reads that grep -E does not (`\z`) read as no
+# card in Ready at all.
+cp .aif/project.json "$OUT/pre-z-project.json"
+jq '.ticket_pattern = "^[A-Z]{2,10}-[0-9]+\\z"' "$OUT/pre-z-project.json" >.aif/project.json
+eq "a ticket pattern jq reads and grep -E does not (\\z): next-ready still names the top of Ready" "$("$AIF" board next-ready)" "AIF-2"
+cp "$OUT/pre-z-project.json" .aif/project.json
 # Trello stamps a time to the millisecond (the mock: 2026-09-17T00:00:00.000Z);
 # the head's time drops them, so it compares with a local board's and with
 # `date -u`.

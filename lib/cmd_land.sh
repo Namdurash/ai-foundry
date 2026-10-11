@@ -1570,13 +1570,13 @@ aif_cmd_land() {
   root="$(aif_require_project)"
   main="$(aif_main_root "$root")"
   if [ "$root" != "$main" ]; then
-    aif_err "this is a worker's checkout, not the main one — land from: cd $main"
+    aif_err "this is a worker's checkout, not the main one — land from: cd $(aif_shq "$main")"
     exit 3
   fi
 
   local pattern
   pattern="$(aif_board_ticket_re "$root")"
-  printf '%s' "$ticket" | grep -qE "$pattern" ||
+  aif_ticket_match "$pattern" "$ticket" ||
     aif_die "ticket '$ticket' does not match $pattern (from project.json)"
 
   # One land per checkout, from here to its end (aif_land_lock_dir): one moves

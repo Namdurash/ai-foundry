@@ -364,7 +364,7 @@ _aif_work_block() {
   if ! (AIF_BOARD_BY="${AIF_WORK_BLOCK_BY:-aif work}" AIF_BOARD_FULL_AT="$full_at" aif_board_comment "$root" "$ticket" "$f" >/dev/null); then
     keep="$(aif_main_root "$root")/.aif/tmp/blocked-$ticket.md"
     { mkdir -p "$(dirname "$keep")" && cp "$f" "$keep"; } 2>/dev/null || keep="$f"
-    aif_warn "why did not reach the card — post it when the board answers: aif board comment $ticket $keep"
+    aif_warn "why did not reach the card — post it when the board answers: aif board comment $ticket $(aif_shq "$keep")"
     said="why NOT on the card (above)"
     rc=1
   fi
@@ -5453,7 +5453,7 @@ _aif_work_loop_early() {
 # rc 0 told (drain) or stopped (stop) · 1 no loop to tell, or a stop that did
 # not end it within 90 seconds.
 _aif_work_loop_tell() {
-  local root="$1" what="$2" lock pid who logdir l t0 why pg
+  local root="$1" what="$2" lock pid who logdir l t0 why pg d
   lock="$(aif_loop_lock_dir "$root")"
   if [ ! -d "$lock" ]; then
     aif_err "no loop is running on this checkout — nothing to $what"
@@ -5498,8 +5498,13 @@ _aif_work_loop_tell() {
   # the handler it has then (_aif_work_loop_early) answers by releasing the
   # lock and ending 143 — to its whole group when it leads one, as a loop
   # started from a terminal or by a shift does, so the probe it waits on ends
-  # with it and the handler runs at once; else to the loop alone, whose
-  # handler then runs once the probe is done (docs/FINDINGS.md #23).
+  # with it and the handler runs at once. A loop that leads no group — one a
+  # script started in the background — shares it with whoever started it,
+  # which a TERM to the group would stop too: the loop and every process
+  # under it, found by walking the tree (_aif_work_descendants). To the loop
+  # alone, its handler ran only once the probe was done (docs/FINDINGS.md
+  # #23), and a probe longer than the wait below answered "still running
+  # after 90 s" with 1 over a loop that did stop (docs/DEFECTS.md 15.9).
   l="$(jq -r '.logdir // empty' "$lock/owner.json" 2>/dev/null)" || l=""
   if [ -z "$logdir" ] && [ -z "$l" ] && [ "$(_aif_work_lock_pid "$lock")" = "$pid" ]; then
     pg="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" || pg=""
@@ -5507,6 +5512,9 @@ _aif_work_loop_tell() {
       kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
     else
       kill -TERM "$pid" 2>/dev/null || true
+      for d in $(_aif_work_descendants "$pid"); do
+        kill -TERM "$d" 2>/dev/null || true
+      done
     fi
   fi
   logdir="${logdir:-$l}"
@@ -6347,7 +6355,7 @@ $(head -20 "$gate_out")"
     if (AIF_BOARD_BY="aif work" AIF_BOARD_FULL_AT="$full_at" aif_board_comment "$root" "$ticket" "$report_path" >/dev/null); then
       posted=1
     else
-      aif_warn "the report did not reach the card — post it when the board answers: aif board comment $ticket ${report_path#"$root"/}"
+      aif_warn "the report did not reach the card — post it when the board answers: aif board comment $ticket $(aif_shq "${report_path#"$root"/}")"
     fi
     if ! (aif_board_move "$root" "$ticket" "$col" >/dev/null); then
       aif_warn "could not move $ticket to $col on the board — run: aif board move $ticket $col"

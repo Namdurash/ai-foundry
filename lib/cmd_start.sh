@@ -100,7 +100,9 @@ _aif_start_board() {
 #     cards: [ { ticket, title, column, pos, labels, moved_at, unread, unread_why,
 #                comments (the local board's count; null on Trello),
 #                entry (on Trello, a Ready card's moved_at when the shift
-#                       first saw it there, kept while it stays: R12's key),
+#                       first saw it there, kept while it stays — unless a
+#                       release or a sync: line newer than it says it came
+#                       in again: R12's key),
 #                unread_looks (looks in a row its head failed; 0 once read),
 #                head: { line, at, body, after,
 #                        heads: [ { line, at, edited_at } ], more, read,
@@ -274,7 +276,12 @@ _aif_start_facts_in() {
                  | { ticket, title, column, pos, labels: (.labels // []), moved_at: (.moved_at // null),
                      comments: (.comments // null),
                      entry: (if $kind == "trello" and .column == "ready"
-                             then ($em[$c.ticket] // .moved_at // null) else null end),
+                             then ($em[$c.ticket] // null) as $was
+                                  | if $was != null and (($y.head.line // "") | test("^(released by aif |sync: )"))
+                                       and ((($y.head.at // "") | tostring)[0:19] > ($was | tostring)[0:19])
+                                    then (.moved_at // $was)
+                                    else ($was // .moved_at // null) end
+                             else null end),
                      unread: ($y.unread // false), unread_why: ($y.unread_why // null),
                      unread_looks: ($y.unread_looks // 0),
                      head: ($y.head // null), local: ($y.local // null),
@@ -412,7 +419,7 @@ _aif_start_claim_due() {
 # named (`kept_block`), for the oracle to post it (14.2).
 _aif_start_cards() {
   local root="$1" tmp="$2" kind="$3" main shiftdir cap reads=0 tab host clone reread
-  local id col key cache cached hj hrc unread why loc meta tf f sha kept looks
+  local id col key cache cached hj hrc unread why loc meta tf f sha kept looks ent ma
   main="$(aif_main_root "$root")"
   host="$(aif_host_short)"
   clone="$(aif_clone_id "$root")"
@@ -503,6 +510,40 @@ _aif_start_cards() {
             [ -n "$why" ] || why="the card could not be read"
             looks=$((looks + 1))
             [ -z "$cache" ] || { printf '%s\n' "$looks" >"$cache.unread"; } 2>/dev/null || true
+          fi
+        fi
+        ;;
+      ready)
+        # On Trello, a card in Ready that changed since the shift first saw it
+        # there: its head, for whether it came in again (the facts' `entry`,
+        # docs/DEFECTS.md 15.9). Cached as the others are, under the same
+        # per-tick cap; a read that fails is no head, and nothing waits on it.
+        ent=""
+        [ "$kind" != trello ] || ent="$(printf '%s\n' "${AIF_START_ENTRY:-}" | awk -F '\t' -v t="$id" '$1 == t { print $2; exit }')" || ent=""
+        ma="${key#*|}"
+        ma="${ma%%|*}"
+        if [ -n "$ent" ] && [ "$ent" != "$ma" ]; then
+          cache=""
+          case "$id" in
+            *[!A-Za-z0-9._-]*) ;;
+            *) [ -z "$shiftdir" ] || cache="$shiftdir/cards/$id" ;;
+          esac
+          if [ -n "$cache" ] && [ -f "$cache.key" ] && [ -f "$cache.head" ] &&
+            [ "$(cat "$cache.key" 2>/dev/null)" = "$key" ]; then
+            hj="$(jq -c 'objects' "$cache.head" 2>/dev/null)" || hj=""
+            [ -n "$hj" ] || hj=null
+          elif [ "$cap" -eq 0 ] || [ "$reads" -lt "$cap" ]; then
+            reads=$((reads + 1))
+            hrc=0
+            hj="$(aif_board_head_json "$root" "$id" 2>/dev/null </dev/null)" || hrc=$?
+            if [ "$hrc" -le 1 ] && printf '%s' "$hj" | jq -e 'type == "object"' >/dev/null 2>&1; then
+              if [ -n "$cache" ]; then
+                rm -f "$cache.key" 2>/dev/null || true
+                { printf '%s\n' "$hj" >"$cache.head" && printf '%s' "$key" >"$cache.key"; } 2>/dev/null || true
+              fi
+            else
+              hj=null
+            fi
           fi
         fi
         ;;
@@ -800,9 +841,9 @@ point's countdown, 10 s) and POLL (how often a waiting shift looks again,
 30 s). A flag beats the file; for a role, its own flag beats --model.
 
 Exit: 0 nothing left, q or --max-units · 1 a session that failed, a bad flag
-· 3 the environment (the start, a board that did not answer twice, a machine
-that fails its preflight again, a build that ended 3) · 129 the terminal
-closed · 130 Ctrl-C · 143 a TERM.
+· 3 the environment (the start, a board that did not answer twice, a card it
+could never read, a machine that fails its preflight again, a build that
+ended 3) · 129 the terminal closed · 130 Ctrl-C · 143 a TERM.
 EOF
 }
 
@@ -1306,7 +1347,7 @@ _aif_start_comment_move() {
       keep="$AIF_START_SHIFT_DIR/comment-$id.md"
       cp "$f" "$keep" 2>/dev/null || keep="$f"
       [ "$keep" = "$f" ] || rm -f "$f"
-      AIF_START_BYHAND="aif board comment $id $keep && aif board move $id $to$flag"
+      AIF_START_BYHAND="aif board comment $id $(aif_shq "$keep") && aif board move $id $to$flag"
       _aif_start_say "board" "$id — the comment did not go through (${AIF_START_ERR:-the board refused it}); nothing moved. By hand: $AIF_START_BYHAND"
       return 1
     fi
@@ -1442,10 +1483,10 @@ _aif_start_move() {
         if _aif_start_post "$root" "$id" "$file"; then
           rm -f "$file" 2>/dev/null || true
         elif [ "$from" = "$to" ]; then
-          _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}). By hand: aif board comment $id $file"
+          _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}). By hand: aif board comment $id $(aif_shq "$file")"
           ok=1
         else
-          _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}); nothing moved. By hand: aif board comment $id $file && aif board move $id $to"
+          _aif_start_say "board" "$id — its blocked: line did not go through (${AIF_START_ERR:-the board refused it}); nothing moved. By hand: aif board comment $id $(aif_shq "$file") && aif board move $id $to"
           ok=1
         fi
         if [ "$ok" -eq 0 ] && [ "$from" != "$to" ] && ! _aif_start_mv "$root" "$id" "$to"; then
@@ -1616,7 +1657,11 @@ _aif_start_uuid() {
 # land:, sync:, `# <ID> — landed`), other than the one the facts read, is a
 # line of the after the before never has. The loop's heads — taken:, a
 # report, blocked: — are not among them, so its work under an open session
-# still changes nothing.
+# still changes nothing. And a card that came into Ready from any column but
+# In Progress is the session's, with a line or without: the loop takes cards
+# out of Ready and never puts one in, and a project manager who only dragged
+# a card from Needs Human to Ready read as "changed nothing", the shift
+# paused (docs/DEFECTS.md 15.9).
 _aif_start_snapshot() {
   local root="$1" id="$2" out="$3" facts="${4:-}" from="${5:-board}" main st="" col="-" ids hj="" head="" paths p re
   local also="" others t hj2 line2 seen2
@@ -1652,11 +1697,25 @@ _aif_start_snapshot() {
     others="$(printf '%s' "$st" | jq -r --slurpfile f "$facts" --arg id "$id" '
       def key: "\(.column)|\(.moved_at // "")|\(.comments // "")";
       ([ ($f[0].cards // [])[] | { key: .ticket, value: key } ] | from_entries) as $was
-      | .[] | select(.column != "in_progress" and .column != "ready" and .ticket != $id)
+      | ([ ($f[0].cards // [])[] | { key: .ticket, value: .column } ] | from_entries) as $wascol
+      | .[] | select(.ticket != $id)
       | select(key != ($was[.ticket] // ""))
-      | .ticket' 2>/dev/null)" || others=""
+      | if .column == "ready" and $wascol[.ticket] != null
+           and $wascol[.ticket] != "ready" and $wascol[.ticket] != "in_progress"
+        then "M \(.ticket) \($wascol[.ticket])"
+        elif .column != "in_progress" and .column != "ready" then "H \(.ticket)"
+        else empty end' 2>/dev/null)" || others=""
     while IFS= read -r t <&3; do
-      [ -n "$t" ] || continue
+      case "$t" in
+        "M "*)
+          t="${t#M }"
+          also="${also}also: ${t%% *} into ready from ${t#* }
+"
+          continue
+          ;;
+        "H "*) t="${t#H }" ;;
+        *) continue ;;
+      esac
       hj2="$(aif_board_head_json "$root" "$t" 2>/dev/null </dev/null)" || continue
       line2="$(printf '%s' "$hj2" | jq -r '.line // empty' 2>/dev/null)" || line2=""
       case "$line2" in
@@ -2291,7 +2350,9 @@ _aif_start_summary() {
     --arg moves "${AIF_START_MOVES:-}" --arg donekeys "${AIF_START_DONE:-}" --arg kept "$kept" \
     --arg cfg "${CLAUDE_CONFIG_DIR:-}" --arg q "'" '
     ([ $kept | split("\n")[] | select(length > 0) | split("\t") | { key: .[0], value: .[1] } ] | from_entries) as $kf
-    | def ucmd: if .kind == "session" then "claude \($q)\(.prompt)\($q)"
+    # A path quoted as aif_shq quotes it, so that the line pastes whole.
+    | def shq: if test("^[A-Za-z0-9_./:=+@%,-]+$") then . else @sh end;
+      def ucmd: if .kind == "session" then "claude \($q)\(.prompt)\($q)"
               elif .kind == "land" then "aif land \(.ticket)"
               elif .kind == "demo" then "claude \($q)/aif-pjm \(.ticket)\($q)"
               elif .kind == "build" then "aif work --loop"
@@ -2312,8 +2373,8 @@ _aif_start_summary() {
                        command: (if .kind == "sweep" then "aif board release"
                                  elif .kind == "rework" or .kind == "cancel" then "claude \($q)/aif-pjm \(.ticket)\($q)"
                                  elif .comment == null and .where == null then "aif board move \(.ticket) \(.to)"
-                                 elif $kf[.ticket] != null and .from == .to then "aif board comment \(.ticket) \($kf[.ticket])"
-                                 elif $kf[.ticket] != null then "aif board comment \(.ticket) \($kf[.ticket]) && aif board move \(.ticket) \(.to)"
+                                 elif $kf[.ticket] != null and .from == .to then "aif board comment \(.ticket) \($kf[.ticket] | shq)"
+                                 elif $kf[.ticket] != null then "aif board comment \(.ticket) \($kf[.ticket] | shq) && aif board move \(.ticket) \(.to)"
                                  else "aif work --status \(.ticket)" end) } ]
                + [ ($p.units // [])[] | select(fresh) | { rule, ticket, file, column, text, command: ucmd } ]
                + (if $b.mode == "elsewhere" and $b.loop.live == true
@@ -2466,6 +2527,12 @@ _aif_start_shift() {
     # 15.9); a card that leaves and comes back is new. The run's own times
     # would not do: a card the gate sent back to the analyst before its run
     # wrote a record has none, and its return to Ready read as the same build.
+    # A card that left and came back between two looks was never seen gone,
+    # and kept its first stamp, its build not offered again (15.9): every move
+    # aif makes into Ready says so first, `released by aif …` or `sync:`, so a
+    # card whose head is one of those, newer than its stamp, came in again and
+    # takes its moved_at now. A person's comment is no head, and a claim
+    # (`taken:`) on a card the loop left in Ready says nothing of a return.
     AIF_START_ENTRY="$(jq -r '.cards[] | select(.column == "ready" and .entry != null) | "\(.ticket)\t\(.entry)"' \
       "$dir/facts.json" 2>/dev/null)" || AIF_START_ENTRY=""
     # In a subshell: a trap that ran inside this call would print with its

@@ -173,7 +173,8 @@
 #      opened by hand in a dead run's worktree is never signalled and refuses
 #      the takeover; a card taken twice has a log for each take
 #  58  a Ctrl-C during the Ready read is not the board; aif work --loop
-#      --stop reaches a loop still in its preflight; a loop that is not idle
+#      --stop reaches a loop still in its preflight, one that leads no process
+#      group too, in seconds; a loop that is not idle
 #      asks the machine again before one failed Ready read ends it 3
 #  59  a .gitignore block written by an older aif, without the worktrees line:
 #      the worker adds that line to the block and says so, and every line the
@@ -5483,6 +5484,36 @@ wait_exit "$l58" 40 || rc1=$?
 eq "aif work --loop --stop while the loop probes the suite in its preflight: the loop ends 143 in seconds, the probe with it, its lock gone, and the stop says so" \
   "$rc,$rc1,$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(pgrep -f 'sleep 25.8' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released),$(grep -c "stopped the loop (pid $l58) — it stopped before taking a card" "$OUT/run58b2.out")" \
   "0,143,prompt,0,released,1"
+# A loop that leads no process group — a script started it in the background
+# (docs/DEFECTS.md 15.9): the stop sent its TERM to the loop alone, whose
+# handler ran only once the probe was done, and a probe longer than the
+# stop's 90 s answered 1 over a loop that did stop. The loop and every process
+# under it now; whoever started it, in the same group, untouched.
+rm -f .aif/tmp/probing58
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$SANDBOX/p58-loop-n" python3 -c '
+import os, signal, sys, time
+os.setpgrp()
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+pid = os.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+open(sys.argv[1], "w").write(str(pid))
+_, st = os.waitpid(pid, 0)
+open(sys.argv[1] + ".rc", "w").write(str(os.waitstatus_to_exitcode(st)))
+time.sleep(60)' "$OUT/p58n.pid" "$AIF" work --loop --idle --no-tui >"$OUT/run58n.out" 2>&1 &
+s58=$!
+IDLE_PIDS="$IDLE_PIDS $s58"
+wait_file .aif/tmp/probing58 30
+t0=$SECONDS
+rc=0
+"$AIF" work --loop --stop >"$OUT/run58n2.out" 2>&1 || rc=$?
+secs=$((SECONDS - t0))
+wait_file "$OUT/p58n.pid.rc" 40
+eq "…a loop that leads no process group: the stop ends it 143 in seconds, the probe with it, its lock gone — the process that started it untouched" \
+  "$rc,$(cat "$OUT/p58n.pid.rc" 2>/dev/null),$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(pgrep -f 'sleep 25.8' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released),$(kill -0 "$s58" 2>/dev/null && echo alive || echo gone)" \
+  "0,143,prompt,0,released,alive"
+kill "$s58" 2>/dev/null
+wait "$s58" 2>/dev/null
 rm -f .aif/tmp/slow58 .aif/tmp/probing58
 git checkout -- .aif/project.json
 

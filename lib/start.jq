@@ -207,7 +207,9 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   # row (`unread_looks`, counted by the facts): a board that never answers for
   # one card kept the shift waiting on it until q, its line the only word of
   # why (docs/DEFECTS.md 15.9). Past that it is a line the shift does not wait
-  # on — still nothing decided on it.
+  # on — still nothing decided on it — and a shift with nothing else left ends
+  # on the board, 3, naming the card: it ended 0, "nothing left for the
+  # shift", over a card it had never read (15.9).
   def gave_up: .unread == true and (.unread_looks // 0) >= 3;
   def unread_line:
     if gave_up then
@@ -690,6 +692,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   { backlog: count("backlog"), ready: count("ready"), in_progress: count("in_progress"),
     review: count("review"), needs_human: count("needs_human"), done: count("done") } as $counts
 | ([ $cards[] | select(.unread == true) | select(gave_up | not) ] | length) as $unread
+| [ $cards[] | select(gave_up) | .ticket ] as $gaveup
 | ([ col("in_progress")[] | select(.local.class == "live") ] | length) as $building
 | [ col("in_progress")[] | ip_entries[] ] as $ip
 | [ col("review")[] | rv_entries[] ] as $rv
@@ -919,5 +922,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     "end": (if $idle and ($inflight | not) and ($units | length) == 0
             then (if $pstate == "held"
                   then { rc: 3, why: "\($pausesay) — longer than the shift waits; rm .aif/state/pause to try anyway" }
+                  elif ($gaveup | length) > 0
+                  then { rc: 3, why: "nothing else left, and the board would not give the comments of \($gaveup | join(", ")) for three looks in a row — the board, not the cards" }
                   else { rc: 0, why: "nothing left for the shift" } end)
             else null end) }

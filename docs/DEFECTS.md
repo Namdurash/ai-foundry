@@ -35,49 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 15.9 Smaller seams found building the shift — read unless said
-
-Eleven seams. After 0.16.0 most are closed: `aif _ready` exits 3 for a gate
-not installed, and the facts tell that (`aif init`) from a gate that could not
-run; a card whose comments fail three looks in a row is a line nothing waits
-on; a session that changed only another card is a change; a move never tried
-is left with its comment in `<shiftdir>/comment-<ID>.md` and the two commands
-that make it; R12's key on Trello is a card's entry into Ready as the shift
-saw it; a terminal that takes no write after a failed session is the hang-up,
-129 (probed); the key and session seams are the shift's own, and `*` is a
-whole wait; `--status` lists `--no-worktree` builds and says "its phase
-unknown" of a lock with no phase; a signal during the Ready read is not the
-board, and `--loop --stop` reaches a loop in its preflight (check-start layers
-A, C, T and D; scenarios 55, 58). What is left, each found by an independent
-check of those fixes:
-
-- The ticket pattern is jq's in the facts and the loose-ticket scan only.
-  lib/release.sh's sweep still `grep -E`s it — with `\z` the oracle plans "the
-  sweep releases AIF-2" and the sweep releases nothing —, `aif land` refuses
-  such a pattern (`grep -qE`, lib/cmd_land.sh), and Trello's next-ready
-  matches with jq, then `grep -oE` (probed).
-- A shift that ends "nothing left for the shift" with a card it could never
-  read ends rc 0 (probed).
-- A session that only moves a card from Needs Human to Ready, with no comment,
-  still reads as "changed nothing": Ready is outside the after-read (probed).
-- The by-hand lines print a path unquoted: in a project whose path holds a
-  space the pasted line fails, and `&&` stops the move — safe, not useful
-  (probed).
-- On Trello a card that leaves Ready and comes back between two looks keeps
-  its first entry, and its build is not offered again (read).
-- A loop that leads no process group answers `--stop` after 90 s with rc 1,
-  though it does stop (read; the code says so).
-
-What a fix has to decide: each its own; none of them stops a shift on a local
-board.
-
-#### Directions
-
-- One matcher for the ticket pattern — jq's `test` — in the sweep, the land
-  and next-ready, a row per site.
-- The rest one at a time, each with its row in `check-start.sh` or
-  `check-work.sh`.
-
 ### 16.4 What the gates let through can hide a regression the ticket made — probed
 
 Since 13.9 the gates let through what was red before the ticket (`red_at_base`
@@ -527,6 +484,7 @@ every entry but 15.5 and 15.9 closed, with three found on the way
 - **15.8** In this terminal a held build with Ready still holding cards ended the shift, though its line said `b` — read. It is a unit, *build again* (R13): its default is to leave it, Enter or `b` builds under its own key and lets the hold go; passed by, it is a line naming `aif work --loop --parallel N`, and the shift may end; behind a review, the line it was (lib/start.jq, `_aif_start_offer`, `_aif_start_run_build`). On `main` after 0.16.0; check-start layers A and C.
 - **15.10** The loop's dashboard ended a closed window with 1, no `summary.json` and its lock left — probed (a pty, the dashboard on: 5 of 5 idle, 6 of 6 with a card held at plan; every card settled). bash runs a trap inside the redirections of the builtin it interrupts, and the dashboard spends its seconds in `read … </dev/tty 2>/dev/null`: the HUP handler's `exec >>loop.log 2>&1` was undone for fd 2 when the read put back its own, the next print hit the dead terminal (EIO, errexit, 1), and the bytes it could not write leaked from stdio's buffer into every `$(…)` after it — the summary's results, the lock's pid read against `$$` (docs/FINDINGS.md #28). The tick makes the redirection again once the read is done with its own, and the EXIT branch throws away what a failed print left before it captures anything (`_aif_work_loop_to_log`, lib/cmd_work.sh). 14.8's row ran `--no-tui`; a row of scenario 48 closes the master over the dashboard. Since 0.15.0; on `main` after 0.16.0.
 - **15.11** A drain, a stop or a TERM that came while the loop read Ready was followed by one card more — probed (the read held open by a FIFO among the board's files). The drain had answered "takes no new card"; the TERM stopped every run and then started one no signal reached, which built on after its loop was gone. The stop and the files are looked at again, with builtins, before a card is taken, and a run started as a signal lands is sent it (lib/cmd_work.sh `_aif_work_loop`). The TERM half since before 0.15.0, the drain's since `--drain`; on `main` after 0.16.0; scenario 50.
+- **15.9** Smaller seams found building the shift — read unless said. Eleven closed after 0.16.0: `aif _ready` 3 for a gate not installed, a card whose comments fail three looks a line nothing waits on, a session that changed only another card a change, a move never tried kept with the commands that make it, R12 on Trello keyed on a card's entry into Ready, a terminal that takes no write the hang-up (probed), the seams the shift's own and `*` a whole wait, `--status` for `--no-worktree` builds and a lock with no phase, a signal in the Ready read not the board, `--loop --stop` reaching a loop in its preflight. And the six an independent check of those found: the ticket pattern is matched by jq's `test` everywhere — the release sweep, the land, ticket-init and the Trello Ready reads matched it with `grep -E`, which reads `\z` as no match (`aif_ticket_match`; probed); a shift with nothing left but cards it gave up reading ends 3, naming them, not 0 "nothing left" (probed); a card dragged into Ready from any column but In Progress is the session's change, not "changed nothing" (probed); the by-hand commands quote their paths (`aif_shq`), and the line from a summary in a path with a space, pasted, posts and moves (probed); on Trello a Ready card whose head is a `released by aif …` or `sync:` line newer than its stamp came in again, and its build is offered again; `--stop` sends a loop in its preflight that leads no process group its TERM with every process under it, and answers in seconds, not after the probe. On `main` after 0.16.0; check-start layers A, C, T and D, check-board, scenario 58.
 - **15.12** On Trello the shift could not tell a build of a card's earlier text from one of its current text — read. The head read hashes the description as the pull writes it (`card_sha256`), and `_aif_work_status_json` holds the run's `ticket_sha256` against it as the local board holds `ticket.md`: a card edited after its build gets R8's line — "the card changed after this build — …" — instead of R7's review or R6's land, and `aif land` on Trello refuses such a card itself, exit 1, Review kept, `aif work <ID>` named, from the column read it makes anyway (`AIF_BOARD_CARD_SHA_TO`). On `main` after 0.16.0; check-start layers A and T.
 - **15.13** A Ctrl-C that killed a `$(…)` child the loop assigned from ended the loop under `set -e` — probed while measuring 11.1: every unguarded per-second `x="$(…)"` was a window (2 of 120 dashboard trials). The clock is `SECONDS`, the run-lock directory is computed once, events guard their `$(…)`, and `aif_tui_ago` uses `printf -v` (lib/cmd_work.sh, lib/tui.sh). On `main` after 0.16.0; scenario 56.
 - **15.14** `aif_gitignore_ensure` rewrote the whole block aif manages in `.gitignore` to its one worktrees line whenever that line was missing — probed: a block of five patterns left with one, `.aif/profile.local`, `.aif/tmp/`, `.aif/state/` and `.aif/board/` no longer ignored, in the developer's file, unasked. The line joins the block and the worker says so; a block with no end line is left alone with a warning (lib/merge.sh, lib/cmd_work.sh). On `main` after 0.16.0; scenario 59. Its exact matching, and `aif init`'s own write of a block with no end, are 16.10.
@@ -538,7 +496,7 @@ every entry but 15.5 and 15.9 closed, with three found on the way
 Each fix of logs 11–15 was checked once it was committed, by a verifier that
 had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
-held. What gave way — a fix in part (15.9, above; 11.1 and 15.5, closed since), a hole a fix
+held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
 with it, 16.4–16.15 open above.
 

@@ -100,6 +100,35 @@ AIF_G_MANIFESTS='(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$'
 # shellcheck disable=SC2034
 AIF_G_LOCKFILES='(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|go\.sum)$'
 
+# AIF_G_JQ_MSG — jq definitions, put before a program that compares one
+# test's failure in two runs: `aif_rootsin($rs)` writes a tree's root, in any
+# of its spellings (aif_g_spellings), as `<root>`; `aif_nmsg` folds what a failure's message
+# varies by from run to run of one failure — a temporary path, a date or a
+# time of day, an address (0x…), a duration, a line and column. A test red
+# before the ticket is let through only when it fails there and here the
+# same way: by its id alone, a test red on main whose message gained "users()
+# is gone" — one of its two asserts the ticket's doing — went through as red
+# before the ticket (docs/DEFECTS.md 16.4). What it keeps: every other
+# number, so "expected 3, got 5" is not "expected 3, got 4". The land's twin
+# is AIF_LAND_JQ_MSG (lib/cmd_land.sh); scripts/check-work.sh holds the two
+# to one answer.
+# shellcheck disable=SC2034,SC2016  # read by the gates; jq's variables, not the shell's
+AIF_G_JQ_MSG='
+def aif_rootsin($rs):
+  reduce ($rs | map(select(type == "string" and . != "")) | unique | sort_by(-length))[] as $r
+    (.; split($r) | join("<root>"));
+def aif_nmsg:
+  gsub("(/private)?/(var/folders|tmp)/[^\\s:\"()]+"; "<tmp>")
+  | gsub("\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?"; "<time>")
+  | gsub("\\b\\d{1,2}:\\d{2}:\\d{2}(\\.\\d+)?"; "<time>")
+  | gsub("0x[0-9a-fA-F]+"; "0x#")
+  | gsub("\\b\\d+(\\.\\d+)? ?(ms|seconds|secs|sec|s)\\b"; "#")
+  | gsub(":\\d+(:\\d+)?"; ":#")
+  | gsub("\\(\\d+,\\d+\\)"; "(#,#)")
+  | gsub("\\bline \\d+"; "line #")
+  | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ");
+'
+
 # aif_g_lock_names <manifest-basename> — the lockfile names that can pin it,
 # one per line. The table behind both patterns above.
 aif_g_lock_names() {
@@ -255,6 +284,25 @@ aif_g_changed_since() {
 # among them.
 aif_g_dep_changes() {
   aif_g_changed_since "$1" "$2" | grep -E "$AIF_G_MANIFESTS|$AIF_G_LOCKFILES" || true
+}
+
+# aif_g_spellings <dir> — the ways a path to <dir> is printed, as a JSON
+# array: as given, as `cd` leaves $PWD (a TMPDIR that ends in "/" makes
+# mktemp hand back ".../T//x", which $PWD writes ".../T/x"), and resolved
+# (/var/folders/x is /private/var/folders/x). A suite prints any of them.
+aif_g_spellings() {
+  jq -cn --arg a "$1" --arg b "$(cd "$1" 2>/dev/null && pwd)" --arg c "$(cd "$1" 2>/dev/null && pwd -P)" '[$a, $b, $c]'
+}
+
+# aif_g_deps_moved <root> <base> — those, comma-separated: empty when the tree
+# installs what <base> did. A copy at <base> links the dependencies installed
+# HERE (aif_g_scratch_at), so once a manifest or lockfile moved, the base it
+# measures is not the base: a branch that took a dependency from 1 to 2 had a
+# main test that needs 1 red "before the ticket", and let through, where a
+# fresh clone of main is green (docs/DEFECTS.md 16.4). Nothing is let through
+# as the base's then.
+aif_g_deps_moved() {
+  aif_g_dep_changes "$1" "$2" | paste -sd, - | sed 's/,/, /g'
 }
 
 aif_g_reject() {
@@ -672,6 +720,9 @@ aif_g_base_key() {
         [ ! -f "$1/$f" ] || cat "$1/$f"
       done
     printf '%s' "$3"
+    # The kept run's format: since 16.4 its messages carry the copy's root
+    # folded, and one kept before that would read as another failure.
+    printf 'roots-folded'
   } | aif_g_sha256 /dev/stdin | cut -c1-12)"
   printf '%s-%s' "$2" "$h"
 }
@@ -727,6 +778,10 @@ aif_g_base_suite() {
     return 1
   fi
   json="$(python3 "$AIF_G_HERE/junit.py" "$dir/$report" 2>/dev/null)" || json=""
+  # The copy's path in a message written as <root> (aif_roots): a run kept
+  # from one copy compares with the tree, and with the next copy.
+  [ -z "$json" ] || json="$(printf '%s' "$json" | jq -c --argjson rs "$(aif_g_spellings "$dir")" \
+    "$AIF_G_JQ_MSG"' map(.message = ((.message // "") | aif_rootsin($rs)))' 2>/dev/null)" || json=""
   if [ -z "$json" ]; then
     printf 'the report it wrote there could not be read'
     return 1
@@ -735,6 +790,111 @@ aif_g_base_suite() {
     mv "$cache/$key.suite.json.$$" "$cache/$key.suite.json" 2>/dev/null || rm -f "$cache/$key.suite.json.$$"
   fi
   printf '%s' "$json"
+}
+
+# aif_g_failing_among <ids> — the tests of the junit rows on stdin that fail
+# or error, among <ids> (one a line), one a line.
+aif_g_failing_among() {
+  jq -r --arg ids "$1" '($ids | split("\n") | map(select(length > 0))) as $I
+    | .[]? | select((.status == "failure" or .status == "error") and (.id as $i | $I | index($i) != null)) | .id' 2>/dev/null
+}
+
+# aif_g_flaky_proof <project> <root> <base> <dir> <ids> — of <ids>, tests that
+# failed once here and passed on a re-run of the same tree, the ones that fail
+# at <base> too, a line each: in the run kept there (aif_g_base_suite), or in
+# one of AIF_G_FLAKE_RUNS (2) more runs of the suite in the copy at <base>,
+# stopping once each has. A flip the tree before this ticket never shows is
+# the ticket's own — a race the implementation added, failing 3 runs in 6 on
+# the built tree, passed its one re-run and went through as flaky at the
+# first attempt (docs/DEFECTS.md 16.4) — and is not printed: not let through.
+# What it costs: nothing when the base's own run shows the flip, else up to
+# AIF_G_FLAKE_RUNS suite runs in the copy, only when a test flipped. A flake
+# the base shows one run in N is missed (1 - 1/N)^3 of the time — then the
+# test is judged as any other failure.
+#
+# rc 0 · 1 the base could not be measured, the reason printed instead · 2
+# the copy could not be made, the reason printed (the caller's 3).
+aif_g_flaky_proof() {
+  local project="$1" root="$2" base="$3" dir="$4" ids="$5" bj rc=0 moved cmd report i=0 runs got left json more
+  moved="$(aif_g_deps_moved "$root" "$base")"
+  if [ -n "$moved" ]; then
+    printf 'this ticket moved %s, and the tree before it was not measured with its own dependencies' "$moved"
+    return 1
+  fi
+  bj="$(aif_g_base_suite "$project" "$root" "$base" "$dir")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s' "$bj"
+    return "$rc"
+  fi
+  got="$(printf '%s' "$bj" | aif_g_failing_among "$ids")"
+  left="$(printf '%s\n' "$ids" | grep -v '^$' | grep -vxF -- "${got:-//none//}" || true)"
+  cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
+  report="$(jq -r '.test.report.path // empty' "$project" 2>/dev/null)"
+  runs="${AIF_G_FLAKE_RUNS:-2}"
+  case "$runs" in '' | *[!0-9]*) runs=2 ;; esac
+  while [ -n "$left" ] && [ "$i" -lt "$runs" ]; do
+    i=$((i + 1))
+    if ! more="$(aif_g_base_copy "$root" "$base" "$dir" 2>&1)"; then
+      printf '%s' "$more"
+      return 2
+    fi
+    rm -f "${dir:?}/${report:?}"
+    mkdir -p "$dir/$(dirname "$report")"
+    (cd "$dir" && eval "$cmd") </dev/null >/dev/null 2>&1 || true
+    json="$(python3 "$AIF_G_HERE/junit.py" "$dir/$report" 2>/dev/null)" || json=""
+    [ -n "$json" ] || continue
+    more="$(printf '%s' "$json" | aif_g_failing_among "$left")"
+    [ -n "$more" ] || continue
+    got="$(printf '%s\n%s\n' "$got" "$more" | grep -v '^$' || true)"
+    left="$(printf '%s\n' "$left" | grep -vxF -- "$more" || true)"
+  done
+  printf '%s\n' "$got" | grep -v '^$' || true
+}
+
+# aif_g_standing_as_base <project> <root> <base> <dir> <ids> <files> — the
+# standing tests <ids> run as the tree before this ticket wrote them: a copy
+# of the tree as it is, <files> (one a line) put back as they were at <base>,
+# the suite run there once. `<id><TAB><status><TAB><message>` for each of
+# <ids> that neither passes nor is skipped there.
+#
+# "Standing" was the id and its status at the base, not the test: the tests
+# station rewrote a standing test in place — the same id, its body `true` —
+# and the implementation dropped what it held, built with nothing said
+# (docs/DEFECTS.md 16.4). What it costs: one suite run in a copy, only when a
+# standing test's file changed since the base.
+#
+# rc 0 · 1 not measured, the reason printed · 2 the copy could not be made.
+aif_g_standing_as_base() {
+  local project="$1" root="$2" base="$3" dir="$4" ids="$5" files="$6" cmd report f err json
+  cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
+  report="$(jq -r '.test.report.path // empty' "$project" 2>/dev/null)"
+  rm -rf "${dir:?}"
+  if ! err="$(aif_g_scratch_at "$root" "" "$dir" 2>&1 >/dev/null)"; then
+    printf '%s' "$err"
+    return 2
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! git -C "$root" show "$base:$f" >"$dir/$f" 2>/dev/null; then
+      printf 'could not put %s back as it was at %s' "$f" "$(printf '%s' "$base" | cut -c1-10)"
+      return 2
+    fi
+  done <<EOF
+$files
+EOF
+  rm -f "${dir:?}/${report:?}"
+  mkdir -p "$dir/$(dirname "$report")"
+  (cd "$dir" && eval "$cmd") </dev/null >"$dir.out" 2>&1 || true
+  json="$(python3 "$AIF_G_HERE/junit.py" "$dir/$report" 2>/dev/null)" || json=""
+  if [ -z "$json" ]; then
+    printf 'the suite wrote no report there that could be read — %s' "$(grep -v '^[[:space:]]*$' "$dir.out" 2>/dev/null | tail -1 | cut -c1-160)"
+    return 1
+  fi
+  printf '%s' "$json" | jq -r --arg ids "$ids" '($ids | split("\n") | map(select(length > 0))) as $I
+    | ([ .[] | .id ]) as $seen
+    | ([ .[] | select(.id as $i | $I | index($i) != null) | select(.status != "pass" and .status != "skipped")
+         | .id + "\t" + .status + "\t" + ((.message // "") | gsub("[\n\t]"; " ") | .[0:200]) ]
+       + [ $I[] | select(. as $i | $seen | index($i) == null) | . + "\tmissing\tnot collected" ]) | .[]'
 }
 
 # aif_g_base_check <project> <root> <base> <name> <dir> — one check before this
@@ -793,6 +953,36 @@ aif_g_lines() {
   ' "$1"
 }
 
+# aif_g_chain <command> — true when a check's command stops at a step that
+# fails: `a && b`. Red before the ticket, it stopped at the step that failed
+# there and here alike, and the steps after it — a type check behind a lint —
+# never ran: its being "the same before this ticket" judged nothing of this
+# ticket's code (docs/DEFECTS.md 16.4). (`a; b` and `a || b` run on past a
+# failure; `aif project check` warns of all three.) Read off the text: one
+# inside quotes counts too.
+aif_g_chain() {
+  case "$1" in
+    *'&&'*) return 0 ;;
+  esac
+  return 1
+}
+
+# aif_g_checks_let <record> — the clause a gate's line gives the checks of
+# its record let through as failing the same way before this ticket, with
+# what a chained one did not judge; empty when none was.
+aif_g_checks_let() {
+  jq -r '
+    [ .[]? | select(.result == "at_base") ] as $a
+    | if ($a | length) == 0 then empty
+      else "failing the same way before this ticket: check " + ([ $a[].name ] | join(", "))
+        + ([ $a[] | select(.chain == true) | .name ] as $c
+           | if ($c | length) == 0 then ""
+             else " — " + ($c | join(", ")) + " " + (if ($c | length) == 1 then "stops" else "stop" end)
+               + " at a step that fails (&&), and what follows it never ran, here or before: it judged nothing of this ticket'"'"'s"
+             end)
+      end' "$1" 2>/dev/null
+}
+
 # aif_g_new_lines <now> <now-root> <base-out> [<base-root>] — the lines of <now>
 # in excess of <base-out>, as <now> printed them: a multiset, so a second
 # TS2554 in a file that had one is new, and a line the base printed once
@@ -803,9 +993,12 @@ aif_g_lines() {
 # no root), and past it: positions — `(12,5)`, `:12:5`, a leading `12:5` —
 # durations — `1.9s`, `120 ms` — and counts of errors, problems, warnings and
 # files, all folded to `#`. A line whose number moved is the same line; "Done
-# in 1.9s" is "Done in 2.31s"; "Found 3 errors" is "Found 2 errors", since a
-# summary line moves with every fix and is not a failure of its own
-# (docs/FINDINGS.md #36). What it cannot tell: a base error fixed and a new
+# in 1.9s" is "Done in 2.31s"; "Found 2 errors" answers for "Found 3 errors",
+# since a summary line moves with every fix on main and is not a failure of
+# its own (docs/FINDINGS.md #36) — but not the other way: a count that GREW
+# is new. Folded, "Found 1 error" read as "Found 2 errors", and a second
+# error the ticket added under a count line went through as the base's
+# (docs/DEFECTS.md 16.4). What it cannot tell: a base error fixed and a new
 # one with the same words in the same file net to nothing.
 aif_g_new_lines() {
   local n1="$2" n2 b1="${4:-}" b2=""
@@ -837,19 +1030,46 @@ aif_g_new_lines() {
       gsub(/[0-9]+ (errors|error|problems|problem|warnings|warning|files|file)/, "# n", s)
       return s
     }
+    # The counts a line says, in order — what norm() folds to `# n` — as
+    # "3,1": a line that answers for another may not say more of them.
+    function counts(s,   c, t) {
+      c = ""
+      while (match(s, /[0-9]+ (errors|error|problems|problem|warnings|warning|files|file)/)) {
+        t = substr(s, RSTART, RLENGTH)
+        sub(/ .*/, "", t)
+        c = c (c == "" ? "" : ",") t
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return c
+    }
+    function within(a, b,   x, y, n, i) {
+      if (a == b) return 1
+      n = split(a, x, ",")
+      if (split(b, y, ",") != n) return 0
+      for (i = 1; i <= n; i++) if (x[i] + 0 > y[i] + 0) return 0
+      return 1
+    }
     BEGIN {
       while ((getline line < bf) > 0) {
         line = clean(line)
         if (line !~ /[^ \t]/) continue
-        seen[norm(roots(line, ENVIRON["AIF_G_B1"], ENVIRON["AIF_G_B2"]))]++
+        line = roots(line, ENVIRON["AIF_G_B1"], ENVIRON["AIF_G_B2"])
+        k = norm(line)
+        bc[k, ++nb[k]] = counts(line)
       }
     }
     { line = clean($0) }
     line !~ /[^ \t]/ { next }
     {
-      k = norm(roots(line, ENVIRON["AIF_G_N1"], ENVIRON["AIF_G_N2"]))
-      if (seen[k] > 0) seen[k]--
-      else print line
+      l2 = roots(line, ENVIRON["AIF_G_N1"], ENVIRON["AIF_G_N2"])
+      k = norm(l2)
+      c = counts(l2)
+      hit = 0
+      for (j = 1; j <= nb[k]; j++) {
+        if ((k, j) in used) continue
+        if (within(c, bc[k, j])) { used[k, j] = 1; hit = 1; break }
+      }
+      if (!hit) print line
     }
   ' "$1"
 }
@@ -938,7 +1158,7 @@ aif_g_checks_run() {
   local project="$1" root="$2" phase="$3" record="$4" tests="${5:-}" keep="${6:-}"
   local base="${7:-}" dir="${8:-}"
   local name cmd required rc out n=0 rows="" viol="" tab result note legit bad tf=""
-  local brow brc b_rc b_out all newn same_say
+  local brow brc b_rc b_out all newn same_say chain
   tab="$(printf '\t')"
 
   : >"$record"
@@ -972,7 +1192,12 @@ aif_g_checks_run() {
     result=pass
     note="$(tail -3 "$out" | tr '\n\t' '  ')"
     same_say=""
-    if [ "$rc" -ne 0 ] && [ "$required" = "true" ] && [ -n "$base" ] && [ -n "$dir" ]; then
+    # Not measured before this ticket when it moved the dependencies: the copy
+    # there would run with the ones installed here (aif_g_deps_moved, 16.4).
+    if [ "$rc" -ne 0 ] && [ "$required" = "true" ] && [ -n "$base" ] && [ -n "$dir" ] &&
+      [ -n "$(aif_g_deps_moved "$root" "$base")" ]; then
+      same_say="  Whether it failed this way before this ticket was not measured: this ticket moved $(aif_g_deps_moved "$root" "$base"), and the tree before it would run with the dependencies installed here."
+    elif [ "$rc" -ne 0 ] && [ "$required" = "true" ] && [ -n "$base" ] && [ -n "$dir" ]; then
       brc=0
       brow="$(aif_g_base_check "$project" "$root" "$base" "$name" "$dir")" || brc=$?
       [ "$brc" -ne 2 ] ||
@@ -1043,7 +1268,12 @@ $same_say"
           "$name" "$rc" >&2
       fi
     fi
-    rows="$rows$name$tab$rc$tab$required$tab$result$tab$note
+    chain=false
+    ! aif_g_chain "$cmd" || chain=true
+    if [ "$result" = at_base ] && [ "$chain" = true ]; then
+      note="$note; its command stops at a step that fails (&&), and what follows it never ran, here or before — it judged nothing of this ticket's"
+    fi
+    rows="$rows$name$tab$rc$tab$required$tab$result$tab$chain$tab$note
 "
     rm -f "${out:?}"
   done <<EOF
@@ -1057,8 +1287,8 @@ EOF
   jq -n --arg phase "$phase" --rawfile raw <(printf '%s' "$rows") '
     $raw | split("\n") | map(select(length > 0) | split("\t"))
     | map({ phase: $phase, name: .[0], exit: (.[1] | tonumber),
-            required: (.[2] == "true"), result: .[3],
-            tail: (.[4] // "") })' >"$record"
+            required: (.[2] == "true"), result: .[3], chain: (.[4] == "true"),
+            tail: (.[5] // "") })' >"$record"
 
   printf '%s\n' "$viol" | sed '/^[[:space:]]*$/d'
 }

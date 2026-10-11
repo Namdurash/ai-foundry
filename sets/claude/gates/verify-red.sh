@@ -383,9 +383,11 @@ EOF
   # (aif_g_ticket_base) — the suite there, in a copy, kept under .aif/tmp/base
   # so the station's own `aif _verify` loop pays for it once
   # (aif_g_base_suite). Three answers:
-  #   red before   the repository's. Let through, in the lock as red_at_base,
-  #                named on the first line; this ticket answers for what it
-  #                adds, not for this.
+  #   red before   the repository's — when it fails there the way it fails
+  #                here, its message folded (AIF_G_JQ_MSG): let through, in the
+  #                lock as red_at_base, named on the first line; this ticket
+  #                answers for what it adds, not for this. Red there and red
+  #                here differently is the next answer's (docs/DEFECTS.md 16.4).
   #   green before the tests' interaction with the suite — or the contract's:
   #                the tree before this ticket has no skeleton either. Admitted,
   #                recorded in the lock as red_with_tests and printed on the
@@ -416,6 +418,10 @@ EOF
         jq -r --slurpfile a "$vtmp/again.json" '
           ($a[0] | map({ (.id): .status }) | add // {}) as $A
           | .[] | select(($A[.] // "") == "pass" or ($A[.] // "") == "skipped")' 2>/dev/null)" || flaky_ids=""
+      # A flip here, before the implementation exists, cannot be its race:
+      # flaky, let through and named — and in the lock's flaky list, which is
+      # how green and the land know the test flipped before the implementation
+      # did anything (docs/DEFECTS.md 16.4).
       if [ -n "$flaky_ids" ]; then
         pre_red="$(printf '%s' "$pre_red" | grep -vxF -- "$flaky_ids" || true)"
         foreign_red="$(printf '%s' "$foreign_red" | grep -vxF -- "$flaky_ids" || true)"
@@ -437,9 +443,13 @@ EOF
 
   baseline=""
   base_why=""
+  moved=""
+  [ -z "$tbase" ] || moved="$(aif_g_deps_moved "$root" "$tbase")"
   if [ -n "$pre_red$foreign_red$standing_cand" ]; then
     if [ -z "$tbase" ]; then
       base_why="there is no commit to measure it at"
+    elif [ -n "$moved" ]; then
+      base_why="this ticket moved $moved, and the tree before it was not measured with its own dependencies (docs/DEFECTS.md 16.4)"
     else
       brc=0
       baseline="$(aif_g_base_suite "$project" "$root" "$tbase" "$vtmp/base")" || brc=$?
@@ -452,14 +462,21 @@ EOF
     fi
   fi
   [ -z "$baseline" ] || printf '%s' "$baseline" >"$vtmp/baseline.json"
-  # at_base <ids> — "<status at the base, or empty><TAB><id><TAB><file now>"
-  # a line, for each id.
+  # at_base <ids> — "<status at the base, or empty><TAB><id><TAB><file
+  # now><TAB><same|other>" a line, for each id: `same` when the failure here
+  # reads as the one there, its message folded (AIF_G_JQ_MSG) — red there and
+  # red here differently is not the repository's red (docs/DEFECTS.md 16.4).
+  root_rs="$(aif_g_spellings "$root")"
   at_base() {
     printf '%s\n' "$1" | grep -v '^$' | jq -R . | jq -s . |
-      jq -r --slurpfile b "$vtmp/baseline.json" --slurpfile r "$vtmp/results.json" '
-        ($b[0] | map({ (.id): .status }) | add // {}) as $B
-        | ($r[0] | map({ (.id): (.file // "") }) | add // {}) as $F
-        | .[] | ($B[.] // "") + "\t" + . + "\t" + ($F[.] // "")' 2>/dev/null
+      jq -r --slurpfile b "$vtmp/baseline.json" --slurpfile r "$vtmp/results.json" --argjson rs "$root_rs" \
+        "$AIF_G_JQ_MSG"'
+        ($b[0] | map({ (.id): . }) | add // {}) as $B
+        | ($r[0] | map({ (.id): . }) | add // {}) as $R
+        | .[] | ($B[.] // {}) as $bt | ($R[.] // {}) as $nt
+        | ($bt.status // "") + "\t" + . + "\t" + ($nt.file // "") + "\t"
+          + (if (($bt.message // "") | aif_nmsg) == (($nt.message // "") | aif_rootsin($rs) | aif_nmsg)
+             then "same" else "other" end)' 2>/dev/null
   }
 
   red_before=""
@@ -473,7 +490,7 @@ EOF
       exit "$AIF_G_ERROR"
     fi
     classes="$(at_base "$pre_red" | awk -F'\t' '{
-      k = ($1 == "failure" || $1 == "error") ? "before" : ($1 == "" ? "absent" : "with")
+      k = ($1 == "failure" || $1 == "error") ? ($4 == "same" ? "before" : "with") : ($1 == "" ? "absent" : "with")
       print k "\t" $2 "\t" $3 }')"
     red_before="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "before" { print $2 }')"
     red_with_tests="$(printf '%s\n' "$classes" | awk -F'\t' '$1 == "with" { print $2 }')"
@@ -506,6 +523,7 @@ EOF
       bst="${line%%"$tab"*}"
       id="${line#*"$tab"}"
       id="${id%%"$tab"*}"
+      same="${line##*"$tab"}"
       [ -n "$id" ] || continue
       if printf '%s\n' "$standing_cand" | grep -qxF -- "$id"; then
         if [ "$bst" = pass ] || [ "$bst" = skipped ]; then
@@ -514,7 +532,7 @@ EOF
           held="$held$id
 "
         fi
-      elif [ "$bst" = failure ] || [ "$bst" = error ]; then
+      elif { [ "$bst" = failure ] || [ "$bst" = error ]; } && [ "$same" = same ]; then
         red_at_base="$red_at_base
 $id"
         held="$held$id
@@ -828,7 +846,7 @@ let_say() {
   local parts=""
   [ -z "$red_at_base" ] || parts="$parts; $(printf '%s\n' "$red_at_base" | grep -c .) red before this ticket: $(ids_say "$red_at_base")"
   [ -z "$flaky_ids" ] || parts="$parts; $(printf '%s\n' "$flaky_ids" | grep -c .) flaky — failed once, passed on a re-run: $(ids_say "$flaky_ids")"
-  [ -z "$checks_at_base" ] || parts="$parts; failing the same way before this ticket: check $checks_at_base"
+  [ -z "$checks_at_base" ] || parts="$parts; $(aif_g_checks_let "$root/.aif/tmp/checks-red.json")"
   [ -z "$parts" ] || printf ' — let through, %s' "${parts#; }"
 }
 standing_n="$(printf '%s' "$standing" | grep -c . || true)"
@@ -1027,6 +1045,19 @@ $create_files
 EOF
 )"
 
+# rab_msgs — each red_at_base test's failure at the base, folded (AIF_G_JQ_MSG):
+# what green compares the failure it sees with, measured here, before the
+# implementation could move a dependency (docs/DEFECTS.md 16.4).
+rab_msgs() {
+  if [ -n "$red_at_base" ] && [ -s "$vtmp/baseline.json" ]; then
+    printf '%s\n' "$red_at_base" | grep -v '^$' | jq -R . | jq -s . |
+      jq -c --slurpfile b "$vtmp/baseline.json" "$AIF_G_JQ_MSG"'
+        ($b[0] | map({ (.id): ((.message // "") | aif_nmsg) }) | add // {}) as $B
+        | map({ (.): ($B[.] // "") }) | add // {}' 2>/dev/null || printf '{}'
+  else
+    printf '{}'
+  fi
+}
 jq -n \
   --arg plan_hash "$plan_hash" \
   --arg mode "$mode" \
@@ -1041,6 +1072,7 @@ jq -n \
   --argjson with "$(printf '%s' "$red_with_tests" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson standing "$(printf '%s' "$standing" | jq -R . | jq -s 'map(select(length>0))')" \
   --argjson rab "$(printf '%s' "$red_at_base" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson rabm "$(rab_msgs)" \
   --argjson flaky "$(printf '%s' "$flaky_ids" | jq -R . | jq -s 'map(select(length>0))')" \
   --arg base "$tbase" \
   --argjson declared "$(printf '%s' "$test_files" | jq -R . | jq -s 'map(select(length>0))')" \
@@ -1057,6 +1089,7 @@ jq -n \
     red_with_tests: $with,
     base: (if $base == "" then null else $base end),
     red_at_base: $rab,
+    red_at_base_msg: $rabm,
     flaky: $flaky,
     standing: $standing,
     declared_files: $declared,
@@ -1090,7 +1123,7 @@ else
     printf '; %s older test(s) in the declared files left standing' "$standing_n"
   printf '%s\n' "$(let_say)"
   if [ "${with_count:-0}" -gt 0 ]; then
-    printf '  ! RED WITH THIS TICKET — green before this ticket, red once its files landed:\n'
+    printf '  ! RED WITH THIS TICKET — green before this ticket, or red there another way, red as it is once its files landed:\n'
     printf '%s\n' "$red_with_tests" | sed 's/^/    - /'
     printf '  Not the repository'"'"'s: measured on the tree before this ticket (%s).\n' "$(printf '%s' "$tbase" | cut -c1-10)"
     printf '  The implementation has to clear them — green requires the whole suite, and\n'

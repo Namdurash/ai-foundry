@@ -289,6 +289,14 @@
 #      is handled, and so is the next: the tick under a slow trap, a key
 #      still answered; the loop on a pty, its first Ctrl-C's event slow —
 #      the second stops the run, 130, the terminal back in icanon and echo
+#  95  what the gates let through is the base's, shown: a test red on main
+#      that fails another way with the ticket is not let through, one whose
+#      message carries a time is; a count line that grew is new, one that
+#      shrank is not; a check that stops at a failing step (&&) is said to
+#      judge nothing, and aif project check warns of it; a flip the base
+#      shows too is flaky; a standing test rewritten in place is run as the
+#      base wrote it; a land whose merge moves a lockfile lets nothing through
+#      as the target's
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -477,6 +485,9 @@ for n in 1 2 3; do
     esac
   done <"tests/t$n.py"
 done
+# A scenario's own tests, when it has some: .aif/suite-extra.sh adds to $body
+# with row and fails, its messages read off the tree as it likes.
+[ ! -f .aif/suite-extra.sh ] || . ./.aif/suite-extra.sh
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
   chmod +x .aif/suite.sh
@@ -519,8 +530,9 @@ SUITE
 # 13.10: the plan stub declares every tests/t*.py naming a criterion this
 # ticket's rules replace (FAKE_PLAN_IGNORE_CHANGES a plan that does not), the
 # tests stub removes those tests from the files it did not write
-# (FAKE_KEEP_REPLACED one that leaves them), FAKE_KEEP_WORDS has the
-# implementation keep every word a test in the tree asserts, FAKE_FLAKE_PRE
+# (FAKE_KEEP_REPLACED one that leaves them; FAKE_TESTS_REWRITE_STANDING
+# rewrites the rest in place to assert what always holds), FAKE_KEEP_WORDS has
+# the implementation keep every word a test in the tree asserts, FAKE_FLAKE_PRE
 # names the stations that leave .aif/tmp/flake-t0 behind, FAKE_DELETE has the
 # plan delete a file and the implementation remove it (FAKE_DELETE_SKIP not;
 # FAKE_DELETE_EXTRA one more, unplanned), FAKE_AMEND_NEW has the
@@ -853,6 +865,20 @@ PLAN
             grep -v -i -E "$(marker_re "$m")" "$wt/$f" >"$wt/$f.tmp"
             mv "$wt/$f.tmp" "$wt/$f"
           done
+        done
+    fi
+    # FAKE_TESTS_REWRITE_STANDING: the older tests left in a declared file it
+    # did not write are rewritten in place — the same id, asserting a word
+    # src/app.py always has (docs/DEFECTS.md 16.4).
+    if [ "${FAKE_TESTS_REWRITE_STANDING:-0}" = 1 ]; then
+      mine=" $(for i in $nums; do printf 'tests/t%s.py ' "$i"; done)"
+      sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/plan.md" | sed '1d;$d' | jq -r '.files.tests[]? // empty' 2>/dev/null |
+        while IFS= read -r f; do
+          case "$mine" in *" $f "*) continue ;; esac
+          [ -f "$wt/$f" ] || continue
+          w "$wt/$f"
+          sed 's/ asserts [a-z0-9]* / asserts users /' "$wt/$f" >"$wt/$f.tmp"
+          mv "$wt/$f.tmp" "$wt/$f"
         done
     fi
     # The station's note: what it cannot write a red test for.
@@ -6384,13 +6410,22 @@ ticket_for AIF-75
 git add -A && git commit -qm "ticket 73b" >/dev/null
 rc=0
 FAKE_FLAKE_PRE="implement" "$AIF" work AIF-75 --no-worktree >"$OUT/run73b.out" 2>&1 || rc=$?
-eq "a test that fails once with the implementation only: built — it used to be this change breaking it" \
-  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-75.json)" "0,pass"
+# Failing once with the implementation only, and never before it — not at
+# verify-red, not on the tree before the ticket: that is how a race the
+# implementation added looks, and it went through as flaky at the first
+# attempt (docs/DEFECTS.md 16.4). Rejected, said for what it is.
+eq "a test that fails once with the implementation only, and never before it: an intermittent failure this change brings — rejected, not built" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green") | .result] | join(",")' .aif/state/ledgers/AIF-75.json),$(grep -c 'tests.t0::t0 (failure) — failed once and passed on a re-run, and it did not flip at verify-red' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  "1,fail,fail,1"
 
-# The land judges a merge on which t0 fails once: run once more, it passes —
-# landed, naming it. A flaky test used to send a judged land back.
+# The land judges a merge on which t0 flips — failing, then passing — and the
+# target as the land found it flips it too, in a copy that carries the same
+# .aif/tmp: flaky, landed, naming it. A flaky test used to send a judged land
+# back. One that flips on the merge alone is the branch's (docs/DEFECTS.md
+# 16.4): judged as a failure, and the card goes back.
 fresh_project "$SANDBOX/p73c"
-t0_red_when '[ -f .aif/tmp/flake-t0 ] && rm -f .aif/tmp/flake-t0'
+# shellcheck disable=SC2016  # the suite expands it, not this shell
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && c="$(cat .aif/tmp/fc 2>/dev/null || echo 0)" && printf "%s" "$((c + 1))" >.aif/tmp/fc && [ "$((c % 2))" = 0 ]'
 ticket_for AIF-76
 git add -A && git commit -qm "ticket 73c" >/dev/null
 "$AIF" board create tasks/AIF-76/ticket.md --column ready >/dev/null
@@ -6401,8 +6436,22 @@ git add -A && git commit -qm "main moved: a note" >/dev/null
 : >.aif/worktrees/AIF-76/.aif/tmp/flake-t0
 rc=0
 "$AIF" land AIF-76 >"$OUT/land73c.out" 2>&1 || rc=$?
-eq "a test that fails once in the land's verdict: landed, naming it flaky" \
+eq "a test that flips in the land's verdict, and on the target as it was: landed, naming it flaky" \
   "$rc,$(col AIF-76),$(grep -c '^suite: .* — let through, flaky — failed once, passed on a re-run: tests.t0::t0$' "$OUT/land73c.out")" "0,done,1"
+fresh_project "$SANDBOX/p73d"
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && rm -f .aif/tmp/flake-t0'
+ticket_for AIF-77
+git add -A && git commit -qm "ticket 73d" >/dev/null
+"$AIF" board create tasks/AIF-77/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-77 >"$OUT/run73d.out" 2>&1 || rc=$?
+printf 'notes\n' >NOTES.md
+git add -A && git commit -qm "main moved: a note" >/dev/null
+: >.aif/worktrees/AIF-77/.aif/tmp/flake-t0
+rc=0
+"$AIF" land AIF-77 >"$OUT/land73d.out" 2>&1 || rc=$?
+eq "…one that flips on the merge alone: the branch's — not landed, back to Ready" \
+  "$rc,$(col AIF-77),$(grep -c 'let through, flaky' "$OUT/land73d.out")" "1,ready,0"
 
 # ====== 74. the gates' copies: dependencies linked, a copy cut short is a stop =
 # Every copy of the tree a gate made — verify-red's baseline, green's revert,
@@ -6443,9 +6492,11 @@ eq "…the two find the same dependencies — the gates' list and the worker's t
   ".venv|node_modules|packages/a/node_modules,.venv|node_modules|packages/a/node_modules"
 printf 'src/a.ts(12,5): error TS2554: one\nsrc/a.ts(40,5): error TS2554: one\nFound 3 errors in 2 files.\nDone in 2.31s\n' >"$OUT/nl74.now"
 printf 'src/a.ts(10,5): error TS2554: one\nFound 2 errors in 2 files.\nDone in 1.9s\n' >"$OUT/nl74.base"
-eq "…and the lines new with a ticket are read the same by the gates and the land: a second error new, a moved one not, a timing not" \
+eq "…and the lines new with a ticket are read the same by the gates and the land: a second error new, a moved one not, a timing not, a count that grew new" \
   "$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_new_lines "$1" "$PWD" "$2" ""' _ "$OUT/nl74.now" "$OUT/nl74.base"),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; . "$1/lib/cmd_land.sh"; _aif_land_new_lines "$2" "$PWD" "$3" ""' _ "$ROOT" "$OUT/nl74.now" "$OUT/nl74.base")" \
-  "src/a.ts(40,5): error TS2554: one,src/a.ts(40,5): error TS2554: one"
+  "src/a.ts(40,5): error TS2554: one
+Found 3 errors in 2 files.,src/a.ts(40,5): error TS2554: one
+Found 3 errors in 2 files."
 printf 'SECRET=1\n' >.env
 chmod 000 .env
 rc=0
@@ -7572,6 +7623,143 @@ PY3
 modes94="$(tr -s ' \t;' '\n' <"$OUT/screen94" | grep -xE -- '-?(icanon|echo)' | sort | tr '\n' ' ')"
 eq "the loop on a pty, its first Ctrl-C's event slow across the second: the second Ctrl-C stops the run, 130, the terminal back in icanon and echo" \
   "$r94,$(grep -c '^RC=130$' "$OUT/screen94"),${modes94% },$(col AIF-940)" "exit 0,1,echo icanon,needs_human"
+cd "$SANDBOX" || exit 1
+
+# ====== 95. what a let-through lets through is the base's ===================
+# docs/DEFECTS.md 16.4. The gates let through what was red before the ticket,
+# a test that flips, an older test of a declared file — and each of those let
+# a regression the ticket made through: a test red on main whose message
+# gained what the ticket broke, a count line that grew, a check whose `&&`
+# never reached the step the ticket broke, a race the implementation added, a
+# standing test the tests station rewrote in place, a target measured with the
+# merge's dependencies. Each is shown to be the base's now, or not let through.
+printf '\n95. what the gates let through is shown to be the base'"'"'s\n'
+
+# A test red on main whose failure the implementation changes: its message
+# gains "users() is gone". By its id it was red before the ticket and let
+# through; its message folded, it fails another way — the implementation's.
+fresh_project "$SANDBOX/p95a"
+printf '# a pre-existing test, t5\n' >tests/t5.py
+cat >.aif/suite-extra.sh <<'X'
+m='AssertionError: two things hold'
+grep -q impl1 src/app.py 2>/dev/null && m="$m; users() is gone"
+body="$body$(fails t5 tests/t5.py "$m" "$m")"
+X
+ticket_for AIF-950
+git add -A && git commit -qm "t5 red on main" >/dev/null
+rc=0
+"$AIF" work AIF-950 --no-worktree >"$OUT/run95a.out" 2>&1 || rc=$?
+eq "a test red on main that fails another way with the implementation: not let through, rejected for it — not built" \
+  "$rc,$(jq -c '.red_at_base' tasks/AIF-950/tests.lock.json),$(grep -c 'tests.t5::t5 (failure) — red before this ticket, and the implementation changes how it fails' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  '1,["tests.t5::t5"],1'
+
+# The same test red on main, its message carrying a time and a duration that
+# move with every run: the same failure — let through, built.
+fresh_project "$SANDBOX/p95b"
+printf '# a pre-existing test, t5\n' >tests/t5.py
+cat >.aif/suite-extra.sh <<'X'
+m="AssertionError: timed out at $(date -u '+%Y-%m-%dT%H:%M:%S')Z after 1.$(date '+%S')s"
+body="$body$(fails t5 tests/t5.py "$m" "$m")"
+X
+ticket_for AIF-951
+git add -A && git commit -qm "t5 red on main, its message timed" >/dev/null
+rc=0
+"$AIF" work AIF-951 --no-worktree >"$OUT/run95b.out" 2>&1 || rc=$?
+eq "…one whose message carries a time and a duration: the same failure, let through — built" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-951.json | grep -c 'let through, 1 red before this ticket: tests.t5::t5')" "0,1"
+
+# A check whose summary line counts: "Found 1 error" on main, and "Found 2
+# errors" with the implementation — folded, the two read as one line, and
+# the second error went through as the base's. A count that grew is new; one
+# that shrank is not.
+count95() { # <dir> <at-base> <with-impl>
+  fresh_project "$1"
+  cat >.aif/types.sh <<X
+n=$2; grep -q impl1 src/app.py && n=$3
+printf 'Found %s error%s\n' "\$n" "\$([ "\$n" -gt 1 ] && echo s)"
+exit 1
+X
+  jq '.checks = [{ "name": "types", "phase": ["green"], "required": true, "command": "bash .aif/types.sh" }]' \
+    .aif/project.json >"$OUT/p95.json" && cp "$OUT/p95.json" .aif/project.json
+  ticket_for AIF-952
+  git add -A && git commit -qm "a red types check, counted" >/dev/null
+}
+count95 "$SANDBOX/p95c" 1 2
+rc=0
+"$AIF" work AIF-952 --no-worktree >"$OUT/run95c.out" 2>&1 || rc=$?
+eq "a count line that grew with the implementation (1 error to 2): new — rejected, not built" \
+  "$rc,$(grep -c 'check "types" fails with the implementation (exit 1) — new with it:' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,1"
+count95 "$SANDBOX/p95d" 2 1
+rc=0
+"$AIF" work AIF-952 --no-worktree >"$OUT/run95d.out" 2>&1 || rc=$?
+eq "…one that shrank (2 errors to 1): the same before the ticket — let through, built" \
+  "$rc,$(jq -r '[.entries[] | select(.event == "check" and .check == "types") | .result] | last' .aif/state/ledgers/AIF-952.json)" "0,at_base"
+
+# A check that stops at a failing step: `lint && types`, lint red on main.
+# Red the same before the ticket, it is let through — and said to have judged
+# nothing, on the gate's line and in the report; aif project check warns.
+fresh_project "$SANDBOX/p95e"
+printf 'echo "lint: E1 an old warning"; exit 1\n' >.aif/lint.sh
+printf 'echo "types: the ticket'"'"'s error"; exit 1\n' >.aif/types.sh
+jq '.checks = [{ "name": "lint-types", "phase": ["green"], "required": true, "command": "bash .aif/lint.sh && bash .aif/types.sh" }]' \
+  .aif/project.json >"$OUT/p95.json" && cp "$OUT/p95.json" .aif/project.json
+ticket_for AIF-953
+git add -A && git commit -qm "a chained check, red on main" >/dev/null
+rc=0
+"$AIF" work AIF-953 --no-worktree >"$OUT/run95e.out" 2>&1 || rc=$?
+# shellcheck disable=SC2016  # the backticks are the report's markdown
+eq "a check that stops at a failing step (&&), red on main: let through — said to judge nothing, on green's line and in the report; aif project check warns" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-953.json | grep -c 'lint-types stops at a step that fails (&&), and what follows it never ran, here or before: it judged nothing'),$(grep -c 'check `lint-types` — fails the same way before this ticket, and nothing new with it; its command stops at a step that fails (&&)' tasks/AIF-953/report.md),$("$AIF" project check 2>&1 | grep -c 'warn: check lint-types runs its command in steps')" \
+  "0,1,1,1"
+
+# A flip the tree before the ticket shows too: t0 flips on every run while
+# .aif/tmp/flake-t0 is there, and the implement station leaves it — the copy
+# at the base carries it, and fails t0 there as well. Flaky, let through.
+fresh_project "$SANDBOX/p95f"
+# shellcheck disable=SC2016  # the suite expands it, not this shell
+t0_red_when '[ -f .aif/tmp/flake-t0 ] && c="$(cat .aif/tmp/fc 2>/dev/null || echo 0)" && printf "%s" "$((c + 1))" >.aif/tmp/fc && [ "$((c % 2))" = 0 ]'
+ticket_for AIF-954
+git add -A && git commit -qm "a t0 that flips while a file is there" >/dev/null
+rc=0
+FAKE_FLAKE_PRE="implement" "$AIF" work AIF-954 --no-worktree >"$OUT/run95f.out" 2>&1 || rc=$?
+eq "a flip the base shows too: flaky, let through at green — built" \
+  "$rc,$(jq -r '[.entries[] | select(.event == "let-through" and .test == "tests.t0::t0")] | last | .why' .aif/state/ledgers/AIF-954.json)" \
+  "0,failed once, passed on a re-run, and fails before this ticket too"
+
+# A standing test the tests station rewrote in place — AIF-69 AC-002, the
+# same id, asserting what always holds — while the implementation drops what
+# it held. "Standing" was the id; run as the base wrote it, it fails.
+setup70 "$SANDBOX/p95g"
+rc=0
+FAKE_TESTS_REWRITE_STANDING=1 "$AIF" work AIF-70 --no-worktree >"$OUT/run95g.out" 2>&1 || rc=$?
+eq "a standing test rewritten in place, its behaviour dropped: run as the base wrote it, it fails — rejected, not built" \
+  "$rc,$(grep -c 'asserts users' tests/t3.py),$(grep -c 'tests.t3::AIF-69 AC-002 t3 (failure) — a standing test, as the tree before this ticket wrote it' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  "1,1,1"
+
+# A land whose merge moves a lockfile, the target red at t0: the copy of the
+# target as it was would run with the merge's dependencies — nothing is let
+# through as the target's; the card goes back, the reason said.
+fresh_project "$SANDBOX/p95h"
+ticket_for AIF-955
+git add -A && git commit -qm "ticket 95h" >/dev/null
+"$AIF" board create tasks/AIF-955/ticket.md --column ready >/dev/null
+rc=0
+"$AIF" work AIF-955 >"$OUT/run95h.out" 2>&1 || rc=$?
+printf '{ "lockfileVersion": 3, "packages": { "": { "dependencies": { "dep": "2" } } } }\n' >.aif/worktrees/AIF-955/package-lock.json
+git -C .aif/worktrees/AIF-955 add package-lock.json
+git -C .aif/worktrees/AIF-955 commit -qm "the branch moves its lockfile" >/dev/null
+t0_red_when '[ -f MAINRED ]'
+: >MAINRED
+git add -A && git commit -qm "main went red at t0" >/dev/null
+rc=0
+"$AIF" land AIF-955 >"$OUT/land95h.out" 2>&1 || rc=$?
+eq "the target red, the merge moving its lockfile: not let through as the target's — not landed, the lockfile named" \
+  "$rc,$(col AIF-955),$(grep -c 'not told apart from the target.s: the merge moves package-lock.json' "$OUT/land95h.out")" "1,ready,1"
+
+# The gates' folding of a failure's message and the land's twin: one text.
+eq "the gates and the land fold a failure's message by the same definitions" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; . "$1/lib/cmd_land.sh"; printf "%s" "$AIF_LAND_JQ_MSG"' _ "$ROOT" | cksum)" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum),$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum)"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

@@ -3928,12 +3928,13 @@ _aif_work_report() {
           (($lg[0].entries // [])[] | select(.event == "let-through")
             | { what: ("`" + (.test // "?") + "`"), kind: (.kind // "before"), phase: (.phase // "green") }),
           (($lg[0].entries // [])[] | select(.event == "check" and .result == "at_base")
-            | { what: ("check `" + (.check // "?") + "`"), kind: "check", phase: (.phase // "?") }) ]
+            | { what: ("check `" + (.check // "?") + "`"), kind: "check", phase: (.phase // "?"), chain: (.chain // false) }) ]
       | group_by([.what, .kind])
-      | map({ what: .[0].what, kind: .[0].kind, phases: (map(.phase) | unique) })
+      | map({ what: .[0].what, kind: .[0].kind, phases: (map(.phase) | unique), chain: (map(.chain // false) | any) })
       | .[] | "- " + .what + " — "
         + (if .kind == "flaky" then "flaky: failed once, passed on a re-run of the same tree"
            elif .kind == "check" then "fails the same way before this ticket, and nothing new with it"
+             + (if .chain then "; its command stops at a step that fails (&&), and what follows it never ran — it judged nothing of this ticket'"'"'s" else "" end)
            else "red before this ticket" end)
         + " (" + (.phases | join(", ")) + ")"' 2>/dev/null)" || let_lines=""
     if [ -n "$let_lines" ]; then

@@ -383,6 +383,18 @@ _aif_project_check() {
   else
     jq -r '.checks[] | "  check " + .name + "  [" + (.phase | join(",")) + "]"
            + (if .required then "" else "  (optional)" end) + "  " + .command' "$dest"
+    # A command in steps: `a && b` stops at the step that fails — red before
+    # a ticket, it lets the ticket through as "the same before", though the
+    # steps after the failing one never ran: a type error behind a red lint
+    # goes unseen (docs/DEFECTS.md 16.4); `a; b` answers with the last step's
+    # exit, a failing `a` unheard; `a || b` runs `b` only when `a` fails. Said,
+    # not refused.
+    jq -r '.checks[] | select(.command | test("&&|\\|\\||;")) | .name' "$dest" 2>/dev/null |
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        printf '  %swarn:%s check %s runs its command in steps (&&, || or ;): a step that fails stops the ones after it (&&) or goes unheard (;, ||) — red before a ticket, it lets the ticket through having judged less than it says. One check per command: aif project checks\n' \
+          "$AIF_C_YELLOW" "$AIF_C_RESET" "$n"
+      done
   fi
 
   # What has moved since the template this file was made from. Valid and

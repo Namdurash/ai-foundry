@@ -461,7 +461,7 @@ printf 'plan: %s implementation file(s), %s test file(s), %s criteria covered, %
   "$skeletons"
 [ "$deletes" -eq 0 ] || printf ', %s deletion(s)' "$deletes"
 # What it let through, on the line the ledger keeps (docs/DEFECTS.md 13.9).
-[ -z "$checks_at_base" ] || printf ' — let through, failing the same way before this ticket: check %s' "$checks_at_base"
+[ -z "$checks_at_base" ] || printf ' — let through, %s' "$(aif_g_checks_let "$root/.aif/tmp/checks-contract.json")"
 printf '\n'
 
 # --- what passed, and what passed unwatched ---------------------------------

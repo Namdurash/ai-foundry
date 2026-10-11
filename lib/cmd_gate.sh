@@ -282,7 +282,7 @@ EOF
     done <<EOF
 $(jq -c '.[]? | { event: "check", check: .name, phase: .phase,
                   result: .result, exit: .exit, required: .required,
-                  reason: .tail }' "$file" 2>/dev/null)
+                  chain: (.chain // false), reason: .tail }' "$file" 2>/dev/null)
 EOF
     rm -f "$file"
   done

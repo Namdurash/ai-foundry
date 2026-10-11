@@ -608,16 +608,40 @@ _aif_land_worker_verdict() {
 # rest judged as ever. With the target red, a land that undid on any red sent
 # the card back to a worker that lets the same red through: a loop. And a
 # flaky test sent a judged land back for nothing.
+# AIF_LAND_JQ_MSG — the gates' AIF_G_JQ_MSG (sets/claude/gates/_lib.sh),
+# which lib/ cannot source: a failure's message with the roots, temporary
+# paths, times, addresses, durations and positions folded, so that a test red
+# on the target as the land found it is let through only when it fails there
+# the way it fails here. scripts/check-work.sh holds the two to one answer.
+# shellcheck disable=SC2016  # jq's variables, not the shell's
+AIF_LAND_JQ_MSG='
+def aif_rootsin($rs):
+  reduce ($rs | map(select(type == "string" and . != "")) | unique | sort_by(-length))[] as $r
+    (.; split($r) | join("<root>"));
+def aif_nmsg:
+  gsub("(/private)?/(var/folders|tmp)/[^\\s:\"()]+"; "<tmp>")
+  | gsub("\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?"; "<time>")
+  | gsub("\\b\\d{1,2}:\\d{2}:\\d{2}(\\.\\d+)?"; "<time>")
+  | gsub("0x[0-9a-fA-F]+"; "0x#")
+  | gsub("\\b\\d+(\\.\\d+)? ?(ms|seconds|secs|sec|s)\\b"; "#")
+  | gsub(":\\d+(:\\d+)?"; ":#")
+  | gsub("\\(\\d+,\\d+\\)"; "(#,#)")
+  | gsub("\\bline \\d+"; "line #")
+  | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ");
+'
+
 _aif_land_judge() {
   local wt="$1" project="$2" out="$3" target="$4" branch="$5" pre="${6:-}"
   local test_cmd report_path junit suite_rc=0 report=0 failures=0 tab name required cmd rc first="" first_rc=0
-  local reported=0 again still flaky="" before="" copy="" at_pre="" pre_say pre_rc checks_let=""
+  local reported=0 again still flaky="" before="" copy="" at_pre="" pre_say pre_rc checks_let="" checks_chain=""
+  local flips moved runs left proven
   AIF_LAND_VERDICT=""
   AIF_LAND_WHY=""
   AIF_LAND_FAILING=""
   AIF_LAND_CHECKS_RED=""
   AIF_LAND_CHECKS_RAN=0
   AIF_LAND_LET=""
+  AIF_LAND_NOTLET=""
   tab="$(printf '\t')"
   test_cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
   report_path="$(jq -r '.test.report.path // empty' "$project" 2>/dev/null)"
@@ -638,35 +662,84 @@ _aif_land_judge() {
     reported="$(printf '%s' "$AIF_LAND_FAILING" | grep -c . || true)"
   fi
 
+  moved=""
+  [ -z "$pre" ] || moved="$(git -C "$wt" diff --name-only "$pre" HEAD 2>/dev/null |
+    grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u | paste -sd, - | sed 's/,/, /g')" || moved=""
+
   # 1b. what is not this ticket's: once more, then the target as it was.
+  #     A flip — failing, then passing — is flaky only when the ticket's lock
+  #     says it flipped before the implementation, or the target as the land
+  #     found it fails that test too, in one of up to three runs of the suite
+  #     in its copy: a race the branch added went through on its one re-run
+  #     (docs/DEFECTS.md 16.4). One that fails again is the target's
+  #     only when it fails there the way it fails here (AIF_LAND_JQ_MSG). And
+  #     neither, when the merge moves a dependency manifest or lockfile: the
+  #     copy runs with the dependencies installed for the merge, not the
+  #     target's — a branch that took a dependency from 1 to 2 had a target
+  #     test that needs 1 let through as red before, where a fresh clone of
+  #     the target is green (16.4).
   if [ -n "$AIF_LAND_FAILING" ]; then
     rm -f "${wt:?}/${report_path:?}"
     (cd "$wt" && eval "$test_cmd") </dev/null >"$out.again" 2>&1 || true
     again=""
     [ ! -f "$wt/$report_path" ] ||
-      again="$(python3 "$junit" "$wt/$report_path" 2>/dev/null |
-        jq -r '.[] | select(.status == "failure" or .status == "error") | .id' 2>/dev/null)" || again=""
+      again="$(python3 "$junit" "$wt/$report_path" 2>/dev/null)" || again=""
+    flips=""
     if [ -f "$wt/$report_path" ]; then
-      still="$(printf '%s\n' "$AIF_LAND_FAILING" | _aif_land_both "$again")" || still=""
-      flaky="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$still" awk '
+      printf '%s' "${again:-[]}" >"$out.again.json"
+      still="$(printf '%s\n' "$AIF_LAND_FAILING" | _aif_land_both "$(jq -r '.[]? | select(.status == "failure" or .status == "error") | .id' "$out.again.json" 2>/dev/null)")" || still=""
+      flips="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$still" awk '
         BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
-        NF && !($0 in w)')" || flaky=""
+        NF && !($0 in w)')" || flips=""
       AIF_LAND_FAILING="$still"
     fi
-    if [ -n "$AIF_LAND_FAILING" ] && [ -n "$pre" ] && _aif_land_copy_at "$wt" "$pre"; then
-      copy="$AIF_LAND_COPY"
-      rm -f "${copy:?}/${report_path:?}"
-      mkdir -p "$copy/$(dirname "$report_path")"
-      (cd "$copy" && eval "$test_cmd") </dev/null >"$out.pre" 2>&1 || true
-      if [ -f "$copy/$report_path" ]; then
-        at_pre="$(python3 "$junit" "$copy/$report_path" 2>/dev/null |
-          jq -r '.[] | select(.status == "failure" or .status == "error") | .id' 2>/dev/null)" || at_pre=""
-        before="$(printf '%s\n' "$AIF_LAND_FAILING" | _aif_land_both "$at_pre")" || before=""
-        AIF_LAND_FAILING="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$before" awk '
-          BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
-          NF && !($0 in w)')" || AIF_LAND_FAILING=""
-      fi
+    # A flip the ticket's own lock calls flaky — it flipped at verify-red,
+    # before the implementation — is let through as it was there.
+    if [ -n "$flips" ]; then
+      flaky="$(jq -r '(.flaky // [])[]' "$wt/$AIF_TASKS_DIR/${AIF_LAND_CARD:-}/tests.lock.json" 2>/dev/null |
+        grep -xF -- "$flips" || true)"
+      flips="$(printf '%s\n' "$flips" | grep -v '^$' | grep -vxF -- "${flaky:-//none//}" || true)"
     fi
+    if [ -n "$AIF_LAND_FAILING$flips" ] && [ -n "$pre" ] && [ -n "$moved" ]; then
+      AIF_LAND_NOTLET="not told apart from the target's: the merge moves $moved, and the target as it was would run with the dependencies installed for the merge"
+    elif [ -n "$AIF_LAND_FAILING$flips" ] && [ -n "$pre" ] && _aif_land_copy_at "$wt" "$pre"; then
+      copy="$AIF_LAND_COPY"
+      runs=0
+      left="$flips"
+      while [ "$runs" -lt 3 ] && { [ "$runs" -eq 0 ] || [ -n "$left" ]; }; do
+        runs=$((runs + 1))
+        rm -f "${copy:?}/${report_path:?}"
+        mkdir -p "$copy/$(dirname "$report_path")"
+        (cd "$copy" && eval "$test_cmd") </dev/null >"$out.pre" 2>&1 || true
+        [ -f "$copy/$report_path" ] || break
+        python3 "$junit" "$copy/$report_path" >"$out.pre.json" 2>/dev/null || break
+        at_pre="$(jq -r '.[]? | select(.status == "failure" or .status == "error") | .id' "$out.pre.json" 2>/dev/null)" || at_pre=""
+        if [ "$runs" -eq 1 ] && [ -n "$AIF_LAND_FAILING" ]; then
+          # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+          before="$(printf '%s\n' "$AIF_LAND_FAILING" | jq -R . | jq -s . | jq -r --slurpfile b "$out.pre.json" --slurpfile n "$out.again.json" \
+            --argjson nr "$(jq -cn --arg a "$wt" --arg b "$(cd "$wt" && pwd)" --arg c "$(cd "$wt" && pwd -P)" '[$a, $b, $c]')" \
+            --argjson br "$(jq -cn --arg a "$copy" --arg b "$(cd "$copy" && pwd)" --arg c "$(cd "$copy" && pwd -P)" '[$a, $b, $c]')" "$AIF_LAND_JQ_MSG"'
+            ($b[0] | map({ (.id): . }) | add // {}) as $B
+            | ($n[0] | map({ (.id): . }) | add // {}) as $N
+            | .[] | ($B[.] // {}) as $bt | ($N[.] // {}) as $nt
+            | select(($bt.status // "") == "failure" or ($bt.status // "") == "error")
+            | select((($bt.message // "") | aif_rootsin($br) | aif_nmsg) == (($nt.message // "") | aif_rootsin($nr) | aif_nmsg))' 2>/dev/null)" || before=""
+          AIF_LAND_FAILING="$(printf '%s\n' "$AIF_LAND_FAILING" | AIF_LAND_LIST="$before" awk '
+            BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
+            NF && !($0 in w)')" || AIF_LAND_FAILING=""
+        fi
+        if [ -n "$left" ]; then
+          proven="$(printf '%s\n' "$left" | _aif_land_both "$at_pre")" || proven=""
+          flaky="$(printf '%s\n%s\n' "$flaky" "$proven" | grep -v '^$' || true)"
+          left="$(printf '%s\n' "$left" | AIF_LAND_LIST="$proven" awk '
+            BEGIN { n = split(ENVIRON["AIF_LAND_LIST"], l, "\n"); for (i = 1; i <= n; i++) if (l[i] != "") w[l[i]] = 1 }
+            NF && !($0 in w)')" || left=""
+        fi
+      done
+      flips="$left"
+    fi
+    # A flip the target never showed is the branch's: judged as a failure.
+    AIF_LAND_FAILING="$(printf '%s\n%s\n' "$AIF_LAND_FAILING" "$flips" | grep -v '^$' || true)"
   fi
   failures="$(printf '%s' "$AIF_LAND_FAILING" | grep -c . || true)"
 
@@ -686,11 +759,18 @@ _aif_land_judge() {
       if [ "$required" = "true" ]; then
         # On the target as it was: failing there too, with nothing new here,
         # it is the target's (docs/DEFECTS.md 13.9).
-        if [ -n "$pre" ] && { [ -n "$copy" ] || { _aif_land_copy_at "$wt" "$pre" && copy="$AIF_LAND_COPY"; }; }; then
+        if [ -n "$pre" ] && [ -n "$moved" ]; then
+          AIF_LAND_NOTLET="not told apart from the target's: the merge moves $moved, and the target as it was would run with the dependencies installed for the merge"
+        elif [ -n "$pre" ] && { [ -n "$copy" ] || { _aif_land_copy_at "$wt" "$pre" && copy="$AIF_LAND_COPY"; }; }; then
           pre_rc=0
           (cd "$copy" && eval "$cmd") </dev/null >"$out.precheck" 2>&1 || pre_rc=$?
           if [ "$pre_rc" -ne 0 ] && [ -z "$(_aif_land_new_lines "$out.check" "$wt" "$out.precheck" "$copy")" ]; then
             checks_let="$checks_let, $name"
+            # A command in steps stopped at the one that fails, there and
+            # here: what follows it judged nothing (docs/DEFECTS.md 16.4).
+            case "$cmd" in
+              *'&&'*) checks_chain="$checks_chain, $name" ;;
+            esac
             continue
           fi
           if [ "$pre_rc" -ne 0 ]; then
@@ -719,6 +799,7 @@ EOF
   [ -z "$before" ] || AIF_LAND_LET="$AIF_LAND_LET; red on $pre_say before this ticket: $(printf '%s\n' "$before" | grep -v '^$' | paste -sd, - | sed 's/,/, /g')"
   [ -z "$flaky" ] || AIF_LAND_LET="$AIF_LAND_LET; flaky — failed once, passed on a re-run: $(printf '%s\n' "$flaky" | grep -v '^$' | paste -sd, - | sed 's/,/, /g')"
   [ -z "$checks_let" ] || AIF_LAND_LET="$AIF_LAND_LET; failing the same way on $pre_say before this ticket: check ${checks_let#, }"
+  [ -z "$checks_chain" ] || AIF_LAND_LET="$AIF_LAND_LET — ${checks_chain#, } stops at a step that fails (&&), and what follows it never ran, here or before: it judged nothing of this ticket's"
   AIF_LAND_LET="${AIF_LAND_LET#; }"
 
   # 3. the verdict — judged here, and only here.
@@ -727,15 +808,15 @@ EOF
     AIF_LAND_WHY="the suite could not run in ${wt#"$AIF_LAND_ROOT"/} (exit $suite_rc, and no report at $report_path) — nothing landed"
   elif [ "${failures:-0}" -gt 0 ] || { [ "$suite_rc" -ne 0 ] && [ "${reported:-0}" -eq 0 ]; }; then
     AIF_LAND_VERDICT=red
-    AIF_LAND_WHY="the suite is red on $target with $branch merged (exit $suite_rc, $failures failing)"
+    AIF_LAND_WHY="the suite is red on $target with $branch merged (exit $suite_rc, $failures failing)${AIF_LAND_NOTLET:+ — $AIF_LAND_NOTLET}"
   elif [ -n "$AIF_LAND_CHECKS_RED" ]; then
     AIF_LAND_VERDICT=red
-    AIF_LAND_WHY="the check \"$first\" is red on $target with $branch merged (exit $first_rc)"
+    AIF_LAND_WHY="the check \"$first\" is red on $target with $branch merged (exit $first_rc)${AIF_LAND_NOTLET:+ — $AIF_LAND_NOTLET}"
     cp "$out.first" "$out" 2>/dev/null || true
   else
     AIF_LAND_VERDICT=green
   fi
-  rm -f "$out.check" "$out.first" "$out.again" "$out.pre" "$out.precheck" "$out.new"
+  rm -f "$out.check" "$out.first" "$out.again" "$out.pre" "$out.precheck" "$out.new" "$out.again.json" "$out.pre.json"
 }
 
 # _aif_land_copy_at <wt> <sha> — a copy of the worktree as it stood at <sha>,
@@ -788,19 +869,46 @@ _aif_land_new_lines() {
       gsub(/[0-9]+ (errors|error|problems|problem|warnings|warning|files|file)/, "# n", s)
       return s
     }
+    # The counts a line says, in order — what norm() folds to `# n` — as
+    # "3,1": a line that answers for another may not say more of them.
+    function counts(s,   c, t) {
+      c = ""
+      while (match(s, /[0-9]+ (errors|error|problems|problem|warnings|warning|files|file)/)) {
+        t = substr(s, RSTART, RLENGTH)
+        sub(/ .*/, "", t)
+        c = c (c == "" ? "" : ",") t
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return c
+    }
+    function within(a, b,   x, y, n, i) {
+      if (a == b) return 1
+      n = split(a, x, ",")
+      if (split(b, y, ",") != n) return 0
+      for (i = 1; i <= n; i++) if (x[i] + 0 > y[i] + 0) return 0
+      return 1
+    }
     BEGIN {
       while ((getline line < bf) > 0) {
         line = clean(line)
         if (line !~ /[^ \t]/) continue
-        seen[norm(roots(line, ENVIRON["AIF_G_B1"], ENVIRON["AIF_G_B2"]))]++
+        line = roots(line, ENVIRON["AIF_G_B1"], ENVIRON["AIF_G_B2"])
+        k = norm(line)
+        bc[k, ++nb[k]] = counts(line)
       }
     }
     { line = clean($0) }
     line !~ /[^ \t]/ { next }
     {
-      k = norm(roots(line, ENVIRON["AIF_G_N1"], ENVIRON["AIF_G_N2"]))
-      if (seen[k] > 0) seen[k]--
-      else print line
+      l2 = roots(line, ENVIRON["AIF_G_N1"], ENVIRON["AIF_G_N2"])
+      k = norm(l2)
+      c = counts(l2)
+      hit = 0
+      for (j = 1; j <= nb[k]; j++) {
+        if ((k, j) in used) continue
+        if (within(c, bc[k, j])) { used[k, j] = 1; hit = 1; break }
+      }
+      if (!hit) print line
     }
   ' "$1"
 }

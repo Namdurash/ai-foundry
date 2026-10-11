@@ -378,17 +378,27 @@ if aif_g_have python3; then
     # attributed (docs/DEFECTS.md 13.9). A failing test that is not one of
     # this ticket's own — pre or unknown — and only then:
     #   once more   the whole suite, the same tree, test.command: failing once
-    #               and passing or skipped once is FLAKY — let through, named.
-    #               Not this ticket's own tests: they were red twice at the
-    #               freeze, and a re-run on every unfinished implementation
-    #               would add a suite to the commonest rejection
-    #   before      one that fails again and was red before this ticket — the
-    #               lock's red_at_base, when the base it was measured on is
-    #               still this run's (no sync since, or a sync onto that very
-    #               commit) — is the repository's: let through, named. When
-    #               the branch was brought onto a moved target since (13.4),
-    #               or the lock is older than the field, the suite is measured
-    #               on the tree before this ticket now (aif_g_base_suite).
+    #               and passing or skipped once is a flip. Not this ticket's
+    #               own tests: they were red twice at the freeze, and a re-run
+    #               on every unfinished implementation would add a suite to
+    #               the commonest rejection. A flip is FLAKY — let through,
+    #               named — only on proof it is not the implementation's: it
+    #               flipped at verify-red too, before there was one (the
+    #               lock's flaky), or the tree before this ticket fails it
+    #               (aif_g_flaky_proof). A race the implementation added
+    #               passed its one re-run and went through at the first
+    #               attempt (docs/DEFECTS.md 16.4); a flip with neither is
+    #               the implementation's, and said as one
+    #   before      one that fails again, and fails on the tree before this
+    #               ticket (aif_g_ticket_base, measured once and kept:
+    #               aif_g_base_suite) the way it fails here, its message folded
+    #               (AIF_G_JQ_MSG) — the repository's: let through, named. Red
+    #               there another way is not: a test on main whose message
+    #               gained what the ticket broke went through by its id alone
+    #               (16.4)
+    #   neither     when this ticket moved a dependency manifest or lockfile:
+    #               the copy measures the base with the dependencies installed
+    #               here, which are not the base's (aif_g_deps_moved, 16.4)
     # Everything else goes on to the attribution below, as it always did.
     let_rows=""
     unknown_fail="$(kind_n unknown)"
@@ -398,44 +408,82 @@ if aif_g_have python3; then
       rerun=""
       [ ! -f "$root/$report_path" ] || rerun="$(python3 "$here/junit.py" "$root/$report_path" 2>/dev/null || true)"
       printf '%s\n' "$rows" | awk -F'\t' '$1 == "pre" || $1 == "unknown" { print $2 }' | jq -R . | jq -s . >"$gtmp/outside.json"
+      tb=""
+      moved=""
+      if [ -e "$root/.git" ]; then
+        tb="$(aif_g_ticket_base "$work" "$root")"
+        [ -z "$tb" ] || moved="$(aif_g_deps_moved "$root" "$tb")"
+      fi
+      flips=""
       if [ -n "$rerun" ]; then
         printf '%s' "$rerun" >"$gtmp/rerun.json"
-        let_rows="$(jq -r --slurpfile a "$gtmp/rerun.json" '
+        flips="$(jq -r --slurpfile a "$gtmp/rerun.json" '
           ($a[0] | map({ (.id): .status }) | add // {}) as $A
-          | .[] | select(($A[.] // "") == "pass" or ($A[.] // "") == "skipped")
-          | . + "\tflaky\tfailed once, passed on a re-run"' "$gtmp/outside.json" 2>/dev/null)" || let_rows=""
+          | .[] | select(($A[.] // "") == "pass" or ($A[.] // "") == "skipped")' "$gtmp/outside.json" 2>/dev/null)" || flips=""
       fi
-      lock_base="$(jq -r '.base // empty' "$lock" 2>/dev/null)"
-      sync_base="$(jq -r '.sync_base // empty' "$work/run.json" 2>/dev/null)"
-      measure=""
-      while IFS= read -r tid; do
-        [ -n "$tid" ] || continue
-        ! printf '%s\n' "$let_rows" | cut -f1 | grep -qxF -- "$tid" || continue
-        if [ -n "$lock_base" ] && { [ -z "$sync_base" ] || [ "$sync_base" = "$lock_base" ]; }; then
-          if jq -e --arg i "$tid" '(.red_at_base // []) | index($i) != null' "$lock" >/dev/null 2>&1; then
-            let_rows="$let_rows
-$tid${tab}before${tab}red before this ticket (at $(printf '%s' "$lock_base" | cut -c1-10), measured at the freeze)"
-          fi
-        else
-          measure="$measure$tid
-"
+      unproven=""
+      if [ -n "$flips" ]; then
+        known="$(jq -r '(.flaky // [])[]' "$lock" 2>/dev/null | grep -xF -- "$flips" || true)"
+        [ -z "$known" ] || let_rows="$(printf '%s\n' "$known" | sed "s/\$/${tab}flaky${tab}failed once, passed on a re-run — it did so at verify-red too, before the implementation/")"
+        unproven="$(printf '%s\n' "$flips" | grep -vxF -- "${known:-//none//}" || true)"
+      fi
+      if [ -n "$unproven" ] && [ -n "$tb" ]; then
+        prc=0
+        proven="$(aif_g_flaky_proof "$project" "$root" "$tb" "$gtmp/base" "$unproven")" || prc=$?
+        [ "$prc" -ne 2 ] ||
+          aif_g_error "could not copy the tree to try a flaky test before this ticket (at $(printf '%s' "$tb" | cut -c1-10)): $proven"
+        if [ "$prc" -eq 0 ] && [ -n "$proven" ]; then
+          let_rows="$let_rows
+$(printf '%s\n' "$proven" | sed "s/\$/${tab}flaky${tab}failed once, passed on a re-run, and fails before this ticket too/")"
+          unproven="$(printf '%s\n' "$unproven" | grep -vxF -- "$proven" || true)"
         fi
-      done <<EOF
-$(jq -r '.[]' "$gtmp/outside.json")
-EOF
-      if [ -n "$measure" ] && [ -e "$root/.git" ]; then
-        tb="$(aif_g_ticket_base "$work" "$root")"
+      fi
+      # A flip with no proof is the implementation's: out of the attribution
+      # (whose reverted run would call it "this change broke it" or not,
+      # by chance), said for what it is.
+      if [ -n "$unproven" ]; then
+        rows="$(printf '%s\n' "$rows" | AIF_G_FLIP="$unproven" awk -F'\t' '
+          BEGIN { n = split(ENVIRON["AIF_G_FLIP"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") F[a[i]] = 1 }
+          ($1 == "pre" || $1 == "unknown") && ($2 in F) { $1 = "flip" } { print }' OFS='\t')"
+        mine_fail="$(kind_n mine)"
+        pre_fail="$(kind_n pre)"
+        unknown_fail="$(kind_n unknown)"
+      fi
+      measure="$(jq -r '.[]' "$gtmp/outside.json" | grep -vxF -- "$(printf '%s\n%s\n' "$let_rows" "$unproven" | cut -f1 | grep -v '^$' || printf '//none//')" || true)"
+      # Measured at verify-red, before the implementation could move a
+      # dependency: the lock's red_at_base with each one's failure there,
+      # while the base is still this run's (no sync onto a moved target since).
+      lock_base="$(jq -r '.base // empty' "$lock" 2>/dev/null)"
+      if [ -n "$measure" ] && [ -n "$tb" ] && [ "$lock_base" = "$tb" ] &&
+        jq -e '(.red_at_base_msg | type) == "object"' "$lock" >/dev/null 2>&1; then
+        printf '%s' "$results" >"$gtmp/now.json"
+        let_rows="$let_rows
+$(printf '%s\n' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile l "$lock" --slurpfile n "$gtmp/now.json" \
+          --arg at "$(printf '%s' "$tb" | cut -c1-10)" --argjson rs "$(aif_g_spellings "$root")" "$AIF_G_JQ_MSG"'
+          ($l[0].red_at_base_msg // {}) as $M
+          | ($n[0] | map({ (.id): . }) | add // {}) as $N
+          | .[] | select($M[.] != null)
+          | select($M[.] == ((($N[.] // {}).message // "") | aif_rootsin($rs) | aif_nmsg))
+          | . + "\tbefore\tred before this ticket (at " + $at + ", measured at the freeze), failing there as it does here"' 2>/dev/null)"
+        measure=""
+      fi
+      if [ -n "$measure" ] && [ -n "$tb" ] && [ -z "$moved" ]; then
         brc=0
         bj="$(aif_g_base_suite "$project" "$root" "$tb" "$gtmp/base")" || brc=$?
         [ "$brc" -ne 2 ] ||
           aif_g_error "could not copy the tree to measure the suite before this ticket (at $(printf '%s' "$tb" | cut -c1-10)): $bj"
         if [ "$brc" -eq 0 ]; then
           printf '%s' "$bj" >"$gtmp/base.json"
+          printf '%s' "$results" >"$gtmp/now.json"
           let_rows="$let_rows
-$(printf '%s' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile b "$gtmp/base.json" --arg at "$(printf '%s' "$tb" | cut -c1-10)" '
-            ($b[0] | map({ (.id): .status }) | add // {}) as $B
-            | .[] | select(($B[.] // "") == "failure" or ($B[.] // "") == "error")
-            | . + "\tbefore\tred before this ticket (at " + $at + ")"' 2>/dev/null)"
+$(printf '%s\n' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile b "$gtmp/base.json" --slurpfile n "$gtmp/now.json" \
+            --arg at "$(printf '%s' "$tb" | cut -c1-10)" --argjson rs "$(aif_g_spellings "$root")" "$AIF_G_JQ_MSG"'
+            ($b[0] | map({ (.id): . }) | add // {}) as $B
+            | ($n[0] | map({ (.id): . }) | add // {}) as $N
+            | .[] | ($B[.] // {}) as $bt | ($N[.] // {}) as $nt
+            | select(($bt.status // "") == "failure" or ($bt.status // "") == "error")
+            | select((($bt.message // "") | aif_nmsg) == (($nt.message // "") | aif_rootsin($rs) | aif_nmsg))
+            | . + "\tbefore\tred before this ticket (at " + $at + "), failing there as it does here"' 2>/dev/null)"
         fi
       fi
       let_rows="$(printf '%s\n' "$let_rows" | grep -v '^[[:space:]]*$' || true)"
@@ -476,6 +524,7 @@ $(printf '%s' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile 
         attrib="$(printf '%s' "$results" | jq -c \
           --slurpfile rev "$gtmp/reverted.json" --slurpfile fz "$gtmp/freeze.json" \
           --slurpfile ids "$gtmp/pre.json" --arg deps "$deps" --arg here_root "$root" \
+          --argjson rab "$(jq -c '.red_at_base // []' "$lock" 2>/dev/null || echo '[]')" \
           --arg there "$scratch" --arg there_p "$(cd "$scratch" && pwd -P)" '
           # Each root spelling becomes "<root>", the longer first, so the same
           # failure read in two copies of the tree compares equal.
@@ -503,6 +552,9 @@ $(printf '%s' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile 
                   ((lines($t.message; [$here_root]) - lines($r.message; [$there, $there_p])) as $d
                   | if ($d | length) == 0 then
                       { out: true, kind: "interaction", text: ($head + "red since this ticket'"'"'s test files landed, and it fails the same way with the implementation reverted: the implementation does not reach it") }
+                    elif ($rab | index($t.id)) != null then
+                      { out: false, text: ($head + "red before this ticket, and the implementation changes how it fails — not the repository'"'"'s red any more; new with it:"),
+                        detail: ($d[0:8] | map(.[0:240])) }
                     else
                       { out: false, text: ($head + "red since this ticket'"'"'s test files landed; the implementation changes how it fails and has not cleared it — new with it:"),
                         detail: ($d[0:8] | map(.[0:240])) }
@@ -523,7 +575,8 @@ $(printf '%s' "$measure" | grep -v '^$' | jq -R . | jq -s . | jq -r --slurpfile 
         $1 == "mine"    { print $2 " (" $3 ") — a test this ticket froze, so it must pass; a skip here is red made to go away without implementing anything" }
         $1 == "unknown" { print $2 " (" $3 ") — origin unknown: this lock predates suite_at_freeze, so a pre-existing test cannot be told from one this ticket authored" }
         $1 == "post"    { print $2 " (" $3 ") — NOT pre-existing: absent from the suite when the tests were frozen, so it arrived with this ticket'"'"'s own test files" }
-        $1 == "quiet"   { print $2 " (skipped) — it ran when the tests were frozen (" $4 "), so something in this change silenced it" }'
+        $1 == "quiet"   { print $2 " (skipped) — it ran when the tests were frozen (" $4 "), so something in this change silenced it" }
+        $1 == "flip"    { print $2 " (" $3 ") — failed once and passed on a re-run, and it did not flip at verify-red, before the implementation, nor does the tree before this ticket fail it: an intermittent failure this change brings — a race, an order, a shared state" }'
       [ -z "$pre_text" ] || printf '%s\n' "$pre_text"
     )"
 
@@ -775,6 +828,15 @@ $(printf '%s\n' "$named" | sed -n '1,12p' | cut -c1-240 | sed 's/^/    /')"
         continue
       fi
       [ -n "$tb" ] || tb="$(aif_g_ticket_base "$work" "$root")"
+      # Not measured before this ticket when it moved the dependencies: the
+      # copy there would run with the ones installed here (16.4).
+      moved_c="$(aif_g_deps_moved "$root" "$tb")"
+      if [ -n "$moved_c" ]; then
+        held="$held
+$as_was
+    (whether it failed this way before this ticket was not measured: this ticket moved $moved_c, and the tree before it would run with the dependencies installed here)"
+        continue
+      fi
       brc=0
       brow="$(aif_g_base_check "$project" "$root" "$tb" "$name" "$gtmp/base")" || brc=$?
       [ "$brc" -ne 2 ] ||
@@ -808,9 +870,54 @@ $as_was"
     jq --arg names "$checks_at_base" --arg at "$(printf '%s' "$tb" | cut -c1-10)" '
       ($names | split(", ")) as $N
       | map(if (.name as $n | $N | index($n)) != null
-            then .result = "at_base" | .tail = ("exit " + (.exit | tostring) + ", the same before this ticket (at " + $at + "), and nothing new with the implementation — let through")
+            then .result = "at_base" | .tail = ("exit " + (.exit | tostring) + ", the same before this ticket (at " + $at + "), and nothing new with the implementation — let through"
+                                               + (if .chain == true then "; its command stops at a step that fails (&&), and what follows it never ran, here or before — it judged nothing of this ticket'"'"'s" else "" end))
             else . end)' "$root/.aif/tmp/checks-green.json" >"$gtmp/checks-green.json" 2>/dev/null &&
       cp "$gtmp/checks-green.json" "$root/.aif/tmp/checks-green.json"
+  fi
+fi
+
+# The standing tests as the tree before this ticket wrote them
+# (docs/DEFECTS.md 12.3, 16.4). verify-red froze the older tests of a declared
+# file as standing — pre-existing, held to passing — by their ids and their
+# status at the base, not their bodies: the tests station rewrote one in place
+# (the same id, its body `true`) and the implementation dropped what it held,
+# built with nothing said. When a standing test's file changed since the base,
+# the tests run with those files as the base had them, in a copy of this tree,
+# and each must pass there. One suite run, only then
+# (aif_g_standing_as_base).
+standing_ids="$(jq -r '(.standing // [])[]' "$lock" 2>/dev/null)" || standing_ids=""
+if [ -n "$standing_ids" ] && [ -n "${results:-}" ] && [ -e "$root/.git" ]; then
+  [ -n "${tb:-}" ] || tb="$(aif_g_ticket_base "$work" "$root")"
+  st_files="$(printf '%s' "$results" | jq -r --arg ids "$standing_ids" '
+    ($ids | split("\n") | map(select(length > 0))) as $I
+    | [ .[] | select(.id as $i | $I | index($i) != null) | .file // empty ] | unique | .[]' 2>/dev/null)" || st_files=""
+  st_changed=""
+  if [ -n "$tb" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      git -C "$root" cat-file -e "$tb:$f" 2>/dev/null || continue
+      git -C "$root" diff --quiet "$tb" -- "$f" 2>/dev/null || st_changed="$st_changed$f
+"
+    done <<EOF
+$st_files
+EOF
+  fi
+  st_changed="$(printf '%s' "$st_changed" | grep -v '^$' || true)"
+  if [ -n "$st_changed" ]; then
+    src=0
+    st_bad="$(aif_g_standing_as_base "$project" "$root" "$tb" "$gtmp/standing" "$standing_ids" "$st_changed")" || src=$?
+    [ "$src" -ne 2 ] ||
+      aif_g_error "could not copy the tree to run the standing tests as the tree before this ticket wrote them (at $(printf '%s' "$tb" | cut -c1-10)): $st_bad"
+    if [ "$src" -eq 1 ]; then
+      aif_g_error "the standing tests could not be run as the tree before this ticket wrote them (at $(printf '%s' "$tb" | cut -c1-10)): $st_bad"
+    fi
+    if [ -n "$st_bad" ]; then
+      aif_g_report "$(printf '%s\n' "$st_bad" | awk -F'\t' -v at="$(printf '%s' "$tb" | cut -c1-10)" '
+        NF { print $1 " (" $2 ") — a standing test, as the tree before this ticket wrote it (at " at "), fails on this implementation: " $3 }')
+  Its file changed since the base ($(printf '%s\n' "$st_changed" | paste -sd, - | sed 's/,/, /g')), and the test that passes now is not the
+  one that held the behaviour: an older ticket's rule this ticket does not replace, which the implementation has to keep." "standing"
+    fi
   fi
 fi
 
@@ -854,6 +961,6 @@ say_ids() {
 }
 [ -z "$let_before" ] || let_parts="$let_parts; $(printf '%s\n' "$let_before" | grep -c .) red before this ticket: $(say_ids "$let_before")"
 [ -z "$let_flaky" ] || let_parts="$let_parts; $(printf '%s\n' "$let_flaky" | grep -c .) flaky — failed once, passed on a re-run: $(say_ids "$let_flaky")"
-[ -z "$checks_at_base" ] || let_parts="$let_parts; failing the same way before this ticket: check $checks_at_base"
+[ -z "$checks_at_base" ] || let_parts="$let_parts; $(aif_g_checks_let "$root/.aif/tmp/checks-green.json")"
 [ -z "$let_parts" ] || printf ' — let through, %s' "${let_parts#; }"
 printf '\n'

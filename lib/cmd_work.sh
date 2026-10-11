@@ -138,7 +138,7 @@ usage: aif work [<ticket>] [options]
                      and lets the runs in flight finish; Ctrl-C again stops them.
                      --stop on one run stops that one, and its slot goes on.
                      Each worker's output is in .aif/tmp/loop-<when>/<ID>.log
-                     (<ID>.2.log for a second take of the card, and on), or
+                     (<ID>+2.log for a second take of the card, and on), or
                      under AIF_WORK_LOOP_LOGDIR when it names a directory;
                      summary.json there says how the loop ended
   --idle             with --loop: an empty Ready is not the end — the loop
@@ -4227,8 +4227,8 @@ _aif_work_report() {
 #             leave the files the loop reads at the top of every second.
 #   output    each worker writes its own log under .aif/tmp/loop-<when>/ — or
 #             under AIF_WORK_LOOP_LOGDIR, so a parent can name the directory it
-#             will read — one a take, a card taken again writing <ID>.2.log
-#             (docs/DEFECTS.md 15.7). On a terminal the loop draws its dashboard (lib/tui.sh)
+#             will read — one a take, a card taken again writing <ID>+2.log
+#             (docs/DEFECTS.md 15.7, 16.11). On a terminal the loop draws its dashboard (lib/tui.sh)
 #             from what each worker writes into its run lock as it moves;
 #             anywhere else it says one line per start and per end. A summary
 #             either way, and summary.json beside the logs for a parent.
@@ -5405,13 +5405,17 @@ _aif_work_loop_pause() {
 
 # _aif_work_loop_take_log <ID> — the log the worker about to take <ID>
 # writes, a name in the loop's log directory, into AIF_WORK_LOOP_TAKE_LOG:
-# <ID>.log the first time this loop takes it, <ID>.2.log the second, and so
+# <ID>.log the first time this loop takes it, <ID>+2.log the second, and so
 # on. An idle loop takes a card again when it comes back — a land's sync:, a
 # shift's retry, a person's move — and one log per card had the second
 # worker's output written over the first's: why it stopped, the lines before
 # a refusal, gone, and two results rows naming one file (docs/DEFECTS.md
-# 15.7). Counts the take; a global, not printed — a `$(…)` would lose the
-# count with its subshell.
+# 15.7). A "+", which no ticket id holds (they are [A-Za-z0-9._-]): the
+# second take's log was <ID>.2.log, and under a ticket_pattern that allows a
+# dot that is ticket <ID>.2's own, written over (16.11). Every reader takes
+# the name from here — a slot's, a result row's — and <ID>.log only for a
+# first take. Counts the take; a global, not printed — a `$(…)` would lose
+# the count with its subshell.
 _aif_work_loop_take_log() {
   local t n=1
   for t in $AIF_WORK_LOOP_TAKES; do
@@ -5421,7 +5425,7 @@ _aif_work_loop_take_log() {
   if [ "$n" -eq 1 ]; then
     AIF_WORK_LOOP_TAKE_LOG="$1.log"
   else
-    AIF_WORK_LOOP_TAKE_LOG="$1.$n.log"
+    AIF_WORK_LOOP_TAKE_LOG="$1+$n.log"
   fi
 }
 

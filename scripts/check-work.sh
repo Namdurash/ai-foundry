@@ -171,7 +171,8 @@
 #      when Ready holds only those; a worker that refused to take over a
 #      dead run still running is held, not counted as the machine; a process
 #      opened by hand in a dead run's worktree is never signalled and refuses
-#      the takeover; a card taken twice has a log for each take
+#      the takeover; a card taken twice has a log for each take, the second
+#      under a name no ticket id can be (<ID>+2.log)
 #  58  a Ctrl-C during the Ready read is not the board; aif work --loop
 #      --stop reaches a loop still in its preflight, one that leads no process
 #      group too, in seconds; a loop that is not idle
@@ -5474,7 +5475,7 @@ wait_count "$OUT/run57a.out" 'loop [0-9]* — AIF-575 ' 2 30
 wait_col AIF-575 review 60
 wait_count "$L57/loop.log" 'Ready is empty — idle' 3 30
 eq "a card taken twice: a log a take — the first kept, the second beside it — each named where its worker started" \
-  "$(find "$L57" -name 'AIF-575*.log' | wc -l | tr -d ' '),$(grep -c 'cut .aif/worktrees/AIF-575 on aif/AIF-575' "$L57/AIF-575.log" 2>/dev/null),$(grep -c 'cut .aif/worktrees/AIF-575' "$L57/AIF-575.2.log" 2>/dev/null),$(grep -c "loop 1 — AIF-575 · .*/AIF-575.log$" "$OUT/run57a.out"),$(grep -c "loop 2 — AIF-575 · .*/AIF-575.2.log$" "$OUT/run57a.out")" \
+  "$(find "$L57" -name 'AIF-575*.log' | wc -l | tr -d ' '),$(grep -c 'cut .aif/worktrees/AIF-575 on aif/AIF-575' "$L57/AIF-575.log" 2>/dev/null),$(grep -c 'cut .aif/worktrees/AIF-575' "$L57/AIF-575+2.log" 2>/dev/null),$(grep -c "loop 1 — AIF-575 · .*/AIF-575.log$" "$OUT/run57a.out"),$(grep -c "loop 2 — AIF-575 · .*/AIF-575+2.log$" "$OUT/run57a.out")" \
   "2,1,0,1,1"
 
 # A worker that exits before its claim — the stations gone from the checkout
@@ -5515,10 +5516,15 @@ rc=0
 wait_exit "$l57" 30 || rc=$?
 eq "…drained: the environment never blamed, nothing re-checked, both held, and every run with its own take's log" \
   "$rc|$(jq -r '[.env, .rechecks, (.held | join(" ")), ([.results[] | .ticket + ":" + .log] | join(" "))] | map(tostring) | join("|")' "$L57/summary.json" 2>/dev/null)" \
-  "1|0|0|AIF-576 AIF-577|AIF-575:AIF-575.log AIF-575:AIF-575.2.log AIF-576:AIF-576.log AIF-577:AIF-577.log AIF-578:AIF-578.log"
+  "1|0|0|AIF-576 AIF-577|AIF-575:AIF-575.log AIF-575:AIF-575+2.log AIF-576:AIF-576.log AIF-577:AIF-577.log AIF-578:AIF-578.log"
 eq "…and its last lines name each run's log" \
-  "$(grep -c 'AIF-575 · [0-9]* min · built → Review · aif land AIF-575 · AIF-575.2.log$' "$OUT/run57a.out"),$(grep -c 'AIF-576 · [0-9]* min · not built — its worker exited 1 before it took the card · AIF-576.log$' "$OUT/run57a.out")" \
+  "$(grep -c 'AIF-575 · [0-9]* min · built → Review · aif land AIF-575 · AIF-575+2.log$' "$OUT/run57a.out"),$(grep -c 'AIF-576 · [0-9]* min · not built — its worker exited 1 before it took the card · AIF-576.log$' "$OUT/run57a.out")" \
   "1,1"
+# A take's log under a name no ticket can have (docs/DEFECTS.md 16.11): it
+# was AIF-575.2.log, and under a ticket_pattern that allows a dot that is
+# ticket AIF-575.2's own log, written over by AIF-575's second take.
+eq "…the second take's log a name no ticket id can be: AIF-575+2 is not a ticket id, where AIF-575.2 — the old name — is one" \
+  "$("$AIF" work --status 'AIF-575+2' 2>&1 | grep -c 'not a ticket id'),$("$AIF" work --status 'AIF-575.2' 2>&1 | grep -c 'not a ticket id')" "1,0"
 
 # A process someone opened in a dead run's worktree — nothing but its
 # directory ties it to the run: never signalled, and the takeover refuses at

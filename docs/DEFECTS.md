@@ -35,17 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.11 With a dotted ticket pattern a second take's log is another ticket's — probed
-
-15.7 gave each take its own log, `<ID>.2.log` onward. Under a `ticket_pattern`
-that allows a dot, `AIF-82.2.log` is also ticket `AIF-82.2`'s log, and the
-second take of AIF-82 writes over it — on every commit since 15.7's fix.
-
-#### Directions
-
-- A take's log under a name the pattern cannot produce, every reader of the
-  names (the results rows, `--status`, the dashboard) with it.
-
 ### 16.12 The dashboard's ends: a terminal gone with no hang-up, and a KILL nobody sent — read; probed
 
 Since 15.15 a frame that cannot be written does not end the loop, and after a
@@ -307,7 +296,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.10 closed since, 16.11–16.15 open above.
+with it, 16.4–16.11 closed since, 16.12–16.15 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -319,6 +308,7 @@ with it, 16.4–16.10 closed since, 16.11–16.15 open above.
 - **16.8** A pass's warnings reached no one, and green measured a file the ticket's new ignore rules hide — probed: scope's IGNORED FROM NOW ON and the plan gate's CI AND IGNORE RULES were dropped by `aif _gate`, which kept a pass's first line; and an implementation that wrote `src/gen.py` and ignored it with its planned `.gitignore` passed green, scope and the land — it was never committed, and a fresh clone of main was red. A pass's lines after its first are kept: under the stage it admitted in the run's own lines, on the ledger row (`notes`) and under the gate's line in the report. What only the rules added since a base hide is computed (`aif_g_hidden_since`, the worker's twin `_aif_work_hidden_since`: the ignore rules as committed then, asked in a scratch repository) and left out of every copy — the gates' and the worker's, the land's target copy among them; scope names it (HIDDEN BY THEM); and when the tree holds any, green runs the suite once more in a copy without it, as a fresh clone has it, and a test that passes here and not there is a rejection naming the files. docs/FINDINGS.md #44. On `main` after 0.16.0; scenario 98.
 - **16.9** The guard let a path through `..` — probed at the hook: it matched the path as it was handed, so `src/../.aif/project.json`, `src/../tasks/T-2/plan.md` and `__tests__/../.aif/…` were allowed to every station, the plan station — no Bash, no scope — held by nothing else. `.`, `..` and `//` are resolved lexically before any rule reads the path; one that leaves the project — a relative path climbing above it, an absolute one outside it — is denied to every station (sets/claude/hooks/guard.sh). Whether claude hands the hook a normalised path was not probed: the CLI's login on this machine had expired; the hook no longer depends on it. On `main` after 0.16.0; check-set's guard rows.
 - **16.10** The block aif manages in `.gitignore` was read by exact lines — probed, three ways. `aif init` (`aif_block_inject`) over a block with its begin line and no end dropped every line after the begin — the developer's `node_modules/` and `dist/` with it — and doctor sent the developer to run it; `aif_gitignore_ensure` matched its end marker exactly, so a CRLF file or an end line with a word after it gave a false "no end line" on every worker run, and an end line above the begin "added" a line that went nowhere; doctor read the block's text, so a path ignored outside it — the developer's own line, `.aif/` whole — was named missing. Every writer and reader finds the markers as one (`aif_block_state`, lib/merge.sh): anywhere in a line, past a `\r` and trailing blanks, an end line only after the begin; a block with no end after its begin is left as it is, warned, by `aif init`, the worker's ensure and the uninstall's removal alike, and doctor names the end line to add; doctor asks `git check-ignore`. On `main` after 0.16.0; scenario 59.
+- **16.11** With a dotted ticket pattern a second take's log was another ticket's — probed: 15.7 named a card's second take `<ID>.2.log`, and under a `ticket_pattern` that allows a dot that is ticket `<ID>.2`'s own log, written over. A later take is `<ID>+<n>.log` now — a `+`, which no ticket id holds (ids are `[A-Za-z0-9._-]`) — named in one place (`_aif_work_loop_take_log`), every reader — a slot's, a result row's, the dashboard's — taking that name, `<ID>.log` only for a first take. On `main` after 0.16.0; scenario 57.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

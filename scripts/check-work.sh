@@ -297,6 +297,11 @@
 #      shows too is flaky; a standing test rewritten in place is run as the
 #      base wrote it; a land whose merge moves a lockfile lets nothing through
 #      as the target's
+#  96  an older test of a declared file that fails on verify-red's first run
+#      alone is flaky — let through, named, held at green — where it stopped
+#      the run as non-deterministic; one new with the ticket, unmarked, is
+#      still non-deterministic, and so is one the base could not be asked
+#      about, the rejection saying why
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -461,11 +466,13 @@ body="$(row t0 tests/t0.py 1)<testcase classname=\"tests.t9\" name=\"t9\"><skipp
 # <word> is in src/app.py; for the word `feat`, until src/feat.py stops
 # throwing the not-implemented marker (the plan's skeleton). Words after the
 # dash are the harness's switches: BUG is red whatever the code does, BROKEN a
-# syntax error, BADCALL a TypeError, FLAKY flips on every run.
+# syntax error, BADCALL a TypeError, FLAKY flips on every run, ONCE is red in
+# the one run after a station left .aif/tmp/flake-once (FAKE_FLAKE_ONCE).
 fails() { # <id> <file> <message-attr> <message>
   printf '<testcase classname="%s" name="%s"><failure message="%s">%s\n    at %s/%s:1</failure></testcase>' "$(cn "$2")" "$1" "$3" "$4" "$PWD" "$2"
 }
 flip="$(cat .aif/tmp/flip 2>/dev/null || echo 0)"; flip=$((flip + 1)); printf '%s' "$flip" >.aif/tmp/flip
+once=0; if [ -f .aif/tmp/flake-once ]; then once=1; rm -f .aif/tmp/flake-once; fi
 for n in 1 2 3; do
   [ -f "tests/t$n.py" ] || continue
   while IFS= read -r line; do
@@ -480,6 +487,7 @@ for n in 1 2 3; do
       *" BROKEN"*) body="$body$(fails "$id" "tests/t$n.py" 'invalid syntax' 'SyntaxError: invalid syntax')" ;;
       *" BADCALL"*) body="$body$(fails "$id" "tests/t$n.py" 'not a function' 'TypeError: users_v2 is not a function')" ;;
       *" FLAKY"*) body="$body$(row "$id" "tests/t$n.py" $((flip % 2)))" ;;
+      *" ONCE"*) [ "$once" = 0 ] || g=0; body="$body$(row "$id" "tests/t$n.py" "$g")" ;;
       *) if [ "$word" = feat ] && [ "$g" = 0 ]; then body="$body$(fails "$id" "tests/t$n.py" 'not implemented' 'NotImplementedError: aif: not implemented: feat')"
          else body="$body$(row "$id" "tests/t$n.py" "$g")"; fi ;;
     esac
@@ -881,6 +889,22 @@ PLAN
           mv "$wt/$f.tmp" "$wt/$f"
         done
     fi
+    # FAKE_TESTS_UNMARKED_FIRST: the first dispatch also writes a test that
+    # carries none of this ticket's markers, and fails once (ONCE), into each
+    # declared file it did not write; told it is non-deterministic, the next
+    # takes it out (docs/DEFECTS.md 16.5).
+    if [ "${FAKE_TESTS_UNMARKED_FIRST:-0}" = 1 ]; then
+      mine=" $(for i in $nums; do printf 'tests/t%s.py ' "$i"; done)"
+      sed -n '/^<!-- aif:meta$/,/^-->$/p' "$work/plan.md" | sed '1d;$d' | jq -r '.files.tests[]? // empty' 2>/dev/null |
+        while IFS= read -r f; do
+          case "$mine" in *" $f "*) continue ;; esac
+          [ -f "$wt/$f" ] || continue
+          w "$wt/$f"
+          grep -v '^# AC-009 ' "$wt/$f" >"$wt/$f.tmp"
+          [ "$retry" = 1 ] || printf '# AC-009 asserts old2 — expects on ONCE\n' >>"$wt/$f.tmp"
+          mv "$wt/$f.tmp" "$wt/$f"
+        done
+    fi
     # The station's note: what it cannot write a red test for.
     if [ "${FAKE_TESTS_NOTE_UNF:-0}" = 1 ]; then
       w "$work/tests.note.json"
@@ -987,6 +1011,12 @@ esac
 # pre-existing test (docs/DEFECTS.md 13.9).
 case " ${FAKE_FLAKE_PRE:-} " in
   *" $station "*) : >"$wt/.aif/tmp/flake-t0" ;;
+esac
+# FAKE_FLAKE_ONCE="<station> …": the same for the tests whose line says ONCE,
+# by .aif/tmp/flake-once — an older test of a declared file that fails once
+# (docs/DEFECTS.md 16.5).
+case " ${FAKE_FLAKE_ONCE:-} " in
+  *" $station "*) : >"$wt/.aif/tmp/flake-once" ;;
 esac
 [ -z "${FAKE_TIMELINE:-}" ] || printf 'end %s %s\n' "$ticket" "$station" >>"$FAKE_TIMELINE"
 # The model the worker asked for, and what the profile exported to route
@@ -7760,6 +7790,58 @@ eq "the target red, the merge moving its lockfile: not let through as the target
 eq "the gates and the land fold a failure's message by the same definitions" \
   "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum),$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; . "$1/lib/cmd_land.sh"; printf "%s" "$AIF_LAND_JQ_MSG"' _ "$ROOT" | cksum)" \
   "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum),$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_JQ_MSG"' _ "$ROOT" | cksum)"
+cd "$SANDBOX" || exit 1
+
+# ====== 96. an older test that fails once at verify-red is flaky ============
+# verify-red runs the suite twice and rejects a new test whose verdict moves.
+# An older test in a declared file — another ticket's, left in a file this
+# ticket's rule had to reach — that failed on the first run alone was read as
+# this ticket's: "non-deterministic", the tests station sent back over a test
+# it did not write, and the run stopped (docs/DEFECTS.md 16.5). The tree
+# before the ticket tells them apart: a test there is an older one's flake —
+# flaky, let through and named; one only this ticket has is its own, and
+# non-deterministic still; one that tree could not be asked about is read as
+# the ticket's, and the rejection says why.
+printf '\n96. an older test that fails once at verify-red: flaky, let through and named — not the ticket'"'"'s\n'
+setup70 "$SANDBOX/p96"
+sed 's/^\(# AIF-69 AC-002 .*\)$/\1 ONCE/' tests/t3.py >"$OUT/t3.96" && cp "$OUT/t3.96" tests/t3.py
+git add -A && git commit -qm "AIF-69 AC-002 fails once after a station" >/dev/null
+rc=0
+FAKE_KEEP_WORDS=1 FAKE_FLAKE_ONCE="tests implement" "$AIF" work AIF-70 --no-worktree >"$OUT/run96.out" 2>&1 || rc=$?
+eq "an older test of a declared file that fails on verify-red's first run alone: built, verify-red passing at its first attempt" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-70.json)" "0,pass"
+eq "…flaky in the lock — not standing, not covering, frozen as its re-run found it" \
+  "$(jq -c '[.flaky, .standing, .covering, .suite_at_freeze["tests.t3::AIF-69 AC-002 t3"]]' tasks/AIF-70/tests.lock.json)" \
+  '[["tests.t3::AIF-69 AC-002 t3"],[],["tests.t1::AIF-70 AC-001 t1"],"pass"]'
+# shellcheck disable=SC2016  # the backticks are the report's markdown
+eq "…named on verify-red's line, on green's when it flips there too, and in the report" \
+  "$(jq -r '[.entries[] | select(.gate == "verify-red")] | last | .reason' .aif/state/ledgers/AIF-70.json | grep -c 'let through, 1 flaky — failed once, passed on a re-run: tests.t3::AIF-69 AC-002 t3$'),$(jq -r '[.entries[] | select(.gate == "green")] | last | .reason' .aif/state/ledgers/AIF-70.json | grep -c 'let through, 1 flaky — failed once, passed on a re-run: tests.t3::AIF-69 AC-002 t3'),$(grep -c '^- `tests.t3::AIF-69 AC-002 t3` — flaky: failed once, passed on a re-run of the same tree (green, verify-red)$' tasks/AIF-70/report.md)" \
+  "1,1,1"
+
+# A test the tests station wrote into that file, carrying none of this
+# ticket's markers, failing once: the tree before the ticket has no such
+# test — it is the ticket's own, non-deterministic, and sent back.
+setup70 "$SANDBOX/p96b"
+rc=0
+FAKE_KEEP_WORDS=1 FAKE_FLAKE_ONCE=tests FAKE_TESTS_UNMARKED_FIRST=1 "$AIF" work AIF-70 --no-worktree >"$OUT/run96b.out" 2>&1 || rc=$?
+eq "…one new with this ticket in that file, unmarked, failing once: non-deterministic — sent back, then built, nothing let through" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "verify-red") | .result] | join(",")' .aif/state/ledgers/AIF-70.json),$(grep -c 'AC-009 t3 was failure then pass — a test whose verdict moves between two runs of the same tree is non-deterministic' .aif/tmp/fake-prompt-tests-2 2>/dev/null),$(jq -c '.flaky' tasks/AIF-70/tests.lock.json)" \
+  "0,fail,pass,1,[]"
+
+# The older test failing once, and the tree before the ticket not measured —
+# its suite writes no report in the copy verify-red runs it in: whether the
+# test is an older one's cannot be told, so it is read as the ticket's, and
+# the rejection names what could not be measured.
+setup70 "$SANDBOX/p96c"
+sed 's/^\(# AIF-69 AC-002 .*\)$/\1 ONCE/' tests/t3.py >"$OUT/t3.96" && cp "$OUT/t3.96" tests/t3.py
+# shellcheck disable=SC2016  # the suite expands it, not this shell
+printf 'case "$PWD" in */aif-red-*/base) echo "no runner config before the ticket"; exit 3 ;; esac\n' >.aif/suite-extra.sh
+git add -A && git commit -qm "AIF-69 AC-002 fails once; no report in the copy before the ticket" >/dev/null
+rc=0
+FAKE_KEEP_WORDS=1 FAKE_FLAKE_ONCE=tests "$AIF" work AIF-70 --no-worktree >"$OUT/run96c.out" 2>&1 || rc=$?
+eq "…the tree before the ticket not measured: read as the ticket's, non-deterministic, the rejection saying what could not be measured" \
+  "$rc,$(grep -c 'tests.t3::AIF-69 AC-002 t3 was failure then pass — a test whose verdict moves .*whether the tree before this ticket has this one could not be measured (the suite wrote no report there — no runner config before the ticket)' .aif/tmp/fake-prompt-tests-2 2>/dev/null)" \
+  "1,1"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

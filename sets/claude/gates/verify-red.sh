@@ -19,9 +19,11 @@
 #   - an older test in a declared file — another ticket's, left alone in a
 #     file this ticket's rule had to reach — green before this ticket is
 #     STANDING: not this ticket's test, not on its checklist, held by green
-#     as any pre-existing test (docs/DEFECTS.md 12.3). A test still carrying a
-#     criterion this ticket's rules replace is rejected: it asserts what the
-#     ticket ends
+#     as any pre-existing test (docs/DEFECTS.md 12.3); one the tree before
+#     has, failing once and passing on the re-run, is flaky like any other —
+#     let through, named — where it used to be read as this ticket's and
+#     called non-deterministic (16.5). A test still carrying a criterion this
+#     ticket's rules replace is rejected: it asserts what the ticket ends
 #   - each new test is present in the report, and each failing one fails for
 #     one of two reasons: an assertion did not hold, or the skeleton threw the
 #     not-implemented marker. The plan station wrote the contract — every
@@ -277,6 +279,9 @@ red_with_tests=""
 # green and are not this ticket's (standing).
 red_at_base=""
 flaky_ids=""
+foreign_flaky=""
+flaky_cand=""
+flaky_why=""
 standing=""
 standing_why=""
 again=""
@@ -421,22 +426,35 @@ EOF
       # A flip here, before the implementation exists, cannot be its race:
       # flaky, let through and named — and in the lock's flaky list, which is
       # how green and the land know the test flipped before the implementation
-      # did anything (docs/DEFECTS.md 16.4).
+      # did anything (docs/DEFECTS.md 16.4). One in a declared file is an
+      # older test's flake only when the tree before this ticket has the test
+      # (below); one only this ticket has is its own, and red twice holds it.
       if [ -n "$flaky_ids" ]; then
+        foreign_flaky="$(printf '%s' "$foreign_red" | grep -xF -- "$flaky_ids" || true)"
         pre_red="$(printf '%s' "$pre_red" | grep -vxF -- "$flaky_ids" || true)"
         foreign_red="$(printf '%s' "$foreign_red" | grep -vxF -- "$flaky_ids" || true)"
       fi
     fi
   fi
+  # And a test of a declared file that failed once and passed on the re-run
+  # is an older one's flake only when the tree before this ticket has it — it
+  # used to fall through to the new tests here, where red twice called it
+  # non-deterministic and the run stopped on a test no station wrote
+  # (docs/DEFECTS.md 16.5). Looked for, like a standing one, only where its
+  # file was there before this ticket.
   standing_cand=""
   while IFS="$tab" read -r f id st msg; do
     [ -n "$id" ] || continue
     : "$msg"
-    [ "$st" = pass ] || [ "$st" = skipped ] || continue
     [ -n "$tbase" ] || continue
     git -C "$root" cat-file -e "$tbase:$f" 2>/dev/null || continue
-    standing_cand="$standing_cand$id
+    if [ "$st" = pass ] || [ "$st" = skipped ]; then
+      standing_cand="$standing_cand$id
 "
+    elif [ -n "$foreign_flaky" ] && printf '%s\n' "$foreign_flaky" | grep -qxF -- "$id"; then
+      flaky_cand="$flaky_cand$id
+"
+    fi
   done <<EOF
 $foreign_rows
 EOF
@@ -445,7 +463,7 @@ EOF
   base_why=""
   moved=""
   [ -z "$tbase" ] || moved="$(aif_g_deps_moved "$root" "$tbase")"
-  if [ -n "$pre_red$foreign_red$standing_cand" ]; then
+  if [ -n "$pre_red$foreign_red$standing_cand$flaky_cand" ]; then
     if [ -z "$tbase" ]; then
       base_why="there is no commit to measure it at"
     elif [ -n "$moved" ]; then
@@ -511,10 +529,12 @@ EOF
   red_at_base="$red_before"
 
   # The declared files' foreign tests, by what the tree before this ticket
-  # says of each: green or skipped there and now — standing; red there and
-  # now — the repository's; anything else, this ticket's.
+  # says of each: green or skipped there and now — standing; there at all,
+  # and failing once here — flaky, an older test's flake; red there and now
+  # — the repository's; anything else, this ticket's.
   held=""
-  if [ -n "$baseline" ] && [ -n "$foreign_red$standing_cand" ]; then
+  flaky_old=""
+  if [ -n "$baseline" ] && [ -n "$foreign_red$standing_cand$flaky_cand" ]; then
     # Split by hand: an empty status — absent before this ticket — leads the
     # line, and a TAB in IFS is whitespace, which would shift every column
     # after it (docs/FINDINGS.md #15).
@@ -532,6 +552,13 @@ EOF
           held="$held$id
 "
         fi
+      elif printf '%s\n' "$flaky_cand" | grep -qxF -- "$id"; then
+        if [ -n "$bst" ]; then
+          flaky_old="$flaky_old$id
+"
+          held="$held$id
+"
+        fi
       elif { [ "$bst" = failure ] || [ "$bst" = error ]; } && [ "$same" = same ]; then
         red_at_base="$red_at_base
 $id"
@@ -539,10 +566,18 @@ $id"
 "
       fi
     done <<EOF
-$(at_base "$(printf '%s\n%s\n' "$foreign_red" "$standing_cand")")
+$(at_base "$(printf '%s\n%s\n%s\n' "$foreign_red" "$standing_cand" "$flaky_cand")")
 EOF
-  elif [ -n "$standing_cand" ]; then
-    standing_why="$base_why"
+  else
+    [ -z "$standing_cand" ] || standing_why="$base_why"
+    [ -z "$flaky_cand" ] || flaky_why="$base_why"
+  fi
+  # A flip in a declared file the tree before this ticket does not have, or
+  # could not be asked about, is this ticket's: out of the flaky, into the new
+  # tests, where red twice says what it is.
+  if [ -n "$foreign_flaky" ]; then
+    own_flips="$(printf '%s\n' "$foreign_flaky" | grep -v '^$' | grep -vxF -- "${flaky_old:-//none//}" || true)"
+    [ -z "$own_flips" ] || flaky_ids="$(printf '%s\n' "$flaky_ids" | grep -v '^$' | grep -vxF -- "$own_flips" || true)"
   fi
   red_at_base="$(printf '%s\n' "$red_at_base" | grep -v '^$' || true)"
   standing="$(printf '%s' "$standing" | grep -v '^$' || true)"
@@ -880,7 +915,10 @@ fi
 # a freeze over it would be a coin the implement station is judged with. The
 # run that a failure not this ticket's own already asked for is this one: no
 # third. Only this ticket's new tests are held to it; a standing test that
-# flips is flaky, let through and named (docs/DEFECTS.md 13.9).
+# flips is flaky, let through and named (docs/DEFECTS.md 13.9), and so is an
+# older test of a declared file that failed on the first run alone — taken
+# out of the new tests above (16.5). A flip there the tree before this ticket
+# could not be asked about stays here, and says so.
 moved=""
 if [ "$mode" = "per-test" ]; then
   if [ -z "$again" ]; then
@@ -892,11 +930,17 @@ if [ "$mode" = "per-test" ]; then
     printf '%s' "$again" >"$vtmp/again.json"
     new_ids="$(printf '%s\n' "$new_rows" | cut -f2 | grep -v '^$' || true)"
     moved="$(printf '%s\n' "$new_ids" | grep -v '^$' | jq -R . | jq -s . | jq -r \
-      --slurpfile a "$vtmp/again.json" --slurpfile r "$vtmp/results.json" '
+      --slurpfile a "$vtmp/again.json" --slurpfile r "$vtmp/results.json" \
+      --arg untold "${flaky_why:+$flaky_cand}" --arg why "$flaky_why" '
       ($a[0] | map({ (.id): .status }) | add // {}) as $A
       | ($r[0] | map({ (.id): .status }) | add // {}) as $R
-      | .[] | select(($A[.] // "absent") != $R[.])
-      | . + " was " + $R[.] + " then " + ($A[.] // "absent")' 2>/dev/null)" || moved=""
+      | ($untold | split("\n") | map(select(length > 0))) as $U
+      | .[] | . as $id | select(($A[$id] // "absent") != $R[$id])
+      | $id + " was " + $R[$id] + " then " + ($A[$id] // "absent")
+        + " — a test whose verdict moves between two runs of the same tree is non-deterministic; it proves nothing about the code"
+        + (if any($U[]; . == $id)
+           then ". It carries none of this ticket'"'"'s markers, in a file there before this ticket: an older test that flips is let through as flaky, but whether the tree before this ticket has this one could not be measured (" + $why + ")"
+           else "" end)' 2>/dev/null)" || moved=""
     if [ -n "$standing" ]; then
       flips="$(printf '%s\n' "$standing" | jq -R . | jq -s . | jq -r \
         --slurpfile a "$vtmp/again.json" --slurpfile r "$vtmp/results.json" '
@@ -913,7 +957,7 @@ if [ "$mode" = "per-test" ]; then
     printf '  ! the second run wrote no readable report; red was observed once\n'
   fi
   if [ -n "$moved" ]; then
-    aif_g_report "$(printf '%s\n' "$moved" | sed 's/$/ — a test whose verdict moves between two runs of the same tree is non-deterministic; it proves nothing about the code/')" "tests"
+    aif_g_report "$moved" "tests"
   fi
 fi
 

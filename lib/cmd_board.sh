@@ -24,6 +24,12 @@ usage: aif board <operation> [args]
                              card with its time — on Trello, too, the sha-256
                              of the card's text as aif work pulls it
   label <ID> <label>         add a label (created on the board if new)
+  unclaim <ID> [--why <text>]
+                             another checkout's claim on the card, released —
+                             its worker gone (its machine off, its checkout
+                             moved): a head saying whose claim, how old, and
+                             why, after which the card is taken at once
+                             instead of after a run's wall clock (Trello)
   release [--dry-run]        move the Backlog cards whose every dependency is
                              Done and landed to the bottom of Ready; --dry-run
                              says which would move, and what the rest wait on.
@@ -49,6 +55,50 @@ _aif_board_render_status() {
             + (.ticket + "             ")[0:13]
             + (.title // "")
             + (if ((.labels // []) | length) > 0 then "  [" + (.labels | join(", ")) + "]" else "" end) ) ) end'
+}
+
+# _aif_board_unclaim <root> <ID> <why> — another checkout's claim on the card,
+# released by a person's word (docs/DEFECTS.md 16.13). A claim whose worker
+# was seen alive within a run's wall clock holds its card — skipped by every
+# other checkout's worker (_aif_work_claim_check) — and a worker that died
+# with its machine, or a checkout moved and named anew (aif_clone_id), held
+# it that long, with no way past. The person who knows it is gone says so: a
+# head, `released by aif board unclaim: …`, naming the claim, how long since
+# its worker was seen and why. Newest, it is no claim — the check takes the
+# card — and it ends the run of claims the race reads, so the dead one is no
+# rival. Read as the worker reads a claim (_aif_work_claim_life); this
+# checkout's own claim, or a newest head that is no claim, is refused, and
+# the local board — one checkout's, its run lock the truth — too.
+_aif_board_unclaim() {
+  local root="$1" id="$2" why="$3" hj line claim who age f
+  [ "$(aif_board_kind "$root")" = trello ] ||
+    aif_die "a claim on the local board is this checkout's run lock: aif work $id --status says whose run it is, and aif work $id --stop ends it"
+  # shellcheck source=lib/cmd_work.sh
+  . "$AIF_ROOT/lib/cmd_work.sh"
+  hj="$(aif_board_head_json "$root" "$id")" || aif_die "could not read $id's comments"
+  line="$(printf '%s' "$hj" | jq -r '.line // ""')"
+  case "$line" in
+    "taken: "*) ;;
+    *) aif_die "$id's newest head is not a claim${line:+ ($line)} — there is nothing to release" ;;
+  esac
+  claim="$(_aif_work_claim_life "$root" "$hj" | jq -sc 'last // empty')"
+  [ -n "$claim" ] || aif_die "could not read the claim on $id: $line"
+  [ "$(printf '%s' "$claim" | jq -r '.mine')" != true ] ||
+    aif_die "the claim on $id is this checkout's: aif work $id --status says whether its worker runs, and aif work $id --stop ends it"
+  who="$(printf '%s' "$claim" | jq -r '"\(.who // "?") (pid \(.pid // "?"))"')"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --argjson flag
+  age="$(printf '%s' "$claim" | jq -r --argjson now "$(date +%s)" '
+    if .life == null then "its worker never seen alive"
+    else "its worker last seen alive \((($now - .life) / 60) | floor) min ago" end')"
+  f="$(mktemp "${TMPDIR:-/tmp}/aif-unclaim-XXXXXX")" || aif_die "no temporary file"
+  printf "released by aif board unclaim: %s's claim, %s — declared gone at %s%s\n" \
+    "$who" "$age" "$(aif_host_short)" "${why:+: $why}" >"$f"
+  if ! aif_board_comment "$root" "$id" "$f" >/dev/null; then
+    rm -f "$f"
+    aif_die "could not post the release on $id"
+  fi
+  rm -f "$f"
+  printf 'released %s: %s'"'"'s claim, %s — the card can be taken now\n' "$id" "$who" "$age"
 }
 
 aif_cmd_board() {
@@ -170,6 +220,25 @@ aif_cmd_board() {
     label)
       [ -n "${1:-}" ] && [ -n "${2:-}" ] || aif_die "usage: aif board label <ID> <label>"
       aif_board_label "$root" "$1" "$2"
+      ;;
+    unclaim)
+      local id="" why=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --why)
+            shift
+            why="${1:-}"
+            ;;
+          -*) aif_die "unknown option: $1 (aif board unclaim <ID> [--why <text>])" ;;
+          *)
+            [ -z "$id" ] || aif_die "aif board unclaim takes one ticket"
+            id="$1"
+            ;;
+        esac
+        shift
+      done
+      [ -n "$id" ] || aif_die "usage: aif board unclaim <ID> [--why <text>]"
+      _aif_board_unclaim "$root" "$id" "$why"
       ;;
     release)
       # The Backlog sweep (lib/release.sh), for a human — after a merge by

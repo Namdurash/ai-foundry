@@ -5902,7 +5902,7 @@ aif_cmd_work() {
           ticket="$cand"
           break
         fi
-        _aif_work_say "board" "$cand is taken on $AIF_WORK_CLAIMED — skipped"
+        _aif_work_say "board" "$cand is taken on $AIF_WORK_CLAIMED — skipped (if that worker is gone: aif board unclaim $cand)"
       done
       [ -n "$ticket" ] || aif_die "nothing in the board's Ready column that another checkout's worker has not claimed — write a ticket with /aif-ba, or name one: aif work <ticket>"
     else
@@ -5913,7 +5913,7 @@ aif_cmd_work() {
   elif ! _aif_work_claim_check "$root" "$ticket"; then
     # The loop reads this line back (_aif_work_loop): a card another
     # checkout builds is held, not the environment. Its words are fixed.
-    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another checkout's worker has it. Nothing was spent here, and its card was not touched"
+    aif_err "$ticket is taken on $AIF_WORK_CLAIMED — skipped: another checkout's worker has it. Nothing was spent here, and its card was not touched. If that worker is gone, aif board unclaim $ticket releases its claim"
     exit 3
   fi
 

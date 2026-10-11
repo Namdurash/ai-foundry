@@ -35,26 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.13 On Trello, what the fixes rest on and nothing has seen — read
-
-- Head reads page back with `before=<action id>`, and a claim's age is
-  `data.dateLastEdited` (or `dateLastEdited`): both were built on the mock and
-  neither was seen on the real board. Without the edit's date the heartbeats
-  are invisible, and a worker paused past the wall clock reads as gone to
-  another checkout, which may take its card.
-- A head under more than 100 newer comments reads as no head everywhere but
-  R17, which says so.
-- A dead claim of another checkout holds its card for up to the wall clock,
-  with no override.
-- A moved checkout names itself anew (`aif_clone_id`), so the claims it posted
-  before the move read as another checkout's for up to the wall clock.
-
-#### Directions
-
-- Probe `before=` and an edited comment's fields on a board made for it —
-  never a project's own.
-- An override for a dead foreign claim, by a person's word.
-
 ### 16.14 The land's edges after the fast-forward moved out of reach — read
 
 - A commitlint-style commit-msg hook refuses every land: the land's own commit
@@ -306,7 +286,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.12 closed since, 16.13–16.16 open above.
+with it, 16.4–16.13 closed since, 16.14–16.16 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -320,6 +300,7 @@ with it, 16.4–16.12 closed since, 16.13–16.16 open above.
 - **16.10** The block aif manages in `.gitignore` was read by exact lines — probed, three ways. `aif init` (`aif_block_inject`) over a block with its begin line and no end dropped every line after the begin — the developer's `node_modules/` and `dist/` with it — and doctor sent the developer to run it; `aif_gitignore_ensure` matched its end marker exactly, so a CRLF file or an end line with a word after it gave a false "no end line" on every worker run, and an end line above the begin "added" a line that went nowhere; doctor read the block's text, so a path ignored outside it — the developer's own line, `.aif/` whole — was named missing. Every writer and reader finds the markers as one (`aif_block_state`, lib/merge.sh): anywhere in a line, past a `\r` and trailing blanks, an end line only after the begin; a block with no end after its begin is left as it is, warned, by `aif init`, the worker's ensure and the uninstall's removal alike, and doctor names the end line to add; doctor asks `git check-ignore`. On `main` after 0.16.0; scenario 59.
 - **16.11** With a dotted ticket pattern a second take's log was another ticket's — probed: 15.7 named a card's second take `<ID>.2.log`, and under a `ticket_pattern` that allows a dot that is ticket `<ID>.2`'s own log, written over. A later take is `<ID>+<n>.log` now — a `+`, which no ticket id holds (ids are `[A-Za-z0-9._-]`) — named in one place (`_aif_work_loop_take_log`), every reader — a slot's, a result row's, the dashboard's — taking that name, `<ID>.log` only for a first take. On `main` after 0.16.0; scenario 57.
 - **16.12** The dashboard's ends: a terminal gone with no hang-up, and a KILL nobody sent — read; probed. Since 15.15 a frame that could not be written did not end the loop, and a terminal that went with no hang-up — the loop not its session's leader, or started with HUP ignored, which bash 3.2 cannot trap — left it running headless, a frame a second. Three frames in a row that cannot be written are the hang-up now: its path, the runs stopped, exit 129, loop.log and the summary saying it was the frames (`_aif_work_loop_tick`). The 137 about 0.1 s after a Ctrl-C was traced to no sender: `/bin/bash` 3.2 aborting in macOS's libc on a signal handled inside malloc, fork or printf (docs/FINDINGS.md #45); not fixed here — 16.16. On `main` after 0.16.0; scenario 48.
+- **16.13** On Trello, what the fixes rest on had seen only the mock — read; probed on the real API, with the user's leave, on a board made for it (closed after): `before=<action id>` pages back through 105 comments, each once, in order, and an edited comment carries the edit's date in `data.dateLastEdited` — where aif reads a claim's heartbeat (docs/FINDINGS.md #46); nothing to change. A dead claim of another checkout held its card for up to a run's wall clock with no way past — a worker whose machine went off, or a checkout moved and named anew (`aif_clone_id`): `aif board unclaim <ID> [--why <text>]` is a person's word that its worker is gone — a head naming the claim, how long since its worker was seen, where and why, after which the card is taken at once; the worker's and the loop's skip name it (lib/cmd_board.sh). A head under more than 100 newer comments still reads as no head but in R17, which says so. On `main` after 0.16.0; check-board sections 2 and 5.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

@@ -54,7 +54,9 @@
 #      clock, never the times in its text — two takes racing leave the card
 #      to the earlier claim — through the mock and for real across two
 #      checkouts, of two hosts and of one, a claim naming its checkout — and
-#      the loop holds such a card, not the machine
+#      the loop holds such a card, not the machine; a claim whose worker a
+#      person knows is gone is released by aif board unclaim (16.13), and the
+#      card is taken at once
 #
 # Run by `make check`. Requires git, jq, curl and python3.
 
@@ -315,6 +317,12 @@ eq "--top still wins" "$("$AIF" board next-ready)" "AIF-2"
 eq "and a plain move goes to the bottom, behind the other two" "$("$AIF" board next-ready)" "AIF-3"
 eq "every pos is distinct" \
   "$("$AIF" board status --json | jq -r '[.[].pos] | (length == (unique | length))')" "true"
+# A claim on the local board is this checkout's run lock, which aif work
+# --status and --stop answer for; unclaim is for another checkout's claim on
+# Trello (docs/DEFECTS.md 16.13).
+said_lu="$("$AIF" board unclaim AIF-2 2>&1)" && rc=0 || rc=$?
+eq "aif board unclaim on the local board: refused, naming the run lock's commands" \
+  "$rc,$(printf '%s' "$said_lu" | grep -c 'a claim on the local board is this checkout.s run lock: aif work AIF-2 --status')" "1,1"
 
 # =============================== 3. trello ===================================
 printf '\n3. trello, against a stand-in server\n'
@@ -842,6 +850,24 @@ rc=0
 eq "a card another machine claimed two minutes ago: skipped, exit 3, said — the card untouched, no claim of this machine on it" \
   "$rc,$(grep -c '^error: AIF-40 is taken on hostb (pid 4242, its worker last said it was alive 2 min ago' "$OUT/take-claimed.out"),$(column_of AIF-40),$(claims_on AIF-40 | wc -l | tr -d ' ')" \
   "3,1,ready,1"
+# docs/DEFECTS.md 16.13: a dead claim of another checkout held its card for
+# up to a run's wall clock, with no way past — the skip says the way now.
+# A person who knows the worker is gone says so: `aif board unclaim`, a head
+# naming the claim, its age and why; the next worker takes the card at once.
+eq "…and the skip names the way past it, should that worker be gone" \
+  "$(grep -c 'If that worker is gone, aif board unclaim AIF-40 releases its claim' "$OUT/take-claimed.out")" "1"
+rc=0
+"$AIF" board unclaim AIF-40 --why "hostb is off for the night" >"$OUT/unclaim40.out" 2>&1 || rc=$?
+eq "aif board unclaim on another machine's claim: released, said — a head naming the claim, its age, where and why" \
+  "$rc,$(grep -c "^released AIF-40: hostb (pid 4242)'s claim, its worker last seen alive 2 min ago — the card can be taken now$" "$OUT/unclaim40.out"),$("$AIF" board head AIF-40 | grep -c "^released by aif board unclaim: hostb (pid 4242)'s claim, its worker last seen alive 2 min ago — declared gone at $HOST: hostb is off for the night$")" \
+  "0,1,1"
+rc=0
+"$AIF" work AIF-40 >"$OUT/take-unclaimed.out" 2>&1 || rc=$?
+eq "…and the next worker takes the card at once: built, its own claim after the release" \
+  "$rc,$(column_of AIF-40),$(claims_on AIF-40 | sed -n 2p | grep -cE "^taken: $HOST:[0-9a-f]{6} pid [0-9]+ at ")" "0,review,1"
+said40="$("$AIF" board unclaim AIF-40 2>&1)" || true
+eq "…unclaim where the newest head is no claim: refused, naming the head" \
+  "$(printf '%s' "$said40" | grep -c "AIF-40's newest head is not a claim (# AIF-40 — built")" "1"
 claim_by AIF-41 hostb 10800
 "$AIF" board move AIF-41 ready >/dev/null
 rc=0

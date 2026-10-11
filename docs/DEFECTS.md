@@ -35,22 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.12 The dashboard's ends: a terminal gone with no hang-up, and a KILL nobody sent — read; probed
-
-Since 15.15 a frame that cannot be written does not end the loop, and after a
-HUP its output goes to loop.log. A terminal that goes without a HUP — every
-frame failing with EIO — now leaves the loop running headless at a frame a
-second, where it used to end with 1 (read). Apart from that, a dashboard loop
-died of SIGKILL (137) about 0.1 s after its first Ctrl-C, twice in about 230
-trials on the latest commit and once on an older tree (probed); nothing in aif
-sends KILL, and it was not traced.
-
-#### Directions
-
-- A run of frames failing in a row is a hang-up — the HUP's path: exit 129,
-  the runs stopped, loop.log saying so.
-- Trace the 137 to whoever sends it.
-
 ### 16.13 On Trello, what the fixes rest on and nothing has seen — read
 
 - Head reads page back with `before=<action id>`, and a claim's age is
@@ -104,6 +88,32 @@ and failed it.
 - Each pick scoped to the row's own sandbox; the harnesses searched for the
   same shape.
 - The row, or the cut, not bound to TMPDIR's length.
+
+### 16.16 A Ctrl-C reaches the dashboard and the shift as a signal, and bash 3.2 crashes on about one in a hundred — read
+
+Traced for 16.12 (docs/FINDINGS.md #45): the 137 a dashboard loop died with
+about 0.1 s after a Ctrl-C was no KILL — `/bin/bash` 3.2 aborted inside
+macOS's libc, 52 crash reports in the minutes the Ctrl-C was probed, every one
+"Trying to recursively lock an os_unfair_lock" or "os_unfair_lock is corrupt"
+in `malloc`, `free`, `fork` or `vfprintf`: a signal handled while bash was
+inside one of them. bash 3.2 runs traps and longjmps from signal handlers, and
+every aif runs under it here (`#!/usr/bin/env bash`, /bin/bash the only bash).
+The loop dies without its summary, its terminal left in the dashboard's modes
+(no echo until `reset`); the runs in flight settle their own cards; the next
+loop takes the lock over. The shift reads its keys the same way, and takes its
+Ctrl-C the same way.
+
+What a fix has to decide: whether the dashboard and the shift take Ctrl-C as
+a key — the terminal's ISIG off while they draw, the byte read by the key
+reader like any other — and what stops a loop that hangs then (`--stop` from
+another terminal, closing the window); or whether this stays a limit of bash
+3.2, said.
+
+#### Directions
+
+- Not decided (2026-10-11: logged, not built). A pty row that sends a Ctrl-C
+  a few hundred times and counts the loop's 137s, on the commit before and
+  after, whichever way it goes.
 
 ---
 
@@ -296,7 +306,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.11 closed since, 16.12–16.15 open above.
+with it, 16.4–16.12 closed since, 16.13–16.16 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -309,6 +319,7 @@ with it, 16.4–16.11 closed since, 16.12–16.15 open above.
 - **16.9** The guard let a path through `..` — probed at the hook: it matched the path as it was handed, so `src/../.aif/project.json`, `src/../tasks/T-2/plan.md` and `__tests__/../.aif/…` were allowed to every station, the plan station — no Bash, no scope — held by nothing else. `.`, `..` and `//` are resolved lexically before any rule reads the path; one that leaves the project — a relative path climbing above it, an absolute one outside it — is denied to every station (sets/claude/hooks/guard.sh). Whether claude hands the hook a normalised path was not probed: the CLI's login on this machine had expired; the hook no longer depends on it. On `main` after 0.16.0; check-set's guard rows.
 - **16.10** The block aif manages in `.gitignore` was read by exact lines — probed, three ways. `aif init` (`aif_block_inject`) over a block with its begin line and no end dropped every line after the begin — the developer's `node_modules/` and `dist/` with it — and doctor sent the developer to run it; `aif_gitignore_ensure` matched its end marker exactly, so a CRLF file or an end line with a word after it gave a false "no end line" on every worker run, and an end line above the begin "added" a line that went nowhere; doctor read the block's text, so a path ignored outside it — the developer's own line, `.aif/` whole — was named missing. Every writer and reader finds the markers as one (`aif_block_state`, lib/merge.sh): anywhere in a line, past a `\r` and trailing blanks, an end line only after the begin; a block with no end after its begin is left as it is, warned, by `aif init`, the worker's ensure and the uninstall's removal alike, and doctor names the end line to add; doctor asks `git check-ignore`. On `main` after 0.16.0; scenario 59.
 - **16.11** With a dotted ticket pattern a second take's log was another ticket's — probed: 15.7 named a card's second take `<ID>.2.log`, and under a `ticket_pattern` that allows a dot that is ticket `<ID>.2`'s own log, written over. A later take is `<ID>+<n>.log` now — a `+`, which no ticket id holds (ids are `[A-Za-z0-9._-]`) — named in one place (`_aif_work_loop_take_log`), every reader — a slot's, a result row's, the dashboard's — taking that name, `<ID>.log` only for a first take. On `main` after 0.16.0; scenario 57.
+- **16.12** The dashboard's ends: a terminal gone with no hang-up, and a KILL nobody sent — read; probed. Since 15.15 a frame that could not be written did not end the loop, and a terminal that went with no hang-up — the loop not its session's leader, or started with HUP ignored, which bash 3.2 cannot trap — left it running headless, a frame a second. Three frames in a row that cannot be written are the hang-up now: its path, the runs stopped, exit 129, loop.log and the summary saying it was the frames (`_aif_work_loop_tick`). The 137 about 0.1 s after a Ctrl-C was traced to no sender: `/bin/bash` 3.2 aborting in macOS's libc on a signal handled inside malloc, fork or printf (docs/FINDINGS.md #45); not fixed here — 16.16. On `main` after 0.16.0; scenario 48.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

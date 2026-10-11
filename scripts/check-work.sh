@@ -122,7 +122,8 @@
 #      card saying so; and the loop whose own terminal closes over it — every
 #      line it prints failing from then on — stops its runs, writes its
 #      summary, releases its lock and ends in 129, its dashboard on or off,
-#      the hang-up in its key read or cutting a frame
+#      the hang-up in its key read or cutting a frame; and a terminal gone
+#      with no hang-up, every frame failing, is read as one
 #  49  aif board release moves the Backlog cards whose every dependency is
 #      Done and landed to the bottom of Ready, with a comment; holds one on a
 #      rework: head or a parked label; names a Done dependency with no land
@@ -4434,6 +4435,63 @@ eq "the dashboard on: the terminal closes over an idle loop whose run holds a st
 eq "…the run stopped and its card settled, its line and the loop's last words in its loop.log" \
   "$(col AIF-105),$(grep -c 'AIF-105 stopped (exit 143)' "$SANDBOX/p48-hup-tui/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup-tui/loop.log"),$(pgrep -f 'fake-station.sh plan AIF-105' | wc -l | tr -d ' ')" \
   "needs_human,1,1,0"
+
+# A terminal gone with no hang-up (docs/DEFECTS.md 16.12): the loop started
+# with SIGHUP ignored — what a parent that ignores it hands on, and bash 3.2
+# cannot trap a signal it was started ignoring — so closing the master sends
+# it nothing, and every frame fails (EIO). It went on headless, a frame a
+# second, for good; three frames in a row that cannot be written are the
+# hang-up now — its path, 129, the run stopped, loop.log saying which.
+ticket_for AIF-106
+git add -A && git commit -qm "one for a terminal gone with no hang-up" >/dev/null
+"$AIF" board create tasks/AIF-106/ticket.md --column ready >/dev/null
+rm -rf "$SANDBOX/p48-gone"
+rc="$(FAKE_SLEEP_IN="AIF-106:plan" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-gone" AIF_WORK_LOOP_POLL=1 TERM=xterm-256color \
+  python3 - "$AIF" .aif/worktrees/AIF-106/.aif/tmp/fake-running-AIF-106-plan <<'PY3'
+import fcntl, os, pty, select, signal, struct, sys, termios, time
+aif, mark = sys.argv[1:3]
+pid, fd = pty.fork()
+if pid == 0:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    os.execv(aif, [aif, "work", "--loop", "--idle"])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+deadline = time.time() + 60
+while not os.path.exists(mark) and time.time() < deadline:
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            os.read(fd, 65536)
+        except OSError:
+            break
+end = time.time() + 1.5
+while time.time() < end:
+    if select.select([fd], [], [], 0.1)[0]:
+        try:
+            os.read(fd, 65536)
+        except OSError:
+            break
+os.close(fd)
+status = None
+end = time.time() + 60
+while time.time() < end:
+    r, st = os.waitpid(pid, os.WNOHANG)
+    if r:
+        status = st
+        break
+    time.sleep(0.1)
+if status is None:
+    os.killpg(pid, signal.SIGKILL)
+    print("timeout")
+else:
+    print(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+PY3
+)"
+S48g="$SANDBOX/p48-gone/summary.json"
+eq "a terminal gone with no hang-up, every frame failing: three in a row are the hang-up — exit 129, the summary written, the lock gone" \
+  "$rc,$(jq -r '[.hup, .taken, .stopped, .killed] | map(tostring) | join(",")' "$S48g" 2>/dev/null),$(test -d .aif/state/loop && echo held || echo released)" \
+  "129,1,1,1,TERM,released"
+eq "…loop.log saying it was the frames, not a hang-up; the run stopped and its card settled" \
+  "$(grep -c '1 taken, 0 built — the terminal is gone — 3 frames in a row could not be written, and no hang-up came' "$SANDBOX/p48-gone/loop.log"),$(jq -r '.why' "$S48g" 2>/dev/null | grep -c '^the terminal is gone — 3 frames in a row'),$(col AIF-106),$(pgrep -f 'fake-station.sh plan AIF-106' | wc -l | tr -d ' ')" \
+  "1,1,needs_human,0"
 
 # And the hang-up that cuts a frame: the row above closes the terminal while
 # the dashboard waits in its key read, where it spends most of a second —

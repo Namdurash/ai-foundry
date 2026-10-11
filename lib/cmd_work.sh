@@ -4329,6 +4329,7 @@ _aif_work_loop() {
   AIF_WORK_LOOP_CTRL_C=0    # how many Ctrl-Cs (or q) have arrived
   AIF_WORK_LOOP_KILLED=""   # INT or TERM, once every run in flight was told to stop
   AIF_WORK_LOOP_HUP=0       # 1 once the terminal closed over the loop (HUP)
+  AIF_WORK_LOOP_DRAW_FAILS=0 # frames in a row that could not be written
   AIF_WORK_LOOP_RUNNING=""  # "<pid>:<ticket>:<started>:<slot>" per run in flight
   AIF_WORK_LOOP_IDLE=0      # 1 while an idle loop has nothing to take and nothing running
   AIF_WORK_LOOP_POLL_S="$poll"
@@ -5001,12 +5002,27 @@ _aif_work_loop_tick() {
   # the print's own redirection put back; and with no hang-up yet the second
   # is waited out, not read from a terminal that answers at once, so a
   # terminal gone without one cannot spin the loop.
+  #
+  # But a terminal can go with no hang-up at all — the loop not its session's
+  # leader, a hang-up ignored by whoever started it — and every frame fails
+  # (EIO) after that: the loop went on headless, a frame a second, where it
+  # used to end with 1 (docs/DEFECTS.md 16.12). Three frames in a row that
+  # could not be written are the hang-up: its path, the runs stopped, 129,
+  # loop.log saying which it was.
   if ! _aif_work_loop_draw; then
     printf '\n' >/dev/null 2>&1 || true
+    AIF_WORK_LOOP_DRAW_FAILS=$((${AIF_WORK_LOOP_DRAW_FAILS:-0} + 1))
+    if [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] && [ "$AIF_WORK_LOOP_DRAW_FAILS" -ge 3 ]; then
+      _aif_work_loop_signal HUP
+      AIF_WORK_LOOP_STOP="the terminal is gone — $AIF_WORK_LOOP_DRAW_FAILS frames in a row could not be written, and no hang-up came; the runs in flight were stopped too"
+      _aif_work_loop_event red "$AIF_WORK_LOOP_STOP"
+      return 0
+    fi
     [ "${AIF_WORK_LOOP_HUP:-0}" -ne 0 ] || _aif_work_loop_second
     [ "${AIF_WORK_LOOP_HUP:-0}" -eq 0 ] || _aif_work_loop_to_log
     return 0
   fi
+  AIF_WORK_LOOP_DRAW_FAILS=0
   if aif_key_wait; then
     case "$AIF_KEY" in
       none | enter) ;;

@@ -278,20 +278,50 @@ EOF
 # it names that is still there. Not a test (the tests are frozen, and moving
 # them is the tests station's), not a manifest or a lockfile (a dependency
 # moves through the package manager, never by a deletion), not the pipeline's.
+# A directory is every file git tracks under it (aif_g_delete_expand), each
+# held to the same — scope reads it so (docs/DEFECTS.md 16.7); one under which
+# git tracks nothing has nothing a deletion could be held to.
 deletes=0
+keeps="$(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.tests // []))[]? // empty' 2>/dev/null)"
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  deletes=$((deletes + 1))
   if [ ! -e "$root/$p" ]; then
+    deletes=$((deletes + 1))
     fs="$fs
 files.delete names \"$p\", which does not exist — there is nothing to delete"
-  elif aif_g_test_path "$p" "$roots"; then
-    fs="$fs
-files.delete names \"$p\", a test — the tests are frozen against the implementation; a test that has to go is the tests station's, in files.tests"
-  elif printf '%s' "$p" | grep -qE "$AIF_G_MANIFESTS|$AIF_G_LOCKFILES"; then
-    fs="$fs
-files.delete names \"$p\", a dependency manifest or lockfile — dependencies move through the package manager, in files.change with the lockfile"
+    continue
   fi
+  under=""
+  if [ -d "$root/$p" ] && [ ! -L "$root/$p" ]; then
+    under="$(aif_g_delete_expand "$root" "$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" "$p" | cut -f1)"
+    if [ "$under" = "${p%/}" ]; then
+      deletes=$((deletes + 1))
+      fs="$fs
+files.delete names the directory \"$p\", and git tracks no file under it — there is nothing a deletion could be held to"
+      continue
+    fi
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    deletes=$((deletes + 1))
+    say="\"$f\""
+    [ -z "$under" ] || say="\"$f\", under the directory \"$p\""
+    if aif_g_test_path "$f" "$roots"; then
+      fs="$fs
+files.delete names $say, a test — the tests are frozen against the implementation; a test that has to go is the tests station's, in files.tests"
+    elif printf '%s' "$f" | grep -qE "$AIF_G_MANIFESTS|$AIF_G_LOCKFILES"; then
+      fs="$fs
+files.delete names $say, a dependency manifest or lockfile — dependencies move through the package manager, in files.change with the lockfile"
+    elif [ -n "$under" ] && printf '%s' "$f" | grep -qE "$AIF_G_DENYLIST|$AIF_G_PLANNED_ONLY"; then
+      fs="$fs
+files.delete names $say, which no implementation may touch, or the plan names only by itself — the pipeline's own machinery, CI or the ignore rules"
+    elif [ -n "$under" ] && printf '%s\n' "$keeps" | grep -qxF -- "$f"; then
+      fs="$fs
+files.delete names $say, which files.create, files.change or files.tests names too — a path the plan deletes is only deleted"
+    fi
+  done <<EOF2
+${under:-$p}
+EOF2
 done <<EOF
 $(printf '%s' "$meta" | jq -r '(.files.delete // [])[]? // empty' 2>/dev/null)
 EOF

@@ -200,7 +200,7 @@ _aif_start_facts_in() {
     for lid in $(jq -r '.[] | select(.column == "review") | .ticket' "$tmp/cards.json" 2>/dev/null); do
       git -C "$main" show-ref --verify --quiet "refs/heads/aif/$lid" || continue
       lbase="$(git -C "$main" merge-base HEAD "aif/$lid" 2>/dev/null)" || continue
-      { git -C "$main" -c core.quotePath=false diff --name-only "$lbase" "aif/$lid" 2>/dev/null || true; } |
+      { git -C "$main" -c core.quotePath=false diff --no-renames --name-only "$lbase" "aif/$lid" 2>/dev/null || true; } |
         AIF_START_DIRTY="$(cat "$tmp/dirty")" awk -v t="$lid" '
           BEGIN { n = split(ENVIRON["AIF_START_DIRTY"], d, "\n"); for (i = 1; i <= n; i++) if (d[i] != "") w[d[i]] = 1 }
           ($0 in w) { printf "%s\t%s\n", t, $0 }' >>"$tmp/land_dirty" || true

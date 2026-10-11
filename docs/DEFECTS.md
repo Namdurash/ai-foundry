@@ -35,31 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.7 Plan, scope and the amendment read deletions, renames and new files loosely — probed
-
-- `files.delete` naming a directory passes the plan gate and can never pass
-  scope: each file deleted under it is refused, and keeping one is "still
-  there".
-- `git mv old.py new.py` passes scope though the deletion of old.py was never
-  planned: rename detection hides it from `--diff-filter=D`, and the guard
-  allows `git mv` (on every commit since the gates had a scope).
-- An amendment made after its file was written judges the file as existing:
-  `newroot.py`, `config/settings.py`, `src/.env` and `.babelrc`, written and
-  then amended, are recorded as a change and pass scope — the place and name
-  rules read the working tree, not the dispatch base; amended first, they are
-  refused, as they should be.
-- `src//x.py` is accepted by the amendment and fails scope.
-
-What a fix has to decide: each its own.
-
-#### Directions
-
-- A directory in `files.delete` covers the files tracked under it at the base.
-- Scope's diff with `--no-renames`: a rename is a deletion and a creation,
-  each judged.
-- The amendment judges new or existing, and the place and name rules, against
-  the dispatch base, the path normalised first.
-
 ### 16.8 A pass's warnings reach no one, and green measures a file the ticket's new ignore rules hide — probed
 
 Scope prints what a planned `.gitignore` change now ignores ("IGNORED FROM NOW
@@ -396,7 +371,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.6 closed since, 16.7–16.15 open above.
+with it, 16.4–16.7 closed since, 16.8–16.15 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -404,6 +379,7 @@ with it, 16.4–16.6 closed since, 16.7–16.15 open above.
 - **16.4** What the gates let through could hide a regression the ticket made — probed, six ways, each now shown to be the base's or not let through. A test red before the ticket is let through only when it fails there the way it fails here, its message folded (AIF_G_JQ_MSG, the land's AIF_LAND_JQ_MSG; verify-red writes the base's failure into the lock as `red_at_base_msg`); a count line is new when a count grew (`aif_g_new_lines`, `_aif_land_new_lines`); a check that stops at a failing step (`&&`), red at the base, is let through but said to have judged nothing — on the gate's line, the ledger's check row, the report and the land's note — and `aif project check` warns of `&&`, `;` and `||`; a flip is flaky only when it flipped at verify-red, before the implementation, or the base fails it too (`aif_g_flaky_proof`: the kept run and up to two more; at the land up to three runs of the target's copy), else it is the implementation's intermittent failure, rejected — a race the implementation adds, 20 trials: 5 let through before, 0 now, rejected every time it showed; a standing test whose file changed is run as the base wrote it, once, in a copy (`aif_g_standing_as_base`); and nothing is let through as the base's or the target's while a dependency manifest or lockfile moved, the base measured again only without one (`aif_g_deps_moved`). docs/FINDINGS.md #40. On `main` after 0.16.0; scenarios 73, 74, 95.
 - **16.5** An older test in a declared file that failed on verify-red's first run alone stopped the run — probed: the re-run took it out of the foreign red as `flaky`, but nothing held it, so it fell into the new tests, and red twice called it "non-deterministic" — the tests station sent back twice over a test it had not written, Needs Human. A flip in a declared file is an older test's flake when the tree before the ticket has the test (its file there, the test in the base's run): flaky — in the lock, held out of the new tests, frozen as its re-run found it, named on the gate's line and the report, let through at green as one that flipped at verify-red. One only the ticket has is its own, non-deterministic still; one the base could not be measured for is read as the ticket's, the rejection naming what could not be measured (sets/claude/gates/verify-red.sh). On `main` after 0.16.0; scenario 96.
 - **16.6** The gates' copies reached the real tree through the dependencies they linked — probed (node 22): a copy linked `node_modules` whole, and a workspace's relative link in it (`@ws/pkg -> ../../packages/pkg`) resolved against the real one, so every copy read the real tree's package — a base measured with the ticket's, a reverted copy green with the implementation (correct work rejected twice and stopped), a runner's cache written into the real `node_modules`; and an ignored directory a copy could not read stopped every ticket with no way to leave it out. A copy's `node_modules` is its own directory: each entry linked in batches, each link in it made again — an absolute one into the tree pointed into the copy —, @scopes and `.bin` entered one level, `.cache`, `.vite` and `.vitest` left out (`_aif_g_link_modules`, the worker's and the land's twin `_aif_work_link_modules`); `copies.leave_out` in `.aif/project.json` (both templates, validated, drift, `aif project upgrade`; `aif project check` warns of a path git tracks) names what the copies leave out while git ignores it, and a refusal to copy says so; a base run kept by the old copy is not reused (`aif_g_base_key`). A copy of opes: 0.68 s (0.28 s linked whole), jest 238 passed in it. docs/FINDINGS.md #41. On `main` after 0.16.0; scenarios 37, 74, 97.
+- **16.7** Plan, scope and the amendment read deletions, renames and new files loosely — probed, four ways. A directory in `files.delete` passed the plan gate and could never pass scope; it is every file git tracks under it at the base now, each held to the plan gate's rules and counted, at scope and in verify-red's frozen files (`aif_g_delete_expand`), one with nothing tracked under it refused. `git mv` hid an unplanned deletion from scope — git paired it into a rename, listed by its new name — and the same pairing kept the old path out of every copy's restore: a rename the plan named both ways stopped at green, "could not be reverted"; every list of what changed is read without renames now (scope, `aif_g_changed_since`, the worker's, the land's and the shift's). An amendment judged new or existing by the working tree, so a file written first and amended after — at the root, a dotfile, in a directory the plan never named — went through as a change; the dispatch base decides now, the path normalised first (`src//x.py` was amended and failed scope; `..` refused). On `main` after 0.16.0; scenarios 75, 76.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

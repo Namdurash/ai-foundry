@@ -356,7 +356,7 @@ _aif_land_both() {
 # or not, one path per line. The land no longer refuses on these as such: only
 # on the ones it changes (docs/DEFECTS.md 13.5).
 _aif_land_dirty() {
-  git -C "$1" -c core.quotePath=false diff --name-only HEAD 2>/dev/null || true
+  git -C "$1" -c core.quotePath=false diff --no-renames --name-only HEAD 2>/dev/null || true
 }
 
 # _aif_land_clear <root> <from> <to> <ticket> <again> — what git does not track
@@ -663,7 +663,7 @@ _aif_land_judge() {
   fi
 
   moved=""
-  [ -z "$pre" ] || moved="$(git -C "$wt" diff --name-only "$pre" HEAD 2>/dev/null |
+  [ -z "$pre" ] || moved="$(git -C "$wt" diff --no-renames --name-only "$pre" HEAD 2>/dev/null |
     grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u | paste -sd, - | sed 's/,/, /g')" || moved=""
 
   # 1b. what is not this ticket's: once more, then the target as it was.
@@ -1868,7 +1868,7 @@ aif_cmd_land() {
   base="$(git -C "$root" merge-base "$pre" "$w0" 2>/dev/null)" || base="$pre"
   dirty="$(_aif_land_dirty "$root")"
   if [ -n "$dirty" ]; then
-    hit="$(git -C "$root" -c core.quotePath=false diff --name-only "$base" "$w0" 2>/dev/null | _aif_land_both "$dirty")" || hit=""
+    hit="$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$base" "$w0" 2>/dev/null | _aif_land_both "$dirty")" || hit=""
     if [ -n "$hit" ]; then
       _aif_land_dirty_refusal "$hit" "$rerun"
       exit 1
@@ -1937,7 +1937,7 @@ aif_cmd_land() {
   #    installed — the branch's, as the worker installed it — or everything,
   #    in a worktree the land cut. Never here: that is --prepare's, after.
   local deps_wt=""
-  deps_wt="$(git -C "$wt" -c core.quotePath=false diff --cached --name-only "$w0" 2>/dev/null |
+  deps_wt="$(git -C "$wt" -c core.quotePath=false diff --no-renames --cached --name-only "$w0" 2>/dev/null |
     grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u | paste -sd ',' - | sed 's/,/, /g')" || deps_wt=""
   if [ "$run_suite" -eq 1 ] && [ -n "$prepare" ] && { [ -n "$deps_wt" ] || [ "$made_wt" -eq 1 ]; }; then
     local prep_rc=0 rewrote log="$wt/.aif/tmp/prepare.log"
@@ -1952,7 +1952,7 @@ aif_cmd_land() {
     _aif_land_prepare "$wt" "$prepare" "$log" || prep_rc=$?
     # An install from the lockfile leaves the tree as the merge made it. One
     # that rewrites a tracked file installed something the merge did not pin.
-    rewrote="$(git -C "$wt" -c core.quotePath=false diff --name-only 2>/dev/null |
+    rewrote="$(git -C "$wt" -c core.quotePath=false diff --no-renames --name-only 2>/dev/null |
       paste -sd ',' - | sed 's/,/, /g')" || rewrote=""
     if [ "$prep_rc" -ne 0 ] || [ -n "$rewrote" ]; then
       # Install tools print the reason last.

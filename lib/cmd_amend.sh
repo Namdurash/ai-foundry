@@ -62,9 +62,27 @@ aif_cmd_amend_plan() {
 
   [ -f "$plan" ] || aif_die "no plan.md for $ticket — there is no manifest to amend"
 
-  # Normalise to a repo-relative path; a caller may hand us either form.
+  # Normalise to a repo-relative path first; a caller may hand us either form,
+  # and every rule below reads the path as scope will: `src//x.py` passed the
+  # amendment and failed scope, which reads src/x.py (docs/DEFECTS.md 16.7).
+  # `.` segments go; a `..` one is refused — it reaches outside what the
+  # rules can read.
+  local rroot
+  rroot="$(cd "$root" 2>/dev/null && pwd -P)" || rroot="$root"
   case "$path" in
     "$root"/*) path="${path#"$root"/}" ;;
+    "$rroot"/*) path="${path#"$rroot"/}" ;;
+    /*) aif_die "refusing to amend for '$path': it is not a path in this repository" ;;
+  esac
+  path="$(printf '%s' "$path" | sed -e 's|//*|/|g' -e 's|^\(\./\)*||' -e 's|/\./|/|g' -e 's|/\.$||' -e 's|/$||')"
+  while :; do
+    case "$path" in
+      */./*) path="$(printf '%s' "$path" | sed 's|/\./|/|')" ;;
+      *) break ;;
+    esac
+  done
+  case "/$path/" in
+    */../* | //) aif_die "refusing to amend for '$2': name it as a path inside the repository, without '..'" ;;
   esac
 
   # The paths an amendment may never reach. These are not "the plan did not
@@ -106,9 +124,18 @@ aif_cmd_amend_plan() {
   # files.create — unless it sits beside the plan's own files and is ordinary
   # code: a module the component needs, a style or type file next to it
   # (docs/DEFECTS.md 13.10). Decided by place and name, never extension; what
-  # is refused is said, with the way through.
-  local kind=change dir base_name roots
-  if [ ! -e "$root/$path" ]; then
+  # is refused is said, with the way through. New or not is the dispatch
+  # base's to say — the commit the station was dispatched from, as scope reads
+  # it — not the working tree's: a file written first and amended after read
+  # as an existing one, and a root file, a dotfile or one in a directory the
+  # plan never named went through as a change (docs/DEFECTS.md 16.7).
+  local kind=change dir base_name roots dbase
+  dbase="$(jq -r '.dispatch_base // empty' "$work/run.json" 2>/dev/null)"
+  if [ -z "$dbase" ] || ! git -C "$root" rev-parse -q --verify "$dbase^{commit}" >/dev/null 2>&1; then
+    dbase="$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" || dbase=""
+  fi
+  if { [ -n "$dbase" ] && ! git -C "$root" cat-file -e "$dbase:$path" 2>/dev/null; } ||
+    { [ -z "$dbase" ] && [ ! -e "$root/$path" ]; }; then
     kind=create
     dir="$(dirname "$path")"
     base_name="${path##*/}"

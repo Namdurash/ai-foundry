@@ -1999,7 +1999,7 @@ _aif_work_reprepare() {
   base="$(aif_run_get "$work" '.dispatch_base')" || base=""
   [ -n "$base" ] || return 0
   files="$({
-    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$base" 2>/dev/null
     git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
   } | grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u)" || files=""
   [ -n "$files" ] || return 0
@@ -2161,7 +2161,7 @@ _aif_work_intake() {
       if [ "$old_status" != "built" ] && [ -n "$old_base" ] && [ "$old_base" != "none" ] &&
         git -C "$wt" rev-parse -q --verify "$old_base^{commit}" >/dev/null 2>&1; then
         put_back="$({
-          git -C "$wt" -c core.quotePath=false diff --name-only "$old_base" 2>/dev/null
+          git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$old_base" 2>/dev/null
           git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
         } | sort -u | grep -vcE "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/)" || true)"
         # Not the set, which was just brought up to the checkout's; not the
@@ -3074,7 +3074,7 @@ $left"
 .aif/worktrees"
   _aif_work_copy_into "$wt" "$copy" "" "$links" "$walk" "$left" || return 1
   changed="$({
-    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$base" 2>/dev/null
     git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
   } | sort -u)"
   while IFS= read -r p; do
@@ -3257,7 +3257,7 @@ $r/"*)
 _aif_work_restore_since() {
   local wt="$1" base="$2" keep="$3" p
   {
-    git -C "$wt" -c core.quotePath=false diff --name-only "$base" 2>/dev/null
+    git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$base" 2>/dev/null
     git -C "$wt" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
   } | sort -u | while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -3666,7 +3666,7 @@ Settle each conflict: both sides' behaviour kept, and no <<<<<<<, |||||||, =====
     # The dependencies, whenever the tree's manifests or lockfiles are no
     # longer what was installed: what the merge brought, or what the station
     # wrote. Installed from the lockfile, as everywhere else (6.3).
-    deps="$(git -C "$wt" -c core.quotePath=false diff --name-only "$pre" 2>/dev/null | grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u)" || deps=""
+    deps="$(git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$pre" 2>/dev/null | grep -E "$AIF_DEP_MANIFESTS|$AIF_DEP_LOCKFILES" | sort -u)" || deps=""
     if [ -n "$prepare" ] && [ -n "$deps" ] && [ "$deps" != "$deps_done" ]; then
       _aif_work_say "prepare" "$(printf '%s' "$deps" | paste -sd ' ' -) moved in the sync — $prepare"
       mkdir -p "$wt/.aif/tmp"

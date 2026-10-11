@@ -272,12 +272,37 @@ aif_g_replaced_markers() {
 
 # aif_g_changed_since <root> <base> — every path the working tree changed since
 # <base>: tracked edits and deletions, and new files git does not ignore. One
-# repo-relative path per line — the same diff scope reads.
+# repo-relative path per line — the same diff scope reads. Without renames: a
+# `git mv` is listed by its new name alone otherwise, and the old path — gone
+# from the tree — was never put back in a copy (docs/DEFECTS.md 16.7).
 aif_g_changed_since() {
   {
-    git -C "$1" -c core.quotePath=false diff --name-only "$2" 2>/dev/null
+    git -C "$1" -c core.quotePath=false diff --no-renames --name-only "$2" 2>/dev/null
     git -C "$1" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
   } | sort -u
+}
+
+# aif_g_delete_expand <root> <rev> <entries> — what files.delete covers, one
+# "<path><TAB><entry>" a line: for a directory, every file tracked under it at
+# <rev>; for anything else, the entry itself. A directory used to be read as
+# one path: it passed the plan gate and could never pass scope — each file
+# deleted under it refused, and one kept "still there" (docs/DEFECTS.md 16.7).
+aif_g_delete_expand() {
+  local root="$1" rev="$2" e under
+  while IFS= read -r e; do
+    e="${e%/}"
+    [ -n "$e" ] || continue
+    under=""
+    [ -z "$rev" ] ||
+      under="$(git -C "$root" -c core.quotePath=false --literal-pathspecs ls-tree -r --name-only "$rev" -- "$e" 2>/dev/null)"
+    if [ -n "$under" ]; then
+      printf '%s\n' "$under" | AIF_G_ENTRY="$e" awk '{ print $0 "\t" ENVIRON["AIF_G_ENTRY"] }'
+    else
+      printf '%s\t%s\n' "$e" "$e"
+    fi
+  done <<EOF
+$3
+EOF
 }
 
 # aif_g_dep_changes <root> <base> — the dependency manifests and lockfiles

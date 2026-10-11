@@ -235,10 +235,12 @@
 #      worker's and the land's twins agree with the gates'
 #  75  files.delete: a planned deletion passes scope, one not made is the
 #      work not done, an unplanned one is refused once; the plan gate holds
-#      what may be deleted
+#      what may be deleted; a directory there is every file tracked under it;
+#      a git mv is a deletion and a creation, each judged
 #  76  an amendment creates a file beside the plan's, refuses one elsewhere,
 #      at the root or a dotfile, names the replan at the cap; scope counts
-#      the new file
+#      the new file; new or not is the dispatch base's, so a file written
+#      before it was amended is held to the same; the path normalised first
 #  77  CI and .gitignore move when the plan names them — scope says what is
 #      ignored from now on — never by amendment; .aif/ and .claude/ never
 #  78  the worker exports AIF_TICKET to the guard beside AIF_STATION
@@ -782,6 +784,14 @@ case "$station" in
     fi
     cov="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --argjson c "$change" --argjson cr "$create" \
       'map({ key: ., value: (if . == "AC-001" and ($cr | length) > 0 then $cr else $c end) }) | from_entries')"
+    # FAKE_PLAN_CREATE=<path>: a file the plan creates with no skeleton — what
+    # a rename lands on (docs/DEFECTS.md 16.7).
+    noskel='[]'
+    if [ -n "${FAKE_PLAN_CREATE:-}" ]; then
+      create="$(printf '%s' "$create" | jq -c --arg p "$FAKE_PLAN_CREATE" '. + [$p]')"
+      noskel="$(jq -cn --arg p "$FAKE_PLAN_CREATE" '[$p]')"
+      cov="$(printf '%s' "$cov" | jq -c --arg p "$FAKE_PLAN_CREATE" '.["AC-001"] += [$p]')"
+    fi
     # A verdict per criterion: buildable, unless the harness says AC-001 is
     # something else (a spec stop).
     verdicts="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --arg v "${FAKE_VERDICT:-buildable}" \
@@ -811,7 +821,7 @@ case "$station" in
 <!-- aif:meta
 { "schema": 3, "ticket": "$ticket", "risk": "low",
   "files": { "create": $create, "change": $change, "tests": $tests_json, "delete": $delete_json },
-  "no_skeleton": [],
+  "no_skeleton": $noskel,
   "verdicts": $verdicts,
   "decisions": [
     { "id": "D-001", "statement": "Write the markers from the app module.",
@@ -980,9 +990,24 @@ PLAN
         done
       done
     fi
-    # The plan's deletion made (FAKE_DELETE), or not (FAKE_DELETE_SKIP); and
-    # one it did not name (FAKE_DELETE_EXTRA) — docs/DEFECTS.md 13.10.
-    if [ -n "${FAKE_DELETE:-}" ] && [ "${FAKE_DELETE_SKIP:-0}" != 1 ]; then rm -f "$wt/$FAKE_DELETE"; fi
+    # FAKE_GIT_MV="<from> <to>": a rename, staged the way `git mv` stages it
+    # (docs/DEFECTS.md 16.7).
+    if [ -n "${FAKE_GIT_MV:-}" ]; then
+      # shellcheck disable=SC2086  # two paths, split on purpose
+      git -C "$wt" mv ${FAKE_GIT_MV} >/dev/null 2>&1
+    fi
+    # The plan's deletion made (FAKE_DELETE — a file, or a directory), or not
+    # (FAKE_DELETE_SKIP), or made but for one file under it (FAKE_DELETE_KEEP);
+    # and one it did not name (FAKE_DELETE_EXTRA) — docs/DEFECTS.md 13.10, 16.7.
+    if [ -n "${FAKE_DELETE:-}" ] && [ "${FAKE_DELETE_SKIP:-0}" != 1 ]; then
+      kept=""
+      [ -z "${FAKE_DELETE_KEEP:-}" ] || kept="$(cat "$wt/$FAKE_DELETE_KEEP" 2>/dev/null)"
+      rm -rf "${wt:?}/${FAKE_DELETE:?}"
+      if [ -n "${FAKE_DELETE_KEEP:-}" ]; then
+        mkdir -p "$wt/$(dirname "$FAKE_DELETE_KEEP")"
+        printf '%s\n' "$kept" >"$wt/$FAKE_DELETE_KEEP"
+      fi
+    fi
     [ -z "${FAKE_DELETE_EXTRA:-}" ] || rm -f "$wt/$FAKE_DELETE_EXTRA"
     # FAKE_AMEND_NEW=<path>: a file the plan did not foresee, beside its own,
     # amended in before it is written — kind create (docs/DEFECTS.md 13.10).
@@ -6610,6 +6635,58 @@ d3="$(pg | grep -c '"src/app.py" is in files.delete and in files.create, files.c
 plan_delete '[".aif/project.json"]'
 d4="$(pg | grep -c '".aif/project.json", which no implementation may touch')"
 eq "…and refuses a path that is not there, a test, a path it also changes, the pipeline's own" "$d1,$d2,$d3,$d4" "1,1,1,1"
+# A directory there is every file git tracks under it (docs/DEFECTS.md 16.7):
+# it used to be one path, admitted here and never passable at scope.
+mkdir -p src/scratch && printf 'x\n' >src/scratch/notes.txt
+plan_delete '["src/scratch"]'
+d5="$(pg | grep -c 'files.delete names the directory "src/scratch", and git tracks no file under it')"
+plan_delete '["tests"]'
+d6="$(pg | grep -c '"tests/t0.py", under the directory "tests", a test')"
+mkdir -p src/pkg && printf 'def a():\n    return 0\n' >src/pkg/a.py && printf 'def b():\n    return 0\n' >src/pkg/b.py
+git add src/pkg && git commit -qm "a package to delete" >/dev/null
+plan_delete '["src/pkg/"]'
+rc=0
+pg >"$OUT/plan75b.out" || rc=$?
+eq "a directory in files.delete: one under which git tracks nothing refused, one holding a test refused naming it, one of code admitted, each file counted" \
+  "$d5,$d6,$rc,$(grep -c '^plan: .*, 2 deletion(s)$' "$OUT/plan75b.out")" "1,1,0,1"
+
+# And at scope: a directory the implementation removes passes, each file
+# counted; one file under it kept is the work not done, named.
+setup75dir() { # <dir>
+  fresh_project "$1"
+  mkdir -p src/legacy
+  printf 'def a():\n    return 0\n' >src/legacy/a.py
+  printf 'def b():\n    return 0\n' >src/legacy/b.py
+  ticket_for AIF-78
+  git add -A && git commit -qm "ticket 75, a package to remove" >/dev/null
+}
+setup75dir "$SANDBOX/p75e"
+rc=0
+FAKE_DELETE=src/legacy "$AIF" work AIF-78 --no-worktree >"$OUT/run75e.out" 2>&1 || rc=$?
+eq "the plan deletes the directory src/legacy and the implementation removes it: built, scope counting each file, none left on the branch" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-78.json | grep -c '2 deletion(s)'),$(git ls-tree -r --name-only HEAD -- src/legacy | wc -l | tr -d ' ')" \
+  "0,1,0"
+setup75dir "$SANDBOX/p75f"
+rc=0
+FAKE_DELETE=src/legacy FAKE_DELETE_KEEP=src/legacy/b.py "$AIF" work AIF-78 --no-worktree >"$OUT/run75f.out" 2>&1 || rc=$?
+eq "…one file under it kept: rejected, the file and the directory named" \
+  "$rc,$(grep -c 'files.delete names the directory src/legacy, and src/legacy/b.py under it is still there' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,1"
+
+# A rename: `git mv src/legacy.py src/modern.py`, the new path the plan's to
+# create. git paired the two into one rename, listed by its new name, and a
+# deletion the plan never named passed scope unseen (docs/DEFECTS.md 16.7). It
+# is a deletion and a creation now, each judged.
+setup75 "$SANDBOX/p75g"
+rc=0
+FAKE_PLAN_CREATE=src/modern.py FAKE_GIT_MV="src/legacy.py src/modern.py" "$AIF" work AIF-78 --no-worktree >"$OUT/run75g.out" 2>&1 || rc=$?
+eq "a git mv whose old path the plan does not delete: refused as the deletion it is" \
+  "$rc,$(grep -c 'src/legacy.py was deleted — the plan did not authorise removing it' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" "1,1"
+setup75 "$SANDBOX/p75h"
+rc=0
+FAKE_DELETE=src/legacy.py FAKE_PLAN_CREATE=src/modern.py FAKE_GIT_MV="src/legacy.py src/modern.py" "$AIF" work AIF-78 --no-worktree >"$OUT/run75h.out" 2>&1 || rc=$?
+eq "…one the plan names both ways — the old path deleted, the new one created: built, the deletion counted, green's reverted copy holding the old file again" \
+  "$rc,$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-78.json | grep -c '1 deletion(s)'),$(git cat-file -e HEAD:src/modern.py 2>/dev/null && echo moved)" \
+  "0,1,moved"
 
 # ====== 76. an amendment may create a file, beside the plan's ==================
 # A file the plan did not foresee could be amended in only if it existed; a new
@@ -6643,6 +6720,28 @@ eq "an implementation that amends in a new module and writes it: built, scope pa
   "$rc,$(jq -r '[.entries[] | select(.gate == "scope") | .result] | join(",")' .aif/state/ledgers/AIF-79.json)" "0,pass"
 eq "…scope passing it as amended, the new file counted on the line the ledger keeps" \
   "$(jq -r '[.entries[] | select(.gate == "scope")] | last | .reason' .aif/state/ledgers/AIF-79.json | grep -c '^scope: change confined to the plan AS AMENDED (.*, 1 amendment(s), 1 of them new)$')" "1"
+
+# An amendment judged a path by the working tree: a file written first and
+# amended after read as an existing one — at the root, a dotfile, in a
+# directory the plan never named — recorded as a change, and scope passed it
+# (docs/DEFECTS.md 16.7). New or not is the dispatch base's now, and the path
+# is normalised first: `src//x.py` passed the amendment and failed scope.
+mkdir -p "$SANDBOX/p76c"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p76c/" 2>/dev/null || true
+cd "$SANDBOX/p76c" || exit 1
+mkdir -p config && for f in newroot.py config/settings.py src/.env .babelrc; do printf 'x = 1\n' >"$f"; done
+b1="$("$AIF" _amend-plan AIF-1 newroot.py "x" 2>&1)"
+b2="$("$AIF" _amend-plan AIF-1 config/settings.py "x" 2>&1)"
+b3="$("$AIF" _amend-plan AIF-1 src/.env "x" 2>&1)"
+b4="$("$AIF" _amend-plan AIF-1 .babelrc "x" 2>&1)"
+eq "files written first and amended after are judged new, by the dispatch base: at the root, in a directory the plan has none in, two dotfiles — each refused, none recorded" \
+  "$(printf '%s' "$b1" | grep -c 'at the root of the repository'),$(printf '%s' "$b2" | grep -c 'config/ holds none of the plan'),$(printf '%s' "$b3" | grep -c 'a dotfile'),$(printf '%s' "$b4" | grep -c 'a dotfile'),$(jq '.amendments | length' tasks/AIF-1/plan-amendments.json 2>/dev/null || echo 0)" \
+  "1,1,1,1,0"
+rc=0
+"$AIF" _amend-plan AIF-1 "src//x.py" "x" >"$OUT/amend76c.out" 2>&1 || rc=$?
+b5="$("$AIF" _amend-plan AIF-1 "src/../x.py" "x" 2>&1)"
+eq "…a path written with //, recorded as scope reads it; one with .. refused" \
+  "$rc,$(jq -r '.amendments[].path' tasks/AIF-1/plan-amendments.json 2>/dev/null | paste -sd, -),$(printf '%s' "$b5" | grep -c "without '..'")" "0,src/x.py,1"
 
 # ====== 77. CI and the ignore rules: the plan's to name ========================
 # The denylist held .gitignore, .github/ and .gitlab-ci* against any

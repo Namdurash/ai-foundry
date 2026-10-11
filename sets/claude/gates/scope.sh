@@ -102,13 +102,16 @@ EOF
 # What the implement station changed: tracked modifications and deletions since
 # the baseline, plus new untracked files. The baseline is what the worker
 # recorded at dispatch, not HEAD — a station with Bash can move HEAD, and for
-# one release that emptied this diff (see aif_g_dispatch_base).
+# one release that emptied this diff (see aif_g_dispatch_base). Without
+# renames: git pairs a `git mv` into one rename, listed by its new name, and
+# the deletion of the old path — never planned — passed unseen
+# (docs/DEFECTS.md 16.7). A rename is a deletion and a creation, each judged.
 base="$(aif_g_dispatch_base "$work" "$root")"
 [ -n "$base" ] || aif_g_error "scope needs a baseline commit and the repository has none"
 head_now="$(git -C "$root" rev-parse HEAD 2>/dev/null)"
-changed="$(git -C "$root" diff --name-only "$base" 2>/dev/null || true)"
+changed="$(git -C "$root" diff --no-renames --name-only "$base" 2>/dev/null || true)"
 created="$(git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true)"
-deleted="$(git -C "$root" diff --name-only --diff-filter=D "$base" 2>/dev/null || true)"
+deleted="$(git -C "$root" diff --no-renames --name-only --diff-filter=D "$base" 2>/dev/null || true)"
 
 # A branch the worker brought onto the branch it lands on (its sync,
 # docs/DEFECTS.md 13.4) carries that branch's changes in the diff since the
@@ -170,8 +173,11 @@ record_rel=""
 # them, or they do not move (docs/DEFECTS.md 13.10).
 planned="$(printf '%s' "$plan_meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.delete // []))[]? // empty' 2>/dev/null)"
 # What the plan deletes: the one way a tracked path may go (docs/DEFECTS.md
-# 13.10). Never an amendment — `aif _amend-plan` widens to files to write.
-to_delete="$(printf '%s' "$plan_meta" | jq -r '(.files.delete // [])[]? // empty' 2>/dev/null)"
+# 13.10). Never an amendment — `aif _amend-plan` widens to files to write. A
+# directory there is every file tracked under it at the dispatch base, each
+# "<path><TAB><entry>" (aif_g_delete_expand, 16.7).
+to_delete_map="$(aif_g_delete_expand "$root" "$base" "$(printf '%s' "$plan_meta" | jq -r '(.files.delete // [])[]? // empty' 2>/dev/null)")"
+to_delete="$(printf '%s\n' "$to_delete_map" | cut -f1)"
 
 viol=""
 while IFS= read -r p; do
@@ -222,14 +228,20 @@ $p was deleted — the plan did not authorise removing it"
 done <<EOF
 $deleted
 EOF
-while IFS= read -r p; do
+tab="$(printf '\t')"
+while IFS="$tab" read -r p e; do
   [ -n "$p" ] || continue
   if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then
-    viol="$viol
+    if [ "$p" = "$e" ]; then
+      viol="$viol
 files.delete names $p, and it is still there — delete it (rm): the plan's deletions are this station's to make"
+    else
+      viol="$viol
+files.delete names the directory $e, and $p under it is still there — delete it (rm): the plan's deletions are this station's to make"
+    fi
   fi
 done <<EOF
-$to_delete
+$to_delete_map
 EOF
 
 aif_g_report "${viol# }" "scope"

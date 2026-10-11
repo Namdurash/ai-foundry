@@ -986,7 +986,8 @@ fi
 # this round's code was never going to turn it red, and demanding that would
 # accuse an honest test on a second round. A path the plan deletes is in
 # impl_frozen too, as it is before the implementation removes it: green's
-# reverted copy has to hold it again (docs/DEFECTS.md 13.10).
+# reverted copy has to hold it again (docs/DEFECTS.md 13.10) — a directory
+# there, each file tracked under it at the dispatch base (16.7).
 #
 # And what this gate let through, for green and the report: `base`, the tree
 # before this ticket the suite was measured on; `red_at_base`, the tests red
@@ -1077,7 +1078,7 @@ impl_frozen="$(
   done <<EOF
 $change_files
 $create_files
-$delete_files
+$(aif_g_delete_expand "$root" "$base" "$delete_files" | cut -f1)
 EOF
 )"
 impl_created="$(

@@ -53,10 +53,22 @@ unlink:
 	else echo "$(PREFIX)/bin/aif is not our symlink — left alone"; fi
 	@brew list aif >/dev/null 2>&1 && echo "run 'brew link aif' to go back to the tap" || true
 
+# One file at a time. One shellcheck over every file kept the whole tree's
+# dataflow analysis in one process, and it grew past 8 GB: on 2026-10-11 macOS
+# closed the programs around it and the Mac had to restart (docs/FINDINGS.md
+# #42). On its own, each file stays near 2 GB at most. bin/aif sources every
+# lib file — followed (-x), it is the whole tree in one process again — so it
+# is checked alone, and each file it sources is checked as its own input.
 lint:
 	@command -v shellcheck >/dev/null 2>&1 || { \
 		echo "shellcheck not found — brew install shellcheck"; exit 1; }
-	shellcheck -x $(SHELL_SOURCES)
+	@echo "shellcheck, one file at a time: $(words $(SHELL_SOURCES)) files"
+	@rc=0; \
+	shellcheck -e SC1091 bin/aif || rc=1; \
+	for f in $(filter-out bin/aif,$(SHELL_SOURCES)); do \
+		shellcheck -x "$$f" || rc=1; \
+	done; \
+	exit $$rc
 
 fmt:
 	@command -v shfmt >/dev/null 2>&1 || { \

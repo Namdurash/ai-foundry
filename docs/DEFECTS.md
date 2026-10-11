@@ -414,6 +414,12 @@ long enough to meet it often.
 - **17.1** A Ctrl-C at the shift's control point, its countdown or a pause ran the shift's INT handler inside the shift's own `read -t 1`, and the read's timer went off through it — the handler (stty, the summary's jq and date, the unlock, `exit 130`) takes tens to hundreds of milliseconds, so a Ctrl-C in that much of a second's end was abandoned half way: the shift went on to the countdown's default, and no later Ctrl-C ran a handler — probed (the handler's `date` slowed: on 89be0ea the shift counted on and the harness timed out; docs/FINDINGS.md #39). The key is read by the loop's child (`_aif_start_key`, `aif_key_wait`); the handler stops it before it puts the terminal back. On `main` after 0.16.0; check-start layer D.
 - **17.2** With the shift's stdin not the terminal, no key was ever read: the shift read fd 6 with `-u`, and bash 3.2's `read -s -n 1` sets the terminal's modes on fd 0 — the key echoed, the countdown ran on to its default — probed (#39). The child reads the terminal as its stdin. On `main` after 0.16.0; check-start layer D.
 
+### Log 18 — after 0.16.0, the lint that took a Mac down (2026-10-11)
+
+Not a defect of aif: of the repository's own `make lint`, which every change runs before it ships.
+
+- **18.1** `make lint` ran one shellcheck over all 54 sources, and its dataflow analysis, kept for the whole run, grew past 8 GB: on a 24 GB Mac macOS closed the programs around it and the Mac had to restart — observed (a JetsamEvent: shellcheck the largest process at 8.5 GB); probed (past 3.4 GB in 14 s and growing, killed by a watchdog). One shellcheck per file, bin/aif alone with SC1091 excepted — it sources every lib file, each linted as its own input: 2.1 GB at most, 21 s, the same findings; turning the analysis off is not, 36 SC2086 it proves safe (docs/FINDINGS.md #42). The Makefile's `lint`.
+
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 
 Four problems from a loop that built nothing: two tickets stopped at the plan

@@ -921,6 +921,48 @@ EOF
   fi
 fi
 
+# A fresh clone's view (docs/DEFECTS.md 16.8). What the ignore rules added
+# since the tree before this ticket hide is never committed: the suite above
+# ran with it, and a clone of the branch lacks it — an implementation wrote
+# src/gen.py, ignored it, passed here and at the land, and main was red in a
+# fresh clone. When the tree holds such a path, the suite runs once more in a
+# copy without it (aif_g_scratch_at leaves it out), and every test that passes
+# here has to pass there. One suite run, only then.
+[ -n "${tb:-}" ] || tb="$(aif_g_ticket_base "$work" "$root")"
+hidden=""
+[ ! -e "$root/.git" ] || [ -z "$tb" ] || hidden="$(aif_g_hidden_since "$root" "$tb")"
+if [ -n "$hidden" ]; then
+  fresh="$gtmp/fresh"
+  if ! err="$(aif_g_scratch_at "$root" "" "$fresh" "$tb" 2>&1 >/dev/null)"; then
+    aif_g_error "could not copy the tree to run the suite as a fresh clone of the branch would: $err"
+  fi
+  rm -f "${fresh:?}/${report_path:?}"
+  mkdir -p "$fresh/$(dirname "$report_path")"
+  fresh_rc=0
+  (cd "$fresh" && eval "$test_cmd") </dev/null >"$gtmp/fresh.out" 2>&1 || fresh_rc=$?
+  hid_say="$(printf '%s\n' "$hidden" | sed -n '1,5p' | paste -sd, - | sed 's/,/, /g')"
+  [ "$(printf '%s\n' "$hidden" | grep -c .)" -le 5 ] || hid_say="$hid_say, …"
+  hid_why="the ignore rules this ticket added keep it out of every commit, so a fresh clone of the branch lacks it ($hid_say) — commit what the suite needs, or make the suite produce it"
+  if [ -n "${results:-}" ]; then
+    fresh_json=""
+    [ ! -f "$fresh/$report_path" ] || fresh_json="$(python3 "$here/junit.py" "$fresh/$report_path" 2>/dev/null || true)"
+    if [ -z "$fresh_json" ]; then
+      aif_g_report "the suite does not run without what $hid_why: $(grep -v '^[[:space:]]*$' "$gtmp/fresh.out" | tail -1 | cut -c1-200)" "fresh clone"
+    fi
+    printf '%s' "$results" >"$gtmp/here.json"
+    printf '%s' "$fresh_json" >"$gtmp/fresh.json"
+    lost="$(jq -r --slurpfile f "$gtmp/fresh.json" '
+      ($f[0] | map({ (.id): .status }) | add // {}) as $F
+      | .[] | select(.status == "pass") | select((($F[.id] // "absent") as $s | ["pass", "skipped"] | index($s)) == null)
+      | .id + " (" + ($F[.id] // "absent") + ")"' "$gtmp/here.json" 2>/dev/null)" || lost=""
+    [ -z "$lost" ] ||
+      aif_g_report "$(printf '%s\n' "$lost" | sed 's/$/ — passes here, and not in a fresh clone of the branch/')
+  It passes only with what $hid_why." "fresh clone"
+  elif [ "$suite_rc" -eq 0 ] && [ "$fresh_rc" -ne 0 ]; then
+    aif_g_report "the suite passes here and exits $fresh_rc in a fresh clone of the branch: $hid_why" "fresh clone"
+  fi
+fi
+
 checks_ran="$(jq '[ .[]? | select(.result != "at_base") ] | length' "$root/.aif/tmp/checks-green.json" 2>/dev/null || echo 0)"
 
 # What this gate let through, for `aif _gate` to fold into the ledger — the

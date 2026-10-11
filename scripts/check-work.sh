@@ -310,6 +310,10 @@
 #      reads the code through such a link passes green's revert; an ignored
 #      directory a copy cannot read stops verify-red naming copies.leave_out,
 #      and named there it is left out and the ticket builds
+#  98  a pass's lines after its first reach the run's output and the report;
+#      green runs the suite once more as a fresh clone has it when the
+#      ticket's new ignore rules hide a file — one the suite needs is a
+#      rejection, one it does not passes — and every copy leaves it out
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -792,6 +796,9 @@ case "$station" in
       noskel="$(jq -cn --arg p "$FAKE_PLAN_CREATE" '[$p]')"
       cov="$(printf '%s' "$cov" | jq -c --arg p "$FAKE_PLAN_CREATE" '.["AC-001"] += [$p]')"
     fi
+    # FAKE_PLAN_CHANGE=<path>: one more file the plan changes — .gitignore,
+    # which moves only when the plan names it (docs/DEFECTS.md 13.10, 16.8).
+    [ -z "${FAKE_PLAN_CHANGE:-}" ] || change="$(printf '%s' "$change" | jq -c --arg p "$FAKE_PLAN_CHANGE" '. + [$p]')"
     # A verdict per criterion: buildable, unless the harness says AC-001 is
     # something else (a spec stop).
     verdicts="$(printf '%s\n' "$acs" | jq -R 'select(length>0)' | jq -sc --arg v "${FAKE_VERDICT:-buildable}" \
@@ -989,6 +996,16 @@ PLAN
           grep -q "$kw" "$wt/src/app.py" 2>/dev/null || printf '# %s\n' "$kw" >>"$wt/src/app.py"
         done
       done
+    fi
+    # FAKE_IMPL_GEN=used|unused: the implementation writes src/gen.py and
+    # hides it with the planned .gitignore — the app importing it (used) or
+    # not (docs/DEFECTS.md 16.8).
+    if [ -n "${FAKE_IMPL_GEN:-}" ]; then
+      w "$wt/src/gen.py"
+      printf 'GENERATED = 1\n' >"$wt/src/gen.py"
+      w "$wt/.gitignore"
+      grep -qx 'src/gen.py' "$wt/.gitignore" 2>/dev/null || printf 'src/gen.py\n' >>"$wt/.gitignore"
+      [ "$FAKE_IMPL_GEN" != used ] || printf '# uses gen\n' >>"$wt/src/app.py"
     fi
     # FAKE_GIT_MV="<from> <to>": a rename, staged the way `git mv` stages it
     # (docs/DEFECTS.md 16.7).
@@ -8052,6 +8069,52 @@ eq "…named under copies.leave_out: left out of the copy — t0 measured red be
 eq "aif project check: a leave_out path git tracks is said to be kept; one outside the repository is refused" \
   "$(jq '.copies.leave_out = ["pgdata", "src"]' .aif/project.json >"$OUT/p97.json" && cp "$OUT/p97.json" .aif/project.json; "$AIF" project check 2>&1 | grep -c 'warn: copies.leave_out names src, which git does not ignore'),$(jq '.copies.leave_out = ["../elsewhere"]' .aif/project.json >"$OUT/p97.json" && cp "$OUT/p97.json" .aif/project.json; "$AIF" project check >/dev/null 2>&1; echo $?)" \
   "1,1"
+cd "$SANDBOX" || exit 1
+
+# ====== 98. a pass's warnings travel; a fresh clone's view ===================
+# A passing gate's lines after its first — IGNORED FROM NOW ON, CI AND IGNORE
+# RULES — were dropped by `aif _gate` and reached neither the run's output nor
+# the report. And green measured a file the ticket's own new ignore rules keep
+# out of every commit: the implementation wrote src/gen.py, ignored it, passed
+# green and scope and the land, and a fresh clone of main was red
+# (docs/DEFECTS.md 16.8). Here t7 fails when src/app.py uses gen and
+# src/gen.py is not there.
+printf '\n98. a pass'"'"'s warnings reach the run and the report; green runs the suite as a fresh clone has it\n'
+gen98() { # <dir>
+  fresh_project "$1"
+  printf '# a pre-existing test, t7\n' >tests/t7.py
+  cat >.aif/suite-extra.sh <<'X'
+g7=1
+if grep -q 'uses gen' src/app.py 2>/dev/null && [ ! -f src/gen.py ]; then g7=0; fi
+body="$body$(row t7 tests/t7.py "$g7")"
+X
+  ticket_for AIF-980
+  git add -A && git commit -qm "t7, and ticket 98" >/dev/null
+}
+gen98 "$SANDBOX/p98"
+rc=0
+FAKE_PLAN_CHANGE=.gitignore FAKE_IMPL_GEN=used "$AIF" work AIF-980 --no-worktree >"$OUT/run98.out" 2>&1 || rc=$?
+eq "an implementation that needs a file its planned .gitignore hides: green runs the suite as a fresh clone has it — rejected, not built" \
+  "$rc,$(grep -c 'tests.t7::t7 (failure) — passes here, and not in a fresh clone of the branch' .aif/tmp/fake-prompt-implement-2 2>/dev/null),$(grep -c 'keep it out of every commit, so a fresh clone of the branch lacks it (src/gen.py)' .aif/tmp/fake-prompt-implement-2 2>/dev/null)" \
+  "1,1,1"
+gen98 "$SANDBOX/p98b"
+rc=0
+FAKE_PLAN_CHANGE=.gitignore FAKE_IMPL_GEN=unused "$AIF" work AIF-980 --no-worktree >"$OUT/run98b.out" 2>&1 || rc=$?
+eq "…one that hides a file the suite does not need: built — the fresh clone passes" "$rc,$(git cat-file -e HEAD:src/gen.py 2>/dev/null && echo committed || echo not-committed)" "0,not-committed"
+sed '/^# AIF-980 — built$/,$d' "$OUT/run98b.out" >"$OUT/run98b.live"
+eq "…and scope's warnings — the rule, and the file it hides — reach the run's own lines, under the stage it admitted; the plan's too" \
+  "$(grep -c '^ *IGNORED FROM NOW ON' "$OUT/run98b.live"),$(grep -c '^ *HIDDEN BY THEM' "$OUT/run98b.live"),$(grep -c '^ *- src/gen.py$' "$OUT/run98b.live"),$(grep -c '^ *CI AND IGNORE RULES' "$OUT/run98b.live")" "1,1,1,1"
+eq "…and the report, under scope's line, with the plan's CI AND IGNORE RULES under its own" \
+  "$(awk '/^- scope: pass/{s=1} s && /HIDDEN BY THEM/{print "hidden"; exit}' tasks/AIF-980/report.md),$(awk '/^- plan: pass/{s=1} s && /CI AND IGNORE RULES/{print "ci"; exit}' tasks/AIF-980/report.md)" "hidden,ci"
+base98="$(jq -r '.base' tasks/AIF-980/run.json)"
+c98="$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "" "" "$1"' _ "$base98" 2>/dev/null)"
+mkdir -p "$OUT/c98w"
+/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_copy_at "$PWD" "$2" "$3"' _ "$ROOT" "$base98" "$OUT/c98w" >/dev/null 2>&1
+eq "the gates' copies and the worker's — the land's target copy — leave out what only the ticket's new rules hide; the tree keeps it" \
+  "$([ -f src/gen.py ] && echo tree),$([ -e "$c98/src/gen.py" ] && echo gates-copy || echo gates-none),$([ -e "$OUT/c98w/src/gen.py" ] && echo work-copy || echo work-none)" \
+  "tree,gates-none,work-none"
+[ -z "$c98" ] || rm -rf "${c98:?}"
+rm -rf "$OUT/c98w"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

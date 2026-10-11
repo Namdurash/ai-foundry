@@ -288,6 +288,14 @@ if [ -n "$ignored_now" ]; then
   printf '  IGNORED FROM NOW ON — .gitignore gained these; a file they match is not in the diff above:\n'
   printf '%s\n' "$ignored_now" | sed 's/^/    + /'
 fi
+# And the files those rules hide that the tree holds now — never committed, so
+# not on the branch: green ran the suite once more without them, as a fresh
+# clone has it (docs/DEFECTS.md 16.8).
+hidden_now="$(aif_g_hidden_since "$root" "$base")"
+if [ -n "$hidden_now" ]; then
+  printf '  HIDDEN BY THEM — in the tree now, on no commit of this branch:\n'
+  printf '%s\n' "$hidden_now" | sed 's/^/    - /'
+fi
 # On the pass path, always: a station that commits is doing the worker's job,
 # and a reviewer reading the branch will meet its commit without this note.
 if [ -n "$head_now" ] && [ "$head_now" != "$base" ]; then

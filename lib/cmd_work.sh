@@ -3067,7 +3067,7 @@ _aif_work_copy_at() {
   local wt="$1" base="$2" copy="$3" links="" left walk p changed
   AIF_WORK_COPY_WHY=""
   [ "${AIF_G_COPY_DEPS:-0}" = 1 ] || links="$(_aif_work_dep_dirs "$wt")"
-  left="$(_aif_work_left_out "$wt")"
+  left="$(printf '%s\n%s\n' "$(_aif_work_left_out "$wt")" "$(_aif_work_hidden_since "$wt" "$base" | sed 's|/$||')" | grep -v '^$' | sort -u)"
   walk="$links
 $left"
   [ ! -d "$wt/.aif/worktrees" ] || walk="$walk
@@ -3138,6 +3138,52 @@ _aif_work_left_out() {
       [ -n "$p" ] || continue
       if [ -e "$root/$p" ] || [ -L "$root/$p" ]; then printf '%s\n' "$p"; fi
     done | git -C "$root" check-ignore --stdin 2>/dev/null || true
+}
+
+# _aif_work_hidden_since <wt> <rev> — the untracked paths git ignores now that
+# the ignore rules committed at <rev> would not: the gates' aif_g_hidden_since,
+# which a copy leaves out — a fresh clone of the branch lacks them
+# (docs/DEFECTS.md 16.8).
+_aif_work_hidden_since() {
+  local root="$1" rev="$2" now ign tmp p ex
+  [ -n "$rev" ] || return 0
+  git -C "$root" rev-parse -q --verify "$rev^{commit}" >/dev/null 2>&1 || return 0
+  ign="$({
+    git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$rev" 2>/dev/null
+    git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+  } | grep -E '(^|/)\.gitignore$')" || ign=""
+  [ -n "$ign" ] || return 0
+  now="$(git -C "$root" -c core.quotePath=false ls-files --others --ignored --exclude-standard --directory 2>/dev/null)"
+  [ -n "$now" ] || return 0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-ignore-XXXXXX")" || return 0
+  git init -q "$tmp" 2>/dev/null || {
+    rm -rf "${tmp:?}"
+    return 0
+  }
+  ign="$(git -C "$root" -c core.quotePath=false ls-tree -r --name-only "$rev" 2>/dev/null | grep -E '(^|/)\.gitignore$')" || ign=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    mkdir -p "$tmp/$(dirname "$p")" && git -C "$root" show "$rev:$p" >"$tmp/$p" 2>/dev/null
+  done <<EOF
+$ign
+EOF
+  ex="$(git -C "$root" rev-parse --git-path info/exclude 2>/dev/null)" || ex=""
+  case "$ex" in /*) ;; ?*) ex="$root/$ex" ;; esac
+  [ -z "$ex" ] || [ ! -f "$ex" ] || cp "$ex" "$tmp/.git/info/exclude" 2>/dev/null
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      */) mkdir -p "$tmp/$p" ;;
+      *) mkdir -p "$tmp/$(dirname "$p")" && : >"$tmp/$p" ;;
+    esac
+  done <<EOF
+$now
+EOF
+  ex="$(printf '%s\n' "$now" | sed 's|/$||' | git -C "$tmp" -c core.quotePath=false check-ignore --stdin 2>/dev/null)" || true
+  rm -rf "${tmp:?}"
+  printf '%s\n' "$now" | AIF_WORK_WAS="$ex" awk '
+    BEGIN { n = split(ENVIRON["AIF_WORK_WAS"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") was[a[i]] = 1 }
+    NF { p = $0; sub(/\/$/, "", p); if (!(p in was)) print }'
 }
 
 # _aif_work_link_modules <real> <copy> <root> <copy-root> [<depth>] — the
@@ -4105,9 +4151,13 @@ _aif_work_report() {
         then "- nothing recorded — every criterion was exercised, and the plan named no unvalidated dependency"
         else .[] | "- [ ] **" + .source + " " + .id + "** " + .text end' 2>/dev/null
 
+    # A pass's notes under its line, as the gate printed them — what it let
+    # through and what it warns of (docs/DEFECTS.md 16.8), in a block so the
+    # gate's own indentation reads as it did.
     printf '\n## Gates\n\n'
     jq -r '[ .entries[] | select(.gate != null) ] | if length == 0 then "- none ran" else
-      .[] | "- " + .gate + ": " + .result + (if (.reason // "") != "" then " — " + .reason else "" end) end' \
+      .[] | "- " + .gate + ": " + .result + (if (.reason // "") != "" then " — " + .reason else "" end)
+        + (if (.notes // "") != "" then "\n\n  ```\n" + (.notes | split("\n") | map("  " + .) | join("\n")) + "\n  ```\n" else "" end) end' \
       "$ledger" 2>/dev/null
     printf '\n---\n_Written by `aif work`. Review the diff on the branch; merge when it is what you meant, or send the ticket back through the analyst with what was wrong._\n'
   } >"$report.tmp" && mv "$report.tmp" "$report"
@@ -6313,6 +6363,11 @@ $(printf '%s' "$tool_out" | sed 's/\x1b\[[0-9;]*m//g' | sed -n '1,10p')"
     case "$rc" in
       0)
         _aif_work_say "gate" "$stage admitted — $(grep -m1 '✓' "$gate_out" | sed 's/.*✓ //')"
+        # And the rest of what the gates said on their pass — each one's line
+        # after the first, and what each said after its own: what it let
+        # through, what it warns of (IGNORED FROM NOW ON, CI AND IGNORE
+        # RULES). Only the first line used to reach here (docs/DEFECTS.md 16.8).
+        sed 's/\x1b\[[0-9;]*m//g' "$gate_out" | awk '/✓/ && !first++ { next } NF' | sed 's/^/          /' >&2
         # The commit seals the verdict and is the next station's baseline. One
         # that did not happen used to be invisible until scope rejected the
         # implementation for "touching" the tests the previous commit should

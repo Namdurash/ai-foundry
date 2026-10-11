@@ -282,6 +282,59 @@ aif_g_changed_since() {
   } | sort -u
 }
 
+# aif_g_hidden_since <root> <rev> — the untracked paths git ignores now that the
+# ignore rules as committed at <rev> would not: what only the rules added since
+# hide, one path a line, a directory whole with its "/" (git lists it so). A
+# file the implementation wrote and its planned .gitignore hid was never
+# committed, yet green and the land passed on it, where it still was; a fresh
+# clone lacked it and was red (docs/DEFECTS.md 16.8). Empty when no ignore
+# file moved since <rev>. The rules at <rev> are asked in a scratch repository
+# holding that commit's ignore files and this one's info/exclude — the user's
+# own excludes apply there as here.
+aif_g_hidden_since() {
+  local root="$1" rev="$2" now ign tmp p ex
+  [ -n "$rev" ] || return 0
+  git -C "$root" rev-parse -q --verify "$rev^{commit}" >/dev/null 2>&1 || return 0
+  ign="$({
+    git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$rev" 2>/dev/null
+    git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
+  } | grep -E '(^|/)\.gitignore$')" || ign=""
+  [ -n "$ign" ] || return 0
+  now="$(git -C "$root" -c core.quotePath=false ls-files --others --ignored --exclude-standard --directory 2>/dev/null)"
+  [ -n "$now" ] || return 0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-ignore-XXXXXX")" || return 0
+  git init -q "$tmp" 2>/dev/null || {
+    rm -rf "${tmp:?}"
+    return 0
+  }
+  ign="$(git -C "$root" -c core.quotePath=false ls-tree -r --name-only "$rev" 2>/dev/null | grep -E '(^|/)\.gitignore$')" || ign=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    mkdir -p "$tmp/$(dirname "$p")" && git -C "$root" show "$rev:$p" >"$tmp/$p" 2>/dev/null
+  done <<EOF
+$ign
+EOF
+  ex="$(git -C "$root" rev-parse --git-path info/exclude 2>/dev/null)" || ex=""
+  case "$ex" in /*) ;; ?*) ex="$root/$ex" ;; esac
+  [ -z "$ex" ] || [ ! -f "$ex" ] || cp "$ex" "$tmp/.git/info/exclude" 2>/dev/null
+  # Each path as it stands now — a directory as a directory, so a rule written
+  # for one (`dist/`) matches it there as it does here.
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      */) mkdir -p "$tmp/$p" ;;
+      *) mkdir -p "$tmp/$(dirname "$p")" && : >"$tmp/$p" ;;
+    esac
+  done <<EOF
+$now
+EOF
+  ex="$(printf '%s\n' "$now" | sed 's|/$||' | git -C "$tmp" -c core.quotePath=false check-ignore --stdin 2>/dev/null)" || true
+  rm -rf "${tmp:?}"
+  printf '%s\n' "$now" | AIF_G_WAS="$ex" awk '
+    BEGIN { n = split(ENVIRON["AIF_G_WAS"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") was[a[i]] = 1 }
+    NF { p = $0; sub(/\/$/, "", p); if (!(p in was)) print }'
+}
+
 # aif_g_delete_expand <root> <rev> <entries> — what files.delete covers, one
 # "<path><TAB><entry>" a line: for a directory, every file tracked under it at
 # <rev>; for anything else, the entry itself. A directory used to be read as
@@ -768,7 +821,10 @@ _aif_g_copy_into() {
 # `__dirname` there is the real path (#36) — so AIF_G_COPY_DEPS=1 in the
 # environment copies them as before. `rm -rf` of the copy removes a link,
 # never what it points at. A path the project names under copies.leave_out,
-# git ignoring it, is not in the copy at all (aif_g_left_out).
+# git ignoring it, is not in the copy at all (aif_g_left_out); nor is what
+# only the ignore rules added since <base> hide — or since <rules-rev>, for a
+# copy of the tree as it stands — which a fresh clone of the branch lacks
+# (aif_g_hidden_since, docs/DEFECTS.md 16.8).
 #
 # rc 1, the reason on stderr, when the copy could not be made whole — an
 # unreadable file, a file the base could not give back: a suite judged in a
@@ -786,7 +842,7 @@ _aif_g_copy_into() {
 # worktree's index. green's revert-recheck did exactly that for as long as it
 # existed (docs/DEFECTS.md 6.4).
 aif_g_scratch_at() {
-  local root="$1" base="$2" scratch="${3:-}" made=0 links="" left walk p changed
+  local root="$1" base="$2" scratch="${3:-}" rules="${4:-$2}" made=0 links="" left walk p changed
   if [ -n "$scratch" ]; then
     mkdir -p "$scratch" || return 1
   else
@@ -799,7 +855,7 @@ aif_g_scratch_at() {
   # two runs' output then recognises as the copy.
   scratch="$(cd "$scratch" && pwd -P)" || return 1
   [ "${AIF_G_COPY_DEPS:-0}" = 1 ] || links="$(aif_g_dep_dirs "$root")"
-  left="$(aif_g_left_out "$root")"
+  left="$(printf '%s\n%s\n' "$(aif_g_left_out "$root")" "$(aif_g_hidden_since "$root" "$rules" | sed 's|/$||')" | grep -v '^$' | sort -u)"
   # A directory is entered rather than copied whole when something under it
   # is linked, or left behind (.aif/worktrees, copies.leave_out): every line
   # of <walk> below it.
@@ -850,8 +906,9 @@ aif_g_base_key() {
     # The kept run's format: since 16.4 its messages carry the copy's root
     # folded, and one kept before that would read as another failure; since
     # 16.6 the copy's node_modules is its own, and one measured through a
-    # node_modules linked whole read the real tree's workspace packages.
-    printf 'roots-folded node-modules-own'
+    # node_modules linked whole read the real tree's workspace packages; and
+    # since 16.8 what only new ignore rules hide is not in it.
+    printf 'roots-folded node-modules-own new-ignores-out'
   } | aif_g_sha256 /dev/stdin | cut -c1-12)"
   printf '%s-%s' "$2" "$h"
 }
@@ -998,7 +1055,7 @@ aif_g_standing_as_base() {
   cmd="$(jq -r '.test.command // empty' "$project" 2>/dev/null)"
   report="$(jq -r '.test.report.path // empty' "$project" 2>/dev/null)"
   rm -rf "${dir:?}"
-  if ! err="$(aif_g_scratch_at "$root" "" "$dir" 2>&1 >/dev/null)"; then
+  if ! err="$(aif_g_scratch_at "$root" "" "$dir" "$base" 2>&1 >/dev/null)"; then
     printf '%s' "$err"
     return 2
   fi

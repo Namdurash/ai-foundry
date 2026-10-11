@@ -190,15 +190,18 @@ _aif_ledger_append() {
   return 0
 }
 
-# aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason>
+# aif_ledger_gate <work> <gate> <result> <subject> <subject_sha> <gate_sha> <reason> [<notes>]
 #
 # One row per verdict, bound to the bytes it judged and to the gate script that
 # judged them. The gate's own hash is there so a verdict recorded by an older
 # set is legible as such rather than silently compared against today's rules.
+# <notes>: what a pass said after its first line — what it let through, what
+# it warns of — kept for the report (docs/DEFECTS.md 16.8).
 aif_ledger_gate() {
   aif_ledger_append "$1" "$(jq -n \
     --arg gate "$2" --arg result "$3" --arg subject "$4" \
-    --arg ssha "$5" --arg gsha "$6" --arg reason "$7" \
+    --arg ssha "$5" --arg gsha "$6" --arg reason "$7" --arg notes "${8:-}" \
     '{ gate: $gate, result: $result, subject: $subject,
-       subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }')"
+       subject_sha256: $ssha, gate_sha256: $gsha, reason: $reason }
+     + (if $notes == "" then {} else { notes: $notes } end)')"
 }

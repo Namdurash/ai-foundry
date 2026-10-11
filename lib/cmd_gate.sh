@@ -87,7 +87,7 @@ aif_cmd_gate() {
   }
   _resolve_subject
 
-  local gates gate rc out overall=0
+  local gates gate rc out notes overall=0
   gates="$(aif_station_gates "$root" "$station")"
   [ -n "$gates" ] || aif_die "station '$station' declares no gates — nothing to check"
 
@@ -156,7 +156,13 @@ aif_cmd_gate() {
     # sed -n 1p, not head -1: the first line of a gate's output goes into an
     # assignment, whose status under set -e is the pipeline's — and a head that
     # leaves early hands the producer SIGPIPE (docs/DEFECTS.md 5.3).
-    records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)
+    # A pass's lines after its first — what it let through, what it warns of:
+    # IGNORED FROM NOW ON, CI AND IGNORE RULES — were dropped here, and reached
+    # neither the run's output nor the report (docs/DEFECTS.md 16.8). Kept, a
+    # newline as \036 in the record, which is one line.
+    notes=""
+    [ "$rc" -ne 0 ] || notes="$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n '2,$p')"
+    records="$records$gate$sep$([ "$rc" -eq 0 ] && printf pass || printf fail)$sep$subject$sep$hash$sep$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | sed -n 1p)$sep$(printf '%s' "$notes" | tr '\n' '\036')
 "
 
     if [ "$rc" -ne 0 ]; then
@@ -169,6 +175,7 @@ aif_cmd_gate() {
     fi
 
     printf '%s✓%s %s\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(printf '%s' "$out" | head -1)"
+    [ -z "$notes" ] || printf '%s\n' "$notes" | sed 's/^/  /'
   done
 
   _aif_gate_book "$root" "$work" "$records" amendments checks
@@ -326,18 +333,19 @@ EOF
 # gate has run — see the comment on `records` above for why that ordering is not
 # a detail. Each record carries its own subject and hash, because a freezing gate
 # changes what the subject is by running. The reason is a gate's own words and
-# therefore last: only the final field may contain anything.
+# therefore last but one: only the reason and a pass's notes after it may
+# contain anything but the separator — the notes' newlines are \036.
 _aif_gate_record() {
   local work="$1" root="$2" records="$3"
-  local gate result subject hash reason sep
+  local gate result subject hash reason notes sep
   sep="$(printf '\037')"
-  while IFS="$sep" read -r gate result subject hash reason; do
+  while IFS="$sep" read -r gate result subject hash reason notes; do
     [ -n "$gate" ] || continue
     # A rejection with nothing to say is a defect in the gate, not a row to
     # write blank: the ledger's whole job at this column is to record why.
     [ -n "$reason" ] || reason="(the gate gave no reason — look at $gate)"
     aif_ledger_gate "$work" "$gate" "$result" "$subject" "$hash" \
-      "$(aif_sha256 "$(aif_gate_path "$root" "$gate")")" "$reason"
+      "$(aif_sha256 "$(aif_gate_path "$root" "$gate")")" "$reason" "$(printf '%s' "$notes" | tr '\036' '\n')"
   done <<EOF
 $records
 EOF

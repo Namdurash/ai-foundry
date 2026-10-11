@@ -179,7 +179,10 @@
 #  59  a .gitignore block written by an older aif, without the worktrees line:
 #      the worker adds that line to the block and says so, and every line the
 #      block held stays; a block with no end line is left alone; no block at
-#      all gets one, the developer's own lines kept
+#      all gets one, the developer's own lines kept; the markers found past a
+#      \r and a word after them, an end only after the begin; aif init and
+#      the uninstall leave a block with no end line as it was, and doctor
+#      names the end line; doctor asks git what is ignored
 #  60  the land beside the developer's own work: uncommitted edits and staged
 #      files it does not touch stay as they are; an edit to a file it changes
 #      refuses it, named, nothing touched
@@ -5772,6 +5775,40 @@ gi59 "$SANDBOX/p59c" >/dev/null
 eq "no block at all: one is appended with the line, the developer's own line first" \
   "$(sed -n 1p "$SANDBOX/p59c/.gitignore")|$(grep -cx '.aif/worktrees/' "$SANDBOX/p59c/.gitignore")|$(grep -c '^# aif:end' "$SANDBOX/p59c/.gitignore")" \
   "mine/|1|1"
+
+# docs/DEFECTS.md 16.10. Every writer and reader of the block finds its
+# markers alike — past a \r and trailing blanks, an end line counting only
+# after the begin — and a block with no end line after its begin is left alone
+# by them all, `aif init` and the uninstall's removal among them.
+mkdir -p "$SANDBOX/p59d" "$SANDBOX/p59e" "$SANDBOX/p59f"
+printf 'mine/\r\n# aif:begin — managed by ai-foundry; edits inside are overwritten\r\n.aif/tmp/\r\n# aif:end\r\n' >"$SANDBOX/p59d/.gitignore"
+said59d="$(gi59 "$SANDBOX/p59d")"
+printf '# aif:begin — managed by ai-foundry; edits inside are overwritten\n.aif/tmp/\n# aif:end -- kept by hand\n' >"$SANDBOX/p59e/.gitignore"
+said59e="$(gi59 "$SANDBOX/p59e")"
+printf '# aif:end\nmine/\n# aif:begin — managed by ai-foundry; edits inside are overwritten\n.aif/tmp/\n' >"$SANDBOX/p59f/.gitignore"
+said59f="$(gi59 "$SANDBOX/p59f")"
+eq "a CRLF block, and an end line with a word after it: the line joins the block, no false 'no end line'; an end line above the begin is no end — said, nothing said to be added, nothing written" \
+  "$(printf '%s' "$said59d" | grep -c 'added .aif/worktrees/'),$(tr -d '\r' <"$SANDBOX/p59d/.gitignore" | grep -cx '.aif/worktrees/'),$(printf '%s' "$said59e" | grep -c 'added .aif/worktrees/'),$(grep -cx '.aif/worktrees/' "$SANDBOX/p59e/.gitignore"),$(printf '%s' "$said59f" | grep -c 'has no end line'),$(printf '%s' "$said59f" | grep -c '^added'),$(wc -l <"$SANDBOX/p59f/.gitignore" | tr -d ' ')" \
+  "1,1,1,1,1,0,4"
+fresh_project "$SANDBOX/p59g"
+awk '!/^# aif:end/' .gitignore >"$OUT/gi59g" && cat "$OUT/gi59g" >.gitignore
+printf 'node_modules/\ndist/\n' >>.gitignore
+sum59g="$(cksum <.gitignore | tr -d ' ')"
+"$AIF" init anthropic >"$OUT/init59g.out" 2>&1 || true
+"$AIF" doctor >"$OUT/doctor59g.out" 2>&1 || true
+eq "aif init over a block with no end line: the file as it was — node_modules/ and dist/ kept — the end line to add named; doctor names that line, not aif init" \
+  "$(cksum <.gitignore | tr -d ' ' | sed "s/^$sum59g\$/same/"),$(grep -c 'has a begin line and no end line after it' "$OUT/init59g.out"),$(grep -c "add the line '# aif:end' where it ends" "$OUT/doctor59g.out"),$(grep -c 'aif init adds' "$OUT/doctor59g.out")" \
+  "same,1,1,0"
+eq "…and the uninstall's removal leaves it as it was" \
+  "$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/merge.sh"; aif_block_remove "$2" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH" 2>/dev/null; cksum <"$2" | tr -d " "' _ "$ROOT" "$PWD/.gitignore" | sed "s/^$sum59g\$/same/")" "same"
+# doctor asks git: the developer ignoring .aif/ whole, with no block, keeps
+# every path aif keeps out of git out of it — named missing, every one, when
+# doctor read the block's text.
+fresh_project "$SANDBOX/p59h"
+printf '.aif/\n' >.gitignore
+"$AIF" doctor >"$OUT/doctor59h.out" 2>&1 || true
+eq "doctor asks git, not the block's text: .aif/ ignored whole, no block — every path aif keeps out of git is ignored, a ✓" \
+  "$(grep -c '✓ .gitignore *the managed block names every path aif keeps out of git' "$OUT/doctor59h.out")" "1"
 
 # ====== 60. the land beside the developer's own uncommitted work ==============
 # The land merged into the developer's own checkout, and refused while anything

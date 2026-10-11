@@ -134,9 +134,18 @@ _aif_doctor_project() {
   # from the team's repository (docs/DEFECTS.md 15.2). Named here with the
   # command that adds it, never written: the developer's .gitignore is theirs
   # to have rewritten, when they say so.
-  local gi_missing
+  # A block with a begin line and no end after it is left alone by `aif
+  # init` — rewritten, everything after the begin would go (docs/DEFECTS.md
+  # 16.10) — so the line to add is the end, and it is named.
+  local gi_missing gi_state
+  # shellcheck source=lib/merge.sh
+  . "$AIF_ROOT/lib/merge.sh"
   gi_missing="$(_aif_doctor_gitignore_missing "$root")"
-  if [ -z "$gi_missing" ]; then
+  gi_state="$(aif_block_state "$root/.gitignore" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH")"
+  if [ "$gi_state" = open ]; then
+    printf '  %s %-14s %sthe managed block has a begin line and no end line after it — add the line %s where it ends; aif init leaves it alone until then%s\n' \
+      "$(aif_no)" ".gitignore" "$AIF_C_YELLOW" "'$AIF_MARK_END_HASH'" "$AIF_C_RESET"
+  elif [ -z "$gi_missing" ]; then
     printf '  %s %-14s the managed block names every path aif keeps out of git\n' "$(aif_ok)" ".gitignore"
   else
     printf '  %s %-14s %sthe managed block lacks %s — aif init adds %s (it rewrites that block and nothing else)%s\n' \
@@ -215,16 +224,25 @@ _aif_doctor_project() {
   [ "$missing" -eq 0 ] && printf '  %s %-14s all skill agent targets exist\n' "$(aif_ok)" "skill targets"
 }
 
-# _aif_doctor_gitignore_missing <root> — each pattern of the managed block
-# `aif init` writes (aif_gitignore_block, lib/paths.sh) that the block in
-# <root>/.gitignore lacks, one a line; every one of them when the file or the
-# block is not there. Found as aif_block_inject finds the block (lib/merge.sh):
-# by its markers, anywhere on a line; a line inside it matched whole, a
-# browser's \r and trailing blanks taken off.
+# _aif_doctor_gitignore_missing <root> — each path of the managed block `aif
+# init` writes (aif_gitignore_block, lib/paths.sh) that git does not ignore
+# here, one a line. Asked of git, not read off the block's text: a path the
+# developer ignores outside it — their own line, or .aif/ whole — was named
+# missing (docs/DEFECTS.md 16.10). Outside a repository, read off the block as
+# aif_block_inject finds it (lib/merge.sh): by its markers, anywhere on a
+# line; a line inside it matched whole, a \r and trailing blanks taken off.
 _aif_doctor_gitignore_missing() {
-  local f="$1/.gitignore" have=""
+  local f="$1/.gitignore" have="" ign
   # shellcheck source=lib/merge.sh
   . "$AIF_ROOT/lib/merge.sh"
+  if git -C "$1" rev-parse --git-dir >/dev/null 2>&1; then
+    ign="$(aif_gitignore_block | grep -v '^#' | grep -v '^$' | git -C "$1" check-ignore --no-index --stdin 2>/dev/null)" || ign=""
+    aif_gitignore_block | AIF_D_IGN="$ign" awk '
+      BEGIN { n = split(ENVIRON["AIF_D_IGN"], h, "\n"); for (i = 1; i <= n; i++) got[h[i]] = 1 }
+      /^#/ || !NF { next }
+      !($0 in got) { print }'
+    return 0
+  fi
   if [ -f "$f" ]; then
     have="$(awk -v b="$AIF_MARK_BEGIN_HASH" -v e="$AIF_MARK_END_HASH" '
       index($0, b) { inb = 1; next }

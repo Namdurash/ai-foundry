@@ -21,10 +21,37 @@ aif_write_file() {
   mv "$tmp" "$dest"
 }
 
+# aif_block_state <file> <begin> <end> — what <file> holds of a marked block:
+# none (no begin line, or no file), open (a begin line and no end line after
+# it), closed. A marker is found in a line as every writer and reader of the
+# block finds it — anywhere in the line, a \r and trailing blanks no matter
+# (docs/DEFECTS.md 16.10): one read the end line exactly, and a CRLF file, or
+# an end line with a word after it, had "no end"; an end line above the begin
+# is no end — read as one, a line joined nothing and was said to be added.
+aif_block_state() {
+  [ -f "$1" ] || {
+    printf none
+    return 0
+  }
+  awk -v b="$2" -v e="$3" '
+    { sub(/\r$/, "") }
+    !open && !closed && index($0, b) { open = 1; next }
+    open && index($0, e)             { open = 0; closed = 1 }
+    END { print (closed ? "closed" : (open ? "open" : "none")) }' "$1" 2>/dev/null || printf none
+}
+
+# aif_block_open_warn <file> <end> — what a block with no end line is told.
+aif_block_open_warn() {
+  aif_warn "the block aif manages in ${1##*/} has a begin line and no end line after it — left as it is: rewritten, every line after the begin would be read as the block and lost. Add the line '$2' where the block ends, and run this again"
+}
+
 # aif_block_inject <file> <begin> <end> <payload>
 #
 # Idempotently maintain a marked block. Absent file: create it. Block present:
-# replace only its contents. Block absent: append.
+# replace only its contents. Block absent: append. A begin line with no end
+# line after it: left alone, warned (aif_block_state) — rewritten, every line
+# after the begin was the block's, and `aif init` dropped the developer's
+# node_modules/ and dist/ with it (docs/DEFECTS.md 16.10).
 #
 # Appending rather than prepending: it never disturbs what the user already
 # wrote, and re-running only ever rewrites between the markers.
@@ -34,7 +61,7 @@ aif_write_file() {
 # and no spelling satisfies both.
 aif_block_inject() {
   local file="$1" begin="$2" end="$3" payload="$4"
-  local tmp
+  local tmp state
 
   if [ ! -f "$file" ]; then
     mkdir -p "$(dirname "$file")"
@@ -42,7 +69,12 @@ aif_block_inject() {
     return 0
   fi
 
-  if grep -qF "$begin" "$file"; then
+  state="$(aif_block_state "$file" "$begin" "$end")"
+  if [ "$state" = open ]; then
+    aif_block_open_warn "$file" "$end"
+    return 0
+  fi
+  if [ "$state" = closed ]; then
     tmp="$(aif_tmpfile "$file")"
     # The payload arrives through the environment, not `-v`: an assignment on
     # the command line is scanned as an awk string literal, so a multi-line
@@ -76,19 +108,26 @@ aif_block_inject() {
 #
 # Blank lines are therefore buffered rather than printed as they arrive: when
 # the begin marker turns up, one held blank is dropped and the rest are emitted.
+#
+# A begin line with no end line after it is left alone, warned: removed, every
+# line after the begin went with it (docs/DEFECTS.md 16.10).
 aif_block_remove() {
   local file="$1" begin="$2" end="$3"
-  local tmp
+  local tmp state
 
-  [ -f "$file" ] || return 0
-  grep -qF "$begin" "$file" || return 0
+  state="$(aif_block_state "$file" "$begin" "$end")"
+  [ "$state" != none ] || return 0
+  if [ "$state" = open ]; then
+    aif_block_open_warn "$file" "$end"
+    return 0
+  fi
 
   tmp="$(aif_tmpfile "$file")"
   awk -v b="$begin" -v e="$end" '
     function flush(n,   i) { for (i = 0; i < n; i++) print "" }
     {
       if (skip)          { if (index($0, e)) skip = 0; next }
-      if (index($0, b))  { if (blanks > 0) blanks--; flush(blanks); blanks = 0; skip = 1; next }
+      if (!done && index($0, b)) { if (blanks > 0) blanks--; flush(blanks); blanks = 0; skip = 1; done = 1; next }
       if ($0 == "")      { blanks++; next }
       flush(blanks); blanks = 0
       print
@@ -193,28 +232,32 @@ aif_json_unmerge() {
 # one `git add -A` from being committed (docs/DEFECTS.md 15.14, probed). The
 # block is aif's — its marker says edits inside are overwritten — so a line
 # joins it without asking; the developer's own lines around it are never
-# touched. A begin marker with no end is left alone, with the line to add by
-# hand: aif_block_inject would read everything after it as the block and drop
-# it.
+# touched. A begin marker with no end after it is left alone, with the line to
+# add by hand: aif_block_inject would read everything after it as the block
+# and drop it. The markers are read as aif_block_state reads them — a CRLF
+# file, an end line with a word after it, gave a false "no end line" on every
+# worker run, and an end line above the begin "added" a line that went nowhere
+# (docs/DEFECTS.md 16.10).
 aif_gitignore_ensure() {
   local root="$1" pattern="$2" why="$3"
-  local file="$root/.gitignore" tmp
+  local file="$root/.gitignore" tmp state
 
-  if [ -f "$file" ] && grep -qxF "$pattern" "$file"; then
+  if [ -f "$file" ] && tr -d '\r' <"$file" | sed 's/[[:space:]]*$//' | grep -qxF -- "$pattern"; then
     return 0
   fi
 
-  if [ -f "$file" ] && grep -qF "$AIF_MARK_BEGIN_HASH" "$file"; then
-    if ! grep -qxF "$AIF_MARK_END_HASH" "$file"; then
-      aif_warn "the block aif manages in .gitignore has no end line ($AIF_MARK_END_HASH) — not rewritten; add $pattern to .gitignore by hand"
-      return 0
-    fi
+  state="$(aif_block_state "$file" "$AIF_MARK_BEGIN_HASH" "$AIF_MARK_END_HASH")"
+  if [ "$state" = open ]; then
+    aif_warn "the block aif manages in .gitignore has no end line after its begin ($AIF_MARK_END_HASH) — not rewritten; add $pattern to .gitignore by hand, or the end line where the block ends"
+    return 0
+  fi
+  if [ "$state" = closed ]; then
     tmp="$(aif_tmpfile "$file")"
     # The lines arrive through the environment, as aif_block_inject's payload
     # does: an awk -v assignment would read a backslash in them as an escape.
     if AIF_GI_LINES="$(printf '# %s\n%s' "$why" "$pattern")" awk -v b="$AIF_MARK_BEGIN_HASH" -v e="$AIF_MARK_END_HASH" '
-      index($0, b)          { inside = 1 }
-      inside && $0 == e     { print ENVIRON["AIF_GI_LINES"]; inside = 0 }
+      !seen && index($0, b) { inside = 1; seen = 1 }
+      inside && index($0, e) { print ENVIRON["AIF_GI_LINES"]; inside = 0 }
                             { print }
     ' "$file" >"$tmp"; then
       mv "$tmp" "$file"

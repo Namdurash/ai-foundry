@@ -35,30 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.10 The block aif manages in `.gitignore` is read by exact lines — probed
-
-- `aif init` (`aif_block_inject`, lib/merge.sh) on a `.gitignore` whose block
-  has its begin line and no end drops every line after the begin and writes no
-  end — `node_modules/` and `dist/` lost in the probe — and `aif doctor` tells
-  a block with no end line to run `aif init` ("it rewrites that block and
-  nothing else"). 15.14 guarded `aif_gitignore_ensure` only.
-- `aif_gitignore_ensure` matches its markers exactly, where `aif_block_inject`
-  and doctor take a `\r`: a CRLF `.gitignore` gives a false "has no end line"
-  on every worker run, an end line with trailing text the same, and an end
-  line above the begin prints "added" and adds nothing.
-- `aif doctor` reads the block's text, not git: a path the developer ignores
-  outside the block — their own line, or `.aif/` whole — is named missing.
-
-What a fix has to decide: each its own.
-
-#### Directions
-
-- `aif_block_inject` leaves a file with a begin and no end alone, and warns,
-  as `aif_gitignore_ensure` does; doctor names the end line to add.
-- Markers matched past a `\r` and trailing blanks; an end above the begin is
-  no end.
-- Doctor asks `git check-ignore`.
-
 ### 16.11 With a dotted ticket pattern a second take's log is another ticket's — probed
 
 15.7 gave each take its own log, `<ID>.2.log` onward. Under a `ticket_pattern`
@@ -331,7 +307,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.9 closed since, 16.10–16.15 open above.
+with it, 16.4–16.10 closed since, 16.11–16.15 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -342,6 +318,7 @@ with it, 16.4–16.9 closed since, 16.10–16.15 open above.
 - **16.7** Plan, scope and the amendment read deletions, renames and new files loosely — probed, four ways. A directory in `files.delete` passed the plan gate and could never pass scope; it is every file git tracks under it at the base now, each held to the plan gate's rules and counted, at scope and in verify-red's frozen files (`aif_g_delete_expand`), one with nothing tracked under it refused. `git mv` hid an unplanned deletion from scope — git paired it into a rename, listed by its new name — and the same pairing kept the old path out of every copy's restore: a rename the plan named both ways stopped at green, "could not be reverted"; every list of what changed is read without renames now (scope, `aif_g_changed_since`, the worker's, the land's and the shift's). An amendment judged new or existing by the working tree, so a file written first and amended after — at the root, a dotfile, in a directory the plan never named — went through as a change; the dispatch base decides now, the path normalised first (`src//x.py` was amended and failed scope; `..` refused). On `main` after 0.16.0; scenarios 75, 76.
 - **16.8** A pass's warnings reached no one, and green measured a file the ticket's new ignore rules hide — probed: scope's IGNORED FROM NOW ON and the plan gate's CI AND IGNORE RULES were dropped by `aif _gate`, which kept a pass's first line; and an implementation that wrote `src/gen.py` and ignored it with its planned `.gitignore` passed green, scope and the land — it was never committed, and a fresh clone of main was red. A pass's lines after its first are kept: under the stage it admitted in the run's own lines, on the ledger row (`notes`) and under the gate's line in the report. What only the rules added since a base hide is computed (`aif_g_hidden_since`, the worker's twin `_aif_work_hidden_since`: the ignore rules as committed then, asked in a scratch repository) and left out of every copy — the gates' and the worker's, the land's target copy among them; scope names it (HIDDEN BY THEM); and when the tree holds any, green runs the suite once more in a copy without it, as a fresh clone has it, and a test that passes here and not there is a rejection naming the files. docs/FINDINGS.md #44. On `main` after 0.16.0; scenario 98.
 - **16.9** The guard let a path through `..` — probed at the hook: it matched the path as it was handed, so `src/../.aif/project.json`, `src/../tasks/T-2/plan.md` and `__tests__/../.aif/…` were allowed to every station, the plan station — no Bash, no scope — held by nothing else. `.`, `..` and `//` are resolved lexically before any rule reads the path; one that leaves the project — a relative path climbing above it, an absolute one outside it — is denied to every station (sets/claude/hooks/guard.sh). Whether claude hands the hook a normalised path was not probed: the CLI's login on this machine had expired; the hook no longer depends on it. On `main` after 0.16.0; check-set's guard rows.
+- **16.10** The block aif manages in `.gitignore` was read by exact lines — probed, three ways. `aif init` (`aif_block_inject`) over a block with its begin line and no end dropped every line after the begin — the developer's `node_modules/` and `dist/` with it — and doctor sent the developer to run it; `aif_gitignore_ensure` matched its end marker exactly, so a CRLF file or an end line with a word after it gave a false "no end line" on every worker run, and an end line above the begin "added" a line that went nowhere; doctor read the block's text, so a path ignored outside it — the developer's own line, `.aif/` whole — was named missing. Every writer and reader finds the markers as one (`aif_block_state`, lib/merge.sh): anywhere in a line, past a `\r` and trailing blanks, an end line only after the begin; a block with no end after its begin is left as it is, warned, by `aif init`, the worker's ensure and the uninstall's removal alike, and doctor names the end line to add; doctor asks `git check-ignore`. On `main` after 0.16.0; scenario 59.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

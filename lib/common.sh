@@ -283,6 +283,41 @@ aif_git_own() {
   git -C "$dir" -c core.hooksPath=/dev/null "$@"
 }
 
+# The land's commit, named in one place (docs/DEFECTS.md 16.14). Its subject
+# is the project's to set — .aif/project.json land.subject, {ticket} and
+# {title} filled in, `aif: land {ticket} — {title}` when it sets none — since
+# a commit-msg hook that holds every subject to a convention (commitlint's)
+# refused every land. What says a commit is a land is its trailer,
+# `Aif-Land: <ID>`, whatever the subject: the shift's facts and the release
+# sweep read that, and a land from before the trailer by its old subject.
+# shellcheck disable=SC2034  # read by lib/cmd_land.sh
+AIF_LAND_TRAILER="Aif-Land"
+AIF_LAND_SUBJECT_DEFAULT='aif: land {ticket} — {title}'
+
+# aif_land_subject <root> <ticket> <title> — the land commit's subject. jq
+# fills it in: a title is the ticket's words, `&` and `\` among them.
+aif_land_subject() {
+  local t
+  t="$(jq -r '(.land.subject // empty) | strings' "$(aif_project_config "$1")" 2>/dev/null)" || t=""
+  [ -n "$t" ] || t="$AIF_LAND_SUBJECT_DEFAULT"
+  jq -rn --arg t "$t" --arg id "$2" --arg title "$3" '$t | gsub("\\{ticket\\}"; $id) | gsub("\\{title\\}"; $title)'
+}
+
+# aif_land_commits <dir> — "<hash><TAB><ID>" a line, newest first: every land
+# in <dir>'s history, by its trailer — or, a land from before the trailer, by
+# a subject that starts `aif: land <ID> ` — the id matched whole, so AIF-1
+# does not stand in for AIF-10, and a revert of a land is none.
+aif_land_commits() {
+  git -C "$1" log --fixed-strings --grep "$AIF_LAND_TRAILER: " --grep 'aif: land ' --format='%x1e%h%x1f%B' 2>/dev/null |
+    LC_ALL=C awk -v RS='\036' -F'\037' -v tr="$AIF_LAND_TRAILER: " '
+      NF >= 2 {
+        n = split($2, l, "\n"); id = ""
+        for (i = 1; i <= n; i++) if (index(l[i], tr) == 1) id = substr(l[i], length(tr) + 1)
+        if (id == "" && index(l[1], "aif: land ") == 1) { id = substr(l[1], 11); sub(/ .*/, "", id) }
+        if (id ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) print $1 "\t" id
+      }'
+}
+
 # aif_host_short — this machine's name, as aif writes it wherever a claim says
 # where: the worker's `taken:` comment, the loop's and the shift's locks, what
 # the shift reads off a card to tell its own claims from another machine's.

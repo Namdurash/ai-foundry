@@ -150,6 +150,15 @@ aif_project_validate() {
       # the suite (npm ci, bundle install). git checks out tracked files only.
       (if ((.prepare // "") | type) != "string"
         then "prepare must be a string — a shell command, e.g. \"npm ci\"" else empty end),
+      # land.subject — optional: the land commit subject, {ticket} and
+      # {title} filled in; the trailer says it is a land whatever it reads
+      # (docs/DEFECTS.md 16.14).
+      (if ((.land // {}) | type) != "object" then "land must be an object" else empty end),
+      ( ((.land // {}) | if type == "object" then .subject else null end) as $ls
+        | if $ls == null then empty
+          elif ($ls | type) != "string" or ($ls | contains("{ticket}") | not) or ($ls | test("\n"))
+            then "land.subject must be one line naming {ticket} — e.g. \"chore(aif): land {ticket} — {title}\""
+          else empty end ),
       # copies.leave_out — optional: the paths the copies of the tree a gate
       # makes leave out, each while git ignores it — a directory a copy cannot read
       # (the data of a database) stops a gate otherwise (docs/DEFECTS.md 16.6).

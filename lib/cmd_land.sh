@@ -1481,8 +1481,8 @@ _aif_land_finish() {
 # the land's own handler.
 #
 #   the branch at the merge, or past it      landed: finished
-#   git's index.lock still there             exit 3, naming it: whether a git
-#                                            runs here is the person's to know
+#   git's index.lock still there, or the     exit 3, naming it: whether a git
+#   target's ref lock                        runs here is the person's to know
 #   the index and the files the merge's      git wrote all but the ref: the
 #                                            ref moved (update-ref), finished
 #   the index the target's, files the        put back to the target's, the
@@ -1490,7 +1490,7 @@ _aif_land_finish() {
 #   anything else on those paths             refused, naming them, exit 1
 #   the branch elsewhere                     nothing of it landed: put back
 _aif_land_settle_ff() {
-  local root="$1" m="$2" id pid target pre merge head on lockf p tb mb ib fb all_m=1 all_t=1 bad="" back="" d a ad from
+  local root="$1" m="$2" id pid target pre merge head on lockf rlockf p tmp all_m=1 all_t=1 bad="" back="" d a ad from
   id="$(aif_land_marker_get "$m" .ticket)"
   pid="$(aif_land_marker_get "$m" .pid)"
   target="$(aif_land_marker_get "$m" .target)"
@@ -1509,32 +1509,37 @@ _aif_land_settle_ff() {
       /*) ;;
       *) lockf="$root/$lockf" ;;
     esac
+    # The branch's own lock too: a git KILLed while it updated the ref leaves
+    # refs/heads/<target>.lock, and the settle refused with an empty list of
+    # paths — nothing named what was in the way (docs/DEFECTS.md 16.14).
+    rlockf="$(git -C "$root" rev-parse --git-path "refs/heads/$target.lock" 2>/dev/null)" || rlockf=""
+    case "$rlockf" in
+      /* | '') ;;
+      *) rlockf="$root/$rlockf" ;;
+    esac
+    [ -n "$rlockf" ] && [ -e "$rlockf" ] && [ ! -e "$lockf" ] && lockf="$rlockf"
     if [ -e "$lockf" ]; then
       aif_err "the land of $id (pid ${pid:-?}) died in its fast-forward and git's lock is still here — when no git command runs in this checkout: rm ${lockf#"$root"/}, then aif land $id"
       _aif_land_unlock
       aif_trap_disarm
       exit 3
     fi
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      tb="$(git -C "$root" rev-parse -q --verify "$pre:$p" 2>/dev/null)" || tb=""
-      mb="$(git -C "$root" rev-parse -q --verify "$merge:$p" 2>/dev/null)" || mb=""
-      ib="$(git -C "$root" ls-files -s -- "$p" 2>/dev/null | awk '$3 == 0 { print $2; exit }')" || ib=""
-      fb=""
-      [ ! -e "$root/$p" ] || fb="$(git -C "$root" hash-object -- "$root/$p" 2>/dev/null)" || fb="?"
-      [ "$ib" = "$mb" ] || all_m=0
-      [ "$ib" = "$tb" ] || all_t=0
-      if [ "$fb" != "$mb" ]; then
-        all_m=0
-        [ "$fb" = "$tb" ] || bad="$bad$p
-"
-      elif [ "$fb" != "$tb" ]; then
-        back="$back$p
-"
-      fi
-    done <<EOF
-$(git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" 2>/dev/null)
-EOF
+    # Every path the merge touched, as the target had it, as the merge has
+    # it, in the index and in the tree: four git calls, read side by side
+    # (_aif_land_settle_read). Four a path were minutes at 30 000 files
+    # (docs/DEFECTS.md 16.14).
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-settle-XXXXXX")" || tmp=""
+    if [ -n "$tmp" ] && _aif_land_settle_read "$root" "$pre" "$merge" "$tmp"; then
+      [ "$(awk -F'\t' '$1 == "A" { print $2 }' "$tmp/verdict")" = 1 ] || all_m=0
+      [ "$(awk -F'\t' '$1 == "A" { print $3 }' "$tmp/verdict")" = 1 ] || all_t=0
+      bad="$(awk -F'\t' '$1 == "B" { print $2 }' "$tmp/verdict")"
+      back="$(awk -F'\t' '$1 == "K" || $1 == "R"' "$tmp/verdict")"
+    else
+      all_m=0
+      all_t=0
+      bad="(the paths the merge touched could not be read here)"
+    fi
+    [ -z "$tmp" ] || rm -rf "${tmp:?}"
     if [ "$all_m" -eq 1 ] && aif_git_own "$root" update-ref "refs/heads/$target" "$merge" "$pre" >/dev/null 2>&1; then
       _aif_land_say "settle" "the land of $id (pid ${pid:-?}) died in its fast-forward after git wrote it all but the branch's ref — the ref moved to it"
       aif_land_marker_set "$m" '.state = "landed"' || true
@@ -1548,16 +1553,18 @@ EOF
       aif_trap_disarm
       exit 1
     fi
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      if [ -n "$(git -C "$root" rev-parse -q --verify "$pre:$p" 2>/dev/null)" ]; then
-        aif_git_own "$root" checkout "$pre" -- "$p" >/dev/null 2>&1 || true
-      else
-        rm -f "${root:?}/$p"
+    # Put back: what the target has, from it, in one checkout; what it has
+    # not, removed — the verdict says which (_aif_land_settle_read).
+    if [ -n "$back" ]; then
+      tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-settle-XXXXXX")" || tmp=""
+      if [ -n "$tmp" ]; then
+        printf '%s\n' "$back" | awk -F'\t' '$1 == "K" { print $2 }' >"$tmp/restore"
+        printf '%s\n' "$back" | awk -F'\t' '$1 == "R" { print $2 }' | tr '\n' '\0' >"$tmp/remove"
+        [ ! -s "$tmp/restore" ] || aif_git_own "$root" --literal-pathspecs checkout "$pre" --pathspec-from-file="$tmp/restore" >/dev/null 2>&1 || true
+        [ ! -s "$tmp/remove" ] || (cd "$root" && xargs -0 rm -f) <"$tmp/remove" 2>/dev/null || true
+        rm -rf "${tmp:?}"
       fi
-    done <<EOF
-$back
-EOF
+    fi
   fi
   # Put back: the ticket's own files from aside, where nothing took their
   # place, and the worktree on its branch.
@@ -1590,6 +1597,50 @@ EOF
     _aif_land_say "settle" "an earlier land of $id (pid ${pid:-?}) stopped before its fast-forward moved $target — $target has moved since, and nothing of that land is in it$from"
   fi
   rm -f "$m"
+}
+
+# _aif_land_settle_read <root> <pre> <merge> <dir> — each path the merge
+# touched, as <pre> has it, as <merge> has it, in the index (stage 0) and in
+# the tree, judged as the settle judges them, into <dir>/verdict: `B<TAB>path`
+# neither the target's nor the merge's; `K<TAB>path` the merge's where the
+# target had another, `R<TAB>path` where it had none — to put back, or to
+# remove; `A<TAB><all the merge's><TAB><all the target's>` once. Four git
+# calls for the lot — an ls-tree of each commit, the index's listing, one
+# hash-object over the files that are there — where it was four a path. rc 1
+# when a read fails, or the hashes do not answer one a file.
+_aif_land_settle_read() {
+  local root="$1" pre="$2" merge="$3" dir="$4" p
+  git -C "$root" -c core.quotePath=false diff --no-renames --name-only "$pre" "$merge" >"$dir/paths" 2>/dev/null || return 1
+  git -C "$root" -c core.quotePath=false ls-tree -r "$pre" >"$dir/t" 2>/dev/null || return 1
+  git -C "$root" -c core.quotePath=false ls-tree -r "$merge" >"$dir/m" 2>/dev/null || return 1
+  git -C "$root" -c core.quotePath=false ls-files -s >"$dir/i" 2>/dev/null || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ ! -e "$root/$p" ] || printf '%s\n' "$p"
+  done <"$dir/paths" >"$dir/here"
+  : >"$dir/hashes"
+  if [ -s "$dir/here" ]; then
+    (cd "$root" && git hash-object --stdin-paths) <"$dir/here" >"$dir/hashes" 2>/dev/null || return 1
+  fi
+  [ "$(wc -l <"$dir/here")" -eq "$(wc -l <"$dir/hashes")" ] || return 1
+  paste "$dir/here" "$dir/hashes" >"$dir/f"
+  awk -F'\t' -v P="$dir/paths" -v T="$dir/t" -v M="$dir/m" -v I="$dir/i" -v F="$dir/f" '
+    FILENAME == P { if ($0 != "") order[++n] = $0; next }
+    FILENAME == T { split($1, a, " "); tb[$2] = a[3]; next }
+    FILENAME == M { split($1, a, " "); mb[$2] = a[3]; next }
+    FILENAME == I { split($1, a, " "); if (a[3] == "0") ib[$2] = a[2]; next }
+    FILENAME == F { fb[$1] = $2; next }
+    END {
+      am = 1; at = 1
+      for (k = 1; k <= n; k++) {
+        p = order[k]; t = tb[p]; m = mb[p]; i = ib[p]; x = ((p in fb) ? fb[p] : "")
+        if (i != m) am = 0
+        if (i != t) at = 0
+        if (x != m) { am = 0; if (x != t) print "B\t" p }
+        else if (x != t) print ((t == "") ? "R" : "K") "\t" p
+      }
+      print "A\t" am "\t" at
+    }' "$dir/paths" "$dir/t" "$dir/m" "$dir/i" "$dir/f" >"$dir/verdict"
 }
 
 # _aif_land_wt_settle <root> <marker> <ticket> <worktree-rel> — the worktree a
@@ -1973,11 +2024,14 @@ aif_cmd_land() {
   #    Every commit of aif's before it skipped them (aif_git_own): this is the
   #    one they are for (docs/DEFECTS.md 13.11). What a hook left unstaged is
   #    not in the commit, and is reset away.
-  local subject="aif: land $ticket — $title" crc=0 merge
+  #    Its subject is the project's to set, and the trailer says it is a land
+  #    (aif_land_subject; docs/DEFECTS.md 16.14).
+  local subject crc=0 merge
+  subject="$(aif_land_subject "$root" "$ticket" "$title")"
   if [ -n "$settled" ]; then
-    git -C "$wt" commit -q --cleanup=strip -m "$subject" -m "Settled by owner (aif's own files): $settled" >"$out" 2>&1 || crc=$?
+    git -C "$wt" commit -q --cleanup=strip -m "$subject" -m "Settled by owner (aif's own files): $settled" -m "$AIF_LAND_TRAILER: $ticket" >"$out" 2>&1 || crc=$?
   else
-    git -C "$wt" commit -q --cleanup=strip -m "$subject" >"$out" 2>&1 || crc=$?
+    git -C "$wt" commit -q --cleanup=strip -m "$subject" -m "$AIF_LAND_TRAILER: $ticket" >"$out" 2>&1 || crc=$?
   fi
   if [ "$crc" -ne 0 ]; then
     if _aif_land_hooks "$wt"; then

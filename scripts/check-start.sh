@@ -882,7 +882,7 @@ fx "R8 on Trello: the card changed after its build — no review offered, the li
 JSON
 
 # ------------------------------------------------------------ Backlog, build
-fx "R10: every dependency Done and landed — one sweep; the rest are lines" '(.moves | length) == 1 and .moves[0].rule == "R10" and .moves[0].kind == "sweep" and .moves[0].key == "R10 AIF-40 AIF-42" and ([.lines[] | .text] == ["waits on AIF-2 (review)","waits on AIF-3 (Done, but no \"aif: land AIF-3\" commit here — merged by hand? then: aif board move AIF-43 ready)","held: label parked"]) and .lines[1].command == "aif board move AIF-43 ready" and ."end" == null' <<JSON
+fx "R10: every dependency Done and landed — one sweep; the rest are lines" '(.moves | length) == 1 and .moves[0].rule == "R10" and .moves[0].kind == "sweep" and .moves[0].key == "R10 AIF-40 AIF-42" and ([.lines[] | .text] == ["waits on AIF-2 (review)","waits on AIF-3 (Done, but no land of AIF-3 here — merged by hand? then: aif board move AIF-43 ready)","held: label parked"]) and .lines[1].command == "aif board move AIF-43 ready" and ."end" == null' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"hold_labels":["parked"],"cards":[
  {"ticket":"AIF-40","column":"backlog","pos":1,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":["AIF-1"]},"deps":[{"ticket":"AIF-1","column":"done","landed":true}]},
  {"ticket":"AIF-41","column":"backlog","pos":2,"ticket_file":true,"head":{"line":null,"after":0,"heads":[]},"meta":{"depends_on":["AIF-2"]},"deps":[{"ticket":"AIF-2","column":"review","landed":false}]},

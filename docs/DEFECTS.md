@@ -35,25 +35,6 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.14 The land's edges after the fast-forward moved out of reach — read
-
-- A commitlint-style commit-msg hook refuses every land: the land's own commit
-  keeps the project's hooks (13.11), and its subject is `aif: land …`, which
-  the shift's facts, start.jq's `landed()` (R8, R10) and lib/release.sh read.
-- `_aif_land_settle_ff` runs three or four git commands per path the merge
-  touched — minutes at 30 000 files, by reading; not timed.
-- A git KILLed during its ref update could leave `refs/heads/<target>.lock`;
-  the settle would refuse with an empty list of paths.
-- The starter that puts the fast-forward out of the land's tree lives 1–5 ms;
-  an interrupt in that window can still reach the section, which ignores TERM
-  and runs on.
-
-#### Directions
-
-- One helper owning the land's subject for every reader, or a subject the
-  project sets.
-- The settle timed at 30 000 files; a ref lock named as the index lock is.
-
 ### 16.15 Two harness rows can kill another run's processes, and one depends on a path's length — probed
 
 Rows 54 and 57 of `scripts/check-work.sh` pick a pid with a global `pgrep -f
@@ -286,7 +267,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.13 closed since, 16.14–16.16 open above.
+with it, 16.4–16.14 closed since, 16.15–16.16 open above.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -301,6 +282,7 @@ with it, 16.4–16.13 closed since, 16.14–16.16 open above.
 - **16.11** With a dotted ticket pattern a second take's log was another ticket's — probed: 15.7 named a card's second take `<ID>.2.log`, and under a `ticket_pattern` that allows a dot that is ticket `<ID>.2`'s own log, written over. A later take is `<ID>+<n>.log` now — a `+`, which no ticket id holds (ids are `[A-Za-z0-9._-]`) — named in one place (`_aif_work_loop_take_log`), every reader — a slot's, a result row's, the dashboard's — taking that name, `<ID>.log` only for a first take. On `main` after 0.16.0; scenario 57.
 - **16.12** The dashboard's ends: a terminal gone with no hang-up, and a KILL nobody sent — read; probed. Since 15.15 a frame that could not be written did not end the loop, and a terminal that went with no hang-up — the loop not its session's leader, or started with HUP ignored, which bash 3.2 cannot trap — left it running headless, a frame a second. Three frames in a row that cannot be written are the hang-up now: its path, the runs stopped, exit 129, loop.log and the summary saying it was the frames (`_aif_work_loop_tick`). The 137 about 0.1 s after a Ctrl-C was traced to no sender: `/bin/bash` 3.2 aborting in macOS's libc on a signal handled inside malloc, fork or printf (docs/FINDINGS.md #45); not fixed here — 16.16. On `main` after 0.16.0; scenario 48.
 - **16.13** On Trello, what the fixes rest on had seen only the mock — read; probed on the real API, with the user's leave, on a board made for it (closed after): `before=<action id>` pages back through 105 comments, each once, in order, and an edited comment carries the edit's date in `data.dateLastEdited` — where aif reads a claim's heartbeat (docs/FINDINGS.md #46); nothing to change. A dead claim of another checkout held its card for up to a run's wall clock with no way past — a worker whose machine went off, or a checkout moved and named anew (`aif_clone_id`): `aif board unclaim <ID> [--why <text>]` is a person's word that its worker is gone — a head naming the claim, how long since its worker was seen, where and why, after which the card is taken at once; the worker's and the loop's skip name it (lib/cmd_board.sh). A head under more than 100 newer comments still reads as no head but in R17, which says so. On `main` after 0.16.0; check-board sections 2 and 5.
+- **16.14** The land's edges after the fast-forward moved out of reach — read; probed. A commitlint-style commit-msg hook refused every land, its subject `aif: land …` what every reader matched: the land commit carries a trailer, `Aif-Land: <ID>`, its subject the project's to set (`land.subject`, `{ticket}` and `{title}` filled in, `aif project check` holding it to one line naming `{ticket}`), and one helper finds every land by the trailer or, from before it, by the subject (`aif_land_subject`, `aif_land_commits`, lib/common.sh) — the shift's facts, R8, R10 and the release sweep read it, and a revert of a land is no land. The settle of a land gone in its fast-forward ran four git calls a path — 1 075 s at 30 000 files — and four for them all now: 1 s, the put-back 8 s (docs/FINDINGS.md #47); a ref lock left by a git KILLed in its ref update is named and refused as the index lock is. The 1–5 ms window in which an interrupt can still reach the fast-forward's section, which ignores TERM, is as it was. On `main` after 0.16.0; scenarios 49, 66.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

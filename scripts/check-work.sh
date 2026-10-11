@@ -212,7 +212,9 @@
 #      from aside, said, and the land goes on
 #  66  the land's merge commit runs the project's hooks, in the worktree — a
 #      pre-commit's refusal is a land: line, nothing landed — while the
-#      worker's own git ran none of them
+#      worker's own git ran none of them; it carries the Aif-Land trailer,
+#      and under a commit-msg hook the project's own subject lands, the
+#      release sweep reading the trailer
 #  67  a target that moves while the land runs: nothing landed, the card left
 #      in Review, said; a checkout switched to another branch is said as that
 #  68  a blocked: line the board refused, kept on this machine, is posted by
@@ -4601,7 +4603,7 @@ eq "B would be released" "$(grep -c '^AIF-111  would release → Ready (bottom)$
 eq "C is held on its rework: head, the person's reply under it notwithstanding" \
   "$(grep -c '^AIF-112  held: rework: the export must be signed — back to the analyst$' "$OUT/release49a.out")" "1"
 eq "D waits on E — Done, but no land commit here: a merge by hand, named, with the move that releases D" \
-  "$(grep -cF 'AIF-113  waits on AIF-114 (Done, but no "aif: land AIF-114" commit here — merged by hand? then: aif board move AIF-113 ready)' "$OUT/release49a.out")" "1"
+  "$(grep -cF 'AIF-113  waits on AIF-114 (Done, but no land of AIF-114 here — merged by hand? then: aif board move AIF-113 ready)' "$OUT/release49a.out")" "1"
 eq "F is held by its label" "$(grep -c '^AIF-115  held: label parked$' "$OUT/release49a.out")" "1"
 eq "G waits on a ticket with no card" "$(grep -c '^AIF-118  waits on AIF-119 (no card on the board)$' "$OUT/release49a.out")" "1"
 eq "the landed ticket, the Done one, the card in Ready and the card with no depends_on are not named" \
@@ -6317,6 +6319,40 @@ eq "…the hook ran once, in the ticket's worktree" \
 rc=0
 { "$AIF" board move AIF-180 review && "$AIF" land AIF-180; } >"$OUT/land66b.out" 2>&1 || rc=$?
 eq "the hook satisfied: landed, Done" "$rc,$(col AIF-180),$(git log --format=%s -1)" "0,done,aif: land AIF-180 — one-command user export"
+eq "…its commit carrying the trailer every reader finds a land by" "$(git log -1 --format=%B | grep -cx 'Aif-Land: AIF-180')" "1"
+
+# A commit-msg hook that holds every subject to a convention — commitlint's,
+# say — refused every land: `aif: land …` is no conventional subject
+# (docs/DEFECTS.md 16.14). The project sets the subject now; the trailer says
+# the commit is a land, and the release sweep and the shift read it so.
+land_built "$SANDBOX/p66c" AIF-181
+ticket_for AIF-182 '[]' '' '["AIF-181"]'
+git add -A && git commit -qm "AIF-182 waits on AIF-181" >/dev/null
+"$AIF" board create tasks/AIF-182/ticket.md >/dev/null
+cat >.git/hooks/commit-msg <<'HOOK'
+#!/bin/sh
+head -1 "$1" | grep -qE '^(feat|fix|chore)(\([a-z]+\))?: ' && exit 0
+echo "commitlint: type must be one of [feat, fix, chore]"
+exit 1
+HOOK
+chmod +x .git/hooks/commit-msg
+rc=0
+"$AIF" land AIF-181 >"$OUT/land66c.out" 2>&1 || rc=$?
+eq "a commit-msg hook that holds subjects to a convention refuses aif's own: not landed" \
+  "$rc,$(col AIF-181),$(last_comment AIF-181 | grep -c 'commitlint: type must be one of')" "1,needs_human,1"
+jq '.land = { subject: "chore(aif): land {ticket} — {title}" }' .aif/project.json >"$OUT/p66c.json" && cp "$OUT/p66c.json" .aif/project.json
+git add -A && git commit -q --no-verify -m "chore: the land's subject, the project's" >/dev/null
+rc=0
+{ "$AIF" board move AIF-181 review && "$AIF" land AIF-181; } >"$OUT/land66d.out" 2>&1 || rc=$?
+eq "…the subject the project sets: landed under the hook, the trailer on it" \
+  "$rc,$(col AIF-181),$(git log --format=%s -1),$(git log -1 --format=%B | grep -cx 'Aif-Land: AIF-181')" \
+  "0,done,chore(aif): land AIF-181 — one-command user export,1"
+eq "…and a land to every reader: the shared list, and the release sweep the land runs freed what waited on it" \
+  "$(/bin/bash -c '. "$1/lib/common.sh"; aif_land_commits "$PWD"' _ "$ROOT" | cut -f2 | paste -sd' ' -),$(col AIF-182)" \
+  "AIF-181,ready"
+jq '.land = { subject: "chore: landed" }' .aif/project.json >"$OUT/p66c.json" && cp "$OUT/p66c.json" .aif/project.json
+eq "…a subject that names no {ticket}: aif project check refuses it" \
+  "$("$AIF" project check 2>&1 | grep -c 'land.subject must be one line naming {ticket}')" "1"
 
 # ====== 67. the target moves while the land runs ===============================
 # A person committing in another terminal — here a pre-commit hook of the

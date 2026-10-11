@@ -206,12 +206,11 @@ _aif_start_facts_in() {
           ($0 in w) { printf "%s\t%s\n", t, $0 }' >>"$tmp/land_dirty" || true
     done
   fi
-  # Every line that says a ticket landed: `aif: land <ID> — <title>`, the
-  # subject `aif land` writes (lib/cmd_land.sh), read once for every card and
-  # dependency of the tick — matched below as lib/release.sh matches it, the
-  # id with its trailing ` — ` so that AIF-1 does not stand in for AIF-10.
-  git -C "$main" log --fixed-strings --grep 'aif: land ' --format=%B 2>/dev/null |
-    grep -F 'aif: land ' >"$tmp/lands" || : >"$tmp/lands"
+  # Every ticket that landed here — by its land's trailer, or the subject a
+  # land had before it (aif_land_commits, lib/common.sh; docs/DEFECTS.md
+  # 16.14) — read once for every card and dependency of the tick, as
+  # lib/release.sh reads it: an id a line, matched whole.
+  aif_land_commits "$main" | cut -f2 | sort -u >"$tmp/lands" || : >"$tmp/lands"
   # In a subshell, as the oracle's call is: a trap fired inside a function
   # call runs with that call's 2>/dev/null (_aif_start_snapshot).
   (aif_requests_json "$root") >"$tmp/requests.json" 2>/dev/null || printf '[]\n' >"$tmp/requests.json"
@@ -261,7 +260,7 @@ _aif_start_facts_in() {
      | from_entries) as $em
     | ($lands | split("\n") | map(select(length > 0))) as $ll
     | ($ld | split("\n") | map(select(length > 0) | split("\t"))) as $ldl
-    | def landed($id): any($ll[]; contains("aif: land " + $id + " — "));
+    | def landed($id): any($ll[]; . == $id);
       ($x | map({ key: .ticket, value: . }) | from_entries) as $e
     | ($g | map({ key: .ticket, value: .rc }) | from_entries) as $gate
     | $all[0] as $a

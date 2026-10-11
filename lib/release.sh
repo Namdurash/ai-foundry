@@ -173,11 +173,11 @@ aif_release_sweep() {
         wait="waits on $d ($col)"
         break
       fi
-      # --fixed-strings: the subject is matched as text, not a regex, and the
-      # trailing space keeps AIF-1's land from standing in for AIF-10's.
-      landed="$(git -C "$main" log --fixed-strings --grep "aif: land $d — " -1 --format=%h 2>/dev/null)" || landed=""
+      # A land by its trailer, or the subject it had before one, the id
+      # matched whole (aif_land_commits; docs/DEFECTS.md 16.14).
+      landed="$(aif_land_commits "$main" | awk -F'\t' -v d="$d" '$2 == d { print $1; exit }')" || landed=""
       if [ -z "$landed" ]; then
-        wait="waits on $d (Done, but no \"aif: land $d\" commit here — merged by hand? then: aif board move $t ready)"
+        wait="waits on $d (Done, but no land of $d here — merged by hand? then: aif board move $t ready)"
         break
       fi
     done

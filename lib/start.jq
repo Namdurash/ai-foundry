@@ -410,7 +410,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     ($c.head.line // "") as $h
     | if ($h | startswith("land: ")) then line("R8"; $c; "\($h) — the land was refused, or landed nothing"; "aif land \($c.ticket)")
       elif $h == "# \($c.ticket) — landed" then
-        line("R8"; $c; "\($h) — but no aif: land \($c.ticket) commit in this checkout; landed from another?"; null)
+        line("R8"; $c; "\($h) — but no land of \($c.ticket) in this checkout; landed from another?"; null)
       elif ($h | startswith("taken: ")) then r8_built($c)
       else line("R8"; $c; "\($h) — nothing the shift acts on"; null) end;
 
@@ -658,7 +658,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
     first(($c.deps // [])[] | select((.column == "done" and .landed == true) | not)) as $d
     | if $d.column == null then [ "waits on \($d.ticket) (no card on the board)", null ]
       elif $d.column != "done" then [ "waits on \($d.ticket) (\($d.column))", null ]
-      else [ "waits on \($d.ticket) (Done, but no \"aif: land \($d.ticket)\" commit here — merged by hand? then: aif board move \($c.ticket) ready)",
+      else [ "waits on \($d.ticket) (Done, but no land of \($d.ticket) here — merged by hand? then: aif board move \($c.ticket) ready)",
              "aif board move \($c.ticket) ready" ] end;
 
   def bl_entries:

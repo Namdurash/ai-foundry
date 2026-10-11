@@ -397,6 +397,7 @@ for hold in ${FAKE_SLEEP_IN:-}; do
         if [ -n "${FAKE_CHILD_AFTER:-}" ] && [ -z "$spawned" ] && [ -f "$FAKE_CHILD_AFTER" ]; then
           spawned=1
           (cd / && exec sleep 58.7 </dev/null >/dev/null 2>&1) &
+          printf '%s\n' "$!" >"$FAKE_CHILD_AFTER.pid"
         fi
         sleep 0.1
         i=$((i + 1))
@@ -2136,17 +2137,18 @@ r4=$BG
 wait_said "$OUT/r4-shift.out" "next: requeue AIF-4 " 20
 : >"$SANDBOX/child-4"
 i=0
-while ! pgrep -f 'sleep 58.7' >/dev/null 2>&1 && [ "$i" -lt 30 ]; do
+while [ ! -s "$SANDBOX/child-4.pid" ] && [ "$i" -lt 30 ]; do
   sleep 0.1
   i=$((i + 1))
 done
-born="$(pgrep -f 'sleep 58.7' | wc -l | tr -d ' ')"
+child4="$(cat "$SANDBOX/child-4.pid" 2>/dev/null)"
+born="$(kill -0 "${child4:-0}" 2>/dev/null && echo 1 || echo 0)"
 rc=0
 wait_exit "$r4" 60 || rc=$?
 eq "R3b: a child the group gains after the facts were read — gone with the group, the card back at the top of Ready; the harness untouched" \
-  "$born,$rc,$(pgrep -f 'sleep 58.7' | wc -l | tr -d ' '),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-4" | wc -l | tr -d ' '),$(ready_list | cut -d' ' -f1),$(kill -0 $$ && echo alive)" \
+  "$born,$rc,$(kill -0 "${child4:-0}" 2>/dev/null && echo 1 || echo 0),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-4" | wc -l | tr -d ' '),$(ready_list | cut -d' ' -f1),$(kill -0 $$ && echo alive)" \
   "1,0,0,0,AIF-4,alive"
-pkill -f 'sleep 58.7' 2>/dev/null
+[ -z "${child4:-}" ] || kill -9 "$child4" 2>/dev/null
 
 # Another clone of a project on this machine building the same id: its
 # station carries the same prompt in its argv, and it is not this card's to

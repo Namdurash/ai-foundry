@@ -626,8 +626,17 @@ for hold in ${FAKE_SLEEP_IN:-}; do
     # and FAKE_CHILD_DEAF one that ignores TERM, in the worktree. Started
     # before the mark, so a scenario that sees the mark sees them; their
     # output nowhere, so no capture waits on them.
-    if [ "${FAKE_CHILD_CD:-0}" = 1 ]; then (cd / && exec sleep 47.3 </dev/null >/dev/null 2>&1) & fi
-    if [ "${FAKE_CHILD_DEAF:-0}" = 1 ]; then (trap '' TERM && exec sleep 63.3 </dev/null >/dev/null 2>&1) & fi
+    # Each writes its pid beside the mark: a row picks its own by that, never
+    # by a search of every process on the machine — another run's would do
+    # (docs/DEFECTS.md 16.15).
+    if [ "${FAKE_CHILD_CD:-0}" = 1 ]; then
+      (cd / && exec sleep 47.3 </dev/null >/dev/null 2>&1) &
+      printf '%s\n' "$!" >"$wt/.aif/tmp/child-cd-$ticket.pid"
+    fi
+    if [ "${FAKE_CHILD_DEAF:-0}" = 1 ]; then
+      (trap '' TERM && exec sleep 63.3 </dev/null >/dev/null 2>&1) &
+      printf '%s\n' "$!" >"$wt/.aif/tmp/child-deaf-$ticket.pid"
+    fi
     : >"$wt/.aif/tmp/fake-running-$ticket-$station"
     [ -z "${FAKE_MARKS:-}" ] || : >"$FAKE_MARKS/$ticket-$station"
     if [ -n "${FAKE_RELEASE:-}" ]; then
@@ -3234,6 +3243,9 @@ eq "uninstall: our hooks gone, the user hooks kept" \
 # child handle the signal and went on, and the loop took the next card.
 printf '\n39. one worker per ticket, a stop from anywhere, and a card that always says why\n'
 fresh_project "$SANDBOX/p39"
+alive_n() { # <pid> — 1 when it is a live process, else 0: a row's own child, by the pid it wrote
+  if [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; then echo 1; else echo 0; fi
+}
 wait_for() { # <file> — up to ten seconds
   local i=0
   while [ ! -f "$1" ] && [ "$i" -lt 100 ]; do
@@ -3296,7 +3308,7 @@ eq "--stop: the worker exits 143 at once, and the stop says where the card went"
 eq "…the card says who stopped it, and during which stage" \
   "$(col AIF-39),$(last_comment AIF-39 | sed -n 1p)" "needs_human,blocked: stopped — by Work (aif work AIF-39 --stop), during plan"
 eq "…the station it was running is gone, not orphaned" \
-  "$(pgrep -f 'fake-station.sh plan AIF-39' | wc -l | tr -d ' ')" "0"
+  "$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-39" | wc -l | tr -d ' ')" "0"
 eq "…and the run lock is released" "$(test -d .aif/state/runs/AIF-39 && echo held || echo released)" "released"
 "$AIF" board move AIF-39 ready >/dev/null
 rc=0
@@ -4335,7 +4347,7 @@ eq "HUP to the worker's group while its plan station runs: exit 129 at once, the
 eq "…the card says a hang-up stopped it, and during which stage" \
   "$("$AIF" board head AIF-103)" "blocked: stopped — by a hang-up — the terminal closed — during plan"
 eq "…the station went with it, and the run lock is released" \
-  "$(pgrep -f 'fake-station.sh plan AIF-103' | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-103 && echo held || echo released)" "0,released"
+  "$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-103" | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-103 && echo held || echo released)" "0,released"
 
 # The loop, hung up on by its own terminal — the one event that produces a
 # HUP, and the one a HUP to a worker's group does not stand in for: with the
@@ -4379,7 +4391,7 @@ eq "the terminal closes over the loop while its run holds a station: exit 129, t
 eq "…its lines after the hang-up are in its own log, and the card is settled as stopped by the loop's TERM" \
   "$(grep -c 'AIF-104 stopped (exit 143)' "$SANDBOX/p48-hup/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup/loop.log"),$(col AIF-104),$("$AIF" board head AIF-104 | grep -c '^blocked: stopped — by a TERM signal, during plan')" "1,1,needs_human,1"
 eq "…the station went with it, and nothing of the loop is left" \
-  "$(pgrep -f 'fake-station.sh plan AIF-104' | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-104 && echo held || echo released)" "0,released"
+  "$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-104" | wc -l | tr -d ' '),$(test -d .aif/state/runs/AIF-104 && echo held || echo released)" "0,released"
 
 # The same with the dashboard on — the default on a terminal, and how an idle
 # loop beside a shift is closed — which the row above, under --no-tui, never
@@ -4435,7 +4447,7 @@ eq "the dashboard on: the terminal closes over an idle loop whose run holds a st
   "$rc,$(jq -r '[.hup, .taken, .stopped, .killed, .idle] | map(tostring) | join(",")' "$S48t" 2>/dev/null),$(test -d .aif/state/loop && echo held || echo released)" \
   "129,1,1,1,TERM,1,released"
 eq "…the run stopped and its card settled, its line and the loop's last words in its loop.log" \
-  "$(col AIF-105),$(grep -c 'AIF-105 stopped (exit 143)' "$SANDBOX/p48-hup-tui/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup-tui/loop.log"),$(pgrep -f 'fake-station.sh plan AIF-105' | wc -l | tr -d ' ')" \
+  "$(col AIF-105),$(grep -c 'AIF-105 stopped (exit 143)' "$SANDBOX/p48-hup-tui/loop.log"),$(grep -c '1 taken, 0 built — the terminal closed (HUP)' "$SANDBOX/p48-hup-tui/loop.log"),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-105" | wc -l | tr -d ' ')" \
   "needs_human,1,1,0"
 
 # A terminal gone with no hang-up (docs/DEFECTS.md 16.12): the loop started
@@ -4444,12 +4456,12 @@ eq "…the run stopped and its card settled, its line and the loop's last words 
 # it nothing, and every frame fails (EIO). It went on headless, a frame a
 # second, for good; three frames in a row that cannot be written are the
 # hang-up now — its path, 129, the run stopped, loop.log saying which.
-ticket_for AIF-106
+ticket_for AIF-107
 git add -A && git commit -qm "one for a terminal gone with no hang-up" >/dev/null
-"$AIF" board create tasks/AIF-106/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-107/ticket.md --column ready >/dev/null
 rm -rf "$SANDBOX/p48-gone"
-rc="$(FAKE_SLEEP_IN="AIF-106:plan" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-gone" AIF_WORK_LOOP_POLL=1 TERM=xterm-256color \
-  python3 - "$AIF" .aif/worktrees/AIF-106/.aif/tmp/fake-running-AIF-106-plan <<'PY3'
+rc="$(FAKE_SLEEP_IN="AIF-107:plan" AIF_WORK_LOOP_LOGDIR="$SANDBOX/p48-gone" AIF_WORK_LOOP_POLL=1 TERM=xterm-256color \
+  python3 - "$AIF" .aif/worktrees/AIF-107/.aif/tmp/fake-running-AIF-107-plan <<'PY3'
 import fcntl, os, pty, select, signal, struct, sys, termios, time
 aif, mark = sys.argv[1:3]
 pid, fd = pty.fork()
@@ -4492,7 +4504,7 @@ eq "a terminal gone with no hang-up, every frame failing: three in a row are the
   "$rc,$(jq -r '[.hup, .taken, .stopped, .killed] | map(tostring) | join(",")' "$S48g" 2>/dev/null),$(test -d .aif/state/loop && echo held || echo released)" \
   "129,1,1,1,TERM,released"
 eq "…loop.log saying it was the frames, not a hang-up; the run stopped and its card settled" \
-  "$(grep -c '1 taken, 0 built — the terminal is gone — 3 frames in a row could not be written, and no hang-up came' "$SANDBOX/p48-gone/loop.log"),$(jq -r '.why' "$S48g" 2>/dev/null | grep -c '^the terminal is gone — 3 frames in a row'),$(col AIF-106),$(pgrep -f 'fake-station.sh plan AIF-106' | wc -l | tr -d ' ')" \
+  "$(grep -c '1 taken, 0 built — the terminal is gone — 3 frames in a row could not be written, and no hang-up came' "$SANDBOX/p48-gone/loop.log"),$(jq -r '.why' "$S48g" 2>/dev/null | grep -c '^the terminal is gone — 3 frames in a row'),$(col AIF-107),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-107" | wc -l | tr -d ' ')" \
   "1,1,needs_human,0"
 
 # And the hang-up that cuts a frame: the row above closes the terminal while
@@ -4544,7 +4556,7 @@ eq "the dashboard on, its terminal no longer read: the hang-up comes while a fra
   "$rc,$(jq -r '[.hup, .taken, .stopped, .killed, .idle] | map(tostring) | join(",")' "$S48f" 2>/dev/null),$(test -d .aif/state/loop && echo held || echo released)" \
   "129,1,1,1,TERM,1,released"
 eq "…the run stopped and its card settled, nothing of it left" \
-  "$(col AIF-106),$(grep -c 'AIF-106 stopped (exit 143)' "$SANDBOX/p48-hup-frame/loop.log"),$(pgrep -f 'fake-station.sh plan AIF-106' | wc -l | tr -d ' ')" \
+  "$(col AIF-106),$(grep -c 'AIF-106 stopped (exit 143)' "$SANDBOX/p48-hup-frame/loop.log"),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-106" | wc -l | tr -d ' ')" \
   "needs_human,1,0"
 
 # ====== 49. aif board release: Backlog cards whose dependencies are Done and landed
@@ -4773,7 +4785,7 @@ eq "…and it says how the loop ended, in the summary's words" \
 eq "…the card says a person stopped it, and during which stage" \
   "$(col AIF-122),$("$AIF" board head AIF-122)" "needs_human,blocked: stopped — by Work (aif work AIF-122 --stop), during plan"
 eq "…the summary says TERM, the station is gone and so is the lock" \
-  "$(jq -r '[.killed, .idle, .stopped] | map(tostring) | join(",")' "$L50c/summary.json" 2>/dev/null),$(pgrep -f 'fake-station.sh plan AIF-122' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released)" \
+  "$(jq -r '[.killed, .idle, .stopped] | map(tostring) | join(",")' "$L50c/summary.json" 2>/dev/null),$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-122" | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released)" \
   "TERM,1,1,0,released"
 
 # A drain, or a TERM, that comes while the loop reads Ready: the read found a
@@ -4793,7 +4805,7 @@ held_read() { # <loop log> <card> <drain|term> <loop pid> — the read held, the
   local i=0 w
   wait_count "$1" 'Ready is empty — idle' 1 30
   mkfifo .aif/board/AAA.json
-  while ! pgrep -f 'board/AAA.json' >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
+  while ! pgrep -f "${SANDBOX##*/}/.*board/AAA.json" >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -5018,13 +5030,13 @@ eq "a worker killed by kill -9 mid-plan: interrupted, its lock held and its pid 
   "$(printf '%s' "$S52" | jq -r '[.class, .lock.held, .lock.live, .lock.pid, .lock.pid_alive, .lock.phase, .lock.stage, .run.where, .run.status, .run.stage] | map(tostring) | join(",")')" \
   "interrupted,true,false,$w52,false,run,plan,worktree,running,plan"
 eq "…its station still running, and the sleep under it, listed with the group the dead worker led" \
-  "$(printf '%s' "$S52" | jq -r --argjson p "$w52" '[.lock.orphans[] | select(.pgid == $p and (.command | contains("fake-station.sh plan AIF-151")))] | length'),$(printf '%s' "$S52" | jq -r --argjson p "$w52" '[.lock.orphans[] | select(.pgid == $p and .command == "sleep 41")] | length')" "1,1"
+  "$(printf '%s' "$S52" | jq -r --argjson p "$w52" --argjson sp "$(sed -n 1p .aif/state/runs/AIF-151/station 2>/dev/null || echo 0)" '[.lock.orphans[] | select(.pgid == $p and .pid == $sp)] | length'),$(printf '%s' "$S52" | jq -r --argjson p "$w52" '[.lock.orphans[] | select(.pgid == $p and .command == "sleep 41")] | length')" "1,1"
 eq "…said for a person" \
   "$(printf '%s' "$S52" | jq -r .why | grep -cE "^its worker \(pid $w52\) is gone mid-plan, attempt 1; [0-9]+ process(es)? still in its group$")" "1"
 # --status reads and never stops anything: the harness stops the group.
 kill -TERM -- "-$w52" 2>/dev/null
 i=0
-while pgrep -f 'fake-station.sh plan AIF-151' >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
+while pgrep -f "$SANDBOX/fake-station.sh plan AIF-151" >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
   sleep 0.1
   i=$((i + 1))
 done
@@ -5292,6 +5304,7 @@ w54=$!
 set +m
 wait_for .aif/worktrees/AIF-540/.aif/tmp/fake-running-AIF-540-plan
 sp54="$(cat .aif/state/runs/AIF-540/station 2>/dev/null)"
+cd54="$(cat .aif/worktrees/AIF-540/.aif/tmp/child-cd-AIF-540.pid 2>/dev/null)"
 eq "the run lock records the worker's group, and the station's pid as the station wrote it" \
   "$(jq -r .pgid .aif/state/runs/AIF-540/owner.json),$(ps -o command= -p "$sp54" 2>/dev/null | grep -c 'fake-station.sh plan AIF-540')" "$w54,1"
 kill -9 "$w54" 2>/dev/null
@@ -5306,7 +5319,7 @@ eq "the next aif work TERMs the dead worker's group before it takes the lock ove
   "$rc,$(grep -c "AIF-540 — the worker that held it (pid $w54) is gone, and 3 process(es) it started still run — TERM" "$OUT/run54b.out"),$(grep -c 'is gone; taken over' "$OUT/run54b.out"),$(col AIF-540)" \
   "0,1,1,review"
 eq "…the old station and the child that left the tree are gone" \
-  "$(pgrep -f 'fake-station.sh plan AIF-540' | wc -l | tr -d ' '),$(pgrep -f 'sleep 47.3' | wc -l | tr -d ' ')" "0,0"
+  "$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-540" | wc -l | tr -d ' '),$([ -n "$cd54" ] && alive_n "$cd54" || echo none)" "0,0"
 
 # A child that ignores TERM, in the worktree: the takeover sends its TERM,
 # waits, and refuses — exit 3, the card and the dead lock as they were.
@@ -5315,7 +5328,7 @@ FAKE_SLEEP_IN="AIF-541:plan" FAKE_SLEEP_SECS=44 FAKE_CHILD_DEAF=1 "$AIF" work AI
 w54=$!
 set +m
 wait_for .aif/worktrees/AIF-541/.aif/tmp/fake-running-AIF-541-plan
-deaf54="$(pgrep -f 'sleep 63.3' | head -1)"
+deaf54="$(cat .aif/worktrees/AIF-541/.aif/tmp/child-deaf-AIF-541.pid 2>/dev/null)"
 kill -9 "$w54" 2>/dev/null
 wait "$w54" 2>/dev/null
 rc=0
@@ -5337,7 +5350,7 @@ git add -A && git commit -qm "the same id, another checkout" >/dev/null
 FAKE_SLEEP_IN="AIF-542:plan" FAKE_RELEASE="$OUT/rel54b" "$AIF" work AIF-542 >"$OUT/run54f.out" 2>&1 &
 b54=$!
 wait_for .aif/worktrees/AIF-542/.aif/tmp/fake-running-AIF-542-plan
-bst54="$(pgrep -f 'fake-station.sh plan AIF-542' | head -1)"
+bst54="$(pgrep -f "$SANDBOX/fake-station.sh plan AIF-542" | head -1)"
 cd "$p54" || exit 1
 sleep 0 &
 dead54=$!
@@ -5557,7 +5570,7 @@ FAKE_SLEEP_IN="AIF-577:plan" FAKE_SLEEP_SECS=44 FAKE_CHILD_DEAF=1 "$AIF" work AI
 w57=$!
 set +m
 wait_for .aif/worktrees/AIF-577/.aif/tmp/fake-running-AIF-577-plan
-deaf57="$(pgrep -f 'sleep 63.3' | head -1)"
+deaf57="$(cat .aif/worktrees/AIF-577/.aif/tmp/child-deaf-AIF-577.pid 2>/dev/null)"
 kill -9 "$w57" 2>/dev/null
 wait "$w57" 2>/dev/null
 "$AIF" board move AIF-577 ready >/dev/null
@@ -5634,11 +5647,11 @@ IDLE_PIDS="$IDLE_PIDS $l58"
 wait_count "$L58a/loop.log" 'Ready is empty — idle' 1 30
 mkfifo .aif/board/AAA.json
 i=0
-while ! pgrep -f 'board/AAA.json' >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
+while ! pgrep -f "${SANDBOX##*/}/.*board/AAA.json" >/dev/null 2>&1 && [ "$i" -lt 100 ]; do
   sleep 0.1
   i=$((i + 1))
 done
-read58="$(pgrep -f 'board/AAA.json' >/dev/null 2>&1 && echo held || echo free)"
+read58="$(pgrep -f "${SANDBOX##*/}/.*board/AAA.json" >/dev/null 2>&1 && echo held || echo free)"
 kill -INT -- "-$l58" 2>/dev/null
 rc=0
 wait_exit "$l58" 30 || rc=$?
@@ -5650,7 +5663,7 @@ eq "a Ctrl-C while the loop reads Ready: exit 130, the summary saying Ctrl-C, an
 # A suite probe that takes its time: `aif work --loop --stop` while the loop
 # is still in it.
 tmp="$(mktemp)"
-jq '.test.command = "bash .aif/suite.sh; if [ -f .aif/tmp/slow58 ]; then : >.aif/tmp/probing58; sleep 25.8; fi"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+jq '.test.command = "bash .aif/suite.sh; if [ -f .aif/tmp/slow58 ]; then : >.aif/tmp/probing58; sleep 25.8 & printf %s $! >.aif/tmp/sleep58.pid; wait $!; fi"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
 mkdir -p .aif/tmp
 : >.aif/tmp/slow58
 L58b="$SANDBOX/p58-loop-b"
@@ -5665,7 +5678,7 @@ secs=$((SECONDS - t0))
 rc1=0
 wait_exit "$l58" 40 || rc1=$?
 eq "aif work --loop --stop while the loop probes the suite in its preflight: the loop ends 143 in seconds, the probe with it, its lock gone, and the stop says so" \
-  "$rc,$rc1,$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(pgrep -f 'sleep 25.8' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released),$(grep -c "stopped the loop (pid $l58) — it stopped before taking a card" "$OUT/run58b2.out")" \
+  "$rc,$rc1,$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(alive_n "$(cat .aif/tmp/sleep58.pid 2>/dev/null)"),$(test -d .aif/state/loop && echo held || echo released),$(grep -c "stopped the loop (pid $l58) — it stopped before taking a card" "$OUT/run58b2.out")" \
   "0,143,prompt,0,released,1"
 # A loop that leads no process group — a script started it in the background
 # (docs/DEFECTS.md 15.9): the stop sent its TERM to the loop alone, whose
@@ -5693,7 +5706,7 @@ rc=0
 secs=$((SECONDS - t0))
 wait_file "$OUT/p58n.pid.rc" 40
 eq "…a loop that leads no process group: the stop ends it 143 in seconds, the probe with it, its lock gone — the process that started it untouched" \
-  "$rc,$(cat "$OUT/p58n.pid.rc" 2>/dev/null),$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(pgrep -f 'sleep 25.8' | wc -l | tr -d ' '),$(test -d .aif/state/loop && echo held || echo released),$(kill -0 "$s58" 2>/dev/null && echo alive || echo gone)" \
+  "$rc,$(cat "$OUT/p58n.pid.rc" 2>/dev/null),$([ "$secs" -lt 10 ] && echo prompt || echo "${secs}s"),$(alive_n "$(cat .aif/tmp/sleep58.pid 2>/dev/null)"),$(test -d .aif/state/loop && echo held || echo released),$(kill -0 "$s58" 2>/dev/null && echo alive || echo gone)" \
   "0,143,prompt,0,released,alive"
 kill "$s58" 2>/dev/null
 wait "$s58" 2>/dev/null

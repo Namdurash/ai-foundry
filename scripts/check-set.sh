@@ -311,6 +311,18 @@ gt "plan writes a test util the plan declares"       test-utils/render.tsx deny 
 gt "no ticket: tests writes that mock — named like no test, refused" __mocks__/api.ts deny tests ""
 gt "no ticket: tests writes a test"                  tests/t.py allow tests ""
 gt "no ticket: implement writes source"              src/api.ts allow implement ""
+# docs/DEFECTS.md 16.9. The path as it was handed: a `..` walked past every
+# rule — `src/../.aif/project.json` was not under .aif/. Resolved lexically
+# first now; a path that leaves the project is no station's.
+gt "plan writes .aif/project.json through src/.."    src/../.aif/project.json deny plan
+gt "plan writes another ticket's plan through src/.., spelled absolute" "$GP/link/src/../tasks/T-2/plan.md" deny plan
+gt "tests writes a gate through __tests__/.."        __tests__/../.aif/gates/green.sh deny tests
+gt "tests writes a declared mock, spelled with // and ." __mocks__//./api.ts allow tests
+gt "implement writes source through a/.."            src/./a/../api.ts allow implement
+gt "implement writes a test through src/.."          src/../tests/t.py deny implement
+gt "implement writes above the project"              ../outside.py deny implement
+gt "implement writes an absolute path outside the project" /etc/aif-guard-probe deny implement
+gt "plan climbs out and back in"                     src/../../proj/.aif/project.json deny plan
 rm -rf "${GP:?}"
 
 printf '\nevery runner template has its stack fragment, and the other way round\n'

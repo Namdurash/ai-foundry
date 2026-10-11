@@ -122,16 +122,42 @@ fi
 path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] || exit 0
 
-# Normalise to a repo-relative path when the tool passed an absolute one —
-# spelled through $PWD, or through the physical path: on macOS a project
-# under /var or /tmp is /private/var or /private/tmp to every tool that
-# resolves it, and a station's declared file written that way read as no
-# path of the project's at all (docs/DEFECTS.md 13.10).
-rel="$path"
+# `.`, `..` and `//` resolved first, lexically, before any rule reads the path.
+# Matched as it was handed, `src/../.aif/project.json` was not under .aif/,
+# and every station could write the pipeline's own files that way — the plan
+# station, which has no Bash and no scope, held by nothing else
+# (docs/DEFECTS.md 16.9). Lexically, not through links: no station makes a
+# link with Write. rc 1 when a relative path climbs above where it starts; an
+# absolute one stops at /, as the system does.
+lexical() { # <path> — resolved, printed
+  printf '%s' "$1" | awk -F/ '
+    { n = 0; abs = (substr($0, 1, 1) == "/")
+      for (i = 1; i <= NF; i++) {
+        s = $i
+        if (s == "" || s == ".") continue
+        if (s == "..") { if (n > 0) { n--; continue } if (abs) continue; bad = 1; exit }
+        a[++n] = s
+      }
+      out = ""
+      for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") a[i]
+      printf "%s%s", (abs ? "/" : ""), out }
+    END { exit bad }'
+}
+outside="a station writes inside the project it builds, and $path is not in it — write the files your stage names, by their place in the project."
+np="$(lexical "$path")" || deny "$outside"
+
+# Then to a repo-relative path when the tool passed an absolute one — spelled
+# through $PWD, or through the physical path: on macOS a project under /var
+# or /tmp is /private/var or /private/tmp to every tool that resolves it, and
+# a station's declared file written that way read as no path of the
+# project's at all (docs/DEFECTS.md 13.10). An absolute path in neither is
+# outside the project.
+rel="$np"
 here_p="$(pwd -P 2>/dev/null)" || here_p="$PWD"
-case "$path" in
-  "$PWD"/*) rel="${path#"$PWD"/}" ;;
-  "$here_p"/*) rel="${path#"$here_p"/}" ;;
+case "$np" in
+  "$PWD"/*) rel="${np#"$PWD"/}" ;;
+  "$here_p"/*) rel="${np#"$here_p"/}" ;;
+  /*) deny "$outside" ;;
 esac
 
 # A test by its name or its place. `__tests__/` is jest's own root — the jest

@@ -2953,6 +2953,11 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 #   ua            the same wrapper: і — the s key on the Ukrainian layout —
 #                 at the control point, then q at whatever comes next
 #   unknown       the same wrapper: z, a key no unit has, then q at the pause
+#   arrow         the same wrapper: the up arrow, ESC [ A, at the control
+#                 point, then q at the pause once it has had time to draw
+#                 itself again for any byte left of it
+#   realclaude    the same wrapper, no session seam: Enter, claude's own
+#                 opener runs a claude on PATH, then q at whatever follows
 #   tstp          the same wrapper: Enter, a session that stops itself as
 #                 claude does on Ctrl+Z; once it says it resumed, a line for
 #                 it to read, and q at the pause after it
@@ -3084,6 +3089,18 @@ elif mode == "unknown":
     mark = len(buf)
     send(b"z")
     pump(10, rb"paused", mark)
+    time.sleep(0.5)
+    send(b"q")
+elif mode == "arrow":
+    mark = len(buf)
+    send(b"\x1b[A")
+    pump(10, rb"paused", mark)
+    time.sleep(2.5)
+    send(b"q")
+elif mode == "realclaude":
+    mark = len(buf)
+    send(b"\r")
+    pump(15, rb"paused|shift ended", mark)
     time.sleep(0.5)
     send(b"q")
 elif mode == "tstp":
@@ -3251,6 +3268,57 @@ r="$(python3 "$SANDBOX/terminal.py" unknown "$OUT/d-unknown.out" "$SANDBOX/sessi
 eq "a key no unit has: a pause that names the keys, nothing done, no session; q ends the shift, 0" \
   "$r,$(grep -c '^paused — z is none of this unit.s keys (Enter: open · s: skip · p: pause · q: end the shift)' "$OUT/d-unknown.out"),$(grep -c '^RC=0$' "$OUT/d-unknown.out"),$(sessions_n),$(lock_gone)" \
   "exit 0,1,1,$n0,gone"
+
+# An arrow key is three bytes, ESC [ A, and each was read as a key: the
+# Escape paused, and `[` and `A` drew the pause again each — and the last
+# byte of a sequence can be a key, keypad 1 in application mode being ESC O q
+# (docs/DEFECTS.md 19.3; seen on opes's first live shift: `key: ?`, `key: [`,
+# `key: A` in its shift.log). A sequence is one key.
+r="$(python3 "$SANDBOX/terminal.py" arrow "$OUT/d-arrow.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+SD="$(newest_shift)"
+eq "the up arrow at the control point: one key — one pause, drawn once, nothing done, no session; q ends the shift, 0" \
+  "$r,$(grep -c '^paused — that key is none of this unit.s keys' "$OUT/d-arrow.out"),$(sed -n 's/^key: //p' "$SD/shift.log" | paste -sd, -),$(grep -c '^RC=0$' "$OUT/d-arrow.out"),$(sessions_n),$(lock_gone)" \
+  "exit 0,1,esc,q,1,$n0,gone"
+
+# claude's own opener, the session seam unset: a claude on PATH that answers
+# the shift's probe, and as a session writes down what its terminal is and
+# whether kqueue can watch its output — what claude, Bun, asks first. The
+# opener handed it /dev/tty, which macOS's kqueue cannot watch: every real
+# session ended at its start, rc 1, "EINVAL: invalid argument, kqueue", and
+# the shift with it (docs/DEFECTS.md 19.2; seen on opes's first live shift;
+# docs/FINDINGS.md #49). The terminal by its own device now.
+mkdir -p "$SANDBOX/d-claude"
+cat >"$SANDBOX/d-claude/claude" <<'CLAUDE'
+#!/bin/bash
+case " $* " in
+  *" --version "*) printf '2.1.226 (Claude Code)\n'; exit 0 ;;
+  *" -p "*) printf '{"type":"result","is_error":false,"num_turns":1,"result":"ok"}\n'; exit 0 ;;
+esac
+python3 -I -c '
+import os, select, sys
+try:
+    n = os.ttyname(0)
+except OSError as e:
+    n = "ttyname: " + str(e.strerror)
+if hasattr(select, "kqueue"):
+    try:
+        kq = select.kqueue()
+        kq.control([select.kevent(1, select.KQ_FILTER_WRITE, select.KQ_EV_ADD)], 0)
+        r = "kqueue ok"
+    except OSError as e:
+        r = "kqueue " + str(e.strerror)
+else:
+    r = "kqueue ok"
+open(sys.argv[1], "w").write(n + " | " + r + "\n")
+' "$D_CLAUDE_SAW"
+exit 0
+CLAUDE
+chmod +x "$SANDBOX/d-claude/claude"
+rm -f "$SANDBOX/d-claude.saw"
+r="$(env -u AIF_START_SESSION_CMD PATH="$SANDBOX/d-claude:$PATH" D_CLAUDE_SAW="$SANDBOX/d-claude.saw" python3 "$SANDBOX/terminal.py" realclaude "$OUT/d-realclaude.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+eq "claude's own opener: claude gets the terminal by its device, not /dev/tty, and kqueue can watch it — the session runs, changes nothing, the shift pauses; q, 0" \
+  "$r,$(sed -E 's#^/dev/(ttys|pts/)[0-9]+ #DEV #' "$SANDBOX/d-claude.saw" 2>/dev/null),$(grep -c '^paused — ' "$OUT/d-realclaude.out"),$(grep -c '^RC=0$' "$OUT/d-realclaude.out"),$(lock_gone)" \
+  "exit 0,DEV | kqueue ok,1,1,gone"
 
 # Ctrl-Z inside a session: claude stops its own group, and a non-interactive
 # bash under `set -m` never returns from a foreground wait on a stopped child

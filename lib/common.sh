@@ -112,7 +112,9 @@ aif_trap_disarm() {
 # aif_key_wait returning 0 sets AIF_KEY: the key — one printable ASCII
 # character; a Cyrillic letter typed where a Latin key is read as that key
 # (aif_key_layout); `?` for any other byte — or `intr` (a Ctrl-C), `enter`,
-# `none` (the second passed), `fast` (the read gave up at once with no key: a
+# `esc` (an Escape, or a sequence that starts with one: an arrow key, a
+# function key — read whole), `none` (the second passed), `fast` (the read
+# gave up at once with no key: a
 # terminal that answers end of file), `gone` (no terminal to open). Returning
 # 1, the wait was cut by a trapped signal whose handler has run: the child
 # reads on, and the next aif_key_wait waits for the same one, so that no two
@@ -146,6 +148,7 @@ aif_key_wait() {
     2) AIF_KEY=gone ;;
     3) AIF_KEY=fast ;;
     4) AIF_KEY=intr ;;
+    5) AIF_KEY=esc ;;
     3[2-9] | [4-9][0-9] | 1[01][0-9] | 12[0-6])
       printf -v o '%03o' "$rc"
       # shellcheck disable=SC2059  # the format is the octal escape of the key
@@ -181,10 +184,40 @@ aif_key_intr_off() {
   { stty intr undef </dev/tty; } 2>/dev/null || true
 }
 
+# aif_tty_path — the controlling terminal's own device, /dev/ttys003 or
+# /dev/pts/3, for a child that watches its descriptors: macOS's kqueue cannot
+# watch /dev/tty, and claude — Bun — on /dev/tty ended at its start, rc 1,
+# "EINVAL: invalid argument, kqueue": no session a shift opened could run
+# (docs/DEFECTS.md 19.2; docs/FINDINGS.md #49). /dev/tty when there is no
+# terminal to name, which a redirection then fails on as it did.
+aif_tty_path() {
+  local t
+  t="$(ps -o tty= -p $$ 2>/dev/null)" || t=""
+  t="${t// /}"
+  case "$t" in
+    '' | '?' | '??' | -) ;;
+    *)
+      if [ -c "/dev/$t" ]; then
+        printf '/dev/%s' "$t"
+        return 0
+      fi
+      ;;
+  esac
+  printf '/dev/tty'
+}
+
 # _aif_key_read — the child: one key from the terminal, or a second without
 # one, said as its exit code — 0 Enter, 1 no key, 2 no terminal, 3 a read
-# that gave up at once, 4 a Ctrl-C (aif_key_intr_off), 32–126 the key's own
-# code.
+# that gave up at once, 4 a Ctrl-C (aif_key_intr_off), 5 an Escape and what
+# follows it, 32–126 the key's own code.
+#
+# An arrow key is three bytes, ESC [ A, and each was a key: the Escape paused
+# the shift, and the two after it drew the pause again each — and the last
+# byte of a sequence can be a key: keypad 1 in application mode, ESC O q,
+# ended the shift (docs/DEFECTS.md 19.3). A sequence is read whole — ESC [,
+# its parameters and the one byte from @ to ~ that ends it; ESC O and one
+# byte; ESC and any one byte — and is one key, `esc`. bash 3.2's `read -t`
+# takes whole seconds: a lone Escape waits one for what might follow it.
 #
 # bash 3.2 reads one BYTE, in every locale (probed: C, en_US.UTF-8,
 # uk_UA.UTF-8), and a person who just wrote Ukrainian in a session types the
@@ -193,7 +226,7 @@ aif_key_intr_off() {
 # pressed to stop. A Cyrillic lead byte takes the next one, and the letter is
 # read as the key in its place (aif_key_layout).
 _aif_key_read() {
-  local k="" k2="" c=63 t0=$SECONDS
+  local k="" k2="" c=63 n t0=$SECONDS
   { exec </dev/tty; } 2>/dev/null || exit 2
   if ! IFS= read -r -t 1 -n 1 -s k; then
     [ "$SECONDS" -ne "$t0" ] || exit 3
@@ -201,6 +234,21 @@ _aif_key_read() {
   fi
   [ -n "$k" ] || exit 0
   [ "$k" != $'\003' ] || exit 4
+  if [ "$k" = $'\033' ]; then
+    IFS= read -r -t 1 -n 1 -s k2 || exit 5
+    case "$k2" in
+      '[')
+        n=0
+        while [ "$n" -lt 16 ] && IFS= read -r -t 1 -n 1 -s k2; do
+          printf -v c '%d' "'$k2" 2>/dev/null || c=0
+          [ "$c" -lt 64 ] || [ "$c" -gt 126 ] || break
+          n=$((n + 1))
+        done
+        ;;
+      O) IFS= read -r -t 1 -n 1 -s k2 || true ;;
+    esac
+    exit 5
+  fi
   if [ "$k" = $'\xd0' ] || [ "$k" = $'\xd1' ]; then
     IFS= read -r -t 1 -n 1 -s k2 || true
     aif_key_layout "$k$k2"

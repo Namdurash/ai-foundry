@@ -51,23 +51,29 @@ aif_runner_claude_version() {
 # command would take the terminal (#24). A subshell, so the `cd` is the
 # session's own.
 #
-# `/dev/tty` on all three of claude's descriptors, not the caller's: claude
+# The terminal on all three of claude's descriptors, not the caller's: claude
 # with a stdin that is not a terminal was never probed (#28), and a caller
 # inside a `while … done <<EOF` loop — the way this codebase iterates — would
-# hand it the here-doc. The test seam (AIF_START_SESSION_CMD, a script run
-# with the same five arguments) sits inside the same `set -m` bracket, so a
-# harness exercises the real job control, and keeps the caller's descriptors,
-# so a harness with no terminal can run it.
+# hand it the here-doc. The terminal by its own device (aif_tty_path), not
+# /dev/tty: claude is Bun, which watches a terminal with kqueue, and macOS's
+# cannot watch /dev/tty — every session ended at its start, rc 1, "EINVAL:
+# invalid argument, kqueue" (docs/DEFECTS.md 19.2; docs/FINDINGS.md #49).
+# The test seam (AIF_START_SESSION_CMD, a script run with the same five
+# arguments) sits inside the same `set -m` bracket, so a harness exercises
+# the real job control, and keeps the caller's descriptors, so a harness with
+# no terminal can run it.
 aif_runner_claude_session() {
-  local rc=0 m
+  local rc=0 m tty
   m=()
   [ -z "$3" ] || m=(--model "$3")
+  tty="$(aif_tty_path)"
   set -m
   if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
     (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5") || rc=$?
   else
+    # shellcheck disable=SC2094  # a terminal: read and written, as /dev/tty was
     (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" --session-id "$5" \
-      </dev/tty >/dev/tty 2>/dev/tty) || rc=$?
+      <"$tty" >"$tty" 2>"$tty") || rc=$?
   fi
   set +m
   return "$rc"

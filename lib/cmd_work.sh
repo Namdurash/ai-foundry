@@ -4241,6 +4241,12 @@ _aif_work_report() {
 #             a Ctrl-C then reaches that command and not the loop. The tick's
 #             second is spent in the `wait` builtin, where a Ctrl-C always
 #             runs the handler (_aif_work_loop_tick, docs/DEFECTS.md 11.1).
+#             On the dashboard a Ctrl-C is no signal at all but a key, read
+#             with the others — a signal aborted /bin/bash 3.2 about one time
+#             in a hundred (docs/DEFECTS.md 16.16) — and Ctrl-\, the quit
+#             character, is left a signal: it ends a loop that never comes
+#             back to its keys where it stands, with no summary, its runs
+#             settling their own cards.
 #
 # Takes no new card when Ready has none it has not taken — unless --idle, when
 # it looks again every AIF_WORK_LOOP_POLL seconds (30) and goes on — at
@@ -4571,8 +4577,9 @@ EOF
             env=1
             _aif_work_loop_event red "$id $started, and the preflight fails again (exit $rc2) — the environment, not the card; loop.log has what it said"
           fi
-          # rc2 above 128: the preflight was interrupted — a Ctrl-C reaches
-          # this subshell as it reaches the loop — and the loop's handler has
+          # rc2 above 128: the preflight was interrupted — a signal reaches
+          # this subshell as it reaches the loop, a Ctrl-C too where there is
+          # no dashboard to read it as a key — and the loop's handler has
           # what the signal meant.
         else
           _aif_work_loop_event red "$envhit — its log says what"
@@ -4642,7 +4649,8 @@ EOF
           done
         elif [ -n "$AIF_WORK_LOOP_STOP" ] || [ "$rl" -gt 128 ]; then
           # A signal that came during the read ended the read, not the board:
-          # a Ctrl-C reaches the `$(…)` with the loop, and the loop's own
+          # it reaches the `$(…)` with the loop — a Ctrl-C does where there
+          # is no dashboard to read it as a key — and the loop's own
           # handler has what it meant — the top of the next iteration acts on
           # it. Read as the board, it ended the loop with env 1 in its summary
           # beside a 130, which a reader of `env` takes for the machine
@@ -4903,6 +4911,9 @@ _aif_work_loop_event() {
 # the terminal's alternate one, so the summary lands where the loop started.
 # The terminal's modes are kept as they were found, for the stop to put back:
 # the key's reader sets its own, and a reader stopped mid-read leaves them.
+# And while it draws, a Ctrl-C is one of its keys, not a signal
+# (aif_key_intr_off; docs/DEFECTS.md 16.16) — only once those modes are kept,
+# for nothing else would give the terminal its Ctrl-C back.
 # The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
 # shellcheck disable=SC2034
 _aif_work_loop_tui_start() {
@@ -4911,6 +4922,7 @@ _aif_work_loop_tui_start() {
   [ "${1:-auto}" != off ] && [ "${AIF_NO_TUI:-}" != 1 ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] || return 0
   { : </dev/tty; } 2>/dev/null || return 0
   AIF_WORK_LOOP_STTY="$({ stty -g </dev/tty; } 2>/dev/null)" || AIF_WORK_LOOP_STTY=""
+  [ -z "$AIF_WORK_LOOP_STTY" ] || aif_key_intr_off
   AIF_WORK_LOOP_TUI=1
   AIF_TUI_COLOR=1
   [ -z "${NO_COLOR:-}" ] || AIF_TUI_COLOR=0
@@ -4933,8 +4945,8 @@ _aif_work_loop_tui_start() {
 }
 
 # _aif_work_loop_tui_stop — the terminal as it was: the key's reader stopped
-# and the modes it set put back (aif_key_stop), the cursor back, the
-# alternate screen left. Safe to call twice.
+# and the modes it set put back (aif_key_stop), Ctrl-C a signal again, the
+# cursor back, the alternate screen left. Safe to call twice.
 _aif_work_loop_tui_stop() {
   [ "${AIF_WORK_LOOP_TUI:-0}" = 1 ] || return 0
   AIF_WORK_LOOP_TUI=0
@@ -4984,6 +4996,15 @@ _aif_work_loop_typical() {
 # terminal that answers at once with no key, or cannot be opened, has its
 # second waited out as a frame that could not be written does: the loop does
 # not spin on it.
+#
+# A Ctrl-C typed at the dashboard is no signal, though: it is a key the reader
+# takes (aif_key_intr_off), and its handler is called here, between two
+# commands, as q's is. The INT a person sent reached the loop wherever it was,
+# the children it was forking with it, and about one time in a hundred
+# /bin/bash 3.2 aborted inside malloc, fork or printf — 137, no summary, the
+# terminal left with no echo (docs/DEFECTS.md 16.16; docs/FINDINGS.md #45). A
+# Ctrl-C typed while the loop is not at its key — a frame, a Ready read, a
+# preflight asked again — waits on the terminal for the next tick's reader.
 _aif_work_loop_tick() {
   if [ "${AIF_WORK_LOOP_TUI:-0}" != 1 ]; then
     _aif_work_loop_second
@@ -5027,6 +5048,7 @@ _aif_work_loop_tick() {
     case "$AIF_KEY" in
       none | enter) ;;
       fast | gone) _aif_work_loop_second ;;
+      intr) _aif_work_loop_signal INT ;;
       *) _aif_work_loop_key "$AIF_KEY" ;;
     esac
   fi

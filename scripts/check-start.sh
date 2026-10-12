@@ -2942,6 +2942,10 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 #                 control point
 #   ctrlcslow     the same wrapper and Ctrl-C, the file $D_SLOW made just
 #                 before it — what slows the shift's `date` from then on
+#   ctrlcbusy     the same wrapper: the file $D_SED made, z at the control
+#                 point — the shift's next `sed`, the one that logs the key,
+#                 is slow and writes down any INT it gets — and Ctrl-C while
+#                 it runs
 #   stdinnull     the same wrapper, the shift's stdin /dev/null: q at the
 #                 control point
 #   sessionctrlc  the same wrapper: Enter (a held session opens), Ctrl-C in
@@ -2975,7 +2979,8 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 #                 closed; the kernel hangs up on the foreground group, the
 #                 session's, and the shift is nobody's child to wait for
 # Prints `exit N`, `signal N` or `timeout`; the screen, colour taken off, to
-# <out>, and as it came to <out>.raw.
+# <out>, and as it came to <out>.raw; the terminal's interrupt character as
+# the `next:` line found it, `^C` or `undef`, to <out>.intr.
 cat >"$SANDBOX/terminal.py" <<'PY3'
 import fcntl, os, pty, re, select, signal, struct, sys, termios, time
 mode, out, opened = sys.argv[1:4]
@@ -3044,10 +3049,20 @@ def opens():
         pump(0.1)
 pump(30, rb"next: ")
 time.sleep(0.5)
+c = termios.tcgetattr(fd)[6][termios.VINTR]
+open(out + ".intr", "w").write("^C" if c == b"\x03" else "undef" if c in (b"\xff", b"\x00") else repr(c))
 if mode == "ctrlc":
     send(b"\x03")
 elif mode == "ctrlcslow":
     open(os.environ["D_SLOW"], "w").close()
+    send(b"\x03")
+elif mode == "ctrlcbusy":
+    open(os.environ["D_SED"], "w").close()
+    send(b"z")
+    end = time.time() + 10
+    while not os.path.exists(os.environ["D_SED"] + ".running") and time.time() < end:
+        pump(0.05)
+    time.sleep(0.3)
     send(b"\x03")
 elif mode == "stdinnull":
     send(b"q")
@@ -3138,6 +3153,14 @@ eq "a Ctrl-C at the control point: the shift ends 130, the terminal back in ican
   "exit 0,1,1,0,1,0,gone,$n0"
 eq "…and said why, the summary on the screen" \
   "$(grep -c 'shift ended — stopped by Ctrl-C · exit 130' "$OUT/d-ctrlc.out")" "1"
+# A Ctrl-C reached the shift as an INT — the shift and whatever it was running
+# — and about one in a hundred aborted /bin/bash 3.2 in libc, 137
+# (docs/DEFECTS.md 16.16; docs/FINDINGS.md #45): too rare for a row. What is
+# shown is that no signal is sent: while the shift has the terminal its
+# interrupt character is undefined, and given back with it to a child — the
+# session's Ctrl-C below is still the session's — and to the prompt after.
+eq "…a key, not a signal: while the shift waits at the control point the terminal's interrupt character is undefined; after it, Ctrl-C again" \
+  "$(cat "$OUT/d-ctrlc.out.intr" 2>/dev/null),$(sed -n '/^RC=/,$p' "$OUT/d-ctrlc.out" | grep -o 'intr = [^;]*' | sed -n 1p)" "undef,intr = ^C"
 
 # The shift read its keys itself, `read -t 1`, and a Ctrl-C there ran its
 # handler inside the read, where the read's timer went off through it: the
@@ -3159,6 +3182,31 @@ rm -f "$SANDBOX/d-slow/on"
 eq "a Ctrl-C at the control point whose handler runs across the key's second: still 130, said, the terminal back in icanon and echo, the lock gone, no session" \
   "$r,$(grep -c '^RC=130$' "$OUT/d-ctrlcslow.out"),$(grep -c 'shift ended — stopped by Ctrl-C · exit 130' "$OUT/d-ctrlcslow.out"),$(words "$OUT/d-ctrlcslow.out" | grep -cx icanon),$(words "$OUT/d-ctrlcslow.out" | grep -cx echo),$(lock_gone),$(sessions_n)" \
   "exit 0,1,1,1,1,gone,$n0"
+
+# A Ctrl-C typed while the shift is busy, not at its key: z at the control
+# point, the `sed` that logs it slow, and the Ctrl-C while it runs. A signal
+# would reach that `sed`, in the shift's own group; a key waits for the pause
+# z leads to, which reads it and ends the shift there.
+mkdir -p "$SANDBOX/d-sed"
+cat >"$SANDBOX/d-sed/sed" <<'SED'
+#!/bin/bash
+# The shift's next `sed` after the harness says so, once: slow, and any INT it
+# gets written down. Every other, the real one, the next on PATH.
+if mv "$D_SED" "$D_SED.taken" 2>/dev/null; then
+  trap 'printf "INT\n" >>"$D_SED.sigs"' INT
+  : >"$D_SED.running"
+  sleep 1.5
+fi
+PATH="${PATH#*:}" exec sed "$@"
+SED
+chmod +x "$SANDBOX/d-sed/sed"
+rm -f "$SANDBOX/d-sed/on"*
+: >"$SANDBOX/d-sed/on.sigs"
+n0="$(sessions_n)"
+r="$(PATH="$SANDBOX/d-sed:$PATH" D_SED="$SANDBOX/d-sed/on" python3 "$SANDBOX/terminal.py" ctrlcbusy "$OUT/d-ctrlcbusy.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+eq "a Ctrl-C typed while the shift's own child runs — z's slow sed: no INT reaches it, and the pause after z reads the Ctrl-C — 130, said, the terminal back with its Ctrl-C, the lock gone, no session" \
+  "$r,$([ -e "$SANDBOX/d-sed/on.taken" ] && echo slowed),$(wc -l <"$SANDBOX/d-sed/on.sigs" | tr -d ' '),$(grep -c '^RC=130$' "$OUT/d-ctrlcbusy.out"),$(grep -c 'shift ended — stopped by Ctrl-C · exit 130' "$OUT/d-ctrlcbusy.out"),$(sed -n '/^RC=/,$p' "$OUT/d-ctrlcbusy.out" | grep -o 'intr = [^;]*' | sed -n 1p),$(words "$OUT/d-ctrlcbusy.out" | grep -cx icanon),$(words "$OUT/d-ctrlcbusy.out" | grep -cx echo),$(lock_gone),$(sessions_n)" \
+  "exit 0,slowed,0,1,1,intr = ^C,1,1,gone,$n0"
 
 # The key read with the shift's stdin not the terminal: it read fd 6 with
 # `-u`, and bash 3.2 sets the terminal's modes on fd 0 — the key was echoed

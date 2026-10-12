@@ -321,6 +321,11 @@
 #      green runs the suite once more as a fresh clone has it when the
 #      ticket's new ignore rules hide a file — one the suite needs is a
 #      rejection, one it does not passes — and every copy leaves it out
+#  99  a Ctrl-C at the dashboard is a key, not a signal: the terminal's
+#      interrupt character undefined while it draws; one typed while the
+#      loop's own child runs reaches no process and is answered at the next
+#      second; the second stops the run, 130, and the terminal has its Ctrl-C
+#      back
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -8265,6 +8270,113 @@ eq "the gates' copies and the worker's — the land's target copy — leave out 
   "tree,gates-none,work-none"
 [ -z "$c98" ] || rm -rf "${c98:?}"
 rm -rf "$OUT/c98w"
+cd "$SANDBOX" || exit 1
+
+# ====== 99. a Ctrl-C at the dashboard is a key ===============================
+# docs/DEFECTS.md 16.16. A Ctrl-C typed at the dashboard was an INT to the
+# terminal's foreground group — the loop and whatever it was running — and
+# bash 3.2 handles a trap from inside the signal's handler: about one in a
+# hundred landed while /bin/bash was in malloc, fork or printf, and it aborted
+# in libc, 137 (docs/FINDINGS.md #45). Too rare to catch in a row; what is
+# shown is that no signal is sent at all. The loop on a pty, a run in flight:
+# while it draws, the terminal's interrupt character is undefined; then its
+# next `date` made slow, once, and writing down any INT it gets — the first
+# Ctrl-C's event runs it — and the second Ctrl-C typed while it runs. A
+# signal would reach that `date`, in the loop's own group; a key waits for
+# the loop's next second, and stops the run there.
+printf '\n99. a Ctrl-C at the dashboard is a key: no signal reaches the loop or its children\n'
+fresh_project "$SANDBOX/p99"
+ticket_for AIF-990
+git add -A && git commit -qm "one for the dashboard's Ctrl-C as a key" >/dev/null
+"$AIF" board create tasks/AIF-990/ticket.md --column ready >/dev/null
+mkdir -p "$SANDBOX/p99-slow" "$SANDBOX/p99-marks"
+cat >"$SANDBOX/p99-slow/date" <<'SLOW'
+#!/bin/bash
+# The loop's own next `date` after the harness says so, once: slow, and any
+# INT it gets written down. Its workers', which carry AIF_WORK_LOOP=1, never.
+if [ "${AIF_WORK_LOOP:-}" != 1 ] && mv "$P99_SLOW" "$P99_SLOW.taken" 2>/dev/null; then
+  trap 'printf "INT\n" >>"$P99_SIGS"' INT
+  : >"$P99_SLOW.running"
+  sleep 1.5
+fi
+exec /bin/date "$@"
+SLOW
+chmod +x "$SANDBOX/p99-slow/date"
+: >"$SANDBOX/p99-marks/sigs"
+utf99="$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.UTF-?8$' | sed -n 1p)" || utf99=""
+r99="$(PATH="$SANDBOX/p99-slow:$PATH" P99_SLOW="$SANDBOX/p99-marks/slow" P99_SIGS="$SANDBOX/p99-marks/sigs" \
+  FAKE_SLEEP_IN="AIF-990:plan" FAKE_MARKS="$SANDBOX/p99-marks" FAKE_RELEASE="$SANDBOX/p99-marks/go" \
+  AIF_WORK_LOOP_LOGDIR="$SANDBOX/p99-loop" python3 - "$AIF" "$SANDBOX/p99-marks" "$OUT/screen99" "$utf99" <<'PY3'
+import os, pty, re, select, signal, sys, termios, time
+aif, marks, out, utf8 = sys.argv[1:5]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.environ["LANG"] = utf8 or "en_US.UTF-8"
+    os.execv("/bin/bash", ["/bin/bash", "-c", '"$0" "$@"; echo "RC=$?"; stty -a', aif, "work", "--loop"])
+buf = b""
+def pump(secs, until=None, since=0):
+    global buf
+    end = time.time() + secs
+    while time.time() < end:
+        if until is not None and until in buf[since:]:
+            return True
+        if select.select([fd], [], [], 0.01)[0]:
+            try:
+                c = os.read(fd, 65536)
+            except OSError:
+                return False
+            if not c:
+                return False
+            buf += c
+    return until is not None and until in buf[since:]
+end = time.time() + 40
+while not os.path.exists(marks + "/AIF-990-plan") and time.time() < end:
+    pump(0.2)
+pump(1.5)
+c = termios.tcgetattr(fd)[6][termios.VINTR]
+intr = "^C" if c == b"\x03" else "undef" if c in (b"\xff", b"\x00") else repr(c)
+open(marks + "/slow", "w").close()
+os.write(fd, b"\x03")
+end = time.time() + 10
+while not os.path.exists(marks + "/slow.running") and time.time() < end:
+    pump(0.01)
+pump(0.3)
+os.write(fd, b"\x03")
+status = None
+end = time.time() + 30
+while time.time() < end:
+    pump(0.1)
+    r, st = os.waitpid(pid, os.WNOHANG)
+    if r:
+        status = st
+        break
+if status is None:
+    open(marks + "/go", "w").close()
+    os.killpg(pid, signal.SIGTERM)
+    time.sleep(3)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+pump(0.5)
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.decode("utf-8", "replace")).replace("\r", "")
+open(out, "w").write(text)
+print(intr + "," + ("hung" if status is None else "exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status)))
+PY3
+)"
+: >"$SANDBOX/p99-marks/go"
+eq "the loop on a pty: while the dashboard draws, the terminal's interrupt character is undefined — a Ctrl-C is a byte its key reader takes" \
+  "${r99%%,*}" "undef"
+eq "…a Ctrl-C typed while the loop's own child runs reaches no process — the slow date got no INT — and the loop answers it at its next second: the run stopped, 130" \
+  "${r99#*,},$(wc -l <"$SANDBOX/p99-marks/sigs" | tr -d ' '),$([ -e "$SANDBOX/p99-marks/slow.taken" ] && echo slowed),$(grep -c '^RC=130$' "$OUT/screen99"),$(col AIF-990)" \
+  "exit 0,0,slowed,1,needs_human"
+# What `stty -a` said after the loop: the frames above it say "^C" too.
+stty99="$(sed -n '/^RC=/,$p' "$OUT/screen99")"
+eq "…its card saying a second Ctrl-C stopped it, and the terminal back with its Ctrl-C, in icanon and echo" \
+  "$(last_comment AIF-990 | sed -n 1p)|$(printf '%s\n' "$stty99" | grep -o 'intr = [^;]*' | sed -n 1p),$(printf '%s\n' "$stty99" | tr -s ' \t;' '\n' | grep -xE -- '-?(icanon|echo)' | sort | tr '\n' ' ')" \
+  "blocked: stopped — by Ctrl-C, during plan|intr = ^C,echo icanon "
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

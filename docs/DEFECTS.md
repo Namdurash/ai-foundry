@@ -35,31 +35,7 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-### 16.16 A Ctrl-C reaches the dashboard and the shift as a signal, and bash 3.2 crashes on about one in a hundred — read
-
-Traced for 16.12 (docs/FINDINGS.md #45): the 137 a dashboard loop died with
-about 0.1 s after a Ctrl-C was no KILL — `/bin/bash` 3.2 aborted inside
-macOS's libc, 52 crash reports in the minutes the Ctrl-C was probed, every one
-"Trying to recursively lock an os_unfair_lock" or "os_unfair_lock is corrupt"
-in `malloc`, `free`, `fork` or `vfprintf`: a signal handled while bash was
-inside one of them. bash 3.2 runs traps and longjmps from signal handlers, and
-every aif runs under it here (`#!/usr/bin/env bash`, /bin/bash the only bash).
-The loop dies without its summary, its terminal left in the dashboard's modes
-(no echo until `reset`); the runs in flight settle their own cards; the next
-loop takes the lock over. The shift reads its keys the same way, and takes its
-Ctrl-C the same way.
-
-What a fix has to decide: whether the dashboard and the shift take Ctrl-C as
-a key — the terminal's ISIG off while they draw, the byte read by the key
-reader like any other — and what stops a loop that hangs then (`--stop` from
-another terminal, closing the window); or whether this stays a limit of bash
-3.2, said.
-
-#### Directions
-
-- Not decided (2026-10-11: logged, not built). A pty row that sends a Ctrl-C
-  a few hundred times and counts the loop's 137s, on the commit before and
-  after, whichever way it goes.
+Nothing is open.
 
 ---
 
@@ -252,7 +228,7 @@ had not built it, on snapshots of the commits: the defect reproduced on the
 commit before its fix, gone on the fix's, and still gone on the latest. Most
 held. What gave way — a fix in part (11.1, 15.5 and 15.9, closed since), a hole a fix
 opened, a regression, a rule read too loosely — is this log: 16.1–16.3 fixed
-with it, 16.4–16.15 closed since, 16.16 open above.
+with it, 16.4–16.16 closed since.
 
 - **16.1** A process was taken for a dead worker's orphan by the group recorded in its lock whenever that group's leader was gone, though the worker had never led it — probed: a launcher running `aif work A & aif work B &` and exiting, then A killed, sent TERM to B's live worker and station, and B's card went to Needs Human. A group counts only when its id is the dead worker's own pid (`_aif_work_status_orphans`). On `main` after 0.16.0; scenario 91.
 - **16.2** A taker looked for orphans and sent them TERM before it held the takeover, so a slow loser TERMed the winner's station — probed (lsof slowed 1–4 s: the winner's station TERMed in 9 of 12 races). Only the taker holding the mark looks, the lock read again before each round of TERMs; a `--stop` of a gone worker holds the mark too (`_aif_work_lock_take`, `_aif_work_lock_mark`): 0 of 12. On `main` after 0.16.0; scenario 92.
@@ -269,6 +245,7 @@ with it, 16.4–16.15 closed since, 16.16 open above.
 - **16.13** On Trello, what the fixes rest on had seen only the mock — read; probed on the real API, with the user's leave, on a board made for it (closed after): `before=<action id>` pages back through 105 comments, each once, in order, and an edited comment carries the edit's date in `data.dateLastEdited` — where aif reads a claim's heartbeat (docs/FINDINGS.md #46); nothing to change. A dead claim of another checkout held its card for up to a run's wall clock with no way past — a worker whose machine went off, or a checkout moved and named anew (`aif_clone_id`): `aif board unclaim <ID> [--why <text>]` is a person's word that its worker is gone — a head naming the claim, how long since its worker was seen, where and why, after which the card is taken at once; the worker's and the loop's skip name it (lib/cmd_board.sh). A head under more than 100 newer comments still reads as no head but in R17, which says so. On `main` after 0.16.0; check-board sections 2 and 5.
 - **16.14** The land's edges after the fast-forward moved out of reach — read; probed. A commitlint-style commit-msg hook refused every land, its subject `aif: land …` what every reader matched: the land commit carries a trailer, `Aif-Land: <ID>`, its subject the project's to set (`land.subject`, `{ticket}` and `{title}` filled in, `aif project check` holding it to one line naming `{ticket}`), and one helper finds every land by the trailer or, from before it, by the subject (`aif_land_subject`, `aif_land_commits`, lib/common.sh) — the shift's facts, R8, R10 and the release sweep read it, and a revert of a land is no land. The settle of a land gone in its fast-forward ran four git calls a path — 1 075 s at 30 000 files — and four for them all now: 1 s, the put-back 8 s (docs/FINDINGS.md #47); a ref lock left by a git KILLed in its ref update is named and refused as the index lock is. The 1–5 ms window in which an interrupt can still reach the fast-forward's section, which ignores TERM, is as it was. On `main` after 0.16.0; scenarios 49, 66.
 - **16.15** Harness rows picked processes by a search of the whole machine — probed. Rows 54 and 57 took the first `sleep 63.3` any process ran and `kill -9`ed it, and more did the same in other shapes — `sleep 58.7` (a `pkill`), `sleep 47.3`, `sleep 25.8`, `board/AAA.json`, every `fake-station.sh plan <ID>` — so two runs at once stopped or counted each other's processes. A stub's child writes its pid in its own worktree and a row reads it (`alive_n`); a station is looked for under `$SANDBOX/fake-station.sh`, a fifo's reader by the sandbox's own name — no pick in scripts/check-*.sh searches past its run: two copies of scenario 54 at once, on the commit before, one named and killed the other's child and could not take its own card over; after, both pass. Scenario 52 matched the station by its command line, which a TMPDIR of 266 characters pushed past the 200 kept of it: it matches the station's pid now. On `main` after 0.16.0; scenarios 48, 50, 52, 54, 57, 58, check-start layer C.
+- **16.16** A Ctrl-C reached the dashboard and the shift as a signal, and /bin/bash 3.2 aborted in libc on about one in a hundred — read (docs/FINDINGS.md #45); probed. A Ctrl-C is a key there now: while the loop draws its dashboard, and while the shift has the terminal, the terminal's interrupt character is undefined (`aif_key_intr_off`, lib/common.sh) — the character, not ISIG, which `read -n 1` turns back on for its read — so a Ctrl-C is the byte the key reader takes as `intr`, the handler called from the tick or the shift's key, between two commands, and no process is sent a signal. The shift gives the terminal back as it found it to every child it hands it to — a session, a land, the loop — and takes the key again after (`_aif_start_ctrl_c`); every way out puts Ctrl-C back. One typed while the loop or the shift is busy waits on the terminal for the next key read, a second at most on the dashboard. `Ctrl-\`, the quit character, is left a signal: it ends a loop or a shift that never comes back to its key where it stands, as the crash did — no summary, the runs settling their own cards, the terminal without its Ctrl-C until `stty sane` (zsh puts echo back, not that); closing the window still hangs up on it. 400 Ctrl-Cs aimed at the end of a key reader's second, on an idle dashboard: no 137 on the commit before either, nor after — the rate #45 counted, met in the probes of 11.1 among runs whose key read was still the shell's own `read -t`, was not met again; what holds the fix is that no signal is sent (#48). On `main` after 0.16.0; scenario 99, check-start layer D.
 
 ### Log 17 — after 0.16.0, the dashboard's half of 11.1 (2026-10-10)
 

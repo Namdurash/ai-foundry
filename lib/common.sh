@@ -102,13 +102,21 @@ aif_trap_disarm() {
 # (#39). Killed, it leaves the terminal as the read set it — `-icanon
 # -echo` — so whoever stops it puts the terminal back.
 #
+# A Ctrl-C is one of its keys, not a signal (aif_key_intr_off). As a signal it
+# reached the shell wherever the shell was, and bash 3.2 runs a trap — and
+# `wait` returns — from inside the signal's handler: one that landed while the
+# shell was in malloc, fork or printf aborted /bin/bash in libc, about one
+# Ctrl-C in a hundred — the loop dead with 137 and no summary, its terminal
+# left with no echo (docs/DEFECTS.md 16.16; docs/FINDINGS.md #45, #48).
+#
 # aif_key_wait returning 0 sets AIF_KEY: the key — one printable ASCII
 # character; a Cyrillic letter typed where a Latin key is read as that key
-# (aif_key_layout); `?` for any other byte — or `enter`, `none` (the second
-# passed), `fast` (the read gave up at once with no key: a terminal that
-# answers end of file), `gone` (no terminal to open). Returning 1, the wait
-# was cut by a trapped signal whose handler has run: the child reads on, and
-# the next aif_key_wait waits for the same one, so that no two read at once.
+# (aif_key_layout); `?` for any other byte — or `intr` (a Ctrl-C), `enter`,
+# `none` (the second passed), `fast` (the read gave up at once with no key: a
+# terminal that answers end of file), `gone` (no terminal to open). Returning
+# 1, the wait was cut by a trapped signal whose handler has run: the child
+# reads on, and the next aif_key_wait waits for the same one, so that no two
+# read at once.
 # shellcheck disable=SC2034  # read by the modules that source this file
 AIF_KEY=""
 AIF_KEY_PID=""
@@ -137,6 +145,7 @@ aif_key_wait() {
     0) AIF_KEY=enter ;;
     2) AIF_KEY=gone ;;
     3) AIF_KEY=fast ;;
+    4) AIF_KEY=intr ;;
     3[2-9] | [4-9][0-9] | 1[01][0-9] | 12[0-6])
       printf -v o '%03o' "$rc"
       # shellcheck disable=SC2059  # the format is the octal escape of the key
@@ -158,9 +167,24 @@ aif_key_stop() {
   return 0
 }
 
+# aif_key_intr_off — Ctrl-C a key: the terminal's interrupt character
+# undefined, so that a Ctrl-C is the byte 0x03 on its input — the key's
+# reader takes it as `intr` — and no INT goes to the group in the foreground,
+# the shell, its children and whatever they were in the middle of. The
+# character, not ISIG: `read -n 1` turns ISIG back on for its read (bash's
+# tt_setonechar), and leaves the characters as they are (probed,
+# docs/FINDINGS.md #48). The quit character stays a signal, Ctrl-\ — the one
+# way left, from the same terminal, out of a shell that never comes back to
+# its key. The caller has kept the terminal's modes (`stty -g`), and puts
+# them back once it reads no more keys.
+aif_key_intr_off() {
+  { stty intr undef </dev/tty; } 2>/dev/null || true
+}
+
 # _aif_key_read — the child: one key from the terminal, or a second without
 # one, said as its exit code — 0 Enter, 1 no key, 2 no terminal, 3 a read
-# that gave up at once, 32–126 the key's own code.
+# that gave up at once, 4 a Ctrl-C (aif_key_intr_off), 32–126 the key's own
+# code.
 #
 # bash 3.2 reads one BYTE, in every locale (probed: C, en_US.UTF-8,
 # uk_UA.UTF-8), and a person who just wrote Ukrainian in a session types the
@@ -176,6 +200,7 @@ _aif_key_read() {
     exit 1
   fi
   [ -n "$k" ] || exit 0
+  [ "$k" != $'\003' ] || exit 4
   if [ "$k" = $'\xd0' ] || [ "$k" = $'\xd1' ]; then
     IFS= read -r -t 1 -n 1 -s k2 || true
     aif_key_layout "$k$k2"

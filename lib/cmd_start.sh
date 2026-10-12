@@ -1006,6 +1006,27 @@ _aif_start_tty_restore() {
   return 0
 }
 
+# _aif_start_ctrl_c <key|signal> — whose a Ctrl-C is. `key` while the shift
+# has the terminal: the interrupt character undefined (aif_key_intr_off), so a
+# Ctrl-C is a byte its key reader takes, and the INT handler is called from
+# there — a signal reached the shift wherever it was, and about one in a
+# hundred aborted /bin/bash 3.2 in libc (docs/DEFECTS.md 16.16;
+# docs/FINDINGS.md #45). Typed while the shift works out its tick, it waits on
+# the terminal for the next key the shift reads. `signal` as it hands the
+# terminal to a child — a session, a land, the loop — the modes as the shift
+# found them: that child's Ctrl-C is its own, claude's, the land's, the
+# loop's dashboard's. Only when the shift reads its keys from the terminal
+# and kept its modes to put back; never under the key seam, whose terminal,
+# if there is one, is the harness's.
+_aif_start_ctrl_c() {
+  [ -z "${AIF_START_KEYS+x}" ] && [ -n "${AIF_START_STTY:-}" ] || return 0
+  if [ "$1" = key ]; then
+    aif_key_intr_off
+  else
+    { stty "$AIF_START_STTY" </dev/tty; } 2>/dev/null || true
+  fi
+}
+
 # _aif_start_watch_on / _aif_start_watch_off — around each child the shift
 # hands the terminal to (a session, a land, the loop): Ctrl-Z there does
 # nothing. A non-interactive bash under `set -m` never returns from a
@@ -1092,8 +1113,9 @@ _aif_start_watch_off() {
 # in milliseconds and act on its default, a pause would spin; so each reader
 # opens the terminal anew, the countdown is wall time (SECONDS), and three
 # reads in a row that give up without a second passing are the terminal gone
-# too (critics operations-14). A typed Ctrl-C during the wait runs the INT
-# trap, which stops the reader, puts the terminal back and exits.
+# too (critics operations-14). A typed Ctrl-C is a key here, not a signal
+# (_aif_start_ctrl_c): it calls the INT handler, which stops the reader, puts
+# the terminal back and exits 130.
 #
 # The seam: with AIF_START_KEYS set, its first character is the key and is
 # taken off — `.` Enter, `_` no key (the timeout, after <secs> seconds; in a
@@ -1169,6 +1191,7 @@ _aif_start_key() {
         AIF_START_KEY=gone
         return 0
         ;;
+      intr) _aif_start_signal INT ;;
       *)
         [ "$secs" -eq 0 ] || printf '\n' >&2 2>/dev/null || _aif_start_flush
         AIF_START_KEY="$AIF_KEY"
@@ -1917,9 +1940,17 @@ _aif_start_run_session() {
   # unit and no `claude --resume <uuid>` for a session the person was just
   # in, and listed the unit as untouched, with a fresh session as its command.
   AIF_START_OPEN="$(_aif_start_record_json "$u" "open when the shift ended" "" "" "$model" "$sid" "")" || AIF_START_OPEN=""
+  _aif_start_ctrl_c signal
   _aif_start_watch_on
   aif_runner_claude_session "$root" "$prompt" "$model" "$name" "$sid" || rc=$?
   _aif_start_watch_off
+  # The terminal first, before anything that may end the shift: --max-units
+  # reached by this very session finishes inside _aif_start_acted, and the
+  # EXIT trap's restore, which knows no rc, would leave a kill -9's alternate
+  # screen and mouse reporting on under the person's prompt (#28). Then Ctrl-C
+  # the shift's key again, for the after-snapshot's board reads too.
+  [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
+  _aif_start_ctrl_c key
   _aif_start_snapshot "$root" "$id" "$a" "${AIF_START_FACTS:-}" board
   if cmp -s "$b" "$a"; then changed=0; fi
   col0="$(sed -n 1p "$b" 2>/dev/null)"
@@ -1939,11 +1970,6 @@ _aif_start_run_session() {
   _aif_start_done "$key" "$name — rc $rc, $what"
   _aif_start_record "$u" "$rec" "$rc" "$([ -z "$id" ] || printf '%s' "$col1")" "$model" "$sid" "$changed"
   AIF_START_OPEN=""
-  # The terminal first, before anything that may end the shift: --max-units
-  # reached by this very session finishes inside _aif_start_acted, and the
-  # EXIT trap's restore, which knows no rc, would leave a kill -9's alternate
-  # screen and mouse reporting on under the person's prompt (#28).
-  [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
   _aif_start_say "closed" "$name — rc $rc, $what${file:+ ($file)}"
   if [ "$rc" -ge 1 ] && [ "$rc" -le 128 ]; then
     # A session on a terminal that went away under it, with no hang-up to
@@ -1975,6 +2001,7 @@ _aif_start_run_land() {
   id="$(printf '%s' "$u" | jq -r '.ticket')"
   key="$(printf '%s' "$u" | jq -r '.key')"
   _aif_start_say "land" "aif land $id"
+  _aif_start_ctrl_c signal
   _aif_start_watch_on
   set -m
   "$AIF_ROOT/bin/aif" land "$id" || rc=$?
@@ -1982,6 +2009,7 @@ _aif_start_run_land() {
   _aif_start_watch_off
   # Before _aif_start_acted, which may end the shift (_aif_start_run_session).
   [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
+  _aif_start_ctrl_c key
   col="$(_aif_start_column "$root" "$id")"
   _aif_start_done "$key" "aif land — rc $rc, the card in $col"
   _aif_start_record "$u" "aif land — rc $rc" "$rc" "$col"
@@ -2118,6 +2146,7 @@ _aif_start_run_build() {
   pf=()
   [ -z "${AIF_START_PROFILE_ARG:-}" ] || pf=(--profile "$AIF_START_PROFILE_ARG")
   _aif_start_say "build" "aif work --loop --parallel $par — in this terminal; its logs in ${logdir#"$(aif_main_root "$root")"/}"
+  _aif_start_ctrl_c signal
   _aif_start_watch_on
   set -m
   AIF_WORK_LOOP_LOGDIR="$logdir" "$AIF_ROOT/bin/aif" work --loop --parallel "$par" ${pf[@]+"${pf[@]}"} || rc=$?
@@ -2127,6 +2156,7 @@ _aif_start_run_build() {
   # and hidden cursor, and its key read's -icanon -echo, stay for the rest of
   # the shift. The 137 reset covers both (\e[?25h\e[?1049l, the saved stty).
   [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
+  _aif_start_ctrl_c key
   if [ ! -f "$logdir/summary.json" ]; then
     if [ "$rc" -eq 3 ] && [ -d "$(aif_loop_lock_dir "$root")" ] &&
       _aif_work_lock_live_as "$(aif_loop_lock_dir "$root")" '*aif\ work*--loop*'; then
@@ -2437,7 +2467,9 @@ _aif_start_finish() {
 # start has passed (_aif_start_early before it).
 #
 # INT and TERM arrive between units — inside a session, a land or the loop
-# the child has the terminal, and the person's Ctrl-C is the child's. The
+# the child has the terminal, and the person's Ctrl-C is the child's. Between
+# them a Ctrl-C is no signal but a key, which _aif_start_key hands here as INT
+# (_aif_start_ctrl_c); an INT that is a signal is a kill's. The
 # key's reader first, on every way here — it would read on for up to a
 # second after the shift, and take a key typed at the prompt — then the
 # terminal: a reader stopped in the middle of its read leaves it -icanon
@@ -2880,7 +2912,7 @@ aif_cmd_start() {
   fi
 
   # 9. Only now the shift exists: its directory, the terminal as it was (to
-  # put back on every way out), its handler.
+  # put back on every way out), its handler — and then Ctrl-C its key.
   if ! mkdir -p "$shiftdir/cards" 2>/dev/null || ! : >"$shiftdir/shift.log" 2>/dev/null; then
     aif_err "could not make the shift's directory $shiftdir"
     exit 3
@@ -2888,6 +2920,7 @@ aif_cmd_start() {
   AIF_START_SHIFT_DIR="$shiftdir"
   AIF_START_STTY="$({ stty -g </dev/tty; } 2>/dev/null)" || AIF_START_STTY=""
   aif_trap_arm _aif_start_signal
+  _aif_start_ctrl_c key
   cd "$root" || _aif_start_finish 3 "could not enter $root"
   if [ -f "$cfg" ] && ! git -C "$root" check-ignore -q "$AIF_START_STATE" 2>/dev/null; then
     # A project set up before the shift existed: its ignore block does not

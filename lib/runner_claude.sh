@@ -62,6 +62,15 @@ aif_runner_claude_version() {
 # arguments) sits inside the same `set -m` bracket, so a harness exercises
 # the real job control, and keeps the caller's descriptors, so a harness with
 # no terminal can run it.
+#
+# The session is told it is one unit of a shift (AIF_RUNNER_CLAUDE_SHIFT_NOTE,
+# appended to its system prompt). It was not: a review with nothing to review
+# told the card's state and stopped there, nothing said the shift was waiting
+# on /exit, and the person typed the next card's review into it themselves —
+# the autopilot looked stopped (docs/DEFECTS.md 19.4).
+# shellcheck disable=SC2016  # the backticks are the note's own, for the model
+AIF_RUNNER_CLAUDE_SHIFT_NOTE='This session is one unit of an aif shift (`aif start`): the shift opened it with the command above and waits for it to end. When this unit is done — the verdict taken, the ticket or request written, or nothing here to do — say so in one line and tell the person to type /exit: the shift then reads the board and opens the next unit itself, the next review among them. If the person asks here for another unit (another /aif-review, /aif-ba, /aif-po or /aif-pjm), say that after /exit the shift opens it next; do it here only if they still want it.'
+
 aif_runner_claude_session() {
   local rc=0 m tty
   m=()
@@ -73,6 +82,7 @@ aif_runner_claude_session() {
   else
     # shellcheck disable=SC2094  # a terminal: read and written, as /dev/tty was
     (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" --session-id "$5" \
+      --append-system-prompt "$AIF_RUNNER_CLAUDE_SHIFT_NOTE" \
       <"$tty" >"$tty" 2>"$tty") || rc=$?
   fi
   set +m

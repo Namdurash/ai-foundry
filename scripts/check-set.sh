@@ -173,6 +173,20 @@ for f in "$ROOT"/sets/claude/skills/aif-*/SKILL.md "$ROOT"/sets/claude/commands/
   esac
 done
 
+printf '\nthe reviewer posts again with its head a verdict bash cannot read\n'
+# A person's verdict written before the `wrong:` and `cancel:` heads — or by
+# hand — is any comment to `aif board head`: the shift offered the card for
+# review in every shift, and the review session told the card's state and
+# stopped (docs/DEFECTS.md 19.5, opes's OPES-74). The reviewer offers to post
+# it once more with its head.
+f="$ROOT/sets/claude/skills/aif-review/SKILL.md"
+if grep -q '^\*\*A verdict already on the card\.\*\*' "$f" &&
+  grep -q 'post it once more with its head' "$f"; then
+  ok "skills/aif-review/SKILL.md: a verdict already on the card, its first line no head, is offered again with one"
+else
+  bad "skills/aif-review/SKILL.md: no step for a verdict already on the card whose first line is not wrong: or cancel: — the shift would offer the card for review in every shift"
+fi
+
 printf '\nhooks are executable\n'
 # The one property of these files no other check covers, and the one that broke.
 # Every test below invokes a hook as `/bin/bash <path>`, which works at any mode —

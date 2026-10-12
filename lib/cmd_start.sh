@@ -1932,7 +1932,7 @@ _aif_start_run_session() {
   elif [ -z "${AIF_START_SESSION_CMD:-}" ]; then
     _aif_start_gone
   fi
-  _aif_start_say "open" "$name — model ${model:-default} · afterwards: ${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR }claude --resume $sid"
+  _aif_start_say "open" "$name — model ${model:-default} · /exit when it is done, and the shift goes on · afterwards: ${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR }claude --resume $sid"
   # The session, as the summary should name it should the shift end before
   # its record below: a closed window runs the HUP trap the moment the
   # session returns, before the next line, and a Ctrl-C can land in the

@@ -3294,6 +3294,7 @@ case " $* " in
   *" --version "*) printf '2.1.226 (Claude Code)\n'; exit 0 ;;
   *" -p "*) printf '{"type":"result","is_error":false,"num_turns":1,"result":"ok"}\n'; exit 0 ;;
 esac
+printf '%s\n' "$@" >"$D_CLAUDE_SAW.args"
 python3 -I -c '
 import os, select, sys
 try:
@@ -3319,6 +3320,13 @@ r="$(env -u AIF_START_SESSION_CMD PATH="$SANDBOX/d-claude:$PATH" D_CLAUDE_SAW="$
 eq "claude's own opener: claude gets the terminal by its device, not /dev/tty, and kqueue can watch it — the session runs, changes nothing, the shift pauses; q, 0" \
   "$r,$(sed -E 's#^/dev/(ttys|pts/)[0-9]+ #DEV #' "$SANDBOX/d-claude.saw" 2>/dev/null),$(grep -c '^paused — ' "$OUT/d-realclaude.out"),$(grep -c '^RC=0$' "$OUT/d-realclaude.out"),$(lock_gone)" \
   "exit 0,DEV | kqueue ok,1,1,gone"
+# The session did not know it was one unit of a shift: a review with nothing
+# to review told the card's state and stopped, and the person typed the next
+# review into it — nothing said the shift waited on /exit (docs/DEFECTS.md
+# 19.4). The note goes to claude's system prompt, and the open line says it.
+eq "…and is told it is one unit of a shift, ended by /exit — in its system prompt, and on the open line" \
+  "$(grep -cx -- '--append-system-prompt' "$SANDBOX/d-claude.saw.args" 2>/dev/null),$(grep -c 'one unit of an aif shift.*tell the person to type /exit' "$SANDBOX/d-claude.saw.args" 2>/dev/null),$(grep -c '^open .*/exit when it is done, and the shift goes on' "$OUT/d-realclaude.out")" \
+  "1,1,1"
 
 # Ctrl-Z inside a session: claude stops its own group, and a non-interactive
 # bash under `set -m` never returns from a foreground wait on a stopped child

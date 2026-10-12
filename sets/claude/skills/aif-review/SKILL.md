@@ -46,6 +46,16 @@ For the card `<ID>` (the one in Review the user named, or `aif board status` to 
   sentence and the slice this ticket is — so the human judges the outcome, not only
   the code.
 
+**A verdict already on the card.** When a person's comment after the worker's report
+already judges this build — wrong, cancel, a rework in other words — and no run is
+newer than it, but its first line is not `wrong:` or `cancel:` (written before those
+heads, or by hand), bash cannot read it: the shift offers the card for review again,
+shift after shift, and the project manager does not route it. Do not brief the build
+again. Show the comment and ask whether to post it once more with its head — the first
+line `wrong: <its first point, in one line>` (or `cancel: …`), the rest as it was; on
+their yes, post it as **wrong** below does, and stop. A run newer than the comment is
+reviewed as usual.
+
 ### 2. The brief — what the human reads
 
 Short, in the user's language, in this order:

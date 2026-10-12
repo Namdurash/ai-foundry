@@ -1,7 +1,8 @@
 # Defects — the one log
 
 Every defect found in aif, from the review of 0.5.0 to building the autopilot
-mode's shift after 0.16.0 and checking its fixes. One file, two halves: an **open** defect is written in
+mode's shift after 0.16.0, checking its fixes, and a project on a runner aif
+had no template for. One file, two halves: an **open** defect is written in
 full — how it was established (probed, read, observed or reported), the
 observation quoted, what a fix has to decide — because an open entry is a
 work order; a **closed** one is a line — what went wrong, how it was
@@ -35,7 +36,40 @@ with the observation, the code it names, what a fix has to decide, and a
 still reads as the work order it is. A tag the tap does not serve is a fix
 nobody has, so a closed line names the release once there is one.
 
-Nothing is open.
+### 20.4 A stack whose tests share a file with the code, or whose new files are registered in one file — read
+
+`aif setup` brings a project on any runner to the test contract, and the
+probe proves it (20.1); one shape of project still cannot pass the plan gate,
+whatever its contract says. The gate refuses a path that is in both
+`files.tests` and `files.create`/`files.change` (sets/claude/gates/plan.sh,
+"Implementation and test files must not overlap"), and the guard holds the
+tests station to test files and the plan station off them. Two stacks meet
+that wall by their own conventions:
+
+- **Rust's unit tests live in the module they test**, `#[cfg(test)] mod
+  tests` at the foot of `src/x.rs`: the tests station would write into a
+  file the plan station made, and the implement station into a file
+  verify-red froze.
+- **A project file that lists every source** — an Xcode project without
+  synchronized folders (`project.pbxproj`), a `CMakeLists.txt` that names
+  each file — has both the skeleton's new file and the new test registered in
+  one file both stations must edit.
+
+Not observed on a project yet: read from the gate and the two conventions.
+What `aif setup` can do today is say so in `.aif/stack.md` — Rust's
+integration tests under `tests/`, a test file beside the module rather than in
+it; Xcode's synchronized folders, a glob in CMake — and the plan and tests
+stations then write the stack's other shape.
+
+#### Directions
+
+- A registration file as the pipeline's own: a path `test.registry` names
+  (pbxproj, CMakeLists.txt) that the worker updates for both stations' new
+  files, as it installs dependencies after a lockfile moves — never a
+  station's write.
+- Inline tests as a region, not a file: the gates' freeze hashing the
+  `#[cfg(test)]` block alone, scope letting the implement station change the
+  rest of the file — a rule per stack the project would have to name.
 
 ---
 
@@ -273,6 +307,18 @@ one terminal, the shift in the other.
 - **19.3** An escape sequence at a key was a key a byte — observed (opes's shift.log: `key: ?`, `key: [`, `key: A` — the up arrow — and the pause drawn three times); read. The Escape paused the shift, each byte after it drew the pause again, and a sequence's last byte could be a key: keypad 1 in application mode, ESC O q, ended the shift at that pause; at the dashboard Ctrl+Up, ESC [ 1 ; 5 A, selected worker 1. A sequence is read whole and is one key, `esc` — ESC [, its parameters and the byte from @ to ~ that ends it; ESC O and one byte; ESC and any one — which the control point pauses on once and the dashboard and a pause pass over (`_aif_key_read`, lib/common.sh). A lone Escape waits a second for what might follow it, bash 3.2's `read -t` taking whole seconds. On `main` after 0.16.0; check-start layer D `arrow`.
 - **19.4** A shift's session did not know it was one unit of a shift — observed (opes: `/aif-review OPES-74` found nothing to review, told the card's state and stopped; the person, with nothing saying the shift waited on `/exit`, typed `/aif-review OPES-75` into the same session — the autopilot looked as if it had stopped). claude is opened with a note appended to its system prompt — one unit of an aif shift; when it is done, say so and tell the person to type `/exit`, and the shift opens the next itself; another unit asked for here is the shift's to open next (`AIF_RUNNER_CLAUDE_SHIFT_NOTE`, lib/runner_claude.sh) — and the shift's `open` line says `/exit when it is done, and the shift goes on` (lib/cmd_start.sh). On `main` after 0.16.0; check-start layer D `realclaude`.
 - **19.5** A person's verdict without its head kept the card in the review queue — observed (opes's OPES-74: the verdict of 2026-10-05, its first line `Рецензія 2026-10-05: wrong — на переробку.`, written before 0.16.0 gave the reviewer's verdict a fixed first line; `aif board head` read past it to the worker's report, so the shift offered the card for review again, and `/aif-pjm` never routed it — a week in Review). The reviewer, finding a person's verdict after the report and no run newer than it, does not brief the build again: it shows the comment and offers to post it once more with its head, `wrong:` or `cancel:`, on the person's yes (sets/claude/skills/aif-review, "A verdict already on the card"). On `main` after 0.16.0; check-set.
+
+### Log 20 — 0.17.0, a project on vitest (2026-10-12)
+
+The user went to put aif on a project whose tests run on vitest, and aif
+could not be set up there at all. Read through, the wall was wider than one
+runner: aif knew the test contract — the report, which files are tests, a
+failing assertion, a file that cannot load, the manifests and the directories
+a copy links — for jest and pytest only, in templates and in the gates' code.
+
+- **20.1** A project whose runner aif ships no template for could not be set up — observed (`aif project init` on the vitest project: `no template for 'vitest'`, the only runners `jest pytest`); read (`aif project upgrade` died on "no template for runner"; the gates' test-file names `*.test.* *.spec.* *_test.* test_*.py` and tests/ test/ __tests__/, the manifest families npm/poetry/uv/Cargo/Go, the directories a copy links `node_modules` and `/.venv` `/venv`, all in code — Tests/, `*Tests.swift`, a Podfile, `*.uproject`, Pods were nothing any project could name; `/aif-setup`, the one model step, ran only after `aif project init` had passed). The contract is the project's now, written by the model of its profile and proven by bash: `aif project init` writes the base template for any other runner (`sets/claude/project.templates/base.json`), `aif project upgrade` brings any project up to it; `test.files`, `deps` and `copies.link` in `.aif/project.json` over the old lists as defaults (`aif_g_stack_load`, `aif_g_dep_dirs`, lib/paths.sh `aif_project_stack_load`, the guard); `aif setup` (lib/cmd_setup.sh), offered by `aif init` at a terminal, opens one session on the profile with the aif-setup skill's new first step, the test contract — `.aif/project.json`, `.aif/stack.md` (chosen over the shipped fragment), an adapter under `.aif/adapter/` where a runner writes no JUnit of its own; `.aif/gates/probe.sh` writes `test.probe` — red, green, unable to load, named for `PROBE-1 AC-001` — into a copy of the tree and reads the report as verify-red does (collected, its file named, its marker kept, its red a red, the same id twice), runnable in CI without aif; doctor's `test-contract`, a worker's requirement; the worker proves it with `--cached` before a run, again whenever the config, the manifests, the lockfiles, the watched files, the adapter or the gates move. In 0.18.0; scenario 101, check-set.
+- **20.2** A module whose name holds `test_` was a test to the guard — read. Its copy of the gates' rule matched `*test_*.py` against the whole path where the gates match `test_*.py` against the file's name: the plan station could not write `src/latest_value.py`. One rule, the gates' patterns, read from `test.files` when the project names them (sets/claude/hooks/guard.sh). In 0.18.0; check-set.
+- **20.3** The jest template's command wrote no file on a test case — read (jest-junit's own README, `JEST_JUNIT_ADD_FILE_ATTRIBUTE`, default `"false"`; docs/FINDINGS.md #50). verify-red tells a ticket's tests from the rest of the suite by that file, and stops (exit 3) on a report without it: on a fresh jest project the first ticket stopped at verify-red after the plan and tests stations were paid. `opes` never met it, its package.json setting `addFileAttribute` for itself. The template sets the variable; the probe finds a report without a file on any project, before a run. In 0.18.0; check-set.
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

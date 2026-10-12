@@ -136,14 +136,56 @@ aif_project_validate() {
       (if .schema != 1 then "schema must be 1" else empty end),
       (if (.ticket_pattern | type) != "string" then "ticket_pattern must be a string" else empty end),
       (if (.test | type) != "object" then "test must be an object" else empty end),
-      (if (.test.roots | type) != "array" or (.test.roots | length) < 1
-        then "test.roots must be a non-empty array" else empty end),
-      (if (.test.command | type) != "string" then "test.command must be a string" else empty end),
+      # An empty command is the base template as `aif project init` wrote it
+      # for a runner aif ships no template for: one line says so, not one per
+      # field the setup has still to write (docs/DEFECTS.md 20.1).
+      (if (.test.command | type) != "string" then "test.command must be a string"
+       elif .test.command == "" then "test.command is empty — the test contract is not set up yet: aif setup writes it (the command, the roots, the report, the probe)"
+       elif (.test.roots | type) != "array" or (.test.roots | length) < 1
+         then "test.roots must be a non-empty array"
+       else empty end),
       # test.kind — optional: the runner, as `aif project init` detected it
       # (jest, pytest). What chooses the stack fragment the stations read; a
       # project.json from before the field keeps working without one.
       (if ((.test.kind // "") | type) != "string"
         then "test.kind must be a string — the runner, e.g. \"jest\" or \"pytest\"" else empty end),
+      # test.files — optional: what makes a file a test by its name or its
+      # place, besides the roots — globs, against the path when one holds a
+      # "/", against the file name when not. Absent, the jest and pytest
+      # conventions (AIF_G_TEST_FILES in the gates).
+      (if (.test.files // null) == null then empty
+       elif (.test.files | type) != "array" or (.test.files | map(type == "string" and length > 0) | all | not)
+         then "test.files must be an array of patterns — e.g. \"*/Tests/*\", \"*Spec.cpp\"" else empty end),
+      # test.probe — optional as a key, required by the worker: the test
+      # `aif setup` wrote to prove the contract (aif_project_probe_problems).
+      (if (.test.probe // null) == null then empty
+       elif (.test.probe | type) != "object" then "test.probe must be an object — { path, red, green }"
+       else ( (if ((.test.probe.path // "") | type) != "string" or (.test.probe.path // "") == ""
+                 or (.test.probe.path | startswith("/")) or (.test.probe.path | test("(^|/)\\.\\.(/|$)"))
+                then "test.probe.path must be a path inside the repository — relative, no .." else empty end),
+              (if ((.test.probe.red // "") | type) != "string" or (.test.probe.red // "") == ""
+                then "test.probe.red must be the probe test, failing" else empty end),
+              (if ((.test.probe.green // "") | type) != "string" or (.test.probe.green // "") == ""
+                then "test.probe.green must be the probe test, passing" else empty end),
+              (if ((.test.probe.broken // "") | type) != "string"
+                then "test.probe.broken must be a string — the probe test, unable to load" else empty end),
+              (if ((.test.probe.watch // []) | type) != "array"
+                  or ((.test.probe.watch // []) | map(type == "string" and length > 0) | all | not)
+                then "test.probe.watch must be an array of paths — the configuration files of the runner" else empty end) )
+       end),
+      # deps — optional: the dependency manifests and the lockfiles that pin
+      # them, for a stack the defaults do not know (AIF_G_DEP_TABLE in the gates).
+      (if (.deps // null) == null then empty
+       elif (.deps | type) != "array" then "deps must be an array of { manifest, lockfiles }"
+       else ( .deps | to_entries[] | .key as $i | .value as $d
+              | if ($d | type) != "object" or (($d.manifest // "") | type) != "string" or ($d.manifest // "") == ""
+                     or ($d.manifest | test("/"))
+                  then "deps[" + ($i|tostring) + "].manifest must be a file name, or a glob of one — e.g. \"Podfile\", \"*.uproject\""
+                elif (($d.lockfiles // []) | type) != "array"
+                     or (($d.lockfiles // []) | map(type == "string" and length > 0 and (test("[/*?]") | not)) | all | not)
+                  then "deps[" + ($i|tostring) + "].lockfiles must be an array of file names — e.g. [\"Podfile.lock\"]"
+                else empty end )
+       end),
       (if (.test.report.path | type) != "string" then "test.report.path must be a string" else empty end),
       (if (.test.report.format | type) != "string" then "test.report.format must be a string" else empty end),
       # prepare — optional: the command that makes a fresh worktree able to run
@@ -170,6 +212,16 @@ aif_project_validate() {
             then "copies.leave_out must be an array of paths, relative to the repository"
           else ( $lo[] | select(startswith("/") or test("(^|/)\\.\\.(/|$)"))
                  | "copies.leave_out \"" + . + "\" is not a path inside the repository — relative, no .." )
+          end ),
+      # copies.link — optional: the ignored directories every copy links
+      # rather than copies — a name anywhere, a path with a "/" from the
+      # root. Absent, node_modules, /.venv and /venv (aif_g_dep_dirs).
+      ( ((.copies // {}) | if type == "object" then .link else null end) as $ln
+        | if $ln == null then empty
+          elif ($ln | type) != "array" or ($ln | map(type == "string" and length > 0) | all | not)
+            then "copies.link must be an array of directory names or paths — e.g. \"node_modules\", \"/vendor/bundle\""
+          else ( $ln[] | select(test("(^|/)\\.\\.(/|$)"))
+                 | "copies.link \"" + . + "\" is not a path inside the repository — no .." )
           end ),
       (if (.failure_classes.legitimate | type) != "array"
         then "failure_classes.legitimate must be an array" else empty end),
@@ -330,6 +382,10 @@ aif_project_validate() {
 # a file that is not there.
 # shellcheck disable=SC2034  # read by the modules that source this file
 AIF_STACKS_DIR=".aif/stacks"
+# The project's own fragment, which `aif setup` writes for a stack — and is
+# chosen over the shipped one (aif_stack_fragment).
+# shellcheck disable=SC2034
+AIF_STACK_FILE=".aif/stack.md"
 AIF_GUIDE_FILE=".aif/guide/tests.md"
 # The generated block's markers. Everything outside them is the human's, and
 # `aif project guide` leaves it alone.
@@ -344,6 +400,57 @@ AIF_GUIDE_PLACEHOLDER="_Not written yet."
 
 aif_guide_path() {
   printf '%s/%s' "$1" "$AIF_GUIDE_FILE"
+}
+
+# aif_project_probe <root> [--cached|--proven] — the project's test contract,
+# proven by its own installed gate (.aif/gates/probe.sh): its words on stdout,
+# its exit code returned — 0 it holds · 1 it does not · 3 the gate could not
+# run · 5 not proven since it moved (--proven) · 127 the gate is not
+# installed (`aif init` installs it). The gate, not lib/, because a CI
+# checkout with no aif proves it the same way (docs/DEFECTS.md 20.1).
+aif_project_probe() {
+  local gp="$1/.aif/gates/probe.sh"
+  [ -f "$gp" ] || return 127
+  /bin/bash "$gp" ${2:+"$2"} "$1" 2>&1
+}
+
+# aif_project_is_test <project.json> <path> — rc 0 when <path> is a test by
+# its name or its place: the project's test.files, or the gates' defaults
+# (AIF_G_TEST_FILES in sets/claude/gates/_lib.sh, which lib/ cannot source —
+# scripts/check-work.sh holds the two lists to one answer). A pattern with a
+# "/" is matched against the path, one without against the file's name.
+AIF_PROJECT_TEST_FILES='tests/*
+test/*
+__tests__/*
+*/tests/*
+*/test/*
+*/__tests__/*
+*.test.*
+*.spec.*
+*_test.*
+test_*.py'
+aif_project_is_test() {
+  local pats="$AIF_PROJECT_TEST_FILES" v pat b="${2##*/}"
+  v="$(jq -r 'if (.test.files | type) == "array" then "set", (.test.files[] | strings) else empty end' "$1" 2>/dev/null)" || v=""
+  if [ "${v%%
+*}" = set ]; then pats="$(printf '%s\n' "$v" | sed 1d)"; fi
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # shellcheck disable=SC2254  # the project's patterns are globs
+    case "$pat" in
+      */*) case "$2" in $pat) return 0 ;; esac ;;
+      *) case "$b" in $pat) return 0 ;; esac ;;
+    esac
+  done <<EOF
+$pats
+EOF
+  return 1
+}
+
+# aif_project_set_up <project.json> — rc 0 when the test contract has been
+# written: a test command. The base template leaves it empty for `aif setup`.
+aif_project_set_up() {
+  [ -n "$(jq -r '.test.command // empty' "$1" 2>/dev/null)" ]
 }
 
 # aif_project_kind <project.json> — the runner: test.kind as `aif project init`
@@ -368,10 +475,20 @@ aif_project_kind_recorded() {
   jq -r '.test.kind // empty' "$1" 2>/dev/null
 }
 
-# aif_stack_fragment <root> <kind> — the installed fragment for this runner, or
-# nothing.
+# aif_stack_fragment <root> <kind> — what the stations are told about this
+# stack: the project's own .aif/stack.md when it has one (`aif setup` writes
+# it, committed beside project.json), else the fragment aif ships for this
+# runner, else nothing. The project's wins because it is written for this
+# project's runner as it is set up here — the one aif ships is a runner's in
+# general, and there is one only for the runners aif has templates for
+# (docs/DEFECTS.md 20.1).
 aif_stack_fragment() {
-  local f="$1/$AIF_STACKS_DIR/$2.md"
+  local f
+  if [ -f "$1/$AIF_STACK_FILE" ]; then
+    printf '%s' "$1/$AIF_STACK_FILE"
+    return 0
+  fi
+  f="$1/$AIF_STACKS_DIR/$2.md"
   [ -n "$2" ] && [ -f "$f" ] || return 0
   printf '%s' "$f"
 }
@@ -435,11 +552,23 @@ aif_guide_unwritten() {
 # forward, leaving the project's own as they are.
 
 # aif_project_template <kind> — the template a project of this runner was
-# made from, or nothing for a runner the set has none for.
+# made from: the runner's own, or the base for a runner the set has none for —
+# what aif decides outside the runner (the caps, the copies, the marker a
+# skeleton throws) moves for every project, and a vitest or an Xcode project
+# was left behind by every upgrade, `aif project upgrade` dying on it
+# (docs/DEFECTS.md 20.1).
 aif_project_template() {
-  local f="$AIF_ROOT/sets/claude/project.templates/$1.json"
-  [ -n "$1" ] && [ -f "$f" ] || return 0
-  printf '%s' "$f"
+  printf '%s/sets/claude/project.templates/%s.json' "$AIF_ROOT" "$(aif_project_template_name "$1")"
+}
+
+# aif_project_template_name <kind> — <kind> when the set ships a template for
+# it, "base" otherwise.
+aif_project_template_name() {
+  if [ -n "$1" ] && [ "$1" != base ] && [ -f "$AIF_ROOT/sets/claude/project.templates/$1.json" ]; then
+    printf '%s' "$1"
+  else
+    printf 'base'
+  fi
 }
 
 # aif_project_drift <project.json> — what the gates and the worker read
@@ -454,14 +583,14 @@ aif_project_drift() {
   local f="$1" kind t
   kind="$(aif_project_kind "$f")"
   t="$(aif_project_template "$kind")"
-  [ -n "$t" ] || return 0
-  jq -r --slurpfile tpl "$t" --arg kind "$kind" '
+  [ -f "$t" ] || return 0
+  jq -r --slurpfile tpl "$t" --arg kind "$kind" --arg tname "$(aif_project_template_name "$kind")" '
     . as $p
     | $tpl[0] as $t
     | ($p.failure_classes.legitimate // []) as $legit
     | ($p.failure_classes.broken // []) as $broken
     | [
-      (if (($p.test.kind // "") == "") then
+      (if (($p.test.kind // "") == "") and $kind != "" then
          "test.kind is not recorded — the runner (" + $kind + ") is inferred from test.command on every read; record it as \"kind\": \"" + $kind + "\" under \"test\""
        else empty end),
       ( ($t.failure_classes.retired // [])[] | . as $r
@@ -469,20 +598,22 @@ aif_project_drift() {
         | "failure_classes.legitimate still counts \"" + $r + "\" as a legitimate red — since the contract, a new test failing that way calls something the contract does not export, and verify-red is built to send it back to the tests station; with this entry it freezes it as red instead" ),
       ( ($t.failure_classes.legitimate // [])[] | . as $l
         | select(($legit | index($l)) == null)
-        | "failure_classes.legitimate lacks \"" + $l + "\", which the " + $kind + " template counts as a legitimate red — a test failing that way is rejected here as neither an assertion nor the marker" ),
+        | "failure_classes.legitimate lacks \"" + $l + "\", which the " + $tname + " template counts as a legitimate red — a test failing that way is rejected here as neither an assertion nor the marker" ),
       ( ($t.failure_classes.broken // [])[] | . as $b
         | select(($broken | index($b)) == null)
-        | "failure_classes.broken lacks \"" + $b + "\", which the " + $kind + " template counts as a test that did not run" ),
+        | "failure_classes.broken lacks \"" + $b + "\", which the " + $tname + " template counts as a test that did not run" ),
       ( ($p.checks // [])[]
         | select((((.name // "") | test("type"; "i")) or ((.command // "") | test("tsc|mypy|pyright"))))
         | select((((.phase // []) | index("contract")) == null) or (((.phase // []) | index("red")) == null))
         | "check \"" + (.name // "?") + "\" is a type-check bound to [" + ((.phase // []) | join(",")) + "] — since the contract, the plan gate compiles the skeleton at contract and verify-red type-checks the tests at red; bound as it is, the skeleton is never compiled and a type error in a frozen test is found one implement dispatch late" ),
       ( ($t.limits // {}) | to_entries[] | select(.value != null) | . as $e
         | select((($p.limits // {}) | has($e.key)) | not)
-        | "limits." + $e.key + " is not set — the " + $kind + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" ),
+        | "limits." + $e.key + " is not set — the " + $tname + " template puts it at " + ($e.value | tostring) + ", which is also what the worker falls back to; a reader of this file cannot see the cap" ),
       ( ($t.limits_retired // [])[] | . as $k
         | select(($p.limits // {}) | has($k))
         | "limits." + $k + " is set, and nothing reads it any more — aif retired it, so it looks like a cap and is not one" ),
+      ( select((($p.test.probe // null) == null) and (($t.test.probe // null) != null))
+        | "test.probe is not set — the worker proves the test contract with it before a run (.aif/gates/probe.sh); the " + $tname + " template has one, at " + $t.test.probe.path ),
       ( select((($t.copies // {}) | has("leave_out")) and ((($p.copies // {}) | has("leave_out")) | not))
         | "copies.leave_out is not set — the paths the gates'"'"' copies of the tree leave out, each while git ignores it; a directory a copy cannot read stops the gate that copies until it is named there" )
     ] | .[]

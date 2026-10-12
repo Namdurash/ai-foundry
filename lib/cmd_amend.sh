@@ -55,6 +55,7 @@ aif_cmd_amend_plan() {
 
   local root work plan f project
   root="$(aif_require_project)"
+  aif_project_stack_load "$root"
   work="$(aif_task_dir "$root" "$ticket")"
   plan="$work/plan.md"
   f="$work/$AIF_AMEND_FILE"
@@ -97,19 +98,21 @@ aif_cmd_amend_plan() {
     .github/* | .gitlab-ci* | .gitignore)
       aif_die "refusing to amend for '$path': CI and the ignore rules change only when the plan names them — a ticket that needs one is re-planned with it in the manifest; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
       ;;
-    tests/* | test/* | __tests__/* | */tests/* | */test/* | */__tests__/* | *_test.* | *test_*.py | *.test.* | *.spec.*)
-      aif_die "refusing to amend for '$path': the tests are frozen by verify-red. If a test is wrong, stop and report it — the ticket returns to have its tests or spec revised."
-      ;;
-    # A lockfile moves only with its manifest, and only when the PLAN named
-    # both: a dependency is a planning decision, and the plan gate is where the
-    # pair is checked (docs/DEFECTS.md 6.3). scope permits no amended lockfile
-    # either; this says so before anything is written.
-    package-lock.json | */package-lock.json | npm-shrinkwrap.json | */npm-shrinkwrap.json | \
-      yarn.lock | */yarn.lock | pnpm-lock.yaml | */pnpm-lock.yaml | poetry.lock | */poetry.lock | \
-      uv.lock | */uv.lock | Cargo.lock | */Cargo.lock | go.sum | */go.sum)
-      aif_die "refusing to amend for '$path': a lockfile changes only when the plan names it together with its manifest. A dependency the plan did not foresee is a planning decision — stop and say so."
-      ;;
   esac
+  # A test by its name or its place — the project's test.files, the gates'
+  # rule (docs/DEFECTS.md 20.1; this copy matched *test_*.py against the
+  # whole path, as the guard's did, 20.2).
+  if aif_project_is_test "$project" "$path"; then
+    aif_die "refusing to amend for '$path': the tests are frozen by verify-red. If a test is wrong, stop and report it — the ticket returns to have its tests or spec revised."
+  fi
+  # A lockfile moves only with its manifest, and only when the PLAN named
+  # both: a dependency is a planning decision, and the plan gate is where the
+  # pair is checked (docs/DEFECTS.md 6.3). scope permits no amended lockfile
+  # either; this says so before anything is written. The project's own
+  # lockfiles when it names its deps (aif_project_stack_load).
+  if printf '%s\n' "$path" | grep -qE "$AIF_DEP_LOCKFILES"; then
+    aif_die "refusing to amend for '$path': a lockfile changes only when the plan names it together with its manifest. A dependency the plan did not foresee is a planning decision — stop and say so."
+  fi
 
   local plan_meta plan_hash
   plan_meta="$(aif_meta_json "$plan")"
@@ -129,7 +132,7 @@ aif_cmd_amend_plan() {
   # it — not the working tree's: a file written first and amended after read
   # as an existing one, and a root file, a dotfile or one in a directory the
   # plan never named went through as a change (docs/DEFECTS.md 16.7).
-  local kind=change dir base_name roots dbase
+  local kind=change dir roots dbase
   dbase="$(jq -r '.dispatch_base // empty' "$work/run.json" 2>/dev/null)"
   if [ -z "$dbase" ] || ! git -C "$root" rev-parse -q --verify "$dbase^{commit}" >/dev/null 2>&1; then
     dbase="$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null)" || dbase=""
@@ -138,7 +141,6 @@ aif_cmd_amend_plan() {
     { [ -z "$dbase" ] && [ ! -e "$root/$path" ]; }; then
     kind=create
     dir="$(dirname "$path")"
-    base_name="${path##*/}"
     case "/$path" in
       */.*)
         aif_die "refusing to create '$path' by amendment: a dotfile (or one under a dot-directory) is configuration, not code beside the plan's — it belongs in the plan's files.create; say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
@@ -157,11 +159,9 @@ aif_cmd_amend_plan() {
     done <<EOF
 $roots
 EOF
-    case "$base_name" in
-      package.json | pyproject.toml | Cargo.toml | go.mod)
-        aif_die "refusing to create '$path' by amendment: a dependency manifest is the plan's decision, with its lockfile — say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
-        ;;
-    esac
+    if printf '%s\n' "$path" | grep -qE "$AIF_DEP_MANIFESTS"; then
+      aif_die "refusing to create '$path' by amendment: a dependency manifest is the plan's decision, with its lockfile — say so in your note: { \"replan\": \"…\" } in tasks/$ticket/implement.note.json."
+    fi
     if ! printf '%s' "$plan_meta" | jq -e --arg d "$dir" '
         ((.files.create // []) + (.files.change // []))
         | map(if test("/") then sub("/[^/]*$"; "") else "." end) | index($d) != null' >/dev/null 2>&1; then

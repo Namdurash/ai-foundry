@@ -12,7 +12,20 @@
       "path": ".aif/tmp/report.xml",
       "format": "junit"
     },
-    "ac_marker": "AC-[0-9]{3}"
+    "ac_marker": "AC-[0-9]{3}",
+    "probe": {
+      "path": "tests/test_aif_probe.py",
+      "red": "def test_probe_1_ac_001():\n    assert 1 == 2\n",
+      "green": "def test_probe_1_ac_001():\n    assert 1 == 1\n",
+      "broken": "def test_probe_1_ac_001(:\n    pass\n",
+      "watch": [
+        "pytest.ini",
+        "setup.cfg",
+        "tox.ini",
+        "conftest.py",
+        "tests/conftest.py"
+      ]
+    }
   },
   "checks": [],
   "copies": {

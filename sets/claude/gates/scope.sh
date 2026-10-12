@@ -31,6 +31,7 @@ work="$(cd "$work" 2>/dev/null && pwd -P)" || aif_g_error "no such work dir: $1"
 
 plan="$work/plan.md"
 project="$(aif_g_project "$work")" || exit $?
+aif_g_stack_load "$project"
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"

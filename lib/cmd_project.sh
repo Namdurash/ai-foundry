@@ -12,7 +12,9 @@ usage: aif project init [runner] [--force] [--no-checks]
        aif project guide
 
   init    Scaffold .aif/project.json from a template. Detects the test runner
-          when not named. Runners: $(_aif_project_runners | tr '\n' ' ')
+          when not named. Templates: $(_aif_project_runners | tr '\n' ' ')— any
+          other runner gets the base template, its test contract left for
+          aif setup to write
   checks  Ask again what the project's Definition of Done is, and record it
   check   Validate .aif/project.json, and say what has moved since the
           template it was made from
@@ -42,6 +44,8 @@ _aif_project_runners() {
   [ -d "$dir" ] || return 0
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
+    # The base is every runner's, not a runner of its own.
+    [ "$(basename "$f" .json)" != base ] || continue
     basename "$f" .json
   done
 }
@@ -50,8 +54,15 @@ _aif_project_runners() {
 # the user can always name it, and an unknown result asks rather than assumes.
 _aif_detect_runner() {
   local root="$1"
+  # A name with no template of its own (go, cargo, vitest) is still worth
+  # detecting: it is recorded as test.kind on the base template, and is the
+  # first fact `aif setup` hands its session.
   if [ -f "$root/go.mod" ]; then
     printf 'go'
+  elif [ -f "$root/Cargo.toml" ]; then
+    printf 'cargo'
+  elif [ -f "$root/package.json" ] && grep -q '"vitest"' "$root/package.json" 2>/dev/null; then
+    printf 'vitest'
   elif [ -f "$root/package.json" ] && grep -q '"jest"' "$root/package.json" 2>/dev/null; then
     printf 'jest'
   elif [ -f "$root/pyproject.toml" ] || [ -f "$root/pytest.ini" ] ||
@@ -289,24 +300,30 @@ _aif_project_init() {
 
   if [ -z "$runner" ]; then
     detected="$(_aif_detect_runner "$root")"
-    if [ -z "$detected" ]; then
-      aif_die "could not detect a test runner — name one: aif project init <$(_aif_project_runners | tr '\n' '|' | sed 's/|$//')>"
-    fi
     runner="$detected"
-    printf 'detected runner: %s%s%s\n' "$AIF_C_BOLD" "$runner" "$AIF_C_RESET"
+    [ -z "$runner" ] || printf 'detected runner: %s%s%s\n' "$AIF_C_BOLD" "$runner" "$AIF_C_RESET"
   fi
 
-  template="$(_aif_project_templates_dir)/$runner.json"
-  if [ ! -f "$template" ]; then
-    aif_die "no template for '$runner' — available: $(_aif_project_runners | tr '\n' ' ')"
-  fi
+  # A runner the set ships no template for — vitest, go test, xcodebuild, an
+  # engine's automation — is not a dead end: the base template, its test
+  # contract empty for `aif setup` to write and the probe to prove. A
+  # template per runner was the only way in, and a project on any other
+  # stack could not be set up at all (docs/DEFECTS.md 20.1).
+  local tname
+  tname="$(aif_project_template_name "$runner")"
+  template="$(_aif_project_templates_dir)/$tname.json"
+  [ -f "$template" ] || aif_die "the set has no base template ($template) — reinstall aif"
 
   if [ -f "$dest" ] && [ "$force" -eq 0 ]; then
     aif_die ".aif/project.json already exists — edit it, or re-init with --force"
   fi
 
   mkdir -p "$(dirname "$dest")"
-  cp "$template" "$dest"
+  if [ "$tname" = base ]; then
+    jq --arg k "$runner" '.test.kind = $k' "$template" >"$dest"
+  else
+    cp "$template" "$dest"
+  fi
 
   # Adapt the template's test command to how this project is actually run.
   if [ "$runner" = "pytest" ]; then
@@ -339,6 +356,15 @@ _aif_project_init() {
   fi
   _aif_write_checks "$dest" "$checks"
 
+  if [ "$tname" = base ]; then
+    printf '%swrote%s %s from the base template (runner: %s)\n' "$AIF_C_GREEN" "$AIF_C_RESET" ".aif/project.json" "${runner:-not detected}"
+    printf '%sThe test contract is not set up yet — how the tests run here, the report they write, the probe that proves both.%s\n' \
+      "$AIF_C_YELLOW" "$AIF_C_RESET"
+    printf '%sNext: aif setup — the model of your profile writes it for this project, and the probe proves it.%s\n' \
+      "$AIF_C_DIM" "$AIF_C_RESET"
+    return 0
+  fi
+
   local problems
   problems="$(aif_project_validate "$dest")"
   if [ -n "$problems" ]; then
@@ -349,9 +375,9 @@ _aif_project_init() {
   printf '%swrote%s %s (runner: %s)\n' "$AIF_C_GREEN" "$AIF_C_RESET" ".aif/project.json" "$runner"
   printf '%sReview it — the test command and paths are a starting point, not a guess that is always right.%s\n' \
     "$AIF_C_DIM" "$AIF_C_RESET"
-  printf '%sThen write the guide the stations read, from the repository: aif project guide%s\n' \
+  printf '%sNext: aif setup — the model of your profile checks it against this project and the probe proves it;%s\n' \
     "$AIF_C_DIM" "$AIF_C_RESET"
-  printf '%sAnd confirm it all actually runs here: aif doctor --probe%s\n' \
+  printf '%sor by hand: aif project guide, then aif doctor --probe%s\n' \
     "$AIF_C_DIM" "$AIF_C_RESET"
 }
 
@@ -420,11 +446,11 @@ _aif_project_check() {
   kind="$(aif_project_kind "$dest")"
   if [ -n "$drift" ]; then
     printf '\n%s%s thing(s) have moved%s since this file was made from the %s template — the gates read it as it is:\n' \
-      "$AIF_C_YELLOW" "$(printf '%s\n' "$drift" | grep -c .)" "$AIF_C_RESET" "${kind:-?}"
+      "$AIF_C_YELLOW" "$(printf '%s\n' "$drift" | grep -c .)" "$AIF_C_RESET" "$(aif_project_template_name "$kind")"
     printf '%s\n' "$drift" | sed 's/^/  - /'
     printf '%saif project upgrade%s brings these forward and leaves your own fields alone.\n' "$AIF_C_BOLD" "$AIF_C_RESET"
-  elif [ -n "$kind" ] && [ -n "$(aif_project_template "$kind")" ]; then
-    printf '  %scurrent%s with the %s template\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+  else
+    printf '  %scurrent%s with the %s template\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$(aif_project_template_name "$kind")"
   fi
 }
 
@@ -446,15 +472,16 @@ _aif_project_check() {
 # Idempotent: a current file is left alone and said to be current. What moved
 # is printed as the drift it closes; the file is the project's to review.
 _aif_project_upgrade() {
-  local root="$1" dest kind t drift tmp before after
+  local root="$1" dest kind t tname drift tmp before after
   dest="$(aif_project_config "$root")"
   [ -f "$dest" ] || aif_die "no .aif/project.json — run 'aif project init'"
   kind="$(aif_project_kind "$dest")"
   t="$(aif_project_template "$kind")"
-  [ -n "$t" ] || aif_die "no template for runner '${kind:-?}' — nothing to bring project.json up to. Record test.kind as one of: $(_aif_project_runners | tr '\n' ' ')"
+  tname="$(aif_project_template_name "$kind")"
+  [ -f "$t" ] || aif_die "the set has no $tname template ($t) — reinstall aif"
   drift="$(aif_project_drift "$dest")"
   if [ -z "$drift" ]; then
-    printf '%s✓%s .aif/project.json is current with the %s template — nothing to bring forward\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+    printf '%s✓%s .aif/project.json is current with the %s template — nothing to bring forward\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$tname"
     return 0
   fi
 
@@ -467,6 +494,8 @@ _aif_project_upgrade() {
     | ($t.failure_classes.legitimate // []) as $tl
     | ($t.failure_classes.broken // []) as $tb
     | .test.kind = (.test.kind // $kind)
+    | (if ((.test.probe // null) == null) and (($t.test.probe // null) != null)
+       then .test.probe = $t.test.probe else . end)
     | .failure_classes.legitimate = ($tl + [ ($p.failure_classes.legitimate // [])[] | . as $x
         | select((($tl | index($x)) == null) and (($ret | index($x)) == null)) ])
     | .failure_classes.broken = ($tb + [ ($p.failure_classes.broken // [])[] | . as $x
@@ -495,11 +524,13 @@ _aif_project_upgrade() {
   mv "$tmp" "$dest"
   after="$(cat "$dest")"
 
-  printf '%supgraded%s .aif/project.json to the %s template, on these points:\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$kind"
+  printf '%supgraded%s .aif/project.json to the %s template, on these points:\n' "$AIF_C_GREEN" "$AIF_C_RESET" "$tname"
   printf '%s\n' "$drift" | sed 's/ — .*$//; s/^/  - /'
   # The result, field by field, so the diff reads without opening the file.
   jq -rn --argjson b "$before" --argjson a "$after" '
     (if ($b.test.kind // "") != ($a.test.kind // "") then "  test.kind → " + $a.test.kind else empty end),
+    (if (($b.test.probe // null) == null) and (($a.test.probe // null) != null)
+       then "  test.probe → the template'"'"'s, at " + $a.test.probe.path + " — the worker proves the test contract with it before a run" else empty end),
     (if $b.failure_classes.legitimate != $a.failure_classes.legitimate then
        "  failure_classes.legitimate → " + ($a.failure_classes.legitimate | tojson)
        + (([ $b.failure_classes.legitimate[] | select(. as $x | ($a.failure_classes.legitimate | index($x)) == null) ]) as $gone

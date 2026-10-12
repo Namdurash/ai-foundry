@@ -1727,6 +1727,7 @@ aif_cmd_land() {
 
   local root main
   root="$(aif_require_project)"
+  aif_project_stack_load "$root"
   main="$(aif_main_root "$root")"
   if [ "$root" != "$main" ]; then
     aif_err "this is a worker's checkout, not the main one — land from: cd $(aif_shq "$main")"

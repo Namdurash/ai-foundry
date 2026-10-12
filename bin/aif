@@ -65,12 +65,13 @@ commands:
   start         The shift: review, analyst and owner sessions one at a time, the board moved by fixed rules
   board         The board: next-ready, move, comment, create, status, show, head, release, check, init
   secret        Store a token where no model sees it (set | check | rm | list)
-  init          Install a foundry set into this project
+  init          Install a foundry set into this project, and offer setup
+  setup         The model this project works with sets aif up for its stack; the probe proves it
   uninstall     Remove it again, reverting only what aif installed
   cost          Report what the pipeline spent, per station, from the ledger
   explain       Draw how a ticket got here — criteria, decisions, gaps
   rules         Every ticket's rules, built or in flight — the map the analyst writes against
-  project       Set up .aif/project.json, or write the project's guide to its tests (init | check | guide)
+  project       Set up .aif/project.json by hand, or write the project's guide to its tests (init | check | upgrade | guide)
   doctor        What is installed, and which roles are ready on this machine
   profiles      List the available (set, runner, model) profiles
   test          Run the evals against a profile and report a pass rate
@@ -117,6 +118,15 @@ main() {
       # shellcheck source=lib/cmd_init.sh
       . "$AIF_ROOT/lib/cmd_init.sh"
       aif_cmd_init ${1+"$@"}
+      ;;
+    setup)
+      # shellcheck source=lib/cmd_project.sh
+      . "$AIF_ROOT/lib/cmd_project.sh"
+      # shellcheck source=lib/runner_claude.sh
+      . "$AIF_ROOT/lib/runner_claude.sh"
+      # shellcheck source=lib/cmd_setup.sh
+      . "$AIF_ROOT/lib/cmd_setup.sh"
+      aif_cmd_setup ${1+"$@"}
       ;;
     uninstall)
       # shellcheck source=lib/merge.sh

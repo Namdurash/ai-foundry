@@ -97,7 +97,7 @@ line per slice once the analyst has made cards, `cut` when every slice has one.
 | /aif-ba | The analyst | claude board |
 | /aif-review | The reviewer's brief | claude board |
 | /aif-pjm | The project manager | claude board |
-| /aif-setup | Set the foundry up on this machine | claude |
+| /aif-setup | Set the foundry up for this project and this machine | claude |
 
 ## The board
 

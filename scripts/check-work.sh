@@ -531,9 +531,17 @@ SUITE
   chmod +x .aif/suite.sh
   local tmp
   tmp="$(mktemp)"
+  # The probe the worker proves the test contract with before a run
+  # (.aif/gates/probe.sh): a marker line the stub suite reads as a test of
+  # PROBE-1's first criterion — red asserting a word src/app.py never holds,
+  # green one it always does, broken the stub's syntax error.
   jq '.test.command = "bash .aif/suite.sh"
       | .test.roots = ["tests"]
-      | .test.report.path = ".aif/tmp/report.xml"' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+      | .test.report.path = ".aif/tmp/report.xml"
+      | .test.probe = { path: "tests/t3.py",
+                        red: "# PROBE-1 AC-001 asserts zzprobe\n",
+                        green: "# PROBE-1 AC-001 asserts users\n",
+                        broken: "# PROBE-1 AC-001 asserts users — BROKEN\n" }' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
   # The project's guide to its own tests, which the worker refuses to run
   # without and appends to the plan and tests stations' prompts. Written from
   # the repository, offline, and committed with the rest — the stations read
@@ -2140,6 +2148,20 @@ eq "and the gates' table agrees with their patterns" \
        printf "%s\n" "$m" | grep -Ev "$AIF_G_MANIFESTS"
        aif_g_lock_names "$m" | grep -Ev "$AIF_G_LOCKFILES"
      done' _ "$ROOT" | wc -l | tr -d ' ')" "0"
+# The defaults behind what a project names under deps and test.files
+# (docs/DEFECTS.md 20.1): the patterns made from the gates' table are the
+# patterns they ship, and lib/'s test-file rule is the gates' list.
+eq "the gates' table, made into patterns as a project's deps are, is their default patterns" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"
+     m="$(printf "%s\n" "$AIF_G_DEP_TABLE" | cut -f1 | aif_g_names_re)"
+     l="$(printf "%s\n" "$AIF_G_DEP_TABLE" | cut -f2 | tr " " "\n" | aif_g_names_re)"
+     for p in package.json a/pyproject.toml Cargo.toml go.mod package-lock.json yarn.lock b/uv.lock go.sum Podfile x.lock; do
+       printf "%s:%s%s " "$p" "$(printf "%s" "$p" | grep -cE "$m|$l")" "$(printf "%s" "$p" | grep -cE "$AIF_G_MANIFESTS|$AIF_G_LOCKFILES")"
+     done' _ "$ROOT")" \
+  "package.json:11 a/pyproject.toml:11 Cargo.toml:11 go.mod:11 package-lock.json:11 yarn.lock:11 b/uv.lock:11 go.sum:11 Podfile:00 x.lock:00 "
+eq "lib's test-file rule is the gates' list" \
+  "$(/bin/bash -c '. "$1/lib/project.sh" 2>/dev/null; printf "%s" "$AIF_PROJECT_TEST_FILES"' _ "$ROOT")" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; printf "%s" "$AIF_G_TEST_FILES"' _ "$ROOT")"
 
 # ====== 24. a station that moves the dependencies gets them installed again ===
 #
@@ -4936,8 +4958,10 @@ eq "…each card blocked by the environment, the machine asked again twice and s
 eq "…the summary: the environment, two re-checks, the reason ending (three in a row)" \
   "$(jq -r '[.env, .rechecks, .taken, .built] | map(tostring) | join(",")' "$S51" 2>/dev/null),$(jq -r '.why' "$S51" 2>/dev/null | grep -c '^AIF-132 could not start (exit 3) — the environment, not the card; the loop takes no new card (three in a row)$')" \
   "1,2,3,0,1"
-eq "…and the suite ran in this checkout once — the loop's own probe; asking the machine again does not run it" \
-  "$(grep -c . "$SANDBOX/p51-suite-runs"),$(grep -cx "$p51" "$SANDBOX/p51-suite-runs")" "1,1"
+# And the contract's probe once with it, its three runs — red, green,
+# broken — in a copy of the tree, never this checkout (docs/DEFECTS.md 20.1).
+eq "…and the suite ran in this checkout once — the loop's own probe; asking the machine again does not run it; the contract's probe ran in a copy, once" \
+  "$(grep -cx "$p51" "$SANDBOX/p51-suite-runs"),$(grep -cvx "$p51" "$SANDBOX/p51-suite-runs")" "1,3"
 
 # A machine whose preflight fails again: the first card stops the loop. The
 # "prepare" takes the guide from this checkout, which the preflight refuses
@@ -6748,6 +6772,10 @@ eq "…and the lines new with a ticket are read the same by the gates and the la
 Found 3 errors in 2 files.,src/a.ts(40,5): error TS2554: one
 Found 3 errors in 2 files."
 printf 'SECRET=1\n' >.env
+# The contract proven before the file became unreadable: unproven, the
+# probe's copy meets it first and the run is refused at the preflight
+# (scenario 97) — here it is verify-red's copy that is under test.
+/bin/bash .aif/gates/probe.sh . >/dev/null 2>&1
 chmod 000 .env
 rc=0
 /bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" "$(git rev-parse HEAD)"' >"$OUT/c74b.out" 2>"$OUT/c74b.err" || rc=$?
@@ -8214,9 +8242,21 @@ leave97() { # <dir> [<leave-out-json>]
   t0_red_when 'true'
   ticket_for AIF-971
   git add -A && git commit -qm "a database's data; t0 red; ticket 97" >/dev/null
+  # Proven while the directory could still be read: verify-red's copy is
+  # the one under test below.
+  /bin/bash .aif/gates/probe.sh . >/dev/null 2>&1
   chmod 000 pgdata
 }
 leave97 "$SANDBOX/p97c"
+# Not proven yet, the contract's probe is the first to copy the tree, and
+# the run is refused there — before a station, with the same way out
+# (docs/DEFECTS.md 20.1).
+mv .aif/tmp/probe "$OUT/probe97c"
+rc=0
+"$AIF" work AIF-971 --no-worktree >"$OUT/run97p.out" 2>&1 || rc=$?
+eq "an ignored directory a copy cannot read, the contract not yet proven: the probe's copy meets it first — refused before a station, saying how to leave it out" \
+  "$rc,$(grep -c 'could not copy the tree to probe it — could not copy pgdata: .*"copies": { "leave_out": \[...\] }' "$OUT/run97p.out"),$(test -f .aif/tmp/fake-plan.count && echo dispatched || echo none)" "3,1,none"
+mv "$OUT/probe97c" .aif/tmp/probe
 rc=0
 "$AIF" work AIF-971 --no-worktree >"$OUT/run97c.out" 2>&1 || rc=$?
 chmod 700 pgdata
@@ -8406,6 +8446,111 @@ eq "the ledger names the station's model, not the keys joined, and prices it" \
   "fake-model · priced"
 eq "the budget's token-priced half counts it, where every envelope said USD 0" \
   "$(jq -r '.spent_usd > 0' tasks/AIF-1000/run.json)" "true"
+cd "$SANDBOX" || exit 1
+
+# ====== 101. a runner aif ships no template for ==============================
+# docs/DEFECTS.md 20.1. aif knew the test contract for two runners, in
+# templates, and a project on any other could not be set up: `aif project
+# init vitest` died on "no template", `aif project upgrade` likewise, and
+# what the gates knew of test files, manifests and the directories a copy
+# links was JavaScript's and Python's, in code. The stub suite under a runner
+# name aif has no template for: the base template, the contract written the
+# way `aif setup` writes it, the probe proving it — and refusing each way a
+# contract misleads the gates — the worker refusing until it holds, and a
+# ticket built on the project's own stack notes.
+printf '\n101. a runner aif ships no template for: the base template, the contract written and proven, a ticket built on it\n'
+fresh_project "$SANDBOX/p101"
+rc=0
+"$AIF" project init stubrunner --no-checks --force >"$OUT/init101.out" 2>&1 || rc=$?
+eq "a runner with no template gets the base template, its contract empty, and is told aif setup" \
+  "$rc,$(jq -r '[.test.kind, .test.command, (.test.probe == null)] | map(tostring) | join("|")' .aif/project.json),$(grep -c 'Next: aif setup' "$OUT/init101.out")" \
+  "0,stubrunner||true,1"
+eq "upgrade has a template to bring it up to: the base" \
+  "$("$AIF" project upgrade >/dev/null 2>&1; echo $?)" "0"
+eq "doctor: the worker's test-contract is not set up, and the next step is aif setup" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-contract"].ok'),$("$AIF" doctor 2>/dev/null | grep -c '^next: .*aif setup.* not set up')" "false,1"
+eq "aif init, with no terminal to offer it at, names aif setup as the next step" \
+  "$("$AIF" init anthropic </dev/null 2>&1 | grep -c '^next: aif setup')" "1"
+# aif setup opens one session on the project's profile, the skill its first
+# message with what aif read; the session the harness's (the shift's seam).
+cat >"$OUT/session101.sh" <<'SESSION'
+#!/bin/bash
+printf '%s|%s|%s\n%s\n' "$1" "$3" "$4" "$2" >"$SESSION101_LOG"
+SESSION
+chmod +x "$OUT/session101.sh"
+rc=0
+SESSION101_LOG="$OUT/session101.log" AIF_START_SESSION_CMD="$OUT/session101.sh" \
+  "$AIF" setup >"$OUT/setup101.out" 2>&1 </dev/null || rc=$?
+eq "aif setup: one session, here, on the careful tier, opened with /aif-setup and the facts" \
+  "$(sed -n 1p "$OUT/session101.log" | sed "s|^$(pwd -P)|.|"),$(sed -n 2p "$OUT/session101.log" | grep -c '^/aif-setup Facts aif read before this session: .*base template, its test contract not written (test.kind "stubrunner")')" \
+  ".|opus|aif setup,1"
+eq "…and after it, the verifier's word, not the session's: not set up yet" \
+  "$rc,$(grep -c 'the test contract is not set up yet' "$OUT/setup101.out")" "1,1"
+ticket_for AIF-1010
+git add -A && git commit -qm "base template, ticket 101" >/dev/null
+rc=0
+"$AIF" work AIF-1010 --no-worktree >"$OUT/run101a.out" 2>&1 || rc=$?
+eq "the worker refuses a contract not written, before anything is spent" \
+  "$rc,$(grep -c 'test.command is empty — the test contract is not set up' "$OUT/run101a.out"),$(test -f .aif/tmp/fake-plan.count && echo dispatched || echo none)" "3,1,none"
+
+# The contract, as aif setup writes it for this stub: its tests by their
+# place, its assertion and its load error, no manifests, the probe.
+tmp="$(mktemp)"
+jq '.test.command = "bash .aif/suite.sh"
+    | .test.roots = ["tests"]
+    | .test.files = ["tests/t*.py"]
+    | .failure_classes.legitimate += ["AssertionError"]
+    | .failure_classes.broken = ["SyntaxError"]
+    | .deps = []
+    | .test.probe = { path: "tests/t3.py",
+                      red: "# PROBE-1 AC-001 asserts zzprobe\n",
+                      green: "# PROBE-1 AC-001 asserts users\n",
+                      broken: "# PROBE-1 AC-001 asserts users — BROKEN\n",
+                      watch: ["stub.ini"] }' .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
+probe101() { /bin/bash .aif/gates/probe.sh "$@" . 2>&1; }
+rc=0
+out="$(probe101)" || rc=$?
+eq "the probe proves it: red, green, and a file that cannot load read as broken" \
+  "$rc,$(printf '%s' "$out" | grep -c 'the test contract holds — red, green, broken (failure_classes.broken knows it)')" "0,1"
+eq "…in a copy: the developer's tree has no probe file, and git sees no change but the config" \
+  "$(test -e tests/t3.py && echo there || echo absent),$(git status --porcelain | grep -cv '.aif/project.json')" "absent,0"
+
+# Each way a contract misleads the gates, refused with the fix.
+p101() { # <jq filter> — the probe, run against the contract so changed
+  local t
+  t="$(mktemp)"
+  cp .aif/project.json "$OUT/p101.json"
+  jq "$1" "$OUT/p101.json" >"$t" && mv "$t" .aif/project.json
+  probe101
+  cp "$OUT/p101.json" .aif/project.json
+}
+eq "a probe the runner does not select: not collected" \
+  "$(p101 '.test.probe.path = "tests/t4.py"' | grep -c '✗ the probe was not collected')" "1"
+eq "a name that loses the marker: the file ran, the id lost it" \
+  "$(p101 '.test.probe.red = "# AC-001 asserts zzprobe\n"' | grep -c "✗ the probe's file ran .* no case's id keeps PROBE-1 AC-001")" "1"
+eq "an assertion the classes do not count: every new red would be refused" \
+  "$(p101 '.failure_classes.legitimate = ["Expected"]' | grep -c '✗ test.probe.red fails in a way failure_classes.legitimate does not count as red')" "1"
+eq "a file that cannot load read as a red: verify-red would freeze it" \
+  "$(p101 '.failure_classes.broken = [] | .failure_classes.legitimate += ["SyntaxError"]' | grep -c '✗ a test that cannot load reads as a legitimate red')" "1"
+eq "a probe file that is no test by the project's rules: said before anything runs" \
+  "$(p101 '.test.probe.path = "src/probe.py"' | grep -c '✗ test.probe.path src/probe.py is not a test by this project.s rules')" "1"
+
+# Proven once; proven again only when what it stands on moves.
+eq "--proven: proven, the suite not run" "$(probe101 --proven >/dev/null; echo $?)" "0"
+printf 'x = 1\n' >stub.ini
+eq "a watched file moves: not proven, and doctor says ? rather than ✓" \
+  "$(probe101 --proven >/dev/null; echo $?),$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-contract"].ok')" "5,null"
+
+# A ticket on it, the stations handed the project's own stack notes.
+printf '# stubrunner — what the gates see\n\nSTUB STACK NOTES: a marker line is a test; aif: not implemented; aif _verify.\n' >.aif/stack.md
+git add -A && git commit -qm "the contract, proven; the stack notes" >/dev/null
+rc=0
+"$AIF" work AIF-1010 --no-worktree >"$OUT/run101.out" 2>&1 || rc=$?
+eq "built, on a project whose runner aif has no template for" "$rc" "0"
+eq "the worker proved the contract again first — the watched file had moved: a second proof kept" \
+  "$(find .aif/tmp/probe -name '*.ok' 2>/dev/null | wc -l | tr -d ' ')" "2"
+eq "the plan and tests stations were handed the project's .aif/stack.md" \
+  "$(grep -c 'STUB STACK NOTES' .aif/tmp/fake-sys-plan-1),$(grep -c 'STUB STACK NOTES' .aif/tmp/fake-sys-tests-1),$(grep -c "· stack stubrunner (the project's) + guide$" "$OUT/run101.out")" "1,1,2"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

@@ -100,6 +100,7 @@ plan="$work/plan.md"
 spec="$work/ticket.md"
 note="$work/tests.note.json"
 project="$(aif_g_project "$work")" || exit $?
+aif_g_stack_load "$project"
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"
@@ -247,7 +248,8 @@ if [ ! -f "$root/$report_path" ]; then
   tail -8 "$work/.suite.out" | sed 's/^/      /' >&2
   printf '  A run that never reaches its reporter is neither red nor green; it is not a\n' >&2
   printf '  run. If this is a fresh worktree, the runner may need dependencies that only\n' >&2
-  printf '  tracked files cannot bring: set "prepare" in .aif/project.json (e.g. "npm ci").\n' >&2
+  printf '  tracked files cannot bring: set "prepare" in .aif/project.json (e.g. "npm ci",\n' >&2
+  printf '  "uv sync", "pod install") — aif setup proves the command and the report.\n' >&2
   exit "$AIF_G_ERROR"
 elif ! aif_g_have python3; then
   # PATH, because the interesting case is a python3 the developer's shell
@@ -520,7 +522,9 @@ EOF
         "$(printf '%s\n' "$absent_nofile" | grep -c .)" >&2
       printf '%s\n' "$absent_nofile" | sed -n '1,20p' | sed 's/^/  - /' >&2
       printf '  This gate tells a new test from a pre-existing one by the file on each test case\n' >&2
-      printf '  in %s. Make the reporter write it (jest-junit: addFileAttribute "true").\n' "$report_path" >&2
+      printf '  in %s. Make the reporter write it (jest-junit: addFileAttribute "true"; a\n' "$report_path" >&2
+  printf '  runner that cannot, through the adapter aif setup writes) — the probe,\n' >&2
+  printf '  .aif/gates/probe.sh, says whether it does.\n' >&2
       exit "$AIF_G_ERROR"
     fi
     aif_g_report "$(printf '%s\n' "$absent_elsewhere" |

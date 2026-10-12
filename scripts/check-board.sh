@@ -137,13 +137,16 @@ body="$(row t0 tests/t0.py 1)"
 # The test is named with its marker, `<ticket> AC-001`, read off the first
 # line the fake tests station writes: verify-red looks for the marker in a
 # collected test's id, not in the file's text.
-if [ -f tests/t1.py ]; then g=0; grep -q impl1 src/app.py 2>/dev/null && g=1; body="$body$(row "$(sed -n '1s/^# \([A-Z0-9-]* AC-[0-9]*\).*/\1/p' tests/t1.py) t1" tests/t1.py "$g")"; fi
+if [ -f tests/t1.py ]; then g=0; grep -q impl1 src/app.py 2>/dev/null && g=1; grep -q PASSES tests/t1.py && g=1; body="$body$(row "$(sed -n '1s/^# \([A-Z0-9-]* AC-[0-9]*\).*/\1/p' tests/t1.py) t1" tests/t1.py "$g")"; fi
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
   chmod +x .aif/suite.sh
   local tmp
   tmp="$(mktemp)"
-  jq '.test.command = "bash .aif/suite.sh" | .test.roots = ["tests"] | .test.report.path = ".aif/tmp/report.xml"' \
+  # The probe the worker proves the test contract with (.aif/gates/probe.sh):
+  # a test of PROBE-1 AC-001 the stub reads, PASSES its green.
+  jq '.test.command = "bash .aif/suite.sh" | .test.roots = ["tests"] | .test.report.path = ".aif/tmp/report.xml"
+      | .test.probe = { path: "tests/t1.py", red: "# PROBE-1 AC-001 asserts\n", green: "# PROBE-1 AC-001 PASSES\n" }' \
     .aif/project.json >"$tmp" && mv "$tmp" .aif/project.json
   # The worker requires the project's guide to its tests (test-guide), and
   # reads it from the branch: written here, committed with the rest.

@@ -67,6 +67,7 @@ lock="$work/tests.lock.json"
 # are already red to author them again.
 [ -f "$lock" ] || [ ! -f "$work/tests.lock" ] || lock="$work/tests.lock"
 project="$(aif_g_project "$work")" || exit $?
+aif_g_stack_load "$project"
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$plan" ] || aif_g_error "plan.md missing"

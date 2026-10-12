@@ -65,6 +65,7 @@ work="${1:-}"
 plan="$work/plan.md"
 ticket="$work/ticket.md"
 project="$(aif_g_project "$work")" || exit $?
+aif_g_stack_load "$project"
 root="$(dirname "$(dirname "$project")")"
 
 [ -f "$ticket" ] || aif_g_error "ticket.md missing — a plan cannot be checked without the criteria it serves"

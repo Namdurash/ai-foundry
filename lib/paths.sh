@@ -72,11 +72,36 @@ AIF_WORK_WORKTREES=".aif/worktrees"
 # Copies of AIF_G_MANIFESTS and AIF_G_LOCKFILES in the gates' _lib.sh — which
 # is where the policy they carry is written down. The gates cannot source lib/
 # and lib/ does not reach into an installed set, so the two are kept equal by
-# scripts/check-work.sh instead.
+# scripts/check-work.sh instead. Defaults, as the gates' are: a project's own
+# "deps" in .aif/project.json replaces them (aif_project_stack_load, called by
+# `aif work` and `aif land` once they know the root).
 # shellcheck disable=SC2034
 AIF_DEP_MANIFESTS='(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$'
 # shellcheck disable=SC2034
 AIF_DEP_LOCKFILES='(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|go\.sum)$'
+
+# aif_project_stack_load <root> — AIF_DEP_MANIFESTS and AIF_DEP_LOCKFILES from
+# the project's "deps", when it names them: the gates' aif_g_stack_load, the
+# same names made the same regexes (scripts/check-work.sh holds the two to
+# one answer).
+aif_project_stack_load() {
+  local f="$1/.aif/project.json" v
+  [ -f "$f" ] || return 0
+  v="$(jq -r 'if (.deps | type) == "array" then "set", (.deps[] | objects | select((.manifest | type) == "string") | "\(.manifest)\t\([(.lockfiles // [])[] | strings] | join(" "))") else empty end' "$f" 2>/dev/null)" || v=""
+  [ "${v%%
+*}" = set ] || return 0
+  v="$(printf '%s\n' "$v" | sed 1d)"
+  AIF_DEP_MANIFESTS="$(printf '%s\n' "$v" | cut -f1 | _aif_names_re)"
+  AIF_DEP_LOCKFILES="$(printf '%s\n' "$v" | cut -f2 | tr ' ' '\n' | _aif_names_re)"
+}
+
+# _aif_names_re — the gates' aif_g_names_re: names on stdin (globs) as one
+# path regex, (^|/)(a|b)$; none is a regex no path matches.
+_aif_names_re() {
+  jq -R -s -r 'split("\n") | map(select(length > 0)
+    | gsub("(?<c>[.+()\\[\\]{}^$|\\\\])"; "\\\(.c)") | gsub("\\*"; "[^/]*") | gsub("\\?"; "[^/]"))
+    | unique | if length == 0 then "^/$" else "(^|/)(" + join("|") + ")$" end'
+}
 
 # Where the product partner's requests live, relative to the project root.
 #

@@ -93,12 +93,73 @@ AIF_G_PLANNED_ONLY='^\.github/|^\.gitlab-ci|^\.gitignore$'
 # because a new dependency is the plan's decision; and the worker re-runs
 # "prepare" from the lock after a station changes either, so the gates judge
 # the dependencies the lockfile builds rather than whatever a station
-# installed. lib/cmd_work.sh keeps a copy of these two for that last step
+# installed. lib/paths.sh keeps a copy of these two for that last step
 # (it cannot source this file); scripts/check-work.sh holds the copies equal.
+#
+# These are the defaults: the JavaScript, Python, Rust and Go families. A
+# project on another stack names its own under "deps" in .aif/project.json —
+# [{ "manifest": "<a name, or a glob>", "lockfiles": ["<a name>", …] }] —
+# and aif_g_stack_load reads them over these. A Podfile, a build.gradle, a
+# *.uproject is the project's to name, not a release of aif's
+# (docs/DEFECTS.md 20.1).
 # shellcheck disable=SC2034
 AIF_G_MANIFESTS='(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$'
 # shellcheck disable=SC2034
 AIF_G_LOCKFILES='(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|go\.sum)$'
+# The table both are made from: a manifest's name (a glob), a tab, the names
+# of the lockfiles that can pin it.
+AIF_G_DEP_TABLE='package.json	package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml
+pyproject.toml	poetry.lock uv.lock
+Cargo.toml	Cargo.lock
+go.mod	go.sum'
+
+# What makes a file a test by its name or its place, besides the project's
+# test roots: a pattern a line, matched against the whole repo-relative path
+# when it holds a "/" and against the file's name when it does not. The
+# defaults are the jest and pytest conventions; a project whose tests are
+# named otherwise — Tests/, *Spec.cpp, *Tests.swift — names its own under
+# "test": { "files": [...] } in .aif/project.json (aif_g_stack_load). The
+# guard reads the same key (it cannot source this file).
+AIF_G_TEST_FILES='tests/*
+test/*
+__tests__/*
+*/tests/*
+*/test/*
+*/__tests__/*
+*.test.*
+*.spec.*
+*_test.*
+test_*.py'
+
+# aif_g_stack_load <project.json> — the project's own deps and test.files
+# over the defaults above, for the gate that reads them; a key the project
+# does not set keeps its default, and a list it sets empty means none. A
+# gate calls it once, after aif_g_project. The regexes are built from the
+# names: a "*" is any run of characters but "/", a "?" one of them.
+aif_g_stack_load() {
+  local f="$1" v
+  [ -f "$f" ] || return 0
+  v="$(jq -r 'if (.test.files | type) == "array" then "set", (.test.files[] | strings) else empty end' "$f" 2>/dev/null)" || v=""
+  if [ "${v%%
+*}" = set ]; then
+    AIF_G_TEST_FILES="$(printf '%s\n' "$v" | sed 1d)"
+  fi
+  v="$(jq -r 'if (.deps | type) == "array" then "set", (.deps[] | objects | select((.manifest | type) == "string") | "\(.manifest)\t\([(.lockfiles // [])[] | strings] | join(" "))") else empty end' "$f" 2>/dev/null)" || v=""
+  if [ "${v%%
+*}" = set ]; then
+    AIF_G_DEP_TABLE="$(printf '%s\n' "$v" | sed 1d)"
+    AIF_G_MANIFESTS="$(printf '%s\n' "$AIF_G_DEP_TABLE" | cut -f1 | aif_g_names_re)"
+    AIF_G_LOCKFILES="$(printf '%s\n' "$AIF_G_DEP_TABLE" | cut -f2 | tr ' ' '\n' | aif_g_names_re)"
+  fi
+}
+
+# aif_g_names_re — the names on stdin (globs, a line each) as one path regex:
+# (^|/)(a|b)$. None is a regex no path matches.
+aif_g_names_re() {
+  jq -R -s -r 'split("\n") | map(select(length > 0)
+    | gsub("(?<c>[.+()\\[\\]{}^$|\\\\])"; "\\\(.c)") | gsub("\\*"; "[^/]*") | gsub("\\?"; "[^/]"))
+    | unique | if length == 0 then "^/$" else "(^|/)(" + join("|") + ")$" end'
+}
 
 # AIF_G_JQ_MSG — jq definitions, put before a program that compares one
 # test's failure in two runs: `aif_rootsin($rs)` writes a tree's root, in any
@@ -130,14 +191,21 @@ def aif_nmsg:
 '
 
 # aif_g_lock_names <manifest-basename> — the lockfile names that can pin it,
-# one per line. The table behind both patterns above.
+# one per line: AIF_G_DEP_TABLE, the table behind both patterns above.
 aif_g_lock_names() {
-  case "$1" in
-    package.json) printf '%s\n' package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml ;;
-    pyproject.toml) printf '%s\n' poetry.lock uv.lock ;;
-    Cargo.toml) printf '%s\n' Cargo.lock ;;
-    go.mod) printf '%s\n' go.sum ;;
-  esac
+  local m locks l
+  while IFS="$(printf '\t')" read -r m locks; do
+    [ -n "$m" ] || continue
+    # shellcheck disable=SC2254  # the manifest's name is a glob
+    case "$1" in
+      $m)
+        # shellcheck disable=SC2086  # names, split on blanks; never globs
+        for l in $locks; do printf '%s\n' "$l"; done
+        ;;
+    esac
+  done <<EOF
+$AIF_G_DEP_TABLE
+EOF
 }
 
 # aif_g_lockfiles_for <root> <manifest> — the lockfiles that pin this manifest
@@ -184,14 +252,16 @@ aif_g_locks() {
 }
 
 # aif_g_test_path <path> [<roots>] — rc 0 when <path> is a test file: under one
-# of the project's test roots (one a line), under a tests/, test/ or __tests__/
-# directory, or named like one — *.test.*, *.spec.*, *_test.*, test_*.py. One
-# rule for the gates that ask: the plan gate (what files.delete may not name,
-# where a replaced criterion's tests are looked for) and verify-red. The guard
-# keeps a copy (hooks cannot source the gates); `__tests__/` is the jest
-# template's own root, which the guard's copy missed (docs/DEFECTS.md 13.10).
+# of the project's test roots (one a line), or matched by a pattern of
+# AIF_G_TEST_FILES — by default under a tests/, test/ or __tests__/ directory,
+# or named like one, *.test.*, *.spec.*, *_test.*, test_*.py. One rule for
+# the gates that ask: the plan gate (what files.delete may not name, where a
+# replaced criterion's tests are looked for) and verify-red. The guard keeps
+# a copy (hooks cannot source the gates) and reads the same test.files;
+# `__tests__/` is the jest template's own root, which the guard's copy missed
+# (docs/DEFECTS.md 13.10).
 aif_g_test_path() {
-  local p="$1" r b
+  local p="$1" r b pat
   while IFS= read -r r; do
     r="${r%/}"
     [ -n "$r" ] || continue
@@ -201,13 +271,17 @@ aif_g_test_path() {
   done <<EOF
 ${2:-}
 EOF
-  case "$p" in
-    tests/* | test/* | __tests__/* | */tests/* | */test/* | */__tests__/*) return 0 ;;
-  esac
   b="${p##*/}"
-  case "$b" in
-    *.test.* | *.spec.* | *_test.* | test_*.py) return 0 ;;
-  esac
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # shellcheck disable=SC2254  # the project's patterns are globs
+    case "$pat" in
+      */*) case "$p" in $pat) return 0 ;; esac ;;
+      *) case "$b" in $pat) return 0 ;; esac ;;
+    esac
+  done <<EOF
+$AIF_G_TEST_FILES
+EOF
   return 1
 }
 
@@ -664,14 +738,47 @@ EOF
 # into .git or .aif/worktrees; one `git check-ignore` for all of them. A
 # node_modules someone force-added a file to reads as not ignored, and is
 # copied with the rest (docs/FINDINGS.md #36).
+#
+# Those are the defaults, AIF_G_LINK_DIRS. A project names its own under
+# "copies": { "link": [...] } in .aif/project.json — a name is every directory
+# so named, the first one down each branch; a path with a "/" is that one
+# directory from the root (a leading "/" is optional). What is linked is
+# shared by every copy, so it is for installed dependencies a suite only
+# reads — Pods, vendor/bundle — never for a build's output: an Intermediate/
+# or a target/ the copies would all write into is copies.leave_out's
+# (docs/DEFECTS.md 20.1).
+AIF_G_LINK_DIRS='node_modules
+/.venv
+/venv'
 aif_g_dep_dirs() {
-  local root="$1" p
+  local root="$1" p n dirs="$AIF_G_LINK_DIRS" anchored=""
+  if [ -f "$root/.aif/project.json" ]; then
+    p="$(jq -r 'if (.copies.link | type) == "array" then "set", (.copies.link[] | strings) else empty end' "$root/.aif/project.json" 2>/dev/null)" || p=""
+    if [ "${p%%
+*}" = set ]; then dirs="$(printf '%s\n' "$p" | sed 1d)"; fi
+  fi
+  set --
+  while IFS= read -r n; do
+    n="${n%/}"
+    [ -n "$n" ] || continue
+    case "$n" in
+      */*)
+        n="${n#/}"
+        if [ -d "$root/$n" ] && [ ! -L "$root/$n" ]; then anchored="$anchored$root/$n
+"; fi
+        ;;
+      *)
+        [ "$#" -eq 0 ] || set -- "$@" -o
+        set -- "$@" -name "$n"
+        ;;
+    esac
+  done <<EOF
+$dirs
+EOF
   {
-    find "$root" \( -path "$root/.git" -o -path "$root/.aif/worktrees" \) -prune -o \
-      -type d -name node_modules -print -prune 2>/dev/null
-    for p in .venv venv; do
-      if [ -d "$root/$p" ] && [ ! -L "$root/$p" ]; then printf '%s\n' "$root/$p"; fi
-    done
+    [ "$#" -eq 0 ] || find "$root" \( -path "$root/.git" -o -path "$root/.aif/worktrees" \) -prune -o \
+      -type d \( "$@" \) -print -prune 2>/dev/null
+    printf '%s' "$anchored"
   } | while IFS= read -r p; do
     p="${p#"$root"/}"
     [ -z "$p" ] || [ "$p" = "$root" ] || printf '%s\n' "$p"

@@ -71,23 +71,36 @@ aif_runner_claude_version() {
 # shellcheck disable=SC2016  # the backticks are the note's own, for the model
 AIF_RUNNER_CLAUDE_SHIFT_NOTE='This session is one unit of an aif shift (`aif start`): the shift opened it with the command above and waits for it to end. When this unit is done — the verdict taken, the ticket or request written, or nothing here to do — say so in one line and tell the person to type /exit: the shift then reads the board and opens the next unit itself, the next review among them. If the person asks here for another unit (another /aif-review, /aif-ba, /aif-po or /aif-pjm), say that after /exit the shift opens it next; do it here only if they still want it.'
 
+# aif_runner_claude_session, as the shift opens it, and with a sixth argument
+# the note in the shift's place: `aif setup` opens its one session the same
+# way, told what it is for (AIF_RUNNER_CLAUDE_SETUP_NOTE). An empty
+# <session-id> lets claude choose one.
 aif_runner_claude_session() {
-  local rc=0 m tty
+  local rc=0 m sid_arg tty note="${6-$AIF_RUNNER_CLAUDE_SHIFT_NOTE}"
   m=()
   [ -z "$3" ] || m=(--model "$3")
+  sid_arg=()
+  [ -z "$5" ] || sid_arg=(--session-id "$5")
   tty="$(aif_tty_path)"
   set -m
   if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
     (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5") || rc=$?
   else
     # shellcheck disable=SC2094  # a terminal: read and written, as /dev/tty was
-    (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" --session-id "$5" \
-      --append-system-prompt "$AIF_RUNNER_CLAUDE_SHIFT_NOTE" \
+    (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" ${sid_arg[@]+"${sid_arg[@]}"} \
+      --append-system-prompt "$note" \
       <"$tty" >"$tty" 2>"$tty") || rc=$?
   fi
   set +m
   return "$rc"
 }
+
+# What the session `aif setup` opens is told it is (lib/cmd_setup.sh): the
+# person ran aif setup to make aif work on this project, whatever its stack;
+# the skill is the procedure; doctor and the probe are the verifiers, never
+# the session's own word.
+# shellcheck disable=SC2016,SC2034  # the note's own backticks; read by lib/cmd_setup.sh
+AIF_RUNNER_CLAUDE_SETUP_NOTE='This session is `aif setup`: the person ran it to make aif work on this project — its stack, its test runner, its platform, whatever they are. Follow the aif-setup skill (.claude/skills/aif-setup/SKILL.md) from its first step; the facts aif read before opening this session are in the first message. `aif doctor` and `.aif/gates/probe.sh` are the verifiers: never call the project set up until `aif doctor --probe` shows the worker ready. Ask the person before every install, every commit and every change outside .aif/, and never ask for a token. When it is done, or the person stops, say in a few lines what is set up and what is not, and tell them to type /exit.'
 
 # aif_runner_claude_eval <workdir> <prompt> <max_turns> <budget_usd> <out> <err>
 #

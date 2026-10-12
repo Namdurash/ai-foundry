@@ -8,13 +8,16 @@ AIF_FORCE=0
 
 _aif_init_usage() {
   cat <<EOF
-usage: aif init [profile] [--force] [--dry-run]
+usage: aif init [profile] [--force] [--dry-run] [--no-setup]
 
   Installs a foundry set into the current git repository. With no profile
-  named, prompts for one.
+  named, prompts for one — the model this project works with. Then, at a
+  terminal, offers aif setup: that model sets the project up for its own
+  stack, and the probe proves it.
 
   --dry-run   report what would change, touch nothing
   --force     overwrite files that conflict, keeping a backup
+  --no-setup  install only; aif setup is the next step
 EOF
 }
 
@@ -169,12 +172,13 @@ EOF
 }
 
 aif_cmd_init() {
-  local profile=""
+  local profile="" setup=1
 
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) AIF_DRY_RUN=1 ;;
       --force) AIF_FORCE=1 ;;
+      --no-setup) setup=0 ;;
       -h | --help)
         _aif_init_usage
         return 0
@@ -191,7 +195,7 @@ aif_cmd_init() {
   if [ -z "$profile" ]; then
     # Without this guard CI hangs on the prompt forever instead of failing.
     [ -t 0 ] || aif_die "no profile given and stdin is not a TTY — run: aif init <profile>"
-    printf 'Which profile should this project use?\n\n' >&2
+    printf 'Which model will this project work with? (aif profiles lists them)\n\n' >&2
     profile="$(_aif_pick_profile)"
   fi
 
@@ -482,5 +486,27 @@ EOF
     fi
   fi
 
-  [ "$conflicts" -eq 0 ]
+  [ "$conflicts" -eq 0 ] || return 1
+
+  # Then the project itself, by the model just chosen: how its tests run
+  # here, the report they write, the probe that proves both — whatever the
+  # stack, where a template per runner used to be the only way in
+  # (lib/cmd_setup.sh; docs/DEFECTS.md 20.1). Offered to a person at a
+  # terminal, never forced; a script, or CI, gets the next step as a line.
+  # Not offered again once the contract is proven and nothing it stands on
+  # has moved.
+  if [ -f "$pj" ] && aif_project_set_up "$pj" && aif_project_probe "$root" --proven >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$setup" -eq 1 ] && [ -t 0 ] && [ -t 1 ]; then
+    local answer=""
+    printf '\nSet this project up now with %s? It reads how the tests run here and writes the\n' "$profile"
+    printf 'contract the gates read; the probe proves it. You confirm every install and commit. [Y/n] '
+    read -r answer || answer=n
+    case "$answer" in
+      '' | [Yy]*) exec "$AIF_ROOT/bin/aif" setup ;;
+    esac
+  fi
+  printf '\nnext: %saif setup%s — the model of this profile sets the project up for its stack, and the probe proves it\n' \
+    "$AIF_C_BOLD" "$AIF_C_RESET"
 }

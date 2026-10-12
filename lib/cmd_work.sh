@@ -1749,6 +1749,19 @@ _aif_work_preflight() {
       aif_err "the test toolchain cannot produce a verdict — every gate reads that report."
       exit 3
     fi
+    # And the contract the gates read that report by: a new test collected,
+    # named by its file, its marker kept, its red a red — proven once by the
+    # project's own probe and again whenever what it stands on moves (a
+    # runner upgraded, a config changed), in a copy of the tree, before a
+    # station is paid to meet it (docs/DEFECTS.md 20.1).
+    local contract crc=0
+    contract="$(aif_project_probe "$root" --cached)" || crc=$?
+    if [ "$crc" -ne 0 ]; then
+      [ "$crc" -ne 127 ] || contract="the probe gate is not installed (.aif/gates/probe.sh) — aif init installs it"
+      printf '%s\n' "$contract" >&2
+      aif_err "the test contract does not hold — every gate after the plan reads the report it proves. aif setup fixes it with you; aif doctor --probe shows it again. Nothing was spent, and no card was touched"
+      exit 3
+    fi
   fi
 
   aif_profile_export_env
@@ -2740,12 +2753,13 @@ $complaint"
         printf '\n\n---\n\n'
         if [ -n "$frag" ]; then
           cat "$frag"
-          knows=" · stack $kind"
+          knows=" · stack ${kind:-?}"
+          [ "${frag#"$wt"/}" != "$AIF_STACK_FILE" ] || knows=" · stack ${kind:-?} (the project's)"
         elif [ -z "$kind" ]; then
-          printf '# The stack\n\nNo runner fragment: .aif/project.json records no test.kind, and the test command names neither jest nor pytest. Work from the rules above and the project'"'"'s guide below.\n'
+          printf '# The stack\n\nNo runner fragment: .aif/project.json records no test.kind, the test command names neither jest nor pytest, and the project has no .aif/stack.md. Work from the rules above and the project'"'"'s guide below.\n'
           _aif_work_say "station" "no runner fragment — project.json records no test.kind; $station works from its general rules"
         else
-          printf '# The stack\n\nNo runner fragment ships for "%s" (%s/%s.md is not installed). Work from the rules above and the project'"'"'s guide below.\n' "$kind" "$AIF_STACKS_DIR" "$kind"
+          printf '# The stack\n\nNo runner fragment ships for "%s" (%s/%s.md is not installed), and the project has no %s of its own. Work from the rules above and the project'"'"'s guide below.\n' "$kind" "$AIF_STACKS_DIR" "$kind" "$AIF_STACK_FILE"
           _aif_work_say "station" "no runner fragment for '$kind' — $station works from its general rules"
         fi
         printf '\n\n---\n\n'
@@ -3108,16 +3122,40 @@ EOF
 
 # _aif_work_dep_dirs <wt> — the installed dependencies a copy links: every
 # node_modules (the first one down each branch), .venv or venv at the root,
-# each while git ignores it. The gates' aif_g_dep_dirs, kept equal by
-# scripts/check-work.sh.
+# each while git ignores it — or what the project names under copies.link
+# instead (a name anywhere, a path with a "/" from the root). The gates'
+# aif_g_dep_dirs, kept equal by scripts/check-work.sh.
 _aif_work_dep_dirs() {
-  local root="$1" p
+  local root="$1" p n anchored="" dirs='node_modules
+/.venv
+/venv'
+  if [ -f "$root/.aif/project.json" ]; then
+    p="$(jq -r 'if (.copies.link | type) == "array" then "set", (.copies.link[] | strings) else empty end' "$root/.aif/project.json" 2>/dev/null)" || p=""
+    if [ "${p%%
+*}" = set ]; then dirs="$(printf '%s\n' "$p" | sed 1d)"; fi
+  fi
+  set --
+  while IFS= read -r n; do
+    n="${n%/}"
+    [ -n "$n" ] || continue
+    case "$n" in
+      */*)
+        n="${n#/}"
+        if [ -d "$root/$n" ] && [ ! -L "$root/$n" ]; then anchored="$anchored$root/$n
+"; fi
+        ;;
+      *)
+        [ "$#" -eq 0 ] || set -- "$@" -o
+        set -- "$@" -name "$n"
+        ;;
+    esac
+  done <<EOF
+$dirs
+EOF
   {
-    find "$root" \( -path "$root/.git" -o -path "$root/.aif/worktrees" \) -prune -o \
-      -type d -name node_modules -print -prune 2>/dev/null
-    for p in .venv venv; do
-      if [ -d "$root/$p" ] && [ ! -L "$root/$p" ]; then printf '%s\n' "$root/$p"; fi
-    done
+    [ "$#" -eq 0 ] || find "$root" \( -path "$root/.git" -o -path "$root/.aif/worktrees" \) -prune -o \
+      -type d \( "$@" \) -print -prune 2>/dev/null
+    printf '%s' "$anchored"
   } | while IFS= read -r p; do
     p="${p#"$root"/}"
     [ -z "$p" ] || [ "$p" = "$root" ] || printf '%s\n' "$p"
@@ -5824,6 +5862,7 @@ aif_cmd_work() {
 
   local root
   root="$(aif_require_project)"
+  aif_project_stack_load "$root"
 
   # What this machine knows of a run (_aif_work_status_json): read before
   # anything else, like a --stop — no profile, no board, no lock — and never

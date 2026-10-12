@@ -301,13 +301,16 @@ body="$(row t0 tests/t0.py 1)"
 for t in tests/t_*.py; do
   [ -f "$t" ] || continue
   m="$(sed -n '1s/^# \([A-Z0-9-]* AC-[0-9]*\).*/\1/p' "$t")"
-  g=0; grep -q "impl-${m%% *}\$" "src/${t#tests/t_}" 2>/dev/null && g=1
+  g=0; grep -q "impl-${m%% *}\$" "src/${t#tests/t_}" 2>/dev/null && g=1; grep -q PASSES "$t" && g=1
   body="$body$(row "$m t1" "$t" "$g")"
 done
 printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$body" > .aif/tmp/report.xml
 SUITE
   chmod +x .aif/suite.sh
-  jq '.test.command = "bash .aif/suite.sh" | .test.roots = ["tests"] | .test.report.path = ".aif/tmp/report.xml"' \
+  # The probe the worker proves the test contract with (.aif/gates/probe.sh):
+  # a test of PROBE-1 AC-001 the stub reads, PASSES its green.
+  jq '.test.command = "bash .aif/suite.sh" | .test.roots = ["tests"] | .test.report.path = ".aif/tmp/report.xml"
+      | .test.probe = { path: "tests/t_probe.py", red: "# PROBE-1 AC-001 asserts\n", green: "# PROBE-1 AC-001 PASSES\n" }' \
     .aif/project.json >"$OUT/project.json.tmp" && mv "$OUT/project.json.tmp" .aif/project.json
   "$AIF" project guide >/dev/null 2>&1 || {
     printf 'check-start: aif project guide failed — cannot continue\n'

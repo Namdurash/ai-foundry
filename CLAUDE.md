@@ -53,7 +53,12 @@ make release V=0.5.1
 - **A runner is two files.** `sets/claude/project.templates/<r>.json` and
   `sets/claude/stacks/<r>.md` ship together — the fragment is what the worker
   appends to the plan and tests stations for a project of that `test.kind` —
-  and `scripts/check-set.sh` fails on one without the other.
+  and `scripts/check-set.sh` fails on one without the other. `base.json` is no
+  runner: every other runner starts from it, and `aif setup` writes its test
+  contract (`.aif/project.json`, `.aif/stack.md`, `.aif/adapter/`) and
+  `.aif/gates/probe.sh` proves it. A new stack must never need code in aif — what
+  the gates know of a stack is a `project.json` key with today's list as its
+  default (`docs/DEFECTS.md` 20.1).
 - **`docs/` is gitignored** except `docs/DEFECTS.md` — the one defect log,
   tracked deliberately: an open defect in full, a closed one in a line, ids
   `N.M` that never move because code comments cite them — and `docs/CYCLE.md`

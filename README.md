@@ -443,7 +443,32 @@ silent: you edit the clone, type `aif`, and run the tap's older copy.
 ### Once, per project
 
 ```sh
-aif init              # install the set, pick a profile
+aif init              # install the set, pick the model (a profile) — and, at a
+                      # terminal, it offers the next line
+aif setup             # that model sets aif up for THIS project's stack — any
+                      # test runner, web, mobile, an engine — writing the test
+                      # contract the gates read; the probe proves it
+```
+
+`aif setup` opens one Claude Code session on the project's profile with the
+`aif-setup` skill as its procedure. The model reads how the tests run here and
+writes the **test contract** into `.aif/project.json` — the command, the report,
+which files are tests, the failure classes, the dependency manifests, what the
+gates' copies link or leave out, the probe — plus `.aif/stack.md`, what the
+stations are told about this stack, and, where the runner writes no JUnit of its
+own, an adapter under `.aif/adapter/`. None of that is taken on the model's word:
+`.aif/gates/probe.sh` writes a probe test into a copy of the tree — red, then
+green, then unable to load — and reads the report exactly as verify-red does
+(the test collected, its file named, its marker kept, its red a red, the same id
+every run). The worker proves it again before a run whenever what it stands on
+moves — the config, the lockfiles, the adapter, the gates — so a runner upgraded
+under the project is found before a station is paid to meet it. Every install
+and commit waits for your yes. jest and pytest still have templates
+(`aif project init` copies one); any other runner starts from the base template.
+
+By hand, the same steps:
+
+```sh
 aif project init      # detect the runner, and ask what "done" means here —
                       # then REVIEW .aif/project.json, especially test.command
 aif project guide     # write .aif/guide/tests.md from the repository — where the
@@ -775,10 +800,11 @@ the gates rather than remembered.
 
 | command | what it does |
 |---|---|
-| `aif init [profile]` | install the set; merge, never clobber |
+| `aif init [profile] [--no-setup]` | install the set; merge, never clobber; pick the model, and offer `aif setup` |
+| `aif setup [--model M] [--print]` | the profile's model sets aif up for this project's stack in one session — the test contract, `.aif/stack.md`, an adapter where needed — and `.aif/gates/probe.sh` proves it |
 | `aif uninstall` | reverse the manifest; round-trips clean |
 | `aif profiles` | list the (set, runner, model) profiles |
-| `aif project init [runner]` | scaffold `.aif/project.json`, and ask what "done" means |
+| `aif project init [runner]` | scaffold `.aif/project.json` from the runner's template, or the base one for a runner aif has none for, and ask what "done" means |
 | `aif project checks` | ask again, and record the answer |
 | `aif project check` | validate it, and say what has moved since the template it was made from |
 | `aif project upgrade` | bring forward what aif changed its mind about — the failure classes, a type-check's phases, the caps, the runner — and leave your own fields alone |
@@ -858,7 +884,9 @@ is **data the pipeline supplies**, appended by the worker to the plan and tests
 stations' prompts after their own instructions, in two layers
 (`docs/REBUILD-4.md` §6):
 
-- **The runner fragment**, shipped with the set — `sets/claude/stacks/jest.md`,
+- **The stack fragment**: the project's own `.aif/stack.md` when it has one —
+  `aif setup` writes it, for the runner as it is set up here — else the one
+  shipped with the set — `sets/claude/stacks/jest.md`,
   `pytest.md`, installed to `.aif/stacks/` — chosen by `test.kind` in
   `.aif/project.json` (`aif project init` records it; an older file is read by
   its test command). What red looks like under that runner and how the report
@@ -867,8 +895,8 @@ stations' prompts after their own instructions, in two layers
   asserts a throw passes against a skeleton that throws, so assert the specific
   error; mocks at the boundaries, never of the module under test; no snapshots.
   One fragment per template, and `scripts/check-set.sh` holds the pair together.
-  A runner the set has no fragment for leaves the stations on their general
-  rules — `aif doctor` says so on its `stack` line, and the run says so too.
+  A runner with neither leaves the stations on their general rules — `aif
+  doctor` says so on its `stack` line, and the run says so too.
 - **The project's guide**, `.aif/guide/tests.md`, written by `aif project guide`
   from what *this* repository declares: the runner's configuration lines, the
   setup files it loads, the manual mocks, factories and fixtures (a `conftest.py`

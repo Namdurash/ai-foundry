@@ -162,12 +162,39 @@ esac
 
 # A test by its name or its place. `__tests__/` is jest's own root — the jest
 # template's (docs/DEFECTS.md 13.10). The gates' aif_g_test_path is the same
-# rule; this copy is the hook's, which cannot source the gates.
+# rule; this copy is the hook's, which cannot source the gates — the same
+# patterns, the project's own when .aif/project.json names them under
+# test.files: a pattern with a "/" matched against the path, one without
+# against the file's name. This copy once matched *test_*.py against the
+# whole path, and a module named latest_value.py was a test the plan station
+# could not write (docs/DEFECTS.md 20.2).
+test_files='tests/*
+test/*
+__tests__/*
+*/tests/*
+*/test/*
+*/__tests__/*
+*.test.*
+*.spec.*
+*_test.*
+test_*.py'
+if [ -f "$PWD/.aif/project.json" ]; then
+  tf="$(jq -r 'if (.test.files | type) == "array" then "set", (.test.files[] | strings) else empty end' "$PWD/.aif/project.json" 2>/dev/null)" || tf=""
+  if [ "${tf%%
+*}" = set ]; then test_files="$(printf '%s\n' "$tf" | sed 1d)"; fi
+fi
 is_test() {
-  case "$1" in
-    tests/* | test/* | __tests__/* | */tests/* | */test/* | */__tests__/*) return 0 ;;
-    *_test.* | *test_*.py | *.test.* | *.spec.*) return 0 ;;
-  esac
+  local pat b="${1##*/}"
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # shellcheck disable=SC2254  # the project's patterns are globs
+    case "$pat" in
+      */*) case "$1" in $pat) return 0 ;; esac ;;
+      *) case "$b" in $pat) return 0 ;; esac ;;
+    esac
+  done <<EOF
+$test_files
+EOF
   return 1
 }
 

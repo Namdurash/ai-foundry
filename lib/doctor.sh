@@ -114,16 +114,19 @@ _aif_doctor_project() {
     local kind recorded
     kind="$(aif_project_kind "$config")"
     recorded="$(aif_project_kind_recorded "$config")"
-    if [ -z "$kind" ]; then
-      printf '  %s %-14s %sno test.kind in project.json, and the test command names neither jest nor pytest — the stations get no runner fragment and work from their general rules%s\n' \
-        "$(aif_no)" "stack" "$AIF_C_DIM" "$AIF_C_RESET"
+    if [ -f "$root/$AIF_STACK_FILE" ]; then
+      printf '  %s %-14s %s — the project'"'"'s own %s goes to the plan and tests stations\n' \
+        "$(aif_ok)" "stack" "${kind:-?}" "$AIF_STACK_FILE"
+    elif [ -z "$kind" ]; then
+      printf '  %s %-14s %sno test.kind in project.json, no %s, and the test command names neither jest nor pytest — the stations work from their general rules (aif setup writes %s)%s\n' \
+        "$(aif_no)" "stack" "$AIF_C_DIM" "$AIF_STACK_FILE" "$AIF_STACK_FILE" "$AIF_C_RESET"
     elif [ -n "$(aif_stack_fragment "$root" "$kind")" ]; then
       printf '  %s %-14s %s — %s/%s.md goes to the plan and tests stations%s\n' \
         "$(aif_ok)" "stack" "$kind" "$AIF_STACKS_DIR" "$kind" \
         "$([ -n "$recorded" ] || printf ' %s(inferred from test.command; record it as test.kind)%s' "$AIF_C_YELLOW" "$AIF_C_RESET")"
     else
-      printf '  %s %-14s %sno fragment for %s at %s/%s.md — the stations work from their general rules (aif init installs the ones the set ships)%s\n' \
-        "$(aif_no)" "stack" "$AIF_C_DIM" "$kind" "$AIF_STACKS_DIR" "$kind" "$AIF_C_RESET"
+      printf '  %s %-14s %sno fragment for %s — aif ships none, and the project has no %s: the stations work from their general rules (aif setup writes it)%s\n' \
+        "$(aif_no)" "stack" "$AIF_C_DIM" "$kind" "$AIF_STACK_FILE" "$AIF_C_RESET"
     fi
   fi
 
@@ -412,6 +415,32 @@ aif_doctor_probe() {
   return 0
 }
 
+# _aif_doctor_contract <root> — the test contract proven again, a line under
+# Test toolchain, and the fix when it does not hold; AIF_DOCTOR_CONTRACT the
+# detail the roles table says. rc 0 it holds.
+AIF_DOCTOR_CONTRACT=""
+_aif_doctor_contract() {
+  local root="$1" out rc=0
+  out="$(aif_project_probe "$root")" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    AIF_DOCTOR_CONTRACT="$(printf '%s\n' "$out" | tail -1 | sed 's/^probe: //')"
+    printf '  %s %-14s %s\n' "$(aif_ok)" "test contract" "$AIF_DOCTOR_CONTRACT"
+    return 0
+  fi
+  if [ "$rc" -eq 127 ]; then
+    AIF_DOCTOR_CONTRACT="the probe gate is not installed (.aif/gates/probe.sh) — aif init installs it"
+  else
+    AIF_DOCTOR_CONTRACT="$(printf '%s\n' "$out" | grep -m1 -E '✗|^ERROR' | sed 's/^probe: ✗ //; s/^ERROR  //')"
+    [ -n "$AIF_DOCTOR_CONTRACT" ] || AIF_DOCTOR_CONTRACT="the probe could not prove it (exit $rc)"
+  fi
+  printf '  %s %-14s %s\n' "$(aif_no)" "test contract" "$AIF_DOCTOR_CONTRACT"
+  printf '%s\n' "$out" | sed -n 's/^  fix: //p' | head -1 | while IFS= read -r l; do
+    printf '       %s%s%s\n' "$AIF_C_DIM" "$l" "$AIF_C_RESET"
+  done
+  printf '       %saif setup proves it with you, and fixes what the probe finds%s\n' "$AIF_C_DIM" "$AIF_C_RESET"
+  return 1
+}
+
 # _aif_doctor_guard_matcher <root> — the matcher our PreToolUse registration
 # carries in .claude/settings.json, echoed; rc 1 when the guard hook is not
 # registered there at all. Ours is the entry whose every hook runs from
@@ -531,6 +560,48 @@ _aif_doctor_caps() {
     t_d="not probed — aif doctor --probe runs the test command once"
   fi
 
+  # test-contract — does the test contract hold: a new test collected, named
+  # by its file, its marker kept, its failing assertion a red, the same id on
+  # every run — proven by the project's own gate, .aif/gates/probe.sh,
+  # writing the probe test into a copy of the tree (docs/DEFECTS.md 20.1).
+  # --probe proves it again; without, the last proof is what is said, when
+  # nothing it stands on has moved since — the suite does not run.
+  local tc_ok tc_d tc_rc tc_out
+  if [ -z "$root" ] || [ ! -f "$(aif_project_config "$root")" ]; then
+    tc_ok=false
+    tc_d="no .aif/project.json here"
+  elif ! aif_project_set_up "$(aif_project_config "$root")"; then
+    tc_ok=false
+    tc_d="not set up — the test command, the report, the probe: aif setup writes them for this project"
+  else
+    tc_rc=0
+    if [ "$probe" -eq 1 ]; then
+      tc_out="$(aif_project_probe "$root")" || tc_rc=$?
+    else
+      tc_out="$(aif_project_probe "$root" --proven)" || tc_rc=$?
+    fi
+    case "$tc_rc" in
+      0)
+        tc_ok=true
+        tc_d="$(printf '%s\n' "$tc_out" | tail -1 | sed 's/^probe: //')"
+        ;;
+      5)
+        tc_ok=null
+        tc_d="not proven since what it stands on last moved — aif doctor --probe proves it (the worker does, before a run)"
+        ;;
+      127)
+        tc_ok=false
+        tc_d="the probe gate is not installed (.aif/gates/probe.sh) — aif init installs it"
+        ;;
+      *)
+        tc_ok=false
+        tc_d="$(printf '%s\n' "$tc_out" | grep -m1 -E '✗|^ERROR' | sed 's/^probe: ✗ //; s/^ERROR  //')"
+        [ -n "$tc_d" ] || tc_d="the probe could not prove it (exit $tc_rc)"
+        tc_d="$tc_d — $(printf '%s\n' "$tc_out" | sed -n 's/^  fix: //p' | head -1)"
+        ;;
+    esac
+  fi
+
   if [ -z "$root" ] || [ ! -f "$(aif_project_config "$root")" ]; then
     b_ok=false
     b_d="no .aif/project.json here"
@@ -631,11 +702,12 @@ _aif_doctor_caps() {
     --argjson g "$g_ok" --arg gd "$g_d" \
     --argjson t "$t_ok" --arg td "$t_d" --argjson b "$b_ok" --arg bd "$b_d" \
     --argjson p "$p_ok" --arg pd "$p_d" --argjson s "$s_ok" --arg sd "$s_d" \
-    --argjson tg "$tg_ok" --arg tgd "$tg_d" '
+    --argjson tg "$tg_ok" --arg tgd "$tg_d" --argjson tc "$tc_ok" --arg tcd "$tc_d" '
     { "claude":          { ok: $c, detail: $cd },
       "claude-headless": { ok: $h, detail: $hd },
       "git-worktree":   { ok: $g, detail: $gd },
       "test-toolchain": { ok: $t, detail: $td },
+      "test-contract":  { ok: $tc, detail: $tcd },
       "board":          { ok: $b, detail: $bd },
       "python3":        { ok: $p, detail: $pd },
       "station-guard":  { ok: $s, detail: $sd },
@@ -719,10 +791,17 @@ aif_doctor() {
   local project_rc=0
   _aif_doctor_project || project_rc=$?
 
-  local probe_rc=0
+  local probe_rc=0 contract_rc="" contract_d=""
   if [ "$probe" -eq 1 ]; then
     if [ -n "$root" ]; then
       aif_doctor_probe "$root" || probe_rc=$?
+      # The contract, once the suite is known to run: the same proof the
+      # worker asks for before a run, made again here whatever it cached.
+      if [ "$probe_rc" -eq 0 ]; then
+        contract_rc=0
+        _aif_doctor_contract "$root" || contract_rc=$?
+        contract_d="$AIF_DOCTOR_CONTRACT"
+      fi
     fi
   fi
 
@@ -736,6 +815,9 @@ aif_doctor() {
     if [ "$probe" -eq 1 ]; then
       caps="$(printf '%s' "$caps" | jq --argjson ok "$([ "$probe_rc" -eq 0 ] && printf true || printf false)" \
         '."test-toolchain" = { ok: $ok, detail: (if $ok then "the test command runs and writes a parseable report" else "the test toolchain cannot produce a verdict — see above" end) }')"
+      [ -z "$contract_rc" ] ||
+        caps="$(printf '%s' "$caps" | jq --argjson ok "$([ "$contract_rc" -eq 0 ] && printf true || printf false)" --arg d "$contract_d" \
+          '."test-contract" = { ok: $ok, detail: $d }')"
     fi
     roles="$(_aif_doctor_roles "$root" "$caps")"
     _aif_doctor_render_roles "$roles"
@@ -775,7 +857,12 @@ aif_doctor() {
     return 1
   fi
   if [ ! -f "$(aif_project_config "$root")" ]; then
-    printf 'next: %saif project init%s\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    printf 'next: %saif setup%s — the model of your profile sets this project up, and the probe proves it (or by hand: aif project init)\n' "$AIF_C_BOLD" "$AIF_C_RESET"
+    return 1
+  fi
+  if ! aif_project_set_up "$(aif_project_config "$root")"; then
+    printf 'next: %saif setup%s — the test contract is not set up: the model of your profile writes it for this project, and the probe proves it\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET"
     return 1
   fi
   if [ "$(aif_project_drift "$(aif_project_config "$root")" | grep -c . || true)" -gt 0 ]; then
@@ -792,6 +879,11 @@ aif_doctor() {
     return 1
   fi
   if [ "$probe_rc" -ne 0 ]; then
+    return 1
+  fi
+  if [ -n "$contract_rc" ] && [ "$contract_rc" -ne 0 ]; then
+    printf 'next: %saif setup%s — the test contract does not hold (the ✗ above); the model of your profile fixes it with you, and the probe proves it\n' \
+      "$AIF_C_BOLD" "$AIF_C_RESET"
     return 1
   fi
   if [ "$probe" -eq 0 ]; then

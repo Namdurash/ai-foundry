@@ -37,8 +37,13 @@
 # one dispatches stations that were told to read a file that is not there,
 # and `aif work` refuses before spending anything, the way it refuses without
 # a project.json.
+#
+# test-contract is the worker's because every gate after the plan reads the
+# report the probe proves (.aif/gates/probe.sh): a project whose report names
+# no file, or loses the marker, had every ticket stopped at verify-red after
+# the plan and tests stations were paid for (docs/DEFECTS.md 20.1).
 aif_roles_builtin() {
-  printf 'worker\tclaude-headless git-worktree test-toolchain board test-guide\n'
+  printf 'worker\tclaude-headless git-worktree test-toolchain test-contract board test-guide\n'
 }
 
 # aif_role_requires_of_skill <SKILL.md> — the `requires:` list, space-separated.

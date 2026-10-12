@@ -337,6 +337,17 @@ gt "implement writes a test through src/.."          src/../tests/t.py deny impl
 gt "implement writes above the project"              ../outside.py deny implement
 gt "implement writes an absolute path outside the project" /etc/aif-guard-probe deny implement
 gt "plan climbs out and back in"                     src/../../proj/.aif/project.json deny plan
+# docs/DEFECTS.md 20.2: the guard's copy matched *test_*.py against the whole
+# path, and a module whose name holds "test_" was a test the plan could not
+# write. And a project's own test.files (docs/DEFECTS.md 20.1) — a Swift
+# project's — read by the guard as the gates read them.
+gt "plan writes a module whose name holds test_"     src/latest_value.py allow plan
+mkdir -p "$GP/proj/.aif"
+printf '{ "test": { "files": ["*Tests/*", "*Tests.swift"] } }\n' >"$GP/proj/.aif/project.json"
+gt "plan writes in the project's own test place"     App/AppTests/LoginTests.swift deny plan
+gt "tests writes a test named as the project names them" App/LoginTests.swift allow tests
+gt "tests writes a jest-named file the project does not count as a test" src/a.test.ts deny tests
+rm -f "$GP/proj/.aif/project.json"
 rm -rf "${GP:?}"
 
 printf '\nevery runner template has its stack fragment, and the other way round\n'
@@ -351,6 +362,9 @@ STACKS="$ROOT/sets/claude/stacks"
 for t in "$TEMPLATES"/*.json; do
   [ -f "$t" ] || continue
   r="$(basename "$t" .json)"
+  # The base is every runner's starting point, not a runner (docs/DEFECTS.md
+  # 20.1): no fragment, no kind — checked on its own below.
+  [ "$r" != base ] || continue
   if [ -f "$STACKS/$r.md" ]; then
     ok "$r: template and fragment"
   else
@@ -374,6 +388,39 @@ for s in "$STACKS"/*.md; do
   [ "$(head -1 "$s" | cut -c1-2)" = "# " ] ||
     bad "$r: stacks/$r.md does not open with a title — it is appended after a station's instructions and has to announce itself"
 done
+
+printf '\nthe base template, and what every template carries\n'
+# docs/DEFECTS.md 20.1. A runner aif ships no template for starts from the
+# base, its test contract empty for `aif setup` to write and the probe to
+# prove; `aif project upgrade` brings such a project up to the base. So what
+# aif decides outside the runner — the caps, the copies, the explain moment,
+# the tiers — is one decision in three files, held equal here. Each runner
+# template proves its own contract with a probe of its own, and jest's
+# report names each case's file (jest-junit's addFileAttribute is "false"
+# unless set — docs/DEFECTS.md 20.3).
+BASE="$TEMPLATES/base.json"
+if [ -f "$BASE" ]; then
+  ok "base.json ships"
+  [ "$(jq -r '.test.command + "|" + .test.kind' "$BASE")" = "|" ] ||
+    bad "base.json has a test command or a kind — its contract is aif setup's to write"
+  for t in "$TEMPLATES"/*.json; do
+    r="$(basename "$t" .json)"
+    [ "$r" != base ] || continue
+    if [ "$(jq -S 'del(.test, .prepare, .failure_classes, .risk_rules, .deps, .copies.link)' "$t")" = \
+      "$(jq -S 'del(.test, .prepare, .failure_classes, .risk_rules, .deps, .copies.link)' "$BASE")" ]; then
+      ok "$r agrees with the base outside the runner's own keys"
+    else
+      bad "$r and base.json differ outside the runner's keys — a cap or a copy setting moved in one and not the other"
+    fi
+    [ "$(jq -r '.test.probe | type' "$t")" = object ] ||
+      bad "$r: the template has no test.probe — a project made from it cannot prove its contract"
+  done
+else
+  bad "base.json is missing — a runner without a template has nothing to start from"
+fi
+grep -q 'JEST_JUNIT_ADD_FILE_ATTRIBUTE=true' "$TEMPLATES/jest.json" ||
+  bad "jest.json: the command does not make jest-junit write @file — verify-red cannot tell a ticket's tests from the suite"
+[ -f "$ROOT/sets/claude/gates/probe.sh" ] || bad "the probe gate is missing — nothing proves a project's test contract"
 
 printf '\nthe junit parser reads what pytest writes\n'
 # junit.py turns a report into per-test rows and verify-red matches each row's

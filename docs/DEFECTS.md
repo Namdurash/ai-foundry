@@ -262,6 +262,14 @@ Not a defect of aif: of the repository's own `make lint`, which every change run
 
 - **18.1** `make lint` ran one shellcheck over all 54 sources, and its dataflow analysis, kept for the whole run, grew past 8 GB: on a 24 GB Mac macOS closed the programs around it and the Mac had to restart — observed (a JetsamEvent: shellcheck the largest process at 8.5 GB); probed (past 3.4 GB in 14 s and growing, killed by a watchdog). One shellcheck per file, bin/aif alone with SC1091 excepted — it sources every lib file, each linted as its own input: 2.1 GB at most, 21 s, the same findings; turning the analysis off is not, 36 SC2086 it proves safe (docs/FINDINGS.md #42). The Makefile's `lint`.
 
+### Log 19 — after 0.16.0, the first live shift on `opes` (2026-10-12)
+
+The shift's first run on a real board and a real CLI: `opes` brought to the
+set on `main` (`aif init`, `aif project upgrade`), `aif work --loop --idle` in
+one terminal, the shift in the other.
+
+- **19.1** The model a station ran on was every model its envelope named, joined — observed (OPES-75's dashboard: `sonnet → claude-haiku-4-5-202…`; its ledger: `claude-haiku-4-5-20251001,claude-opus-5` for plan and tests, `…,claude-sonnet-5` for implement); probed. claude 2.1.226 puts a call of its own to haiku — 588 tokens in, 17 out — beside the station's model under `.modelUsage` in every envelope, and the worker took the keys joined: the dashboard showed haiku as what answered, and a `.aif/prices.json` that knew the station's model priced nothing — the ledger said `tokens-only`, and the budget's token-priced half read 0, the runner's own figure all it had. The model is the one that wrote the most (`_aif_work_envelope_model`, lib/cmd_work.sh); claude's own call is left unpriced, as the envelope's `.usage` is the station's model's. On `main` after 0.16.0; scenario 100.
+
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 
 Four problems from a loop that built nothing: two tickets stopped at the plan

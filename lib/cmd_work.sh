@@ -2973,7 +2973,7 @@ EOF
   subtype="$("aif_runner_${AIF_PROFILE_RUNNER}_result_subtype" "$out")" || subtype=""
   # An empty final message splits to no line, `null` to jq (docs/DEFECTS.md 13.7).
   summary="$(jq -r '(.result // "") | (split("\n")[0] // "") | .[0:200]' "$out" 2>/dev/null)" || summary=""
-  model_ran="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
+  model_ran="$(_aif_work_envelope_model "$out")"
   [ -n "$model_ran" ] || model_ran="$model"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   _aif_work_live '.tokens = ((.tokens // 0) + $o) | .models[$s] = $id | .model_id = $id' \
@@ -3007,13 +3007,26 @@ EOF
 _aif_work_envelope_cost() {
   local wt="$1" out="$2" runner priced model usage
   runner="$(jq -r '.total_cost_usd // 0' "$out" 2>/dev/null)"
-  model="$(jq -r '.modelUsage // {} | keys | join(",")' "$out" 2>/dev/null)"
+  model="$(_aif_work_envelope_model "$out")"
   usage="$("aif_runner_${AIF_PROFILE_RUNNER}_result_usage" "$out")"
   priced="$(_aif_meter_cost "$wt/.aif/prices.json" "$model" "$usage")"
   case "$priced" in
     '' | null) priced=0 ;;
   esac
   awk -v r="${runner:-0}" -v p="$priced" 'BEGIN { printf "%.4f", (r > p) ? r : p }'
+}
+
+# _aif_work_envelope_model <envelope> — the model that did the station's work:
+# the one under .modelUsage that wrote the most. claude 2.1.226 puts a call of
+# its own to a small model beside the station's in every envelope —
+# claude-haiku-4-5, some 600 tokens in and 17 out — and the keys joined were
+# one id no price table holds, haiku first: the dashboard showed haiku as
+# what answered and a filled .aif/prices.json priced nothing (docs/DEFECTS.md
+# 19.1). The envelope's .usage, which the cost prices, is the station's model's.
+_aif_work_envelope_model() {
+  jq -r '.modelUsage // {} | to_entries
+         | max_by((.value.outputTokens // 0), (.value.inputTokens // 0))
+         | .key // empty' "$1" 2>/dev/null || true
 }
 
 # _aif_work_keep_envelope <wt> <ticket> <n> <station> <envelope>

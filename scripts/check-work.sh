@@ -1109,13 +1109,20 @@ if knob "${FAKE_EMPTY_RESULT:-}"; then
   empty="$(knob_arg "$FAKE_EMPTY_RESULT")"
   [ -n "$empty" ] || empty=ok
 fi
+# FAKE_SIDE_MODEL=1: the envelope names claude's own small call beside the
+# station's model, as every envelope of claude 2.1.226 does — a haiku id that
+# sorts first, 588 tokens in and 17 out (docs/DEFECTS.md 19.1).
 jq -n --arg st "$station" --argjson n "$n" --argjson cost "$cost" --arg prompt "$prompt" --arg empty "$empty" \
+  --arg side "${FAKE_SIDE_MODEL:-}" \
   '{type:"result",subtype:(if $empty == "error" then "error_max_turns" else "success" end),
     is_error:($empty == "error"),
     result:(if $empty == "" then ("fake " + $st + " done\n" + $prompt) else "" end),
     num_turns:2,total_cost_usd:$cost,duration_ms:5,
     usage:{input_tokens:10,output_tokens:(20*$n),cache_read_input_tokens:0,cache_creation_input_tokens:0},
-    modelUsage:{"fake-model":{}}}
+    modelUsage:(if $side == "1"
+      then {"claude-haiku-4-5-20251001":{inputTokens:588,outputTokens:17},
+            "fake-model":{inputTokens:10,outputTokens:(20*$n)}}
+      else {"fake-model":{}} end)}
    | if $empty == "error" then .terminal_reason = "max_turns" else . end' >"$out"
 FAKE
 chmod +x "$SANDBOX/fake-station.sh"
@@ -8377,6 +8384,28 @@ stty99="$(sed -n '/^RC=/,$p' "$OUT/screen99")"
 eq "…its card saying a second Ctrl-C stopped it, and the terminal back with its Ctrl-C, in icanon and echo" \
   "$(last_comment AIF-990 | sed -n 1p)|$(printf '%s\n' "$stty99" | grep -o 'intr = [^;]*' | sed -n 1p),$(printf '%s\n' "$stty99" | tr -s ' \t;' '\n' | grep -xE -- '-?(icanon|echo)' | sort | tr '\n' ' ')" \
   "blocked: stopped — by Ctrl-C, during plan|intr = ^C,echo icanon "
+cd "$SANDBOX" || exit 1
+
+# ====== 100. the model a station ran on is the one that did its work ========
+# docs/DEFECTS.md 19.1. Every envelope of claude 2.1.226 names, beside the
+# station's model, a small call of claude's own to haiku, and the worker took
+# the keys joined: `claude-haiku-4-5-20251001,claude-sonnet-5` on the
+# dashboard, in the ledger and as the price table's key — haiku shown as what
+# answered, and a price table that knew the station's model priced nothing,
+# the budget's token-priced half among it. A project that prices the fake
+# model, every envelope saying USD 0, haiku in every one.
+printf '\n100. the model a station ran on is the one that wrote the most, not every model its envelope names\n'
+priced "$SANDBOX/p100"
+ticket_for AIF-1000
+git add -A && git commit -qm "ticket 100" >/dev/null
+rc=0
+FAKE_SIDE_MODEL=1 FAKE_ZERO_COST=1 "$AIF" work AIF-1000 --no-worktree >"$OUT/run100.out" 2>&1 || rc=$?
+eq "built, haiku beside the fake model in every envelope" "$rc" "0"
+eq "the ledger names the station's model, not the keys joined, and prices it" \
+  "$(jq -r '[.entries[] | select(.station != null)] | ([.[].model] | unique | join(",")) + " · " + ([.[].cost_source] | unique | join(","))' .aif/state/ledgers/AIF-1000.json)" \
+  "fake-model · priced"
+eq "the budget's token-priced half counts it, where every envelope said USD 0" \
+  "$(jq -r '.spent_usd > 0' tasks/AIF-1000/run.json)" "true"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

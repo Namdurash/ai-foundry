@@ -612,6 +612,8 @@ aif_project_drift() {
       ( ($t.limits_retired // [])[] | . as $k
         | select(($p.limits // {}) | has($k))
         | "limits." + $k + " is set, and nothing reads it any more — aif retired it, so it looks like a cap and is not one" ),
+      ( select((($p.tiers.routine // "") == "sonnet") and (($t.tiers.routine // "sonnet") != "sonnet"))
+        | "tiers.routine is sonnet, as every template said through 0.18.0 when nothing read it — the worker reads the tiers now, and the implement station would run sonnet on every ticket not marked high risk; the " + $tname + " template puts it at " + $t.tiers.routine ),
       ( select((($p.test.probe // null) == null) and (($t.test.probe // null) != null))
         | "test.probe is not set — the worker proves the test contract with it before a run (.aif/gates/probe.sh); the " + $tname + " template has one, at " + $t.test.probe.path ),
       ( select((($t.copies // {}) | has("leave_out")) and ((($p.copies // {}) | has("leave_out")) | not))

@@ -2623,16 +2623,35 @@ _aif_work_backoff_list() {
 # Run once the profile is exported (aif_profile_maps_model reads what that
 # exported).
 _aif_work_station_models() {
-  local f agent m
+  local f agent m station
   for f in "$1"/.claude/agents/aif-*.md; do
     [ -f "$f" ] || continue
     agent="${f##*/}"
     agent="${agent%.md}"
-    m="$(_aif_work_frontmatter "$1" "$agent" model)" || m=""
+    station="$(aif_meta_json "$f" 2>/dev/null | jq -r '.station // empty' 2>/dev/null)" || station=""
+    m="$(_aif_work_station_model "$1" "$station" "$agent")" || m=""
     [ -n "$m" ] || m=sonnet
     aif_profile_maps_model "$m" || printf '%s asks for %s\n' "$agent" "$m"
   done
   return 0
+}
+
+# _aif_work_station_model <wt> <station> <agent> — the model a station runs
+# on: the project's tiers for its tier (.aif/project.json — routine, careful;
+# the implement station's chosen by the ticket's risk, aif_station_agent),
+# else the agent's own model: line. The tiers were the project's to set and
+# validated, and read by nothing: the implement station ran sonnet on every
+# ticket the analyst did not mark high, whatever the project said
+# (docs/DEFECTS.md 21.1).
+_aif_work_station_model() {
+  local wt="$1" agent="$3" tier m=""
+  tier="$(aif_meta_json "$wt/.claude/agents/$agent.md" 2>/dev/null | jq -r --arg a "$agent" '
+    if .tier == "risk" then (if (.agents.careful // "") == $a then "careful" else "routine" end)
+    elif .tier == "careful" or .tier == "routine" then .tier
+    else empty end' 2>/dev/null)" || tier=""
+  [ -z "$tier" ] || m="$(jq -r --arg t "$tier" '.tiers[$t] // empty' "$(aif_project_config "$wt")" 2>/dev/null)" || m=""
+  [ -n "$m" ] || m="$(_aif_work_frontmatter "$wt" "$agent" model)"
+  printf '%s' "$m"
 }
 
 # _aif_work_dispatch <wt> <ticket> <station> <agent> <complaint> <budget-left>
@@ -2663,8 +2682,13 @@ _aif_work_dispatch() {
   # that this worker lives (docs/DEFECTS.md 14.4).
   _aif_work_heartbeat
 
-  model="$(_aif_work_frontmatter "$wt" "$agent" model)"
+  model="$(_aif_work_station_model "$wt" "$station" "$agent")"
   tools="$(_aif_work_frontmatter "$wt" "$agent" tools | tr -d ' ')"
+  # The effort its aif:meta asks for, where the profile takes the flag
+  # (aif_profile_effort_ok); otherwise the CLI's own, per turn.
+  local effort
+  effort="$(aif_meta_json "$wt/.claude/agents/$agent.md" 2>/dev/null | jq -r '.effort // empty' 2>/dev/null)" || effort=""
+  aif_profile_effort_ok || effort=""
   # The station's own cap first, from its aif:meta: the plan and tests
   # stations explore and read back, and hit the project-wide 30 in three runs
   # of five on one batch, leaving half-written files for the gate to judge.
@@ -2785,7 +2809,7 @@ $complaint"
   # the station is said to start, and before each try after it (below).
   AIF_WORK_WAIT_PENDING=0
   _aif_work_pause_wait "$alias" "$resolved" "$station"
-  _aif_work_say "station" "$station · $agent · $model · ≤$max_turns turns$knows"
+  _aif_work_say "station" "$station · $agent · $model${effort:+ · effort $effort} · ≤$max_turns turns$knows"
   # THIS aif first on the station's PATH: `aif _verify` inside the tests
   # station must reach the aif that dispatched it, not whatever Homebrew
   # installed beside it.
@@ -2865,14 +2889,14 @@ $complaint"
         # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
         /bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" \
           "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt$cut" "$model" \
-          "$max_turns" "$budget_left" "$tools" "$stream" "$err" || rc=$?
+          "$max_turns" "$budget_left" "$tools" "$stream" "$err" "$effort" || rc=$?
       else
         "$AIF_WORK_STATION_CMD" "$station" "$ticket" "$wt" "$sys" "$prompt$cut" "$model" \
-          "$max_turns" "$budget_left" "$tools" "$stream" "$err" || rc=$?
+          "$max_turns" "$budget_left" "$tools" "$stream" "$err" "$effort" || rc=$?
       fi
     else
       "aif_runner_${AIF_PROFILE_RUNNER}_station" "$wt" "$sys" "$prompt$cut" "$model" \
-        "$max_turns" "$budget_left" "$tools" "$stream" "$err" "$pidfile" || rc=$?
+        "$max_turns" "$budget_left" "$tools" "$stream" "$err" "$pidfile" "$effort" || rc=$?
     fi
     [ -z "$pidfile" ] || rm -f "$pidfile"
     line="$("aif_runner_${AIF_PROFILE_RUNNER}_classify" "$stream" "$out" "$facts")" || line=""

@@ -38,6 +38,20 @@ aif_profile_reset() {
   AIF_PROFILE_SECRET_VAR=""
   AIF_PROFILE_SECRET_TARGET=""
   AIF_PROFILE_ISOLATE_CONFIG="0"
+  AIF_PROFILE_EFFORT=""
+}
+
+# aif_profile_effort_ok — rc 0 when the exported profile takes claude's
+# --effort: AIF_PROFILE_EFFORT=1 says it does, 0 that it does not, and a
+# profile that says neither takes it only while no ANTHROPIC_BASE_URL routes
+# the CLI elsewhere — the flag is the Anthropic API's, never probed against
+# another endpoint (glm), and a station refused there would be every station.
+aif_profile_effort_ok() {
+  case "${AIF_PROFILE_EFFORT:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [ -z "${ANTHROPIC_BASE_URL:-}" ]
 }
 
 # aif_profile_find <name> — path of the first matching profile, rc 1 if none.

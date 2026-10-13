@@ -89,7 +89,7 @@
     }
   ],
   "tiers": {
-    "routine": "sonnet",
+    "routine": "opus",
     "careful": "opus"
   }
 }

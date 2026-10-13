@@ -468,6 +468,9 @@ _aif_project_check() {
 #                             a key the template retired (limits_retired) goes
 #   copies.leave_out          set to [] where the file lacks it — the paths
 #                             the gates' copies leave out are the project's
+#   test.probe                the template's, where the file has none
+#   tiers.routine             the template's, where the file still says
+#                             sonnet — every template's, when nothing read it
 #
 # Idempotent: a current file is left alone and said to be current. What moved
 # is printed as the drift it closes; the file is the project's to review.
@@ -496,6 +499,8 @@ _aif_project_upgrade() {
     | .test.kind = (.test.kind // $kind)
     | (if ((.test.probe // null) == null) and (($t.test.probe // null) != null)
        then .test.probe = $t.test.probe else . end)
+    | (if ((.tiers.routine // "") == "sonnet") and (($t.tiers.routine // "sonnet") != "sonnet")
+       then .tiers.routine = $t.tiers.routine else . end)
     | .failure_classes.legitimate = ($tl + [ ($p.failure_classes.legitimate // [])[] | . as $x
         | select((($tl | index($x)) == null) and (($ret | index($x)) == null)) ])
     | .failure_classes.broken = ($tb + [ ($p.failure_classes.broken // [])[] | . as $x
@@ -529,6 +534,8 @@ _aif_project_upgrade() {
   # The result, field by field, so the diff reads without opening the file.
   jq -rn --argjson b "$before" --argjson a "$after" '
     (if ($b.test.kind // "") != ($a.test.kind // "") then "  test.kind → " + $a.test.kind else empty end),
+    (if ($b.tiers.routine // "") != ($a.tiers.routine // "")
+       then "  tiers.routine → " + $a.tiers.routine + " — the implement station'"'"'s model on a ticket not marked high risk" else empty end),
     (if (($b.test.probe // null) == null) and (($a.test.probe // null) != null)
        then "  test.probe → the template'"'"'s, at " + $a.test.probe.path + " — the worker proves the test contract with it before a run" else empty end),
     (if $b.failure_classes.legitimate != $a.failure_classes.legitimate then

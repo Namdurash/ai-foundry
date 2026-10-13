@@ -98,6 +98,18 @@ for f in "$AGENTS"/aif-*.md; do
   fi
 done
 
+printf '\nevery station names the effort it runs at\n'
+# docs/DEFECTS.md 21.2: the worker passes a station's aif:meta effort to
+# claude's --effort, and claude takes one of five words — a sixth stops every
+# dispatch of that station.
+for f in "$AGENTS"/aif-*.md; do
+  e="$(aif_meta_json "$f" | jq -r '.effort // ""')"
+  case "$e" in
+    low | medium | high | xhigh | max) ok "$(basename "$f"): effort $e" ;;
+    *) bad "$(basename "$f"): aif:meta effort \"$e\" is not one of low, medium, high, xhigh, max" ;;
+  esac
+done
+
 printf '\ntier variants of one station carry identical instructions\n'
 if diff <(body_after_frontmatter "$AGENTS/aif-implement.md") \
         <(body_after_frontmatter "$AGENTS/aif-implement-careful.md") >/dev/null 2>&1; then

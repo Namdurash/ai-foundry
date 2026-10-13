@@ -45,7 +45,7 @@ flowchart TB
     S_tests["station tests · opus"] --> G_tests{{"gate verify-red"}}
     G_plan --> S_tests
     G_tests -.->|"rejected: up to 4 times"| S_tests
-    S_implement["station implement · sonnet · opus if risk is high"] --> G_implement{{"gates green, scope"}}
+    S_implement["station implement · opus"] --> G_implement{{"gates green, scope"}}
     G_tests --> S_implement
     G_implement -.-> S_implement
     SYNC["sync — the branch brought onto the checkout's branch:<br/>a conflict in code settled by the implement station, the merged tree judged again"]
@@ -118,7 +118,7 @@ token, and it is the same script the analyst ran at the end of the conversation.
 |---|---|---|---|---|---|
 | plan | opus (careful) | plan | 3 | ready | plan.md |
 | tests | opus (careful) | verify-red | 4 | plan | tests.lock.json, frozen |
-| implement | sonnet, or opus when the ticket's risk is high | green, scope | 3 | plan, verify-red | the code, bound to plan.md |
+| implement | opus — the ticket's risk picks the tier, and a project may set tiers.routine apart | green, scope | 3 | plan, verify-red | the code, bound to plan.md |
 
 ## The caps on one run
 

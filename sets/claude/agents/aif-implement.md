@@ -2,7 +2,7 @@
 name: aif-implement
 description: The implementation station of the aif foundry, routine tier. Writes the code that makes the frozen failing tests pass, touching only the files the plan named. Dispatched by `aif work` when the ticket's risk is low or medium; for high risk it dispatches aif-implement-careful instead. Not for direct use.
 tools: Read, Grep, Glob, Write, Edit, Bash
-model: sonnet
+model: opus
 ---
 
 <!-- aif:meta
@@ -10,6 +10,7 @@ model: sonnet
   "requires": ["plan", "verify-red"],
   "tools": "Read Grep Glob Write Edit Bash",
   "max_turns": 60,
+  "effort": "xhigh",
   "agents": { "routine": "aif-implement", "careful": "aif-implement-careful" },
   "binds": "plan.md",
   "expects": "code under the plan's files.create and files.change — the skeleton filled in, and nothing else. green checks the suite passes, that the covering tests go red again with the code reverted to the skeleton, and the project's checks; scope checks the diff stayed inside the manifest." }

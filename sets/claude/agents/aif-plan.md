@@ -10,6 +10,7 @@ model: opus
   "requires": ["ready"],
   "tools": "Read Grep Glob Write Edit",
   "max_turns": 60,
+  "effort": "xhigh",
   "records": { "ticket_sha256": "ticket.md" },
   "expects": "plan.md — an aif:meta block carrying files.create/change/tests (the manifest scope enforces), a verdict per criterion, ac_coverage mapping every criterion to files, decisions[] with a statement and a because, uncovered, and external[] naming what validates each third-party dependency — AND the contract on disk: every path in files.create written as a skeleton whose bodies throw the not-implemented marker. Checked by the plan gate, which also compiles the skeleton where the project has a check for it." }
 -->

@@ -151,8 +151,13 @@ for stage in $stages; do
     risk)
       [ -f "$SET/agents/$(printf '%s' "$meta" | jq -r '.agents.careful // "-"').md" ] ||
         die "aif-$stage.md is tiered by risk but names no careful variant that exists"
-      engine="$routine, or $careful when the ticket's risk is high"
-      short="$routine · $careful if risk is high"
+      if [ "$routine" = "$careful" ]; then
+        engine="$routine — the ticket's risk picks the tier, and a project may set tiers.routine apart"
+        short="$routine"
+      else
+        engine="$routine, or $careful when the ticket's risk is high"
+        short="$routine · $careful if risk is high"
+      fi
       ;;
     *) die "aif-$stage.md declares no tier" ;;
   esac

@@ -607,6 +607,8 @@ cp "$4" "$wt/.aif/tmp/fake-sys-$station-$n" 2>/dev/null
 # The budget the worker handed this dispatch — empty when there is no ceiling,
 # and the real runner then omits --max-budget-usd entirely.
 printf '%s' "${8:-}" >"$wt/.aif/tmp/fake-budget"
+# The model and the effort it was dispatched with (docs/DEFECTS.md 21.1, 21.2).
+printf '%s %s' "${6:-}" "${12:-}" >"$wt/.aif/tmp/fake-engine-$station-$n"
 # The ticket the worker named for the guard, beside the station
 # (docs/DEFECTS.md 13.10): the hook reads the plan's files.tests through it.
 printf '%s' "${AIF_TICKET:-}" >"$wt/.aif/tmp/fake-ticket-$station-$n"
@@ -7220,7 +7222,9 @@ eq "a loop over two cards with a pause in force: says it, takes nothing until th
   "0,review,review,in order"
 fresh_project "$SANDBOX/p84c"
 ticket_for AIF-843
-sed 's/^model: .*/model: sonnet/' .claude/agents/aif-plan.md >"$OUT/plan84.md" && cat "$OUT/plan84.md" >.claude/agents/aif-plan.md
+# The plan station on sonnet: its own model: line, its tier taken out — a
+# station with a tier runs on the project's tiers (docs/DEFECTS.md 21.1).
+sed -e 's/^model: .*/model: sonnet/' -e 's/"tier": "careful", //' .claude/agents/aif-plan.md >"$OUT/plan84.md" && cat "$OUT/plan84.md" >.claude/agents/aif-plan.md
 git add -A && git commit -qm "one, its plan station on sonnet" >/dev/null
 "$AIF" board create tasks/AIF-843/ticket.md --column ready >/dev/null
 pause84 6 opus seven_day_opus
@@ -7350,7 +7354,7 @@ profile87() { # <name> <the alias lines> — a profile of the developer's own, r
 profile87 routed87 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
 profile87 haiku87 "ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
 model87() { # <model> — the plan station asks for it, committed
-  sed "s/^model: .*/model: $1/" .claude/agents/aif-plan.md >"$OUT/plan87.md" && cat "$OUT/plan87.md" >.claude/agents/aif-plan.md
+  sed -e "s/^model: .*/model: $1/" -e 's/"tier": "careful", //' .claude/agents/aif-plan.md >"$OUT/plan87.md" && cat "$OUT/plan87.md" >.claude/agents/aif-plan.md
   git add -A && git commit -qm "the plan station on $1" >/dev/null
 }
 model87 fable
@@ -7778,7 +7782,7 @@ profile93 fable93 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_S
 profile93 three93 "ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small"
 profile93 small93 "ANTHROPIC_DEFAULT_HAIKU_MODEL=routed-small ANTHROPIC_DEFAULT_FABLE_MODEL=routed-top"
 model93() { # <model> — the plan station asks for it, committed
-  sed "s/^model: .*/model: $1/" .claude/agents/aif-plan.md >"$OUT/plan93.md" && cat "$OUT/plan93.md" >.claude/agents/aif-plan.md
+  sed -e "s/^model: .*/model: $1/" -e 's/"tier": "careful", //' .claude/agents/aif-plan.md >"$OUT/plan93.md" && cat "$OUT/plan93.md" >.claude/agents/aif-plan.md
   git add -A && git commit -qm "the plan station on $1" >/dev/null
 }
 model93 Fable
@@ -8475,15 +8479,15 @@ eq "aif init, with no terminal to offer it at, names aif setup as the next step"
 # message with what aif read; the session the harness's (the shift's seam).
 cat >"$OUT/session101.sh" <<'SESSION'
 #!/bin/bash
-printf '%s|%s|%s\n%s\n' "$1" "$3" "$4" "$2" >"$SESSION101_LOG"
+printf '%s|%s|%s|%s\n%s\n' "$1" "$3" "$4" "${6:-}" "$2" >"$SESSION101_LOG"
 SESSION
 chmod +x "$OUT/session101.sh"
 rc=0
 SESSION101_LOG="$OUT/session101.log" AIF_START_SESSION_CMD="$OUT/session101.sh" \
   "$AIF" setup >"$OUT/setup101.out" 2>&1 </dev/null || rc=$?
-eq "aif setup: one session, here, on the careful tier, opened with /aif-setup and the facts" \
+eq "aif setup: one session, here, on the careful tier at max effort, opened with /aif-setup and the facts" \
   "$(sed -n 1p "$OUT/session101.log" | sed "s|^$(pwd -P)|.|"),$(sed -n 2p "$OUT/session101.log" | grep -c '^/aif-setup Facts aif read before this session: .*base template, its test contract not written (test.kind "stubrunner")')" \
-  ".|opus|aif setup,1"
+  ".|opus|aif setup|max,1"
 eq "…and after it, the verifier's word, not the session's: not set up yet" \
   "$rc,$(grep -c 'the test contract is not set up yet' "$OUT/setup101.out")" "1,1"
 ticket_for AIF-1010
@@ -8551,6 +8555,52 @@ eq "the worker proved the contract again first — the watched file had moved: a
   "$(find .aif/tmp/probe -name '*.ok' 2>/dev/null | wc -l | tr -d ' ')" "2"
 eq "the plan and tests stations were handed the project's .aif/stack.md" \
   "$(grep -c 'STUB STACK NOTES' .aif/tmp/fake-sys-plan-1),$(grep -c 'STUB STACK NOTES' .aif/tmp/fake-sys-tests-1),$(grep -c "· stack stubrunner (the project's) + guide$" "$OUT/run101.out")" "1,1,2"
+cd "$SANDBOX" || exit 1
+
+# ====== 102. the tiers choose the model; a station's effort ===================
+# docs/DEFECTS.md 21.1, 21.2. tiers.routine and tiers.careful were required
+# in .aif/project.json and read by nothing: the implement station ran its
+# agent's own model — sonnet — on every ticket the analyst did not mark high
+# risk. The worker reads the tiers now, the templates put both at opus, and
+# `aif project upgrade` brings a routine still at the old sonnet forward. And
+# every station asks for the effort its aif:meta names, xhigh — but only of a
+# profile that talks to Anthropic's own API: --effort was never probed
+# against another endpoint.
+printf '\n102. the project'"'"'s tiers choose a station'"'"'s model; every station runs at xhigh effort\n'
+fresh_project "$SANDBOX/p102"
+ticket_for AIF-1020
+git add -A && git commit -qm "ticket 102" >/dev/null
+rc=0
+"$AIF" work AIF-1020 --no-worktree >"$OUT/run102a.out" 2>&1 || rc=$?
+eq "built; plan, tests and implement each on opus at xhigh — the implement station a routine one" \
+  "$rc,$(cat .aif/tmp/fake-engine-plan-1),$(cat .aif/tmp/fake-engine-tests-1),$(cat .aif/tmp/fake-engine-implement-1),$(grep -c '^station .*implement · aif-implement · opus · effort xhigh ·' "$OUT/run102a.out")" \
+  "0,opus xhigh,opus xhigh,opus xhigh,1"
+fresh_project "$SANDBOX/p102b"
+jq '.tiers.routine = "sonnet"' .aif/project.json >"$OUT/p102b.json" && cp "$OUT/p102b.json" .aif/project.json
+ticket_for AIF-1021
+git add -A && git commit -qm "routine sonnet; ticket 102b" >/dev/null
+eq "a routine still at sonnet is behind the template, and named" \
+  "$("$AIF" project check 2>&1 | grep -c 'tiers.routine is sonnet')" "1"
+rc=0
+"$AIF" work AIF-1021 --no-worktree >"$OUT/run102b.out" 2>&1 || rc=$?
+eq "…and the worker reads it: the routine implement on sonnet, the careful plan on opus" \
+  "$rc,$(cut -d' ' -f1 .aif/tmp/fake-engine-implement-1),$(cut -d' ' -f1 .aif/tmp/fake-engine-plan-1)" "0,sonnet,opus"
+eq "aif project upgrade brings it forward to the template's opus, and says so" \
+  "$("$AIF" project upgrade 2>&1 | grep -c '^  tiers.routine → opus'),$(jq -r '.tiers.routine' .aif/project.json)" "1,opus"
+fresh_project "$SANDBOX/p102c"
+ticket_for AIF-1022
+git add -A && git commit -qm "ticket 102c" >/dev/null
+X102="$SANDBOX/xdg102"
+mkdir -p "$X102/aif/profiles"
+{
+  printf 'AIF_PROFILE_DESC="routed (check-work 102)"\nAIF_PROFILE_RUNNER="claude"\nAIF_PROFILE_SET="claude"\n'
+  printf 'AIF_PROFILE_SECRET_VAR=""\nAIF_PROFILE_SECRET_TARGET=""\nAIF_PROFILE_ISOLATE_CONFIG="0"\n'
+  printf 'aif_profile_env() {\n  printf "%%s\\n" ANTHROPIC_BASE_URL=http://127.0.0.1:9/anthropic ANTHROPIC_DEFAULT_OPUS_MODEL=routed-large ANTHROPIC_DEFAULT_SONNET_MODEL=routed-large\n}\n'
+} >"$X102/aif/profiles/routed102.profile"
+rc=0
+XDG_CONFIG_HOME="$X102" "$AIF" work AIF-1022 --profile routed102 --no-worktree >"$OUT/run102c.out" 2>&1 || rc=$?
+eq "a profile routed to another endpoint: no --effort sent, the station line names none" \
+  "$rc,$(cat .aif/tmp/fake-engine-plan-1)|,$(grep -c '^station .* · effort ' "$OUT/run102c.out")" "0,opus |,0"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

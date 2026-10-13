@@ -59,7 +59,7 @@ aif_runner_claude_version() {
 # cannot watch /dev/tty — every session ended at its start, rc 1, "EINVAL:
 # invalid argument, kqueue" (docs/DEFECTS.md 19.2; docs/FINDINGS.md #49).
 # The test seam (AIF_START_SESSION_CMD, a script run with the same five
-# arguments) sits inside the same `set -m` bracket, so a harness exercises
+# arguments and the effort the session asks for, sixth) sits inside the same `set -m` bracket, so a harness exercises
 # the real job control, and keeps the caller's descriptors, so a harness with
 # no terminal can run it.
 #
@@ -71,23 +71,35 @@ aif_runner_claude_version() {
 # shellcheck disable=SC2016  # the backticks are the note's own, for the model
 AIF_RUNNER_CLAUDE_SHIFT_NOTE='This session is one unit of an aif shift (`aif start`): the shift opened it with the command above and waits for it to end. When this unit is done — the verdict taken, the ticket or request written, or nothing here to do — say so in one line and tell the person to type /exit: the shift then reads the board and opens the next unit itself, the next review among them. If the person asks here for another unit (another /aif-review, /aif-ba, /aif-po or /aif-pjm), say that after /exit the shift opens it next; do it here only if they still want it.'
 
+# The effort every session with a person in it runs at: the shift's units,
+# `aif setup`. The stations' own is their aif:meta's.
+# shellcheck disable=SC2034  # read by aif_runner_claude_session
+AIF_RUNNER_CLAUDE_SESSION_EFFORT="max"
+
 # aif_runner_claude_session, as the shift opens it, and with a sixth argument
 # the note in the shift's place: `aif setup` opens its one session the same
 # way, told what it is for (AIF_RUNNER_CLAUDE_SETUP_NOTE). An empty
 # <session-id> lets claude choose one.
 aif_runner_claude_session() {
-  local rc=0 m sid_arg tty note="${6-$AIF_RUNNER_CLAUDE_SHIFT_NOTE}"
+  local rc=0 m sid_arg eff effort="" tty note="${6-$AIF_RUNNER_CLAUDE_SHIFT_NOTE}"
   m=()
   [ -z "$3" ] || m=(--model "$3")
   sid_arg=()
   [ -z "$5" ] || sid_arg=(--session-id "$5")
+  # A session with a person in it at the most effort there is: its turns are
+  # few and each one decides something (docs/DEFECTS.md 21.2).
+  eff=()
+  if aif_profile_effort_ok; then
+    effort="$AIF_RUNNER_CLAUDE_SESSION_EFFORT"
+    eff=(--effort "$effort")
+  fi
   tty="$(aif_tty_path)"
   set -m
   if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
-    (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5") || rc=$?
+    (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5" "$effort") || rc=$?
   else
     # shellcheck disable=SC2094  # a terminal: read and written, as /dev/tty was
-    (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} --name "$4" ${sid_arg[@]+"${sid_arg[@]}"} \
+    (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} ${eff[@]+"${eff[@]}"} --name "$4" ${sid_arg[@]+"${sid_arg[@]}"} \
       --append-system-prompt "$note" \
       <"$tty" >"$tty" 2>"$tty") || rc=$?
   fi
@@ -210,15 +222,19 @@ aif_runner_claude_result_cost() {
 # (lib/cmd_work.sh _aif_work_dispatch; docs/DEFECTS.md 14.1).
 aif_runner_claude_station() {
   local workdir="$1" sys="$2" prompt="$3" model="$4"
-  local max_turns="$5" budget="$6" tools="$7" out="$8" err="$9" pidfile="${10:-}"
+  local max_turns="$5" budget="$6" tools="$7" out="$8" err="$9" pidfile="${10:-}" effort="${11:-}"
 
   # An empty budget is no ceiling, and the flag is then left off entirely —
   # not passed as 0, which claude would read as a ceiling of nothing. The
   # array is expanded as ${a[@]+"${a[@]}"} because bash 3.2 treats an empty
   # one as unset under set -u (docs/FINDINGS.md, bash 3.2).
-  local cap pre
+  local cap pre eff
   cap=()
   [ -z "$budget" ] || cap=(--max-budget-usd "$budget")
+  # The station's effort, its aif:meta's — empty, the CLI's own per-turn
+  # choice (docs/DEFECTS.md 21.2).
+  eff=()
+  [ -z "$effort" ] || eff=(--effort "$effort")
   pre=()
   # shellcheck disable=SC2016  # $$ and "$@" are the wrapper shell's own
   [ -z "$pidfile" ] || pre=(/bin/sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile")
@@ -228,6 +244,7 @@ aif_runner_claude_station() {
     exec ${pre[@]+"${pre[@]}"} claude -p "$prompt" \
       --append-system-prompt "$(cat "$sys")" \
       --model "$model" \
+      ${eff[@]+"${eff[@]}"} \
       --tools "$tools" \
       --output-format stream-json --verbose \
       --max-turns "$max_turns" \

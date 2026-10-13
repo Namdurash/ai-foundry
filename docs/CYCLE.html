@@ -101,7 +101,7 @@ flowchart TB
     S_tests["station tests · opus"] --&gt; G_tests{{"gate verify-red"}}
     G_plan --&gt; S_tests
     G_tests -.-&gt;|"rejected: up to 4 times"| S_tests
-    S_implement["station implement · sonnet · opus if risk is high"] --&gt; G_implement{{"gates green, scope"}}
+    S_implement["station implement · opus"] --&gt; G_implement{{"gates green, scope"}}
     G_tests --&gt; S_implement
     G_implement -.-&gt; S_implement
     SYNC["sync — the branch brought onto the checkout's branch:&lt;br/&gt;a conflict in code settled by the implement station, the merged tree judged again"]
@@ -177,7 +177,7 @@ flowchart TB
 <tbody>
 <tr><td>plan</td><td>opus (careful)</td><td>plan</td><td>3</td><td>ready</td><td>plan.md</td></tr>
 <tr><td>tests</td><td>opus (careful)</td><td>verify-red</td><td>4</td><td>plan</td><td>tests.lock.json, frozen</td></tr>
-<tr><td>implement</td><td>sonnet, or opus when the ticket's risk is high</td><td>green, scope</td><td>3</td><td>plan, verify-red</td><td>the code, bound to plan.md</td></tr>
+<tr><td>implement</td><td>opus — the ticket's risk picks the tier, and a project may set tiers.routine apart</td><td>green, scope</td><td>3</td><td>plan, verify-red</td><td>the code, bound to plan.md</td></tr>
 </tbody>
 </table>
       </div>

@@ -834,17 +834,30 @@ station may run, over its own files, freezing nothing.
 
 ### Stations and their model tier
 
-| station | tier | produces | its gate(s) | turns | attempts |
-|---|---|---|---|---|---|
-| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready | — | — |
-| `plan` | careful (opus) | `plan.md`, a verdict per criterion, and the **contract**: every new module as a skeleton on disk | plan | 60 | 3 |
-| `tests` | careful (opus) | test files + `tests.lock.json`, red against the skeleton | verify-red | 60 | 4 |
-| `implement` | **by risk** | code — the skeleton filled | green, scope | 60 | 3 |
+| station | tier | produces | its gate(s) | turns | attempts | effort |
+|---|---|---|---|---|---|---|
+| *(the ticket)* | — | `ticket.md`, by the analyst with you | ready | — | — | — |
+| `plan` | careful (opus) | `plan.md`, a verdict per criterion, and the **contract**: every new module as a skeleton on disk | plan | 60 | 3 | xhigh |
+| `tests` | careful (opus) | test files + `tests.lock.json`, red against the skeleton | verify-red | 60 | 4 | xhigh |
+| `implement` | **by risk** (opus either way, by default) | code — the skeleton filled | green, scope | 60 | 3 | xhigh |
 
 There are two tiers, and the question a tier answers is "do the gates catch this
 model's mistakes": `routine` where they do, `careful` where they do not. The tier
-is a label; the profile maps it to a model (`opus` → glm-5.2 on the `glm`
-profile). The turn cap is the station's own (`max_turns` in its `aif:meta`),
+is a label, and **the project says what each one is**: `tiers.routine` and
+`tiers.careful` in `.aif/project.json` — `opus` and `opus` in every template, so
+a project that would rather pay less for the routine work sets
+`tiers.routine` to `sonnet`; a station's own `model:` line is used only where a
+project names no tiers. The profile then maps the alias to a model (`opus` →
+glm-5.2 on the `glm` profile); on Anthropic's own API the claude CLI does, and
+which model an alias means moves with the CLI — `opus` was Opus 5 under
+claude 2.1.226 and is Opus 5.5 under 2.1.287 (`docs/FINDINGS.md` #51).
+
+**Effort.** Every station runs at the effort its `aif:meta` names — `xhigh` —
+passed to claude as `--effort`; every session with a person in it (`aif start`'s
+units, `aif setup`) runs at `max`. A profile routed to another endpoint gets no
+`--effort` unless it sets `AIF_PROFILE_EFFORT=1`: the flag is the Anthropic
+API's, and was never probed elsewhere. A skill you type in your own claude
+session runs at that session's effort — `/effort max` there. The turn cap is the station's own (`max_turns` in its `aif:meta`),
 over the project-wide `limits.station_max_turns` (60): the plan and tests
 stations explore and read back, and hit the old cap of 30 in three runs of five
 on one batch, leaving half-written files for the gate to judge. On a
@@ -872,7 +885,10 @@ code a compiler can check, rather than guessed twice.
 `implement`'s tier comes from the ticket's `risk`, which stays three-valued
 because it describes the *work* — a human's judgement, made with the analyst —
 while a tier describes an *engine*. `low` and `medium` both map to `routine`, `high` to
-`careful`.
+`careful`. Until 0.19.0 the tiers in `project.json` were read by nothing, and
+`routine` was the agent's own `sonnet`: every ticket not marked `high` was built
+on sonnet whatever the project said (`docs/DEFECTS.md` 21.1). `aif project
+upgrade` brings a `routine` still at that `sonnet` forward to the template's.
 
 ### What a station knows about the stack
 

@@ -113,6 +113,20 @@ _aif_names_re() {
 # shellcheck disable=SC2034
 AIF_REQUESTS_DIR="requests"
 
+# The product partner's map of a plan, inside requests/ and no request of its
+# own: the requests a plan holds, in the order they are polished, each line
+# naming the request it became or `not polished` (sets/claude/skills/aif-po,
+# "A plan"). Upper case, so no request's slug — kebab-case, lower case — is
+# ever this name. And the plans the maps come from, one directory down: plan
+# mode writes there when the shift opens it (lib/cmd_start.sh), and the owner
+# copies a plan from anywhere else there when it maps it, so a map's source is
+# committed beside it. Neither is a request: aif_requests_json passes the map
+# over, and requests/*.md does not reach into the plans' directory.
+# shellcheck disable=SC2034
+AIF_REQUEST_MAP="MAP.md"
+# shellcheck disable=SC2034
+AIF_REQUEST_PLANS="plans"
+
 # aif_task_dir <root> <ticket> — where this ticket's artifacts live.
 #
 # One place, because the path is dereferenced by the CLI, the gates, the

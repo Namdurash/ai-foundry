@@ -43,7 +43,11 @@
 #      a fenced block in a slice, two old-format requests with no status; the
 #      analyst's list under the status read under the tickets, and fences at
 #      column 0 or indented and closed, an indented one nobody closed text
-#      (15.5)
+#      (15.5); the owner's map of a plan — no request itself, its entries by
+#      their place with what follows the last arrow, the plans beside it
+#      mapped or not — and the rows it feeds: the two ways at a "nothing
+#      left" end (R26), a plan no map names (R27), the map's entries not
+#      polished, in order, only while the queue is short (R28) (22.1–22.3)
 #   B  the start refuses before it touches anything — a Claude Code session,
 #      a worker's checkout, a profile that does not load, a board that fails
 #      its check, no terminal and no seam, a shift already open (named by its
@@ -78,7 +82,12 @@
 #      with a space in it (15.9); an ignore block from before the shift — the
 #      header, and aif doctor naming its missing line and aif init (15.2);
 #      R7's warning read off the repository per card: an edit beside the
-#      branch none, an edit to a file it changes named (13.5)
+#      branch none, an edit to a file it changes named (13.5); an empty
+#      project's shift offering the two ways and waiting for a key — 2 plan
+#      mode, its plan under requests/plans, then the owner on that plan, the
+#      analyst on the request it wrote, the map's next entry; 1 the owner, a
+#      session that brought nothing a pause and the two ways again, q the end
+#      with both named (22.1–22.3)
 #   T  Trello, against scripts/mock-trello.py with the real clock: this
 #      host's claim is requeued and another host's is a line; a card's head
 #      is read again when a comment moves its last activity, and a block by
@@ -454,7 +463,17 @@ export AIF_WORK_STATION_CMD="$SANDBOX/fake-station.sh"
 #                      a ticket naming the request and its slice, in Ready
 #   /aif-po [requests/<slug>.md]
 #                      the request written with its ## Slices and ## Status
+#   /aif-po requests/plans/<name>.md
+#                      the plan mapped: requests/MAP.md naming it, entry 1
+#                      polished into requests/first-outcome.md, entry 2 not
+#                      polished
+#   /aif-po requests/MAP.md <N>
+#                      entry N polished: requests/entry-<N>.md written, and
+#                      its arrow in the map naming it
 #   /aif-pjm <ID>      rework: posted and the card to Backlog
+# A seventh argument is a plan unit's directory (plan mode, R26's second
+# way): the plan written there as plan mode would, requests/plans/ — and
+# `name|effort|dir` of every session into session-args.log.
 # FAKE_SESSION_NOOP=1 does nothing at all; FAKE_SESSION_HOLD=<file> first
 # waits for that file (at most a minute); FAKE_SESSION_RC is its exit code.
 # A Ctrl-C ends it 130, as claude's does. For the terminal's rows (layer D),
@@ -474,6 +493,7 @@ trap 'rm -f "$FAKE_SB/session.pid"' EXIT
 trap 'exit 130' INT TERM
 [ "${FAKE_SESSION_NOHUP:-0}" != 1 ] || trap '' HUP
 printf '%s|%s|%s|%s\n' "$name" "$model" "$sid" "$prompt" >>"$FAKE_SB/sessions.log"
+printf '%s|%s|%s\n' "$name" "${6:-}" "${7:-}" >>"$FAKE_SB/session-args.log"
 # FAKE_SEAMS_LOG=<file>: what of the shift's own seams this session was
 # handed — nothing, since they are the shift's alone (layer C).
 [ -z "${FAKE_SEAMS_LOG:-}" ] || printf 'session %s|%s\n' "${AIF_START_KEYS-unset}" "${AIF_START_SESSION_CMD-unset}" >>"$FAKE_SEAMS_LOG"
@@ -516,8 +536,53 @@ ticket() { # <id> <request> <slice>
 The slice, as the analyst wrote it.
 TICKET
 }
+if [ "${FAKE_SESSION_NOOP:-0}" != 1 ] && [ -n "${7:-}" ]; then
+  mkdir -p "$7"
+  printf '# A team sees its week
+
+- people sign up
+- the owner sees who did what
+' >"$7/a-team-sees-its-week.md"
+fi
 if [ "${FAKE_SESSION_NOOP:-0}" != 1 ]; then
   case "$prompt" in
+    "/aif-po requests/plans/"*)
+      mkdir -p requests
+      printf '# A first outcome
+
+## Slices
+1. the first
+
+## Status
+not cut
+' >requests/first-outcome.md
+      printf '# The map
+
+## Plans
+- %s
+
+## Requests
+1. People sign up → requests/first-outcome.md
+2. The owner sees the week → not polished
+
+## Technical
+- a database
+' \
+        "${prompt#/aif-po }" >requests/MAP.md
+      ;;
+    "/aif-po requests/MAP.md "*)
+      n="${prompt##* }"
+      printf '# Entry %s
+
+## Slices
+1. the first
+
+## Status
+not cut
+' "$n" >"requests/entry-$n.md"
+      awk -v n="$n" '/^## /{ s = ($0 == "## Requests") } s && /^[0-9]+[.)] /{ k++; if (k == n) sub(/→ not polished$/, "→ requests/entry-" n ".md") } { print }' \
+        requests/MAP.md >requests/MAP.md.tmp && mv requests/MAP.md.tmp requests/MAP.md
+      ;;
     "/aif-review "*)
       id="${prompt#/aif-review }"
       case "${FAKE_REVIEW:-land}" in
@@ -1339,6 +1404,50 @@ fx "R21 offered once — a line, then the end" '(.units | length) == 0 and .line
 {$S,"flags":{"po":true},"build":{"mode":"none","parallel":2},"memory":{"done":[{"key":"R21","note":"owner — rc 0, nothing changed"}],"retried_env":[],"retried_run":[]},"cards":[]}
 JSON
 
+# R26: nothing left — and before the end, the two ways to bring more: one need
+# to the owner, or a plan first (docs/DEFECTS.md 22.3). On a project with
+# nothing on its board yet, the shift's first look was "nothing left" and the
+# end.
+fx "R26: nothing on the board, no requests — the end, with the two ways to start" '."end" == {"rc":0,"why":"nothing left for the shift"} and .ways.empty == true and .ways.key == "R26 0 0 -" and .ways.text == "nothing on the board, no requests yet — two ways to start" and (.units | length) == 0' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[]}
+JSON
+fx "R26: everything in Done and every request cut — the two ways to bring more" '.ways.empty == false and .ways.key == "R26 1 1 -" and .ways.text == "nothing left for the shift — two ways to bring more"' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[{"ticket":"AIF-110","column":"done","pos":1}],
+ "requests":[{"file":"requests/a.md","slug":"a","sha":"s1","status_line":"cut","shape":"slices","slices":1,"tickets":[{"ticket":"AIF-110","slice":1}],"listed":[],"derived":"cut","next_slice":null,"effective":"cut"}]}
+JSON
+fx "R26: never under --po (its owner a unit), in a wait, or past a limit that holds" '[ .ways ] == [null]' <<JSON
+{$S,"flags":{"po":true},"build":{"mode":"none","parallel":2},"cards":[]}
+JSON
+fx "…a limit that holds: the end 3, no ways" '."end".rc == 3 and .ways == null' <<JSON
+{$S,"pause":{"state":"held","label":"the usage credit limit"},"build":{"mode":"none","parallel":2},"cards":[]}
+JSON
+
+# R27, R28: a plan no map names, and the map's entries not polished — the
+# owner's, after every request already written, while the queue is short
+# (docs/DEFECTS.md 22.1, 22.2).
+MAPFX='"map":{"file":"requests/MAP.md","sha":"m1","plans":["requests/plans/p.md"],"entries":[
+   {"n":1,"text":"A signs up","target":"requests/a.md","state":"polished","request":"requests/a.md"},
+   {"n":2,"text":"B sees the week","target":"not polished","state":"not polished","request":null},
+   {"n":3,"text":"C pays","target":"requests/c.md","state":"missing","request":"requests/c.md"},
+   {"n":4,"text":"D exports","target":"dropped","state":"other","request":null},
+   {"n":5,"text":"E reports","target":null,"state":"not polished","request":null}]},
+ "plans":[{"file":"requests/plans/p.md","sha":"x","mapped":true},{"file":"requests/plans/q.md","sha":"y","mapped":false}]'
+REQA='"requests":[{"file":"requests/a.md","slug":"a","sha":"s1","status_line":"not cut","shape":"slices","slices":2,"tickets":[],"listed":[],"derived":null,"next_slice":1,"effective":"not cut"}]'
+fx "R27 and R28: the analyst on the request first, then the plan no map names, then the map's entries not polished, in its order" '([.units[] | .rule + " " + .prompt] == ["R19e /aif-ba requests/a.md","R27 /aif-po requests/plans/q.md","R28 /aif-po requests/MAP.md 2","R28 /aif-po requests/MAP.md 5"]) and .units[1].key == "R27 requests/plans/q.md y" and .units[1].role == "po" and .units[1].name == "aif po plan" and .units[2].key == "R28 2 B sees the week" and .units[2].name == "aif po map 2" and .units[2].text == "owner requests/MAP.md — entry 2 of 5, not polished yet: B sees the week" and .units[2].file == "requests/MAP.md"' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[],$REQA,$MAPFX}
+JSON
+fx "…an entry naming a request that is not there — a line with the owner's command; dropped and polished ones nothing" '[ .lines[] | [ .rule, .file, .text, .command ] ] == [["R28","requests/MAP.md","entry 3 names requests/c.md, and there is no such request — the map or the repository is out of date","claude '"'"'/aif-po requests/MAP.md 3'"'"'"]]' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[],$MAPFX}
+JSON
+fx "…offered once: a line with its command, and the next entry still offered" '([.units[] | .key] == ["R27 requests/plans/q.md y","R28 5 E reports"]) and any(.lines[]; .rule == "R28" and .command == "claude '"'"'/aif-po requests/MAP.md 2'"'"'" and .text == "owner — rc 0, nothing changed")' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"memory":{"done":[{"key":"R28 2 B sees the week","note":"owner — rc 0, nothing changed"}],"retried_env":[],"retried_run":[]},"cards":[],$MAPFX}
+JSON
+fx "…neither while the queue is full — three rounds of the build in Ready" '([.units[] | .rule] | index("R27") == null and index("R28") == null)' <<JSON
+{$S,"build":{"mode":"none","parallel":2},"cards":[
+ {"ticket":"AIF-1","column":"ready","pos":1},{"ticket":"AIF-2","column":"ready","pos":2},{"ticket":"AIF-3","column":"ready","pos":3},
+ {"ticket":"AIF-4","column":"ready","pos":4},{"ticket":"AIF-5","column":"ready","pos":5},{"ticket":"AIF-6","column":"ready","pos":6}],$MAPFX}
+JSON
+
 fx "never an end in a plan that has moves" '(.moves | length) == 1 and ."end" == null and .wait == null' <<JSON
 {$S,"build":{"mode":"none","parallel":2},"cards":[
  {"ticket":"AIF-112","column":"review","pos":1,"head":{"line":"wrong: x","at":"t","after":0,"heads":[]}}]}
@@ -1624,6 +1733,50 @@ eq "requests (15.5): a daily allowance shaped like opes's, slice 1 a ticket that
 eq "requests (15.5): cut in part with no list and no ticket naming it — the analyst opened on the request, no slice guessed" \
   "$(req aif_requests_json "$R2" | jq -c '[ .[] | select(.slug == "cut-in-part") | .derived, .next_slice, .effective ]')" \
   '[null,null,"cut in part"]'
+
+# A plan's map (docs/DEFECTS.md 22.1, 22.2): the owner's requests/MAP.md is no
+# request, its entries are read in their place's order with what follows the
+# last arrow, and the plans beside it are named mapped or not.
+R3="$SANDBOX/requests-map"
+mkdir -p "$R3/requests/plans"
+(cd "$R3" && git init -q)
+printf '# old\n' >"$R3/requests/plans/old-plan.md"
+printf '# new\n' >"$R3/requests/plans/new-plan.md"
+printf '# Sign up\n\n## Slices\n1. a\n\n## Status\nnot cut\n' >"$R3/requests/signup.md"
+cat >"$R3/requests/MAP.md" <<'MAP'
+# Map — команда бачить свій тиждень
+
+## Plans
+- `requests/plans/old-plan.md`
+
+## Requests
+1. Людина реєструється і бачить свій кабінет → requests/signup.md
+   перший: без нього решту ніхто не побачить
+1. Власник бачить, хто що зробив — цілий тиждень -> not polished
+   because -> it matters
+1. Оплата -> stripe → dropped
+1. Звіт для бухгалтерії → requests/accounting.md
+1. Без стрілки взагалі
+
+```
+1. not an entry → not polished
+## Requests
+```
+
+## Technical
+- Postgres, CI
+MAP
+eq "requests (22.2): the map is no request — requests/*.md read without it" \
+  "$(req aif_requests_json "$R3" | jq -c '[ .[].file ]')" '["requests/signup.md"]'
+eq "requests (22.2): the map's entries by their place, the target after the last arrow, as written or typed, a Cyrillic draft whole; a fenced block's lines no entry" \
+  "$(req aif_request_map_json "$R3" | jq -c '[ .map.entries[] | [ .n, .text, .target, .state, .request ] ]')" \
+  '[[1,"Людина реєструється і бачить свій кабінет","requests/signup.md","polished","requests/signup.md"],[2,"Власник бачить, хто що зробив — цілий тиждень","not polished","not polished",null],[3,"Оплата -> stripe","dropped","other",null],[4,"Звіт для бухгалтерії","requests/accounting.md","missing","requests/accounting.md"],[5,"Без стрілки взагалі",null,"not polished",null]]'
+eq "requests (22.1): the plans beside the map, sorted — the one ## Plans names mapped, the other not" \
+  "$(req aif_request_map_json "$R3" | jq -c '[ .map.plans, [ .plans[] | [ .file, .mapped ] ] ]')" \
+  '[["requests/plans/old-plan.md"],[["requests/plans/new-plan.md",false],["requests/plans/old-plan.md",true]]]'
+rm -rf "${R3:?}/requests/MAP.md" "${R3:?}/requests/plans"
+eq "requests (22.1): no map and no plans — null and none" \
+  "$(req aif_request_map_json "$R3" | jq -c '.')" '{"map":null,"plans":[]}'
 
 # =================================== B ======================================
 printf '\nB. the start refuses before it touches anything\n'
@@ -1960,6 +2113,50 @@ kill "$held2" 2>/dev/null
 wait "$held2" 2>/dev/null
 forget "$held2"
 rm -rf .aif/state/runs/AIF-2
+
+# A project with nothing on its board and no request — the first command run
+# on it is the shift (docs/DEFECTS.md 22.1–22.3). It said "nothing left" and
+# ended; it offers the two ways and waits for one. 2: claude in plan mode,
+# its plans written to requests/plans/ — then the owner is offered that plan
+# to map (R27), the analyst the request it wrote, and the map's next entry
+# (R28), each in turn.
+PN="$SANDBOX/pN"
+fresh_project "$PN"
+rc=0
+run_bg "$OUT/n-dry.out" 30 "$AIF" start --dry-run --no-build || rc=$?
+eq "an empty project, --dry-run: the end, and the two ways the shift would offer before it" \
+  "$rc,$(grep -c '^end        nothing left for the shift (exit 0)$' "$OUT/n-dry.out"),$(grep -c '^ways       nothing on the board, no requests yet — two ways to start: 1 /aif-po, one need · 2 a plan first, in plan mode' "$OUT/n-dry.out")" \
+  "0,1,1"
+n0="$(sessions_n)"
+rc=0
+run_bg "$OUT/n-shift.out" 90 env AIF_START_KEYS=2.s.q "$AIF" start --no-build || rc=$?
+SN="$(newest_shift)"
+sed -n "$((n0 + 1)),\$p" "$SANDBOX/sessions.log" >"$OUT/n-sessions"
+eq "an empty project: the two ways offered, 2 — plan mode, then the owner on its plan, the analyst skipped, the map's next entry; q" \
+  "$rc,$(grep -c '^nothing on the board, no requests yet — two ways to start:$' "$OUT/n-shift.out"),$(cut -d'|' -f1,4 "$OUT/n-sessions" | sed 's/|I want to lay out .*/|plan/' | tr '\n' ';'),$(jq -r .why "$SN/summary.json")" \
+  "0,1,aif plan|plan;aif po plan|/aif-po requests/plans/a-team-sees-its-week.md;aif po map 2|/aif-po requests/MAP.md 2;,ended at the control point (q)"
+eq "…the plan session in plan mode, its plans under requests/plans, at the owner's model — and what it wrote is a change, not a pause" \
+  "$(grep -c '^aif plan|[a-z]*|requests/plans$' "$SANDBOX/session-args.log"),$(grep -c '^aif plan|opus|' "$OUT/n-sessions"),$(grep -c '^paused' "$OUT/n-shift.out"),$(jq -r '[ .units[] | select(.rule == "R26") | .what ] | join(";")' "$SN/summary.json")" \
+  "1,1,0,aif plan — rc 0, changed the board or the repository"
+eq "…the analyst offered on the request the map's first entry became, before the map's next entry" \
+  "$(grep -c '^next: analyst requests/first-outcome.md — not cut' "$OUT/n-shift.out"),$(grep -c '^next: owner requests/MAP.md — entry 2 of 2, not polished yet: The owner sees the week' "$OUT/n-shift.out"),$(grep -c '^2. The owner sees the week → requests/entry-2.md$' requests/MAP.md)" \
+  "1,1,1"
+
+# 1: the owner on one need, as --po opens it. A session that brought nothing
+# pauses the shift; Enter, and the two ways again; a key that is neither is
+# said so; q ends the shift — on its end, nothing left, and the summary
+# naming both ways.
+PN2="$SANDBOX/pN2"
+fresh_project "$PN2"
+n0="$(sessions_n)"
+rc=0
+run_bg "$OUT/n2-shift.out" 60 env AIF_START_KEYS=1.xq FAKE_SESSION_NOOP=1 "$AIF" start --no-build || rc=$?
+SN2="$(newest_shift)"
+eq "1: the owner on one need; it brought nothing — a pause, then the two ways again; x said to be neither; q — nothing left, exit 0" \
+  "$rc,$(sed -n "$((n0 + 1)),\$p" "$SANDBOX/sessions.log" | cut -d'|' -f1,4 | tr '\n' ';'),$(grep -c '^paused — the session changed nothing' "$OUT/n2-shift.out"),$(grep -c '^nothing on the board, no requests yet — two ways to start:$' "$OUT/n2-shift.out"),$(grep -c '^that key is neither way' "$OUT/n2-shift.out"),$(jq -r .why "$SN2/summary.json")" \
+  "0,aif po|/aif-po;,1,2,1,nothing left for the shift"
+eq "…the summary's next names both ways" \
+  "$(jq -r .next "$SN2/summary.json")" "/aif-po — bring a need · or a plan: aif start, 2 when nothing is left — plan mode, then /aif-po <the plan>"
 
 # The commonest round trip of a shift in this terminal, in one shift: built,
 # `wrong:` at the review, rework: to the analyst, back in Ready — and built

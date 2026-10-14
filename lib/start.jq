@@ -27,7 +27,8 @@
 #                 default, keys, text, warn, kill, comment, to, top } ],
 #     lines:  [ { rule, ticket, file, column, text, command } ],
 #     wait:   null | { why },
-#     "end":  null | { rc, why } }
+#     "end":  null | { rc, why },
+#     ways:   null | { key, empty, text } }
 #
 # moves are bash's to make without asking (comment first, then move; where
 # says where a comment's body comes from: "branch" or "checkout" for the run's
@@ -36,7 +37,10 @@
 # will not touch, each with the command that would; wait is work in flight
 # elsewhere that the shift waits for; end ends it. Never an end beside a move:
 # the driver makes the moves and decides on the next tick. Read `end` as
-# ."end" — a keyword, which jq before 1.7 does not take as a bare key.
+# ."end" — a keyword, which jq before 1.7 does not take as a bare key. ways
+# (R26) rides on the end that says nothing is left: the two ways to bring
+# more — one need to the owner, or a plan first — which the driver offers
+# with no countdown before it ends (docs/DEFECTS.md 22.3).
 #
 # Keys are the fact, not the card (research R24: once a shift, without
 # hiding what is new). A row keyed on a head carries that head's time, a row
@@ -140,6 +144,10 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | ($b.parallel // 2) as $par
 | ($f.cards // []) as $cards
 | ($f.requests // []) as $reqs
+# The owner's map of a plan and the plans beside it (lib/requests.sh
+# aif_request_map_json): what R27 and R28 offer.
+| ($f.map // null) as $map
+| ($f.plans // []) as $plans
 # The runner's usage limit as a worker of this checkout left it
 # (lib/cmd_work.sh _aif_work_pause_json): paused — it resets within what a run
 # waits — or held, past that or with no reset named. While either holds no
@@ -718,7 +726,13 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # slices behind them); then, only while the queue is short — Ready, In
 # Progress and what the sweep would release under three rounds of the build —
 # (c) a ticket begun and never cut, (d) a request cut in part, (e) a request
-# not cut, or the owner first for a request in the older one-section shape.
+# not cut, or the owner first for a request in the older one-section shape;
+# and the owner's, after every request already written: (f) a plan no map
+# names yet, which the owner maps into requests (R27), and (g) every entry of
+# the map not polished yet, in the map's order — the request the owner writes
+# from it next (R28). The map is what a plan's many outcomes wait in: polished
+# one at a time, just ahead of the analyst, as the queue runs short
+# (docs/DEFECTS.md 22.1, 22.2).
 
 | def po_seed($file; $sha; $why):
     session("R20"; "R20 \($file) \($sha | nz)"; "po"; "/aif-po \($file)"; "aif po \($file | slug)"; "owner \($file) — \($why)")
@@ -781,7 +795,29 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
         session("R19e"; "R19e \(.file) \(.sha | nz)"; "ba"; "/aif-ba \(.file)"; "aif ba \(.slug)"; "analyst \(.file) — not cut")
         + { file: .file }
       end ] as $ba_e
-| ($ba_a + $ba_b + (if $short then $ba_c + $ba_d + $ba_e else [] end)) as $ba
+# (f), R27: a plan in requests/plans/ that no map names — plan mode wrote it
+# at the shift's end (R26's second way), or a person put it there. Keyed on
+# its version: a plan edited after it was offered is offered again.
+| [ $plans[] | select(.mapped != true)
+    | session("R27"; "R27 \(.file) \(.sha | nz)"; "po"; "/aif-po \(.file)"; "aif po plan";
+              "owner \(.file) — a plan no map names yet; the owner maps it into requests, in order")
+      + { file: .file } ] as $po_plan
+# (g), R28: the map's entries not polished, in its order — each the request
+# the owner writes next from it. Keyed on the entry's place and words, not on
+# the map's sha: the owner's session rewrites the map — that is its job — and
+# a key on the file offered every entry again after each edit (R20's lesson).
+# An entry naming a request that is not there is a line: the map and the
+# repository disagree, and which one is right is a person's to say.
+| ([ ($map.entries // [])[] ] | length) as $entries
+| [ ($map.entries // [])[] | select(.state == "not polished")
+    | session("R28"; "R28 \(.n) \(.text)"; "po"; "/aif-po \($map.file) \(.n)"; "aif po map \(.n)";
+              "owner \($map.file) — entry \(.n) of \($entries), not polished yet: \(.text)")
+      + { file: $map.file } ] as $po_map
+| [ ($map.entries // [])[] | select(.state == "missing")
+    | { type: "line", rule: "R28", ticket: null, file: $map.file, column: null,
+        text: "entry \(.n) names \(.request), and there is no such request — the map or the repository is out of date",
+        command: "claude '/aif-po \($map.file) \(.n)'" } ] as $map_lines
+| ($ba_a + $ba_b + (if $short then $ba_c + $ba_d + $ba_e + $po_plan + $po_map else [] end)) as $ba
 | ($ba | live_of) as $ba_live
 
 # ----------------------------------------------------------- build and pull
@@ -898,10 +934,17 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
      [ session("R21"; "R21"; "po"; "/aif-po"; "aif po"; "owner — nothing left on the board; bring a need") ]
    else [] end) as $u21
 | ($units0 + ($u21 | live_of)) as $units
+| (if $idle and ($inflight | not) and ($units | length) == 0
+   then (if $pstate == "held"
+         then { rc: 3, why: "\($pausesay) — longer than the shift waits; rm .aif/state/pause to try anyway" }
+         elif ($gaveup | length) > 0
+         then { rc: 3, why: "nothing else left, and the board would not give the comments of \($gaveup | join(", ")) for three looks in a row — the board, not the cards" }
+         else { rc: 0, why: "nothing left for the shift" } end)
+   else null end) as $end
 # The lines in the board's order: each column's own, with what was left out
 # for its key where its card is; then the rest.
 | ([ $ip[], $rv[], $nh[], $bl[] | if .type == "line" then . elif isdone then as_line else empty end ]
-   + $loose_lines + $l12
+   + $loose_lines + $map_lines + $l12
    + (($r10 + $u14 + $u12 + $ba + $u21) | done_lines)) as $lines
 | { counts: $counts,
     moves: [ $moves[] | del(.type) ],
@@ -919,10 +962,20 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
                         then " — no loop runs on this checkout yet: aif work --loop --idle in another terminal"
                         else "" end)) }
            else null end),
-    "end": (if $idle and ($inflight | not) and ($units | length) == 0
-            then (if $pstate == "held"
-                  then { rc: 3, why: "\($pausesay) — longer than the shift waits; rm .aif/state/pause to try anyway" }
-                  elif ($gaveup | length) > 0
-                  then { rc: 3, why: "nothing else left, and the board would not give the comments of \($gaveup | join(", ")) for three looks in a row — the board, not the cards" }
-                  else { rc: 0, why: "nothing left for the shift" } end)
-            else null end) }
+    "end": $end,
+    # R26: nothing is left, and the shift says so with the two ways to bring
+    # more — a need, or a plan — instead of ending at once: on a project
+    # with nothing on the board yet, `aif start` was the first command, and
+    # it said "nothing left" and was gone (docs/DEFECTS.md 22.3). No
+    # countdown acts on it: a session opened with nobody there changes
+    # nothing and only pauses the shift, so the person chooses, or ends it.
+    # Its key is the board as it stands: the same nothing, offered again
+    # after a session that brought nothing, is the same offer.
+    ways: (if $end != null and $end.rc == 0 then
+             ((($counts | to_entries | map(.value) | add) == 0 and ($reqs | length) == 0 and $map == null
+                and ($plans | length) == 0) as $empty
+              | { key: "R26 \($counts.done) \($reqs | length) \(($map // {}).sha | nz)",
+                  empty: $empty,
+                  text: (if $empty then "nothing on the board, no requests yet — two ways to start"
+                         else "nothing left for the shift — two ways to bring more" end) })
+           else null end) }

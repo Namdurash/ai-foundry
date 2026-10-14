@@ -125,7 +125,12 @@ sets/claude/skills/aif-review/SKILL.md|The product partner's demo, in a fresh co
 sets/claude/skills/aif-review/SKILL.md|As expected — land it, here|…and the review runs aif land when the demo says as expected
 sets/claude/skills/aif-review/SKILL.md|wrong:|the reviewer's wrong is a comment whose first line is wrong:
 sets/claude/skills/aif-po/SKILL.md|demo: not as expected|the demo holds a build back with its reasons, each quoting the request
-sets/claude/skills/aif-po/SKILL.md|aif rules <words>|the product partner reads the map and the open requests before saying a need back
+sets/claude/skills/aif-po/SKILL.md|aif rules <words>|the product partner reads the rules in force and the open requests before saying a need back
+sets/claude/skills/aif-po/SKILL.md|requests/MAP.md|a plan is mapped first, into requests/MAP.md — its requests in order
+sets/claude/skills/aif-po/SKILL.md|### Step 2. One request at a time|…then each request on it polished in turn, through the whole skill
+sets/claude/skills/aif-ba/SKILL.md|**A plan's technical work.**|the analyst puts a plan's technical work into the first slice that needs it
+lib/start.jq|session("R28"|the shift offers the map's next entry not polished to the product partner
+lib/runner_claude.sh|plansDirectory|the shift's plan unit is plan mode, its plan written into requests/plans/
 sets/claude/skills/aif-pjm/SKILL.md|demo: not as expected|the project manager routes the demo's reasons as rework, to Backlog
 ANCHORS
 
@@ -254,14 +259,19 @@ grep -q 'aif_g_spec' "$SET/gates/plan.sh" || die "plan.sh no longer answers a sp
 diagram="$(cat <<MERMAID
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>against the map and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    PLAN(["a plan — many outcomes at once<br/>plan mode, or any file — requests/plans/"])
+    MAP(["requests/MAP.md — the map<br/>a plan's requests in order: not polished → the request"])
+    PO["/aif-po — the product partner<br/>against the rules in force and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most $rules_max rules — over that, only the human keeps it whole"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's<br/>and the demo's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
     DEMO{"/aif-po — the demo<br/>the build held to the request it came from,<br/>in a fresh context, on the human's land"}
+    PLAN -->|"/aif-po — mapped first, written on the person's yes"| MAP
+    MAP -->|"the next entry not polished — one request at a time"| PO
     PO -->|"writes it — Status: not cut"| REQ
+    MAP -.->|"technical work, into the first slice that needs it"| BA
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
     BA --> DOR
@@ -357,7 +367,10 @@ name. \`/aif-setup\` says which of them can run on this machine.
 
 What passes between the first two is a file, \`requests/<slug>.md\`, and it carries
 its own status: \`not cut\` when the product partner writes it, \`cut in part\` with one
-line per slice once the analyst has made cards, \`cut\` when every slice has one.
+line per slice once the analyst has made cards, \`cut\` when every slice has one. A plan
+— many outcomes at once — is mapped first: \`requests/MAP.md\` lists its requests in an
+order the person fixes, each \`not polished\` until the product partner writes it, and
+its technical work for the analyst.
 
 $(table_md "skill|role|needs" "$role_rows")
 
@@ -467,14 +480,14 @@ EOH
     <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review, run on the human's land once the demo says as expected</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
     <li style="--dot: var(--human)">The diamond is the demo: it can hold a land back, never push one through</li>
-    <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
+    <li style="--dot: var(--human)">The rounded nodes are files: the request, with a status line the analyst keeps true; a plan, and its map</li>
   </ul>
 
   <div class="grid">
     <section class="block human">
       <h2><small>The human half</small>Roles</h2>
       <p>Each is a skill under <code>sets/claude/skills/</code> and a slash command of the same name. <code>/aif-setup</code> says which can run on this machine.</p>
-      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one.</p>
+      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one. A plan — many outcomes at once — is mapped first: <code>requests/MAP.md</code> lists its requests in an order the person fixes, each <code>not polished</code> until the product partner writes it, and its technical work for the analyst.</p>
       <div class="table-wrap">
 EOH
   table_html "skill|role|needs" "$role_rows"

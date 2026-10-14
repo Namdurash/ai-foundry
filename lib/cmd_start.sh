@@ -116,6 +116,7 @@ _aif_start_board() {
 #                            land would refuse on) } ],
 #     loose_tasks: [ { ticket, stub, tracked, landed, request, slice } ],
 #     requests: <aif_requests_json>,
+#     map: <aif_request_map_json's map>, plans: <…and its plans>,
 #     memory: { done: [ { key, note } ], retried_env: [..], retried_run: [..] } }
 #
 # rc 0 · 3 the board did not answer twice (said on stderr; the shift ends
@@ -215,6 +216,9 @@ _aif_start_facts_in() {
   # call runs with that call's 2>/dev/null (_aif_start_snapshot).
   (aif_requests_json "$root") >"$tmp/requests.json" 2>/dev/null || printf '[]\n' >"$tmp/requests.json"
   jq -e 'type == "array"' "$tmp/requests.json" >/dev/null 2>&1 || printf '[]\n' >"$tmp/requests.json"
+  # The owner's map of a plan, and the plans beside it (R27, R28).
+  (aif_request_map_json "$root") >"$tmp/map.json" 2>/dev/null || printf '{"map":null,"plans":[]}\n' >"$tmp/map.json"
+  jq -e 'type == "object"' "$tmp/map.json" >/dev/null 2>&1 || printf '{"map":null,"plans":[]}\n' >"$tmp/map.json"
 
   # A run's wall clock, what a claim's silence is held against (14.4), and the
   # margin a head's time is given against the shift's start: Trello's clock
@@ -252,7 +256,7 @@ _aif_start_facts_in() {
     --rawfile dirty "$tmp/dirty" --rawfile lands "$tmp/lands" --rawfile ld "$tmp/land_dirty" \
     --slurpfile all "$tmp/status.json" --slurpfile cards "$tmp/cards.json" \
     --slurpfile x "$tmp/extras" --slurpfile g "$tmp/gates" --slurpfile loose "$tmp/loose" \
-    --slurpfile req "$tmp/requests.json" \
+    --slurpfile req "$tmp/requests.json" --slurpfile mp "$tmp/map.json" \
     --arg donekeys "${AIF_START_DONE:-}" --arg entry "${AIF_START_ENTRY:-}" \
     --arg renv "${AIF_START_RETRIED_ENV:-}" --arg rrun "${AIF_START_RETRIED_RUN:-}" '
     def words: [ splits("[[:space:]]+") | select(length > 0) ];
@@ -295,6 +299,7 @@ _aif_start_facts_in() {
                      land_commit: landed($c.ticket) } ],
         loose_tasks: [ $loose[] | . + { landed: landed(.ticket) } ],
         requests: $req[0],
+        map: ($mp[0].map // null), plans: ($mp[0].plans // []),
         memory: { done: [ $donekeys | split("\n")[] | select(length > 0) | split("\t")
                           | { key: .[0], note: (.[1:] | join("\t")) } ],
                   retried_env: ($renv | words), retried_run: ($rrun | words) } }' >"$tmp/facts.json" || {
@@ -809,9 +814,14 @@ usage: aif start [options]
   after a key. Keys typed on a Ukrainian or Russian layout are read as the
   Latin keys in their place. Ctrl-Z does nothing inside a shift. A session
   that changed nothing — on its card, the board's cards, requests/ or
-  tasks/ — pauses the shift instead of opening the next one. The end says
-  what was done, what is left with the command for each, and claude
-  --resume <uuid> for every session it opened.
+  tasks/ — pauses the shift instead of opening the next one. With nothing
+  left — on a new project, the first look — the shift offers two ways to
+  bring more and waits for one, no countdown: 1 the owner on one need, 2 a
+  plan first, the whole idea in plan mode, written to requests/plans/, which
+  the owner then maps into requests, in order; q ends it. The owner's map,
+  requests/MAP.md, is offered entry by entry, in its order, while the
+  build's queue is short. The end says what was done, what is left with the
+  command for each, and claude --resume <uuid> for every session it opened.
 
   --no-build         never run the loop here; a loop in another terminal builds
   --parallel N       how many the loop here builds at once, and how far ahead
@@ -826,8 +836,8 @@ usage: aif start [options]
   --retry-runs       put a card back in Ready, once a shift, when what stopped
                      its run was an instrument — never a cap, a rejection or a
                      person's stop
-  --po               when nothing is left, open the owner (/aif-po) instead of
-                     ending the shift
+  --po               when nothing is left, open the owner (/aif-po) on the
+                     countdown, instead of offering the two ways
   --no-pjm           a person's words under a card's line are listed, not
                      opened with the project manager
   --max-units N      end after N units acted on
@@ -839,7 +849,7 @@ MODEL_REVIEW, MODEL_BA, MODEL_PO, MODEL_PJM, PARALLEL, WAIT (the control
 point's countdown, 10 s) and POLL (how often a waiting shift looks again,
 30 s). A flag beats the file; for a role, its own flag beats --model.
 
-Exit: 0 nothing left, q or --max-units · 1 a session that failed, a bad flag
+Exit: 0 nothing left and q, q or --max-units · 1 a session that failed, a bad flag
 · 3 the environment (the start, a board that did not answer twice, a card it
 could never read, a machine that fails its preflight again, a build that
 ended 3) · 129 the terminal closed · 130 Ctrl-C · 143 a TERM.
@@ -1913,8 +1923,9 @@ _aif_start_offer() {
 # before the next line, ends the shift with 129 first.
 _aif_start_run_session() {
   local root="$1" u="$2" role prompt name id file model sid rc=0 b a changed=1 col0 col1 what rec key dir="$AIF_START_SHIFT_DIR"
-  local had_tty=0
+  local had_tty=0 plans
   role="$(printf '%s' "$u" | jq -r '.role // empty')"
+  plans="$(printf '%s' "$u" | jq -r '.plans // empty')"
   prompt="$(printf '%s' "$u" | jq -r '.prompt')"
   name="$(printf '%s' "$u" | jq -r '.name')"
   id="$(printf '%s' "$u" | jq -r '.ticket // empty')"
@@ -1942,7 +1953,11 @@ _aif_start_run_session() {
   AIF_START_OPEN="$(_aif_start_record_json "$u" "open when the shift ended" "" "" "$model" "$sid" "")" || AIF_START_OPEN=""
   _aif_start_ctrl_c signal
   _aif_start_watch_on
-  aif_runner_claude_session "$root" "$prompt" "$model" "$name" "$sid" || rc=$?
+  if [ -n "$plans" ]; then
+    aif_runner_claude_session "$root" "$prompt" "$model" "$name" "$sid" "$AIF_RUNNER_CLAUDE_PLAN_NOTE" "$plans" || rc=$?
+  else
+    aif_runner_claude_session "$root" "$prompt" "$model" "$name" "$sid" || rc=$?
+  fi
   _aif_start_watch_off
   # The terminal first, before anything that may end the shift: --max-units
   # reached by this very session finishes inside _aif_start_acted, and the
@@ -1990,6 +2005,58 @@ _aif_start_run_session() {
   fi
   return 0
 }
+
+# _aif_start_ways <root> <plan> — nothing is left, and before the shift ends
+# on it, the two ways to bring more (R26, lib/start.jq): 1 (or Enter) opens
+# the owner on one need, as --po does; 2 opens claude in plan mode — the
+# whole idea at once, written to requests/plans/ — and on the next tick the
+# owner is offered that plan to map (R27). q or s ends the shift, with the
+# end the plan says. No countdown: a session opened with nobody there would
+# change nothing and only pause the shift, and on a project with nothing on
+# its board yet the shift's first look is this one (docs/DEFECTS.md 22.3). A
+# session run here returns to the tick, which looks again: what it brought
+# is offered from there, and if it brought nothing this is offered again.
+_aif_start_ways() {
+  local root="$1" plan="$2" text key why u
+  text="$(jq -r '.ways.text' "$plan")"
+  key="$(jq -r '.ways.key' "$plan")"
+  why="$(jq -r '."end".why // "nothing left for the shift"' "$plan")"
+  _aif_start_out "$text:"
+  _aif_start_out "  1  /aif-po          one need — the owner works it out with you"
+  _aif_start_out "  2  a plan first     everything at once in plan mode, then /aif-po takes the plan"
+  while :; do
+    _aif_start_key 0 "1 or Enter: /aif-po · 2: a plan first · q: end the shift" ""
+    case "$AIF_START_KEY" in
+      1 | enter)
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        u="$(jq -cn --arg key "$key po" '
+          { rule: "R26", key: $key, kind: "session", ticket: null, file: null, column: null, role: "po",
+            prompt: "/aif-po", name: "aif po", default: "open", keys: {},
+            text: "owner — nothing left on the board; one need", warn: null }')"
+        _aif_start_run_session "$root" "$u"
+        return 0
+        ;;
+      2)
+        # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+        u="$(jq -cn --arg key "$key plan" --arg dir "$AIF_REQUESTS_DIR/$AIF_REQUEST_PLANS" --arg prompt "$AIF_START_PLAN_PROMPT" '
+          { rule: "R26", key: $key, kind: "session", ticket: null, file: $dir, column: null, role: "po",
+            prompt: $prompt, name: "aif plan", plans: $dir, default: "open", keys: {},
+            text: "plan mode — the whole idea at once, for the owner to map", warn: null }')"
+        _aif_start_run_session "$root" "$u"
+        return 0
+        ;;
+      q | s) _aif_start_finish 0 "$why" ;;
+      gone) _aif_start_gone ;;
+      *) _aif_start_out "that key is neither way — 1, 2, or q to end the shift" ;;
+    esac
+  done
+}
+
+# The plan unit's first words to claude, in the person's place, so that the
+# session opens asking for the idea rather than on an empty prompt; what the
+# session is for is in its note (AIF_RUNNER_CLAUDE_PLAN_NOTE).
+# shellcheck disable=SC2034  # read by _aif_start_ways
+AIF_START_PLAN_PROMPT="I want to lay out my product idea as a plan — all of it at once — for the product owner to map into requests afterwards. Ask me for it."
 
 # _aif_start_run_land <root> <unit> — `aif land <ID>` in the foreground, with
 # its own lines and its own traps (R6, or `l` over a demo). What came of it
@@ -2246,7 +2313,8 @@ _aif_start_plan_text() {
     (.units | to_entries[] | (if .key == 0 then pad("units") else pad("") end) + "\(.key + 1) \(.value.text)"),
     (.lines | to_entries[] | (if .key == 0 then pad("left") else pad("") end) + (.value | lfmt)),
     (if $dry == 1 and .wait != null then pad("wait") + .wait.why else empty end),
-    (if $dry == 1 and ."end" != null then pad("end") + ."end".why + " (exit \(."end".rc))" else empty end)' "$1"
+    (if $dry == 1 and ."end" != null then pad("end") + ."end".why + " (exit \(."end".rc))" else empty end),
+    (if $dry == 1 and .ways != null then pad("ways") + .ways.text + ": 1 /aif-po, one need · 2 a plan first, in plan mode — the shift waits for one, or q" else empty end)' "$1"
 }
 
 # _aif_start_print_plan <plan> — the plan, when it changed since it was last
@@ -2415,7 +2483,7 @@ _aif_start_summary() {
         sessions: [ $u[] | select(.session_id != null)
                     | { name, session_id,
                         resume: ((if $cfg == "" then "" else "CLAUDE_CONFIG_DIR=\($cfg) " end) + "claude --resume \(.session_id)") } ],
-        next: (if $why == "nothing left for the shift" then "/aif-po — bring a need" else null end) }')" || json=""
+        next: (if $why == "nothing left for the shift" then "/aif-po — bring a need · or a plan: aif start, 2 when nothing is left — plan mode, then /aif-po <the plan>" else null end) }')" || json=""
   [ -n "$json" ] || return 0
   { printf '%s\n' "$json" >"$dir/summary.json.tmp" && mv "$dir/summary.json.tmp" "$dir/summary.json"; } 2>/dev/null || true
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
@@ -2586,6 +2654,10 @@ _aif_start_shift() {
     fi
     if jq -e '."end" != null' "$dir/plan.json" >/dev/null 2>&1; then
       _aif_start_print_plan "$dir/plan.json"
+      if jq -e '.ways != null' "$dir/plan.json" >/dev/null 2>&1; then
+        _aif_start_ways "$root" "$dir/plan.json"
+        continue
+      fi
       _aif_start_finish "$(jq -r '."end".rc // 0' "$dir/plan.json")" "$(jq -r '."end".why // "the end"' "$dir/plan.json")"
     fi
     _aif_start_print_plan "$dir/plan.json"

@@ -199,6 +199,41 @@ else
   bad "skills/aif-review/SKILL.md: no step for a verdict already on the card whose first line is not wrong: or cancel: — the shift would offer the card for review in every shift"
 fi
 
+printf '\nthe product partner writes the map in the words the shift reads\n'
+# A plan's map (docs/DEFECTS.md 22.1, 22.2) is prose the owner writes and
+# bash reads by its headings and arrows alone (lib/requests.sh
+# aif_request_map_json): the shift offers its entries `not polished`, in
+# order. The skill's own template, written out as a project's map, has to
+# read as two entries and one plan — a heading or an arrow's word renamed in
+# the skill and the shift would offer nothing, or the wrong thing.
+f="$ROOT/sets/claude/skills/aif-po/SKILL.md"
+mapdir="$(mktemp -d "${TMPDIR:-/tmp}/aif-set-map-XXXXXX")"
+mkdir -p "$mapdir/requests"
+awk '/^### The map$/ { inmap = 1; next }
+  inmap && /^```markdown$/ { on = 1; next }
+  on && /^```$/ { exit }
+  on { print }' "$f" >"$mapdir/requests/MAP.md"
+got="$( (cd "$mapdir" && git init -q 2>/dev/null; AIF_ROOT="$ROOT" /bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/requests.sh"; aif_request_map_json .' _ "$ROOT") 2>/dev/null |
+  jq -c '[ .map.plans, [ .map.entries[0:2][] | [ .n, .target, .state ] ] ]' 2>/dev/null)" || got=""
+rm -rf "${mapdir:?}"
+if [ "$got" = '[["requests/plans/<name>.md"],[[1,"requests/<slug>.md","missing"],[2,"not polished","not polished"]]]' ]; then
+  ok "skills/aif-po/SKILL.md: the map's template reads as the shift reads a map — its plan, an entry naming its request, one not polished"
+else
+  bad "skills/aif-po/SKILL.md: the map's template does not read as lib/requests.sh reads a map (got: ${got:-nothing}) — the shift would not offer its entries"
+fi
+if grep -q '^\*\*A plan\.\*\*' "$f" && grep -q '^### Step 2\. One request at a time$' "$f" &&
+  grep -q 'requests/MAP.md' "$ROOT/sets/claude/commands/aif-po.md"; then
+  ok "skills/aif-po: a plan is a way in, mapped first, then one request at a time — the command says so too"
+else
+  bad "skills/aif-po: no plan way in, no step 2, or the command does not name requests/MAP.md"
+fi
+if grep -q "^\*\*A plan's technical work\.\*\*" "$ROOT/sets/claude/skills/aif-ba/SKILL.md" &&
+  grep -q 'requests/MAP.md` is none' "$ROOT/sets/claude/skills/aif-ba/SKILL.md"; then
+  ok "skills/aif-ba: a plan's technical work goes into the first slice that needs it, and the map is no request to cut"
+else
+  bad "skills/aif-ba: no step for a plan's technical work, or nothing says requests/MAP.md is no request"
+fi
+
 printf '\nhooks are executable\n'
 # The one property of these files no other check covers, and the one that broke.
 # Every test below invokes a hook as `/bin/bash <path>`, which works at any mode —

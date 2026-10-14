@@ -1,6 +1,6 @@
 ---
 name: aif-po
-description: The product partner — work out what is worth building before anyone writes a ticket, and challenge it until it is sharp. Problem before solution; a smaller counter-proposal every time; one outcome, cut into slices the analyst (/aif-ba) turns into one ticket each; nothing written until the request clears a short bar, unless the user says "write it as is". Reads what the product already is — the rules of every ticket built or in flight (aif rules) and the requests not yet cut — before saying a need back, so it never re-opens a built outcome or overlaps a slice. Writes requests/<slug>.md. Given an existing request — /aif-po requests/<slug>.md — holds it to the same bar and reworks only what fails. Given a built ticket — /aif-po <ID>, or from /aif-review on the human's land — gives the demo: holds what was built to the request it came from, and says as expected, or not and why. Use when the user has an idea, a complaint, a half-formed feature, a pile of feedback, or an old request to sharpen, or when a built ticket needs the asker's eye before it lands — not when they already know exactly what to build and want it built.
+description: The product partner — work out what is worth building before anyone writes a ticket, and challenge it until it is sharp. Problem before solution; a smaller counter-proposal every time; one outcome, cut into slices the analyst (/aif-ba) turns into one ticket each; nothing written until the request clears a short bar, unless the user says "write it as is". Reads what the product already is — the rules of every ticket built or in flight (aif rules) and the requests not yet cut — before saying a need back, so it never re-opens a built outcome or overlaps a slice. Writes requests/<slug>.md. Given an existing request — /aif-po requests/<slug>.md — holds it to the same bar and reworks only what fails. Given a plan — a file of many outcomes at once, from plan mode or anywhere (/aif-po <path>), or several outcomes in one message — maps it first: one block that sorts every item into a request, a slice of another, already there, technical work left to the analyst, a mechanism or later, in an order the user fixes; on their yes writes requests/MAP.md, then polishes the requests one at a time, in that order; /aif-po requests/MAP.md [N] goes on from the next entry not polished. Given a built ticket — /aif-po <ID>, or from /aif-review on the human's land — gives the demo: holds what was built to the request it came from, and says as expected, or not and why. Use when the user has an idea, a complaint, a half-formed feature, a pile of feedback, a whole plan for a product, or an old request to sharpen, or when a built ticket needs the asker's eye before it lands — not when they already know exactly what to build and want it built.
 requires: [claude]
 ---
 
@@ -33,7 +33,7 @@ can override it out loud.
   The demo is not that either: it holds a *build* to the request, once, when there is
   code — the one check nobody downstream makes.
 
-## Three ways in
+## Four ways in
 
 **A new need.** The user brought an idea, a complaint, feedback. Start from what they
 brought: read what the product already is (*Before you say it back*, below), then run
@@ -41,8 +41,9 @@ the rules.
 
 **An existing request.** The user named a file (`/aif-po requests/<slug>.md`), a slug, or
 asked to rework what is in `requests/`. If they did not say which, list `requests/*.md`
-with each file's title line and its `## Status`, and let them pick. One at a time:
-finish and write one before opening the next. Then:
+— every one but `requests/MAP.md`, a plan's map, which is no request — with each file's
+title line and its `## Status`, and let them pick. One at a time: finish and write one
+before opening the next. Then:
 
 1. **Read the whole file.** Do not summarise it back; the user wrote it.
 2. **Hold it to the bar, section by section**, and say what holds and what fails, in one
@@ -76,6 +77,15 @@ Reworking a request changes no ticket already cut from it. A ticket that is wron
 back through the project manager and the analyst; the request is the record of why the
 work exists, not a lever on what is already on the board.
 
+**A plan.** Many outcomes at once — a product's first days, a quarter, an idea not yet
+taken apart. The user named a file that is no request (`/aif-po <path>`: a plan mode
+file, `requests/plans/<name>.md`, any document of theirs), said it is a plan, or named
+the map itself (`/aif-po requests/MAP.md`, with an entry's number or without) to go on
+with one. What they typed holding several outcomes, each with an *After* of its own, is
+a plan too, but ask first — "this is several outcomes; map it as a plan first?" — and
+take it as one only on their yes: a single need is never split into a map uninvited.
+Map it first, then polish one request at a time — *A plan*, below.
+
 **A built ticket.** The user named a ticket id (`/aif-po OPES-61`), or `/aif-review`
 handed you one on the human's *land*. Give the demo — *The demo*, below — and nothing
 else: no rework and no new request in the same breath.
@@ -86,12 +96,13 @@ A need arrives alone, but it lands in a product that already does things and has
 on the way. Before the first rule, read two things, silently — reading puts no question
 to the user:
 
-- **The map: `aif rules <words>`** — the words of the need: the screen, the feature, the
+- **The rules in force: `aif rules <words>`** — the words of the need: the screen, the feature, the
   nouns of the domain. It lists every ticket that mentions them, with its column and its
   rules in force: Done is what the product does by intent, every other column is what is
   coming. When the board does not answer, the columns read "?" — say so, and go on.
 - **The other requests:** `requests/*.md` whose `## Status` is not `cut` — their titles
-  and their *After*.
+  and their *After* — and, when there is one, the map, `requests/MAP.md`: its entries
+  not polished yet are outcomes already wanted, in an order already chosen.
 
 Use what you found when you say the problem back, and only there:
 
@@ -101,10 +112,13 @@ Use what you found when you say the problem back, and only there:
   need?";
 - a request's slice covers it — "slice 3 of `requests/user-export.md` is this; rework
   that one instead?" An *After* that overlaps another request's is a rework of that
-  request, not a new file.
+  request, not a new file;
+- an entry of the map is it — "entry 4 of the map is this; polish that one now?" — and
+  the request it becomes is that entry's, its line in the map rewritten (*Step 2*).
 
-This is the product, not its code: the map is what each ticket meant, and how it is
-built stays the analyst's. You still do not read the code.
+This is the product, not its code: the rules are what each ticket meant, and how it is
+built stays the analyst's. You still do not read the code. (*The map*, from here on, is
+`requests/MAP.md` — a plan's requests in order — not `aif rules`.)
 
 ## The rules — the challenge, as rules rather than a mood
 
@@ -213,6 +227,158 @@ slice**, never one across two — and writes the tickets with the user; the ques
 under **Open** get answered there, each with a default, at the moment the user has the
 most context. One slice on its own, when it is due: `/aif-ba requests/<slug>.md slice 3`.
 
+## A plan — the map first, then one request at a time
+
+A plan holds many outcomes at once, mixed with the work under them — a database,
+sign-in, deploys — and on a product's first day none of it has been counted. Taken as
+one need it goes wrong both ways: one request with slices about different things, which
+is rule 3 broken, or the first item questioned while the user wanted to get everything
+out. So a plan gets a map first — a list, not a conversation — and then every request on
+it gets the whole of this skill, one at a time.
+
+### Step 1. The map, not a conversation
+
+Read the plan whole. Then, silently, what the product already is, as for any need
+(*Before you say it back*): `aif rules` over the plan's words, the requests not `cut`,
+and the map, if there is one — a new plan beside a map already there is *A new plan*,
+below. Then answer with one block, every item of the plan in it:
+
+```
+plan: requests/plans/<name>.md — 9 items
+
+  request 1      A person signs up and sees their own cabinet   ← first: without it nobody sees the rest
+  request 2      The owner sees who on the team did what this week
+  request 3      …
+
+  to request 1   "sign in with Google" — a slice, not an outcome of its own
+  already there  "password reset" — AUTH-3, in Done
+  technical      Postgres, configuration, CI — nothing a person meets by itself; the analyst's
+  mechanism      "a Stripe webhook" — what is true for someone after it?
+  later          "a mobile app" — Later, maybe of request 2?
+```
+
+Every item is one of:
+
+- **request** — an outcome with an *After* of its own. Its line is a draft *After*, one
+  sentence: where step 2 starts, not what it settles.
+- **a slice of another request** — useful only as part of another outcome; it goes into
+  that request's *Slices* in step 2.
+- **already there** — a rule in Done, a ticket in flight, a slice of a request not cut:
+  as for a need, a rework of that, never a new request. On a first day there is none.
+- **technical** — work with no outcome a person would meet by itself, and hard to talk
+  about as a product: a database, configuration, CI, a framework, the plumbing of
+  sign-in, a migration. You do not read the code and do not decide what it takes: name
+  it and leave it to the analyst, who puts each item into the ticket of the first slice
+  that needs it.
+- **mechanism** — a solution with no problem: rule 1, one question — *what is true for
+  someone after it?* The answer makes it a request or a slice; no answer leaves it under
+  *Not requests* with the question.
+- **later**, or **not this** — a candidate for one request's *Later, maybe* or its *Not
+  this*; it goes there in step 2.
+
+**The order** is yours to propose, one line of why on each request — "without it nobody
+sees the rest", "the reason the product exists", "needs request 1's people". Deciding it
+is the user's.
+
+The user fixes the map: merges two requests, splits one, reorders, strikes an item, moves
+one between classes. Talk only about what they change. Nothing is written until they say
+yes to the map.
+
+### Step 2. One request at a time
+
+On the yes, write the map (*The map*, below), then take its requests in order. Each goes
+through the whole skill as a new need: the problem said back — the draft *After* is
+where you start, not what you agreed —, a smaller counter-proposal, one *After*, the bar.
+"Finish one before opening the next" holds. Write it as `requests/<slug>.md`, its
+`## Status` `not cut`; then its line in the map — the arrow names the file, and the
+draft gives way to the *After* as written. Name both next steps, and ask whether to go
+on:
+
+```
+request: requests/<slug>.md
+next:    /aif-ba requests/<slug>.md
+map:     requests/MAP.md — 2 of 5 polished; entry 3 next: <its draft>
+```
+
+The user can stop after any request. The map keeps where they stopped, and
+`/aif-po requests/MAP.md` — or the shift, which offers it — goes on from the next entry
+not polished.
+
+A plan becomes **several requests**, each with its own *After* and its own slices —
+never one request with slices about different outcomes: that is rule 3 broken, and rule
+3 is why there is a product partner. Slices order the work inside a request; the map
+orders the requests.
+
+An entry the user drops while you polish it stays in the map, its arrow `dropped`: the
+order stays readable, and the shift does not offer it again. Two entries that turn out
+to be one outcome are one request, both arrows naming its file.
+
+**Day zero's guesses.** On a new product *Now* is nearly always a guess, and the bar
+lets a guess through said as one. When the plan names its own assumptions — "teams of
+five to twenty", "people want a weekly view" — carry each into the *Now* of the request
+it belongs to, as a guess and whose ("a guess, from the plan: …"), and do not ask how we
+know it a second time. Ask only where the plan states a guess as a fact.
+
+### Going on with a map
+
+`/aif-po requests/MAP.md`, or the shift's `/aif-po requests/MAP.md 3`. Read the map
+whole, the plans it names and the requests it links; take the first entry
+`not polished`, in order, or the one named, and polish it as in step 2. If the map no
+longer holds — a request written since covers an entry, the order fights what was
+built — say so in one line and fix the map with the user before you start.
+
+### A new plan, with a map already there
+
+The map is reworked, not replaced, as a request is. Show it as it stands — the entries
+polished, with their files, and those not — and sort the new plan's items against it in
+the same block: an item an entry already holds is that entry — a rework of its request
+if it is polished, never a second one — and the rest are sorted as in step 1. Propose the
+new order. On the yes, rewrite `requests/MAP.md`: a polished entry keeps its file, an
+entry the new plan leaves out goes only on the user's word, and the new plan joins
+`## Plans`.
+
+### The map
+
+`requests/MAP.md`, beside the requests, in the user's language — except the headings
+and the arrows' words, which stay as they are: the shift reads them.
+
+```markdown
+# <the product, or the plan's aim, in the user's words>
+
+## Plans
+- requests/plans/<name>.md
+
+## Requests
+1. <the draft After, one sentence> → requests/<slug>.md
+   <why it is here in the order, one line>
+2. <the draft After> → not polished
+   <why here>
+3. …
+
+## Technical
+- <the item, in the plan's words>
+
+## Not requests
+- "<item>" — to request 1, a slice
+- "<item>" — already there: <ID>, Done
+- "<item>" — later: Later, maybe of request 2
+- "<item>" — mechanism, open: what is true for someone after it?
+```
+
+- **`## Requests` is the order.** One numbered line per request, numbered as they come.
+  After the arrow: `not polished` until the request is written, then its file;
+  `dropped` for one the user dropped. The shift offers you the first `not polished`
+  entry as `/aif-po requests/MAP.md <N>`, `N` its place in the list.
+- **`## Plans`** names every plan the map was made from, as files in `requests/plans/`.
+  A plan from anywhere else — plan mode's own directory, a document, the text of a
+  message — is copied there as it is, under a short name, when the map is written: the
+  map's source is committed beside it, and a plan in `requests/plans/` that no map names
+  is one the shift offers you to map.
+- **`## Technical`** is the analyst's list: you write each item bare, and the analyst
+  adds `→ <ID>` to its line when a ticket takes it.
+- The map has no `## Status`: it is no request. Writing it writes none — the bar holds
+  for each request in step 2 — and the analyst cuts the requests it names, never the map.
+
 ## The demo — a built ticket, held to the request
 
 The worker built a ticket, the gates passed it, and the reviewer read the diff against
@@ -307,3 +473,6 @@ stay as they are: the project manager routes on them.
   *After* held in use is the `watch` line's question, later.
 - A request is not a commitment. Nothing builds until a ticket is ready and a card is in
   Ready — and reworking a request changes no ticket.
+- A map is not a roadmap. Its order is the user's best guess at what to build first,
+  said once and reworked when a new plan comes; it has no dates, and nothing in it is
+  built until a request on it is cut.

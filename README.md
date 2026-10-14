@@ -227,8 +227,14 @@ Review comes first: each built card opens as `/aif-review <ID>` in claude, and
 the next is offered once that session ends. Then the analyst, on what came back
 — a rework, a `blocked: ticket`, a request with slices left to cut while the
 build has fewer than three rounds ahead of it — and the owner when a request
-needs cutting into slices first (`--po` opens `/aif-po` when nothing else is
-left). The board moves on its own only on fixed first lines: `wrong:` goes back
+needs cutting into slices first, when a plan in `requests/plans/` has no map
+yet, and for the map's next entry not polished, in the map's order. With
+nothing left the shift does not just end — on a new project that is its first
+look: it offers two ways to bring more and waits for a key, no countdown — `1`
+the owner on one need, `2` a plan first: claude in plan mode, the whole idea
+at once, written to `requests/plans/`, which the owner is then offered to map;
+`q` ends it (`--po` opens `/aif-po` on the countdown instead). The board moves
+on its own only on fixed first lines: `wrong:` goes back
 to Backlog as `rework:` for the analyst, `cancel:` to Done, a slice whose
 dependencies have landed to Ready, and a `blocked: environment` posted during
 the shift (or stamped in the two minutes before it, said so) back to Ready once
@@ -530,6 +536,21 @@ exchange, not as a second request. `requests/` sits beside `tasks/` and is commi
 work exists. Give it an existing request (`/aif-po requests/<slug>.md`) and it holds that
 to the same bar and reworks only what fails — including requests written before slices
 existed.
+
+**A plan.** A product's first days arrive as many outcomes at once, mixed with the work
+under them, and none of it counted yet. Give `/aif-po` the plan — a plan mode file, any
+document (`/aif-po <path>`), or the outcomes in one message — and it maps it before it
+asks anything: one block that sorts every item into a request (a draft *After*), a slice
+of another, already there, **technical** work no person meets by itself (a database, CI,
+the plumbing of sign-in — left to the analyst, who puts each item into the ticket of the
+first slice that needs it), a mechanism with no problem yet, or later — in an order you
+fix. On your yes it writes `requests/MAP.md`, the plan copied beside it into
+`requests/plans/`, and polishes the requests one at a time, in that order, each through
+the whole bar: a plan becomes several requests, each with its own *After*, never one
+request with slices about different things. The assumptions the plan names go into each
+*Now* as guesses, not asked again. Stop after any request: `/aif-po requests/MAP.md` —
+or the shift — goes on from the next entry `not polished`. A new plan later reworks the
+map rather than replacing it.
 
 **The demo.** The ticket is the analyst's reading of the request, and once it is built
 nobody asked whether it is what you meant — the reviewer holds the diff to the ticket.
@@ -1614,6 +1635,7 @@ Never `git tag` a release by hand.
 - [x] `aif explain` — the provenance chain behind a ticket, rendered, at no cost
 - [x] The demo — on the reviewer's land, the product partner holds the build to its request before `aif land` runs
 - [x] `aif start` — the shift: your sessions one at a time, by fixed rules, beside `aif work --loop --idle` in another terminal
+- [x] A plan into `/aif-po` — `requests/MAP.md`, its requests polished one at a time; the shift starts a new project from nothing
 - [ ] Fill `prices.json` — tokens are recorded, dollars need a table
 - [ ] Fixture-level evals (a real repo, a real oracle) + guardrail evals
 - [ ] `local` profile via `llama-server`, plus a profile preflight hook

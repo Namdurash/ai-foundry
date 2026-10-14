@@ -224,6 +224,8 @@ aif_requests_json() {
 
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
+    # The owner's map of a plan lists requests; it is none (aif_request_map_json).
+    [ "$(basename "$f")" != "$AIF_REQUEST_MAP" ] || continue
     scan="$(_aif_request_scan "$f" list)" || continue
     facts="$(printf '%s\n' "$scan" | sed -n 1p)"
     list="$(printf '%s\n' "$scan" | sed 1d)"
@@ -299,4 +301,160 @@ aif_requests_json() {
                          elif .effective == "not cut" and .slices >= 1 then 1
                          else null end) ]
     | sort_by(.file)'
+}
+
+# _aif_request_map_scan <file> — the two lists of the owner's map
+# (requests/MAP.md, sets/claude/skills/aif-po/SKILL.md "The map"), a line
+# each: `P<TAB><path>` for every file its `## Plans` names, `E<TAB><n><TAB>
+# <draft><TAB><target>` for every entry of its `## Requests`, in the map's
+# order. rc 1 when the file cannot be read.
+#
+# An entry is a numbered item at column 0 under `## Requests`; its <n> is its
+# place there, counted, not the number written — a map numbered 1, 1, 1 by a
+# Markdown habit is still three entries in order. What follows the last arrow
+# on its line (`→`, or `->` as typed) is its target: `not polished`, the
+# request it became, or the owner's word for what else became of it; a line
+# with no arrow has none. The lines under an entry — the reason it is where it
+# is — are prose. The rules of the request reader hold here too
+# (_aif_request_scan): `\r` off, a fenced block nobody's structure, the LAST
+# of a heading written twice the map's.
+_aif_request_map_scan() {
+  [ -r "$1" ] || return 1
+  awk '
+    { sub(/\r$/, "") }
+    fence != "" { if ($0 ~ "^ ? ? ?" fence) fence = ""; next }
+    /^ ? ? ?```/ { fence = "```"; next }
+    /^ ? ? ?~~~/ { fence = "~~~"; next }
+    /^## / {
+      sec = ""
+      if ($0 ~ /^## Plans[[:space:]]*$/) { sec = "plans"; np = 0 }
+      else if ($0 ~ /^## Requests[[:space:]]*$/) { sec = "requests"; ne = 0 }
+      next
+    }
+    sec == "plans" {
+      n = split($0, w, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        t = w[i]
+        gsub(/^[`<("'\''*_]+|[`>)"'\''*_,;:.]+$/, "", t)
+        if (t ~ /\.md$/ && t !~ /^-/) { sub(/^\.\//, "", t); plan[++np] = t }
+      }
+      next
+    }
+    sec == "requests" && /^[0-9]+[.)][[:space:]]/ {
+      line = $0
+      sub(/^[0-9]+[.)][[:space:]]+/, "", line)
+      gsub(/\t/, " ", line)
+      draft = line
+      target = ""
+      # The last arrow: the draft before it may hold one of its own. Found by
+      # walking from one to the next, never by a bracket that excludes the
+      # arrow: an awk that reads bytes splits it into three, and one of them
+      # is the second byte of a Cyrillic letter.
+      s = line
+      at = 0
+      len = 0
+      seen = 0
+      while (match(s, /→|->/)) {
+        at = seen + RSTART
+        len = RLENGTH
+        seen = seen + RSTART + RLENGTH - 1
+        s = substr(s, RSTART + RLENGTH)
+      }
+      if (at > 0) {
+        draft = substr(line, 1, at - 1)
+        target = substr(line, at + len)
+      }
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", draft)
+      gsub(/^[[:space:]`]+|[[:space:]`]+$/, "", target)
+      entry[++ne] = draft "\t" target
+    }
+    END {
+      for (i = 1; i <= np; i++) printf "P\t%s\n", plan[i]
+      for (i = 1; i <= ne; i++) printf "E\t%d\t%s\n", i, entry[i]
+    }
+  ' "$1"
+}
+
+# aif_request_map_json <root> — the owner's map and the plans beside it, as
+# one JSON object (compact):
+#
+#   { map: null | { file: "requests/MAP.md", sha, plans: [ "<path>" ],
+#                   entries: [ { n, text, target, state, request } ] },
+#     plans: [ { file: "requests/plans/<name>.md", sha, mapped } ] }
+#
+# An entry's `state` is what the shift acts on (lib/start.jq R28): `not
+# polished` — its target says so, or it names nothing; `polished` — its
+# target is a request that is there (`request`, as requests/<slug>.md);
+# `missing` — it names a request that is not; `other` — any other word the
+# owner wrote (`dropped`), nothing for the shift to offer. `plans` is every
+# requests/plans/*.md, sorted by name, `mapped` when the map's `## Plans`
+# names it: a plan no map names is the owner's to map (R27). `sha` keys a
+# file's version, as aif_requests_json's does.
+#
+# Read from the main checkout (aif_main_root), as the requests are. No map and
+# no plans: `{ map: null, plans: [] }`.
+aif_request_map_json() {
+  local main dir mapf scan line kind n draft target state req mapj="null" plans="" entries="" named="" p sha
+  main="$(aif_main_root "$1")"
+  dir="$main/$AIF_REQUESTS_DIR"
+  mapf="$dir/$AIF_REQUEST_MAP"
+  if [ -f "$mapf" ] && scan="$(_aif_request_map_scan "$mapf")"; then
+    while IFS= read -r line; do
+      kind="${line%%	*}"
+      line="${line#*	}"
+      case "$kind" in
+        P)
+          named="$named$line
+"
+          ;;
+        E)
+          n="${line%%	*}"
+          line="${line#*	}"
+          draft="${line%%	*}"
+          target="${line#*	}"
+          req=""
+          case "$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')" in
+            '' | 'not polished') state="not polished" ;;
+            *.md)
+              req="${target#./}"
+              case "$req" in
+                */*) ;;
+                *) req="$AIF_REQUESTS_DIR/$req" ;;
+              esac
+              if [ -f "$main/$req" ]; then state=polished; else state=missing; fi
+              ;;
+            *) state=other ;;
+          esac
+          # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+          entries="$entries$(jq -cn --argjson n "$n" --arg text "$draft" --arg target "$target" \
+            --arg state "$state" --arg req "$req" \
+            '{ n: $n, text: $text, target: (if $target == "" then null else $target end), state: $state,
+               request: (if $req == "" then null else $req end) }')
+"
+          ;;
+      esac
+    done <<EOF
+$scan
+EOF
+    sha="$(aif_sha256 "$mapf")" || sha=""
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+    mapj="$(jq -cn --arg file "$AIF_REQUESTS_DIR/$AIF_REQUEST_MAP" --arg sha "$sha" --arg named "$named" \
+      --arg entries "$entries" '
+      { file: $file, sha: $sha,
+        plans: [ $named | split("\n")[] | select(length > 0) ],
+        entries: [ $entries | split("\n")[] | select(length > 0) | fromjson ] }')" || mapj="null"
+  fi
+  for p in "$dir/$AIF_REQUEST_PLANS"/*.md; do
+    [ -f "$p" ] || continue
+    sha="$(aif_sha256 "$p")" || sha=""
+    plans="$plans${p#"$main"/}	$sha
+"
+  done
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  jq -cn --argjson map "$mapj" --arg plans "$plans" '
+    ([ ($map // {}).plans // [] | .[] | sub("^\\./"; "") ]) as $named
+    | { map: $map,
+        plans: [ $plans | split("\n")[] | select(length > 0) | split("\t")
+                 | { file: .[0], sha: .[1], mapped: (.[0] as $f | any($named[]; . == $f)) } ]
+               | sort_by(.file) }'
 }

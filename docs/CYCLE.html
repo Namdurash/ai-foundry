@@ -67,14 +67,19 @@
     <div id="cycle" class="diagram"><pre id="cycle-src" class="src">
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner&lt;br/&gt;against the map and the open requests,&lt;br/&gt;challenges the need, cuts it into slices&lt;br/&gt;that ship on their own"]
+    PLAN(["a plan — many outcomes at once&lt;br/&gt;plan mode, or any file — requests/plans/"])
+    MAP(["requests/MAP.md — the map&lt;br/&gt;a plan's requests in order: not polished → the request"])
+    PO["/aif-po — the product partner&lt;br/&gt;against the rules in force and the open requests,&lt;br/&gt;challenges the need, cuts it into slices&lt;br/&gt;that ship on their own"]
     REQ(["requests/&amp;lt;slug&amp;gt;.md — the request&lt;br/&gt;Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst&lt;br/&gt;one ticket per slice, never one across two&lt;br/&gt;against the map — aif rules: the rules of every ticket, built or in flight&lt;br/&gt;tasks/&amp;lt;ID&amp;gt;/ticket.md: the rules, then the key&lt;br/&gt;GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready&lt;br/&gt;every open question answered, or its default taken&lt;br/&gt;at most 6 rules — over that, only the human keeps it whole"}}
     PJM["/aif-pjm — the project manager&lt;br/&gt;orders Ready, routes the reviewer's&lt;br/&gt;and the demo's words"]
     QA["/aif-review — the reviewer's brief&lt;br/&gt;per criterion its test, what was not established,&lt;br/&gt;the request's After — then the verdict"]
     DEMO{"/aif-po — the demo&lt;br/&gt;the build held to the request it came from,&lt;br/&gt;in a fresh context, on the human's land"}
+    PLAN --&gt;|"/aif-po — mapped first, written on the person's yes"| MAP
+    MAP --&gt;|"the next entry not polished — one request at a time"| PO
     PO --&gt;|"writes it — Status: not cut"| REQ
+    MAP -.-&gt;|"technical work, into the first slice that needs it"| BA
     REQ --&gt;|"the slices"| BA
     BA -.-&gt;|"marks it after the cards: cut in part, then cut"| REQ
     BA --&gt; DOR
@@ -143,14 +148,14 @@ flowchart TB
     <li style="--dot: var(--machine)">Machine time — <code>aif work</code>, one ticket, one worktree, no questions; <code>aif land</code> is the yes after review, run on the human's land once the demo says as expected</li>
     <li style="--dot: var(--line-strong)">Hexagons are gates: a verdict, retried with the complaint, never a conversation</li>
     <li style="--dot: var(--human)">The diamond is the demo: it can hold a land back, never push one through</li>
-    <li style="--dot: var(--human)">The rounded node is the request itself, a file with a status line the analyst keeps true</li>
+    <li style="--dot: var(--human)">The rounded nodes are files: the request, with a status line the analyst keeps true; a plan, and its map</li>
   </ul>
 
   <div class="grid">
     <section class="block human">
       <h2><small>The human half</small>Roles</h2>
       <p>Each is a skill under <code>sets/claude/skills/</code> and a slash command of the same name. <code>/aif-setup</code> says which can run on this machine.</p>
-      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one.</p>
+      <p>What passes between the first two is a file, <code>requests/&lt;slug&gt;.md</code>, with a status of its own: <code>not cut</code> when the product partner writes it, <code>cut in part</code> with one line per slice once the analyst has made cards, <code>cut</code> when every slice has one. A plan — many outcomes at once — is mapped first: <code>requests/MAP.md</code> lists its requests in an order the person fixes, each <code>not polished</code> until the product partner writes it, and its technical work for the analyst.</p>
       <div class="table-wrap">
 <table>
 <thead><tr><th>skill</th><th>role</th><th>needs</th></tr></thead>

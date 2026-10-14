@@ -59,7 +59,8 @@ aif_runner_claude_version() {
 # cannot watch /dev/tty — every session ended at its start, rc 1, "EINVAL:
 # invalid argument, kqueue" (docs/DEFECTS.md 19.2; docs/FINDINGS.md #49).
 # The test seam (AIF_START_SESSION_CMD, a script run with the same five
-# arguments and the effort the session asks for, sixth) sits inside the same `set -m` bracket, so a harness exercises
+# arguments, the effort the session asks for sixth and a plan unit's
+# directory seventh) sits inside the same `set -m` bracket, so a harness exercises
 # the real job control, and keeps the caller's descriptors, so a harness with
 # no terminal can run it.
 #
@@ -76,16 +77,35 @@ AIF_RUNNER_CLAUDE_SHIFT_NOTE='This session is one unit of an aif shift (`aif sta
 # shellcheck disable=SC2034  # read by aif_runner_claude_session
 AIF_RUNNER_CLAUDE_SESSION_EFFORT="max"
 
+# What the shift's plan unit is told it is (lib/cmd_start.sh, R26's second
+# way): plan mode for a product idea, everything at once, before the owner
+# maps it into requests. Plan mode ends by offering to build what it planned,
+# and a person new to the project says yes to what is offered — so the note
+# says plainly that nothing is built here, whatever plan mode offers
+# (docs/DEFECTS.md 22.3).
+# shellcheck disable=SC2016,SC2034  # the note's own backticks; read by lib/cmd_start.sh
+AIF_RUNNER_CLAUDE_PLAN_NOTE='This session is the plan unit of an aif shift (`aif start`): the person chose to lay out their product idea all at once, in plan mode, before the product owner (/aif-po) maps it into requests. Help them get all of it out — the outcomes they want, for whom, which first, what they are assuming and what they have not decided — with no format and no bar: those are the owner'"'"'s, next. Write it to the plan file plan mode gives you, in their words and their language: a product plan, not an implementation plan — no code, no file layout, no tasks. Nothing is built in this session, whatever plan mode offers when the plan is done: say the plan is written, name its file, and tell the person to type /exit — the shift then opens /aif-po with that plan, and the owner maps it into requests, one at a time.'
+
 # aif_runner_claude_session, as the shift opens it, and with a sixth argument
 # the note in the shift's place: `aif setup` opens its one session the same
 # way, told what it is for (AIF_RUNNER_CLAUDE_SETUP_NOTE). An empty
-# <session-id> lets claude choose one.
+# <session-id> lets claude choose one. A seventh, a directory relative to
+# <cwd>, opens the session in plan mode with its plans written there
+# (`plansDirectory`, a setting of claude's own — probed on 2.1.287: given by
+# --settings, plan mode writes `<dir>/<name>.md` and makes the directory;
+# docs/FINDINGS.md #52), where the shift can find what it wrote; the test
+# seam gets it as its seventh argument.
 aif_runner_claude_session() {
-  local rc=0 m sid_arg eff effort="" tty note="${6-$AIF_RUNNER_CLAUDE_SHIFT_NOTE}"
+  local rc=0 m sid_arg eff effort="" tty note="${6-$AIF_RUNNER_CLAUDE_SHIFT_NOTE}" plans="${7:-}" pm
   m=()
   [ -z "$3" ] || m=(--model "$3")
   sid_arg=()
   [ -z "$5" ] || sid_arg=(--session-id "$5")
+  pm=()
+  if [ -n "$plans" ]; then
+    # shellcheck disable=SC2016  # jq's variable, bound by the --arg flag
+    pm=(--permission-mode plan --settings "$(jq -cn --arg d "$plans" '{ plansDirectory: $d }')")
+  fi
   # A session with a person in it at the most effort there is: its turns are
   # few and each one decides something (docs/DEFECTS.md 21.2).
   eff=()
@@ -96,11 +116,11 @@ aif_runner_claude_session() {
   tty="$(aif_tty_path)"
   set -m
   if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
-    (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5" "$effort") || rc=$?
+    (cd "$1" && exec "$AIF_START_SESSION_CMD" "$1" "$2" "$3" "$4" "$5" "$effort" "$plans") || rc=$?
   else
     # shellcheck disable=SC2094  # a terminal: read and written, as /dev/tty was
     (cd "$1" && exec claude "$2" ${m[@]+"${m[@]}"} ${eff[@]+"${eff[@]}"} --name "$4" ${sid_arg[@]+"${sid_arg[@]}"} \
-      --append-system-prompt "$note" \
+      ${pm[@]+"${pm[@]}"} --append-system-prompt "$note" \
       <"$tty" >"$tty" 2>"$tty") || rc=$?
   fi
   set +m

@@ -11,14 +11,19 @@ They meet only on the board.
 ```mermaid
 flowchart TB
   subgraph HUMAN["Human time · no gates"]
-    PO["/aif-po — the product partner<br/>against the map and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
+    PLAN(["a plan — many outcomes at once<br/>plan mode, or any file — requests/plans/"])
+    MAP(["requests/MAP.md — the map<br/>a plan's requests in order: not polished → the request"])
+    PO["/aif-po — the product partner<br/>against the rules in force and the open requests,<br/>challenges the need, cuts it into slices<br/>that ship on their own"]
     REQ(["requests/&lt;slug&gt;.md — the request<br/>Status: not cut → cut in part → cut"])
     BA["/aif-ba — the analyst<br/>one ticket per slice, never one across two<br/>against the map — aif rules: the rules of every ticket, built or in flight<br/>tasks/&lt;ID&gt;/ticket.md: the rules, then the key<br/>GIVEN / WHEN / THEN examples of each"]
     DOR{{"aif _ready — the Definition of Ready<br/>every open question answered, or its default taken<br/>at most 6 rules — over that, only the human keeps it whole"}}
     PJM["/aif-pjm — the project manager<br/>orders Ready, routes the reviewer's<br/>and the demo's words"]
     QA["/aif-review — the reviewer's brief<br/>per criterion its test, what was not established,<br/>the request's After — then the verdict"]
     DEMO{"/aif-po — the demo<br/>the build held to the request it came from,<br/>in a fresh context, on the human's land"}
+    PLAN -->|"/aif-po — mapped first, written on the person's yes"| MAP
+    MAP -->|"the next entry not polished — one request at a time"| PO
     PO -->|"writes it — Status: not cut"| REQ
+    MAP -.->|"technical work, into the first slice that needs it"| BA
     REQ -->|"the slices"| BA
     BA -.->|"marks it after the cards: cut in part, then cut"| REQ
     BA --> DOR
@@ -89,7 +94,10 @@ name. `/aif-setup` says which of them can run on this machine.
 
 What passes between the first two is a file, `requests/<slug>.md`, and it carries
 its own status: `not cut` when the product partner writes it, `cut in part` with one
-line per slice once the analyst has made cards, `cut` when every slice has one.
+line per slice once the analyst has made cards, `cut` when every slice has one. A plan
+— many outcomes at once — is mapped first: `requests/MAP.md` lists its requests in an
+order the person fixes, each `not polished` until the product partner writes it, and
+its technical work for the analyst.
 
 | skill | role | needs |
 |---|---|---|

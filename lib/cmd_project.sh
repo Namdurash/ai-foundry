@@ -707,15 +707,31 @@ _aif_guide_py_specs() {
 }
 
 # _aif_guide_resolve_js <root> <dir> <spec> — the repository file a relative
-# specifier names, with jest's extensions and index files, or nothing.
+# specifier names, with jest's extensions and index files, or nothing. Then
+# TypeScript's rule, as the gates resolve it (aif_g_imports_unresolved): a
+# specifier naming the emitted .js — what "module": "nodenext" requires — is
+# the source it is emitted from (docs/DEFECTS.md 23.1).
 _aif_guide_resolve_js() {
-  local base cand
+  local base cand e exts
   base="$(_aif_guide_norm "$2/$3")"
   for cand in "$base" "$base.ts" "$base.tsx" "$base.js" "$base.jsx" "$base.mjs" "$base.cjs" \
     "$base.mts" "$base.cts" "$base.json" "$base.d.ts" \
     "$base/index.ts" "$base/index.tsx" "$base/index.js" "$base/index.jsx"; do
     if [ -f "$1/$cand" ]; then
       printf '%s' "$cand"
+      return 0
+    fi
+  done
+  case "$base" in
+    *.js) exts=".ts .tsx .d.ts" ;;
+    *.jsx) exts=".tsx .ts .d.ts" ;;
+    *.mjs) exts=".mts .d.mts" ;;
+    *.cjs) exts=".cts .d.cts" ;;
+    *) exts="" ;;
+  esac
+  for e in $exts; do
+    if [ -f "$1/${base%.*}$e" ]; then
+      printf '%s' "${base%.*}$e"
       return 0
     fi
   done

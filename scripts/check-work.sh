@@ -8603,6 +8603,56 @@ eq "a profile routed to another endpoint: no --effort sent, the station line nam
   "$rc,$(cat .aif/tmp/fake-engine-plan-1)|,$(grep -c '^station .* · effort ' "$OUT/run102c.out")" "0,opus |,0"
 cd "$SANDBOX" || exit 1
 
+# ====== 103. an import that names the emitted .js resolves to its source ======
+# docs/DEFECTS.md 23.1. An ESM project on TypeScript's "module": "nodenext"
+# (or node16) must name the file the compiler emits — `import { AppService }
+# from './app.service.js'` — while the file on disk is app.service.ts. The
+# gates' "every relative import resolves" appended the runner's extensions to
+# ./app.service.js and never tried the source, so verify-red rejected every
+# test a station wrote there as a misspelling, and the plan gate any skeleton
+# importing its neighbour. TypeScript's rule, as tsc 6.0.3 resolves it: .js
+# is .ts, .tsx or .d.ts; .jsx .tsx, .ts or .d.ts; .mjs .mts or .d.mts; .cjs
+# .cts or .d.cts. A specifier no file answers is still named — ./k.mjs too,
+# where only k.ts is there. The guide's twin resolves the same.
+printf '\n103. an import naming the emitted .js resolves to its TypeScript source; one that names nothing is still named\n'
+mkdir -p "$SANDBOX/p103/src/dir" "$SANDBOX/p103/test" && cd "$SANDBOX/p103" || exit 1
+for f in x.ts b.tsx c.mts d.cts e.d.ts f.tsx g.ts h.d.mts dir/index.ts j.js k.ts; do
+  printf 'export const v = 1;\n' >"src/$f"
+done
+cat >src/x.spec.ts <<'T'
+import { describe, expect, it, vi } from 'vitest';
+import { v } from './x.js';
+import { v as b } from './b.js';
+import { v as c } from './c.mjs';
+import { v as d } from './d.cjs';
+import type { E } from './e.js';
+import { v as f } from './f.jsx';
+import { v as g } from './g.jsx';
+import { v as h } from './h.mjs';
+import { v as i } from './dir/index.js';
+import { v as j } from './j.js';
+vi.mock('./x.js', () => ({ v: 2 }));
+it('x', async () => { expect((await import('./b.js')).v).toBe(1); });
+T
+printf "import { v } from './../src/x.js';\n" >test/app.e2e-spec.ts
+cat >src/missing.spec.ts <<'T'
+import { v } from './x.js';
+import { m } from './missing.js';
+import { k } from './k.mjs';
+T
+eq "a spec importing ./x.js beside src/x.ts, and every other source TypeScript would find, by import, mock and import(): nothing unresolved" \
+  "[$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; aif_g_imports_unresolved "$PWD" src/x.spec.ts; aif_g_imports_unresolved "$PWD" test/app.e2e-spec.ts' _ "$ROOT")]" "[]"
+eq "…and ./missing.js is still named, and so is ./k.mjs, which no .mts answers" \
+  "$(/bin/bash -c '. "$1/sets/claude/gates/_lib.sh"; aif_g_imports_unresolved "$PWD" src/missing.spec.ts' _ "$ROOT" | paste -sd, -)" "./k.mjs,./missing.js"
+eq "the guide's twin resolves each to the same source, and the two that name nothing to nothing" \
+  "$(/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/cmd_project.sh"
+     for s in ./x.js ./b.js ./c.mjs ./d.cjs ./e.js ./f.jsx ./g.jsx ./h.mjs ./dir/index.js ./j.js ./missing.js ./k.mjs; do
+       printf "%s=%s " "$s" "$(_aif_guide_resolve_js "$PWD" src "$s")"
+     done
+     printf "%s=%s" ./../src/x.js "$(_aif_guide_resolve_js "$PWD" test ./../src/x.js)"' _ "$ROOT")" \
+  "./x.js=src/x.ts ./b.js=src/b.tsx ./c.mjs=src/c.mts ./d.cjs=src/d.cts ./e.js=src/e.d.ts ./f.jsx=src/f.tsx ./g.jsx=src/g.ts ./h.mjs=src/h.d.mts ./dir/index.js=src/dir/index.ts ./j.js=src/j.js ./missing.js= ./k.mjs= ./../src/x.js=src/x.ts"
+cd "$SANDBOX" || exit 1
+
 # ====== the guard, over every station of the whole run =======================
 # Every write a stub station made in this run — the plans, the skeletons, the
 # tests, the notes, the code, the sync's settlements, in worktrees, in place

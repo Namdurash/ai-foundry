@@ -496,12 +496,13 @@ aif_g_norm() {
 # resolves to no file IS a misspelling, and it is the tests station's to fix.
 #
 # Only the unambiguous cases: a JavaScript or TypeScript specifier that
-# starts with "." (resolved with the runner's extensions and index files),
-# and a python relative import ("from .x import", "from ..x import"). A bare
-# package name, or a python absolute module, depends on a resolver or a
-# sys.path this gate does not know, and is left alone.
+# starts with "." (resolved with the runner's extensions and index files, and
+# by TypeScript's rule when it names the emitted .js), and a python relative
+# import ("from .x import", "from ..x import"). A bare package name, or a
+# python absolute module, depends on a resolver or a sys.path this gate does
+# not know, and is left alone.
 aif_g_imports_unresolved() {
-  local root="$1" file="$2" dir spec base cand found e
+  local root="$1" file="$2" dir spec base cand found e exts
   dir="$(dirname "$file")"
   case "$file" in
     *.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.mts | *.cts)
@@ -521,6 +522,27 @@ aif_g_imports_unresolved() {
             break
           fi
         done
+        # TypeScript's rule: a specifier ending in .js, .jsx, .mjs or .cjs
+        # names the file the compiler emits, and resolves to the source it is
+        # emitted from — the extensions below, in the order tsc tries them. An
+        # ESM project on "module": "nodenext" or node16 must write its imports
+        # so (`./app.service.js` for app.service.ts), and every one of them
+        # used to be named a misspelling here (docs/DEFECTS.md 23.1).
+        if [ "$found" -eq 0 ]; then
+          case "$spec" in
+            *.js) exts=".ts .tsx .d.ts" ;;
+            *.jsx) exts=".tsx .ts .d.ts" ;;
+            *.mjs) exts=".mts .d.mts" ;;
+            *.cjs) exts=".cts .d.cts" ;;
+            *) exts="" ;;
+          esac
+          for e in $exts; do
+            if [ -f "$root/${base%.*}$e" ]; then
+              found=1
+              break
+            fi
+          done
+        fi
         [ "$found" -eq 1 ] || printf '%s\n' "$spec"
       done
       ;;

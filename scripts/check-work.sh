@@ -8653,6 +8653,78 @@ eq "the guide's twin resolves each to the same source, and the two that name not
   "./x.js=src/x.ts ./b.js=src/b.tsx ./c.mjs=src/c.mts ./d.cjs=src/d.cts ./e.js=src/e.d.ts ./f.jsx=src/f.tsx ./g.jsx=src/g.ts ./h.mjs=src/h.d.mts ./dir/index.js=src/dir/index.ts ./j.js=src/j.js ./missing.js= ./k.mjs= ./../src/x.js=src/x.ts"
 cd "$SANDBOX" || exit 1
 
+# ====== 104. the guide of a project aif setup set up ==========================
+# docs/DEFECTS.md 23.2, 23.3. A project on a runner aif ships no template for
+# — LPC-back, on vitest — has its stack notes in .aif/stack.md and its tests
+# named in test.files, both written by `aif setup`, and its guide was written
+# as if for a runner aif knows. It cited .aif/stacks/vitest.md, put together
+# from the runner's name: a path that is not there, so doctor called the
+# guide stale and the worker would not run on it. And it found the tests by
+# jest's naming alone: *.e2e-spec.ts, the project's end-to-end tests, were
+# in none of its sections. The guide names the file the stations get, and
+# the tests test.files names — a whole directory only when the project names
+# them no other way, and never a snapshot.
+# shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+setup_guide_scenario() {
+printf '\n104. the guide of a project aif setup set up: its own stack notes, the tests its test.files names\n'
+mkdir -p "$SANDBOX/p104" && cd "$SANDBOX/p104" || exit 1
+git init -q && git config user.email p@aif && git config user.name P
+mkdir -p src/__snapshots__ test/helpers
+printf '{ "name": "p104", "type": "module", "devDependencies": { "vitest": "4", "supertest": "7" } }\n' >package.json
+printf 'export class AppService {}\n' >src/app.service.ts
+printf "import { AppService } from './app.service.js';\nexport class AppController { constructor(readonly s: AppService) {} }\n" >src/app.controller.ts
+printf "import { AppController } from './app.controller.js';\nexport class AppModule { c = AppController; }\n" >src/app.module.ts
+cat >src/app.controller.spec.ts <<'T'
+import { AppController } from './app.controller.js';
+import { AppService } from './app.service.js';
+it('BACK-1 AC-001 builds', () => { expect(new AppController(new AppService())).toBeDefined(); });
+T
+printf 'exports[`BACK-1 AC-001 builds 1`] = `{}`;\n' >src/__snapshots__/app.controller.spec.ts.snap
+cat >test/app.e2e-spec.ts <<'T'
+import request from 'supertest';
+import { AppModule } from './../src/app.module.js';
+import { serve } from './helpers/server.js';
+it('BACK-2 AC-001 serves', async () => { await request(serve(new AppModule())).get('/').expect(200); });
+T
+printf 'export const serve = (m: unknown) => m;\n' >test/helpers/server.ts
+git add -A && git commit -qm init >/dev/null
+"$AIF" init anthropic </dev/null >/dev/null 2>&1
+"$AIF" project init vitest --no-checks --force >/dev/null 2>&1
+files104() { # <json array> — test.files, and the guide written again
+  local t
+  t="$(mktemp)"
+  jq --argjson f "$1" '.test.command = "./node_modules/.bin/vitest run" | .test.roots = ["src", "test"] | .test.files = $f' \
+    .aif/project.json >"$t" && mv "$t" .aif/project.json
+  "$AIF" project guide >"$OUT/guide104.out" 2>&1
+}
+printf '# vitest — what the gates see\n\nA relative import ends in .js.\n' >.aif/stack.md
+G=.aif/guide/tests.md
+rc=0
+files104 '["*.spec.ts", "*.e2e-spec.ts"]' || rc=$?
+eq "written, every path it cites there: the project's own stack notes, and no fragment named after the runner" \
+  "$rc,$(grep -c 'all exist' "$OUT/guide104.out"),$(grep -c '^- the stack notes the stations get before this guide: `.aif/stack.md`, this project.s own' $G),$(grep -c 'stacks/vitest' $G)" "0,1,1,0"
+eq "the tests test.files names, the end-to-end one among them, by pattern; a helper beside it is not one" \
+  "$(grep -c '^- `src/` (test.roots) — 1 test file(s), 4 other file(s)' $G),$(grep -c '^- `test/` (test.roots) — 1 test file(s), 1 other file(s)' $G),$(grep -cxF -- '- named, by test.files: *.spec.ts 1, *.e2e-spec.ts 1' $G)" "1,1,1"
+eq "…and what the end-to-end test imports, through ./../src/app.module.js, counted" \
+  "$(grep -c '^- `src/app.module.ts` — 1$' $G),$(grep -c '^- `test/helpers/server.ts` — 1$' $G),$(grep -c '^- supertest — 1$' $G)" "1,1,1"
+git add -A && git commit -qm "aif, the stack notes, the guide" >/dev/null
+eq "doctor: the guide is ready, so the worker runs on it" \
+  "$("$AIF" doctor --json 2>/dev/null | jq -r '.capabilities["test-guide"].ok')" "true"
+files104 '["*.spec.*", "*.e2e-spec.ts", "test/*"]'
+eq "a whole directory beside patterns that name the tests is where they live: its helper stays a helper; a snapshot *.spec.* names is no test" \
+  "$(grep -c '^- `src/` (test.roots) — 1 test file(s), 4 other file(s)' $G),$(grep -c '^- `test/` (test.roots) — 1 test file(s), 1 other file(s)' $G),$(grep -cxF -- '- named, by test.files: *.spec.* 1, *.e2e-spec.ts 1' $G)" "1,1,1"
+files104 '["test/*"]'
+eq "…and a whole directory alone names the tests" \
+  "$(grep -c '^- `test/` (test.roots) — 2 test file(s), 0 other file(s)' $G),$(grep -cxF -- '- named, by test.files: test/* 2' $G)" "1,1"
+rm .aif/stack.md
+rc=0
+files104 '["*.spec.ts", "*.e2e-spec.ts"]' || rc=$?
+eq "no stack notes and no fragment for the runner: said, both remedies named, no path cited that is not there" \
+  "$rc,$(grep -c '^- no runner fragment is installed for vitest (.aif/stacks/vitest.md), and the project has no .aif/stack.md of its own — aif init installs the fragments the set ships, aif setup writes the project.s own' $G),$(grep -c 'all exist' "$OUT/guide104.out")" "0,1,1"
+}
+setup_guide_scenario
+cd "$SANDBOX" || exit 1
+
 # ====== the guard, over every station of the whole run =======================
 # Every write a stub station made in this run — the plans, the skeletons, the
 # tests, the notes, the code, the sync's settlements, in worktrees, in place

@@ -653,11 +653,76 @@ _aif_guide_find() {
   done | sort
 }
 
-# _aif_guide_tests <root> <kind> — the test files, as the runner's defaults
-# select them. A project that narrows testMatch or python_files still names
-# its tests this way in practice; the configuration section shows the narrowing.
+# _aif_guide_test_patterns <project.json> — the patterns of the project's
+# test.files that name the files holding its tests, a line each, after a first
+# line "set"; nothing at all when the project does not set the key.
+#
+# test.files is the gates' rule: what makes a file a test by its name or its
+# place (aif_project_is_test). The gates ask whose a file is, and a whole
+# directory — `tests/*`, `*/test/*`, a "/" and nothing but "*" after the last
+# one — makes everything in it the tests station's: the helpers and fixtures
+# with the tests. The guide asks which files hold the tests, so a whole
+# directory names them only when the project names its tests no other way.
+_aif_guide_test_patterns() {
+  local v sel
+  v="$(jq -r 'if (.test.files | type) == "array" then "set", (.test.files[] | strings) else empty end' "$1" 2>/dev/null)" || v=""
+  [ "${v%%
+*}" = set ] || return 0
+  v="$(printf '%s\n' "$v" | sed 1d)"
+  sel="$(printf '%s\n' "$v" | grep -vE '^$|/\**$' || true)"
+  printf 'set\n%s\n' "${sel:-$v}"
+}
+
+# _aif_guide_named <pattern> <files> — how many of <files> (a path a line)
+# the pattern names: matched against the path when it holds a "/", against the
+# file's name when not, as the gates match test.files.
+_aif_guide_named() {
+  local f n=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # shellcheck disable=SC2254  # the project's patterns are globs
+    case "$1" in
+      */*) case "$f" in $1) n=$((n + 1)) ;; esac ;;
+      *) case "${f##*/}" in $1) n=$((n + 1)) ;; esac ;;
+    esac
+  done <<EOF
+$2
+EOF
+  printf '%s' "$n"
+}
+
+# _aif_guide_tests <root> <kind> <patterns> — the test files: the ones the
+# project's test.files names (<patterns>, _aif_guide_test_patterns), else as
+# the runner's defaults select them. A project that narrows testMatch or
+# python_files still names its tests this way in practice; the configuration
+# section shows the narrowing.
+#
+# The runner's defaults were all it read, and a project set up for a runner
+# aif ships no template for had in its guide only the tests jest's or
+# pytest's naming happened to find: LPC-back's end-to-end tests,
+# *.e2e-spec.ts, were in none of its sections (docs/DEFECTS.md 23.3). find's
+# -name and -path match as the gates' case does — a "*" crosses a "/" in a
+# path — and a snapshot, named after its test (x.test.ts.snap), is the
+# runner's output, never a test to read.
 _aif_guide_tests() {
-  case "$2" in
+  local root="$1" kind="$2" pats="$3" pat
+  if [ "${pats%%
+*}" = set ]; then
+    set --
+    while IFS= read -r pat; do
+      [ -n "$pat" ] || continue
+      [ $# -eq 0 ] || set -- "$@" -o
+      case "$pat" in
+        */*) set -- "$@" -path "$root/$pat" ;;
+        *) set -- "$@" -name "$pat" ;;
+      esac
+    done <<EOF
+$(printf '%s\n' "$pats" | sed 1d)
+EOF
+    [ $# -eq 0 ] || _aif_guide_find "$root" -type f ! -path '*/__snapshots__/*' \( "$@" \)
+    return 0
+  fi
+  case "$kind" in
     jest)
       _aif_guide_find "$1" -type f \( -name '*.test.js' -o -name '*.test.jsx' -o -name '*.test.ts' \
         -o -name '*.test.tsx' -o -name '*.test.mjs' -o -name '*.test.cjs' -o -name '*.spec.js' \
@@ -819,13 +884,14 @@ _aif_guide_fixtures() {
 # included, on stdout.
 # shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
 _aif_guide_block() {
-  local root="$1" kind="$2" recorded="$3" project tests tmp tsv
+  local root="$1" kind="$2" recorded="$3" project tests tpats tmp tsv
   project="$(aif_project_config "$root")"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/aif-guide-XXXXXX")" || aif_die "cannot make a scratch directory"
   tsv="$tmp/imports.tsv"
   : >"$tsv"
 
-  tests="$(_aif_guide_tests "$root" "$kind")"
+  tpats="$(_aif_guide_test_patterns "$project")"
+  tests="$(_aif_guide_tests "$root" "$kind" "$tpats")"
   local n_tests
   n_tests="$(printf '%s' "$tests" | grep -c . || true)"
   n_tests="${n_tests:-0}"
@@ -848,13 +914,21 @@ _aif_guide_block() {
   local prepare
   prepare="$(jq -r '.prepare // empty' "$project")"
   [ -z "$prepare" ] || printf -- '- a fresh checkout is made able to run it with: `%s`\n' "$prepare"
-  if [ -n "$kind" ]; then
-    if [ -n "$(aif_stack_fragment "$root" "$kind")" ]; then
-      printf -- '- the runner fragment the stations get before this guide: `%s/%s.md`\n' "$AIF_STACKS_DIR" "$kind"
-    else
-      printf -- '- no runner fragment is installed for %s (%s/%s.md) — aif init installs the ones the set ships; a runner the set has none for leaves the stations on their general rules\n' \
-        "$kind" "$AIF_STACKS_DIR" "$kind"
-    fi
+  # The file the worker hands the stations before this guide, as it chooses
+  # it (aif_stack_fragment): the project's own .aif/stack.md first. The path
+  # used to be put together from the runner's name, and a project `aif setup`
+  # set up on a runner aif ships nothing for cited .aif/stacks/vitest.md — a
+  # path that is not there, so doctor and the worker refused its guide
+  # (docs/DEFECTS.md 23.2). A path is in backticks only when it exists.
+  local frag
+  frag="$(aif_stack_fragment "$root" "$kind")"
+  if [ "${frag#"$root"/}" = "$AIF_STACK_FILE" ]; then
+    printf -- '- the stack notes the stations get before this guide: `%s`, this project'"'"'s own — read in place of a runner fragment aif ships\n' "$AIF_STACK_FILE"
+  elif [ -n "$frag" ]; then
+    printf -- '- the runner fragment the stations get before this guide: `%s`\n' "${frag#"$root"/}"
+  elif [ -n "$kind" ]; then
+    printf -- '- no runner fragment is installed for %s (%s/%s.md), and the project has no %s of its own — aif init installs the fragments the set ships, aif setup writes the project'"'"'s own; without either the stations work from their general rules\n' \
+      "$kind" "$AIF_STACKS_DIR" "$kind" "$AIF_STACK_FILE"
   fi
   local n_checks
   n_checks="$(jq '(.checks // []) | length' "$project")"
@@ -954,7 +1028,11 @@ _aif_guide_block() {
 $(jq -r '.test.roots[]? // empty' "$project")
 EOF2
   rootsre="${rootsre#|}"
-  if [ "$n_tests" -eq 0 ]; then
+  if [ "$n_tests" -eq 0 ] && [ "${tpats%%
+*}" = set ]; then
+    printf -- '- no test files found by test.files (%s) — a project with no tests yet, or tests its patterns do not name\n' \
+      "$(printf '%s\n' "$tpats" | sed 1d | grep -v '^$' | paste -sd, - | sed 's/,/, /g')"
+  elif [ "$n_tests" -eq 0 ]; then
     printf -- '- no test files found by the runner'"'"'s naming (%s) — a project with no tests yet, or tests named in a way the configuration above selects and this scan does not\n' \
       "$([ "$kind" = pytest ] && printf 'test_*.py, *_test.py' || printf '*.test.*, *.spec.*, __tests__/')"
   else
@@ -969,19 +1047,27 @@ EOF2
         sed 's|/[^/]*$||' | sort | uniq -c | sort -rn | head -6 |
         awk '{ c = $1; $1 = ""; sub(/^ /, ""); printf "  - `%s/` — %s\n", $0, c }' || true
     fi
-    case "$kind" in
-      pytest)
-        printf -- '- named: test_*.py %s, *_test.py %s\n' \
-          "$(printf '%s\n' "$tests" | grep -cE '(^|/)test_[^/]*\.py$' || true)" \
-          "$(printf '%s\n' "$tests" | grep -cE '_test\.py$' || true)"
-        ;;
-      *)
-        printf -- '- named: *.test.* %s, *.spec.* %s, under __tests__/ %s\n' \
-          "$(printf '%s\n' "$tests" | grep -c '\.test\.[a-z]*$' || true)" \
-          "$(printf '%s\n' "$tests" | grep -c '\.spec\.[a-z]*$' || true)" \
-          "$(printf '%s\n' "$tests" | grep -c '/__tests__/' || true)"
-        ;;
-    esac
+    if [ "${tpats%%
+*}" = set ]; then
+      printf -- '- named, by test.files: %s\n' "$(printf '%s\n' "$tpats" | sed 1d | while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        printf '%s %s, ' "$pat" "$(_aif_guide_named "$pat" "$tests")"
+      done | sed 's/, $//')"
+    else
+      case "$kind" in
+        pytest)
+          printf -- '- named: test_*.py %s, *_test.py %s\n' \
+            "$(printf '%s\n' "$tests" | grep -cE '(^|/)test_[^/]*\.py$' || true)" \
+            "$(printf '%s\n' "$tests" | grep -cE '_test\.py$' || true)"
+          ;;
+        *)
+          printf -- '- named: *.test.* %s, *.spec.* %s, under __tests__/ %s\n' \
+            "$(printf '%s\n' "$tests" | grep -c '\.test\.[a-z]*$' || true)" \
+            "$(printf '%s\n' "$tests" | grep -c '\.spec\.[a-z]*$' || true)" \
+            "$(printf '%s\n' "$tests" | grep -c '/__tests__/' || true)"
+          ;;
+      esac
+    fi
   fi
 
   # ---- fixtures, doubles, factories, setup ------------------------------------
@@ -1056,7 +1142,10 @@ EOF2
 $(_aif_guide_py_specs "$root/$f")
 EOF2
           ;;
-        *)
+        # The imports of JavaScript, TypeScript and Python alone: a test file
+        # test.files names in another language — a Go `import "net/http"` —
+        # is not read as one of these.
+        *.js | *.jsx | *.ts | *.tsx | *.mjs | *.cjs | *.mts | *.cts)
           while IFS= read -r spec; do
             [ -n "$spec" ] || continue
             case "$spec" in
@@ -1152,7 +1241,7 @@ _aif_project_guide() {
     fi
     {
       printf '# How this project tests — the guide the stations read\n\n'
-      printf 'The plan and tests stations get this file appended to their instructions, after the runner fragment aif ships for this project'"'"'s test runner. The block between the markers is written by `aif project guide` from what the repository declares and is regenerated in place; everything outside it is yours and is kept. Every path in backticks is checked by `aif doctor` and by the worker before a run: a path that no longer exists makes the guide stale, and `aif project guide` brings the block up to date.\n\n'
+      printf 'The plan and tests stations get this file appended to their instructions, after the notes on this project'"'"'s stack — its own .aif/stack.md, or the runner fragment aif ships for its test runner. The block between the markers is written by `aif project guide` from what the repository declares and is regenerated in place; everything outside it is yours and is kept. Every path in backticks is checked by `aif doctor` and by the worker before a run: a path that no longer exists makes the guide stale, and `aif project guide` brings the block up to date.\n\n'
       cat "$block"
       printf '\n## How this project mocks its boundaries\n\n'
       printf '%s One line per boundary the tests do not cross for real — the database, the clock, HTTP, the filesystem, a queue, a device — naming the double this project uses for it and where it lives (a path in backticks, so `aif doctor` checks it still exists). Written by you, or by `/aif-setup` with you from the tests named above; `aif project guide` leaves this section alone._\n' "$AIF_GUIDE_PLACEHOLDER"

@@ -3,7 +3,7 @@
 Every defect found in aif, from the review of 0.5.0 to building the autopilot
 mode's shift after 0.16.0, checking its fixes, a project on a runner aif
 had no template for, which model built a ticket, a startup's first
-plan, and an ESM TypeScript project's imports. One file, two halves: an **open** defect is written in
+plan, and an ESM TypeScript project's imports and guide. One file, two halves: an **open** defect is written in
 full — how it was established (probed, read, observed or reported), the
 observation quoted, what a fix has to decide — because an open entry is a
 work order; a **closed** one is a line — what went wrong, how it was
@@ -346,9 +346,11 @@ away. Agreed in conversation and written down in `docs/PO-FROM-PLAN.md`.
 
 The user put aif on `LPC-back`, a NestJS 12 project — `"type": "module"`,
 TypeScript's `"module"` and `"moduleResolution"` at `nodenext`, vitest — and
-read the gates against its tests before a ticket ran there.
+read the gates and its guide against its tests before a ticket ran there.
 
 - **23.1** Every relative import an ESM TypeScript project writes was a misspelling to the gates — probed (LPC-back: `aif_g_imports_unresolved` named `./app.controller.js` and `./app.service.js` in src/app.controller.spec.ts and `./../src/app.module.js` in test/app.e2e-spec.ts, beside the three `.ts` files; its probe passed, its test importing only `vitest`). Under `"module": "nodenext"` or node16 TypeScript requires a relative import to name the file it emits — `import { AppService } from './app.service.js'` for app.service.ts — and the gates tried the specifier with the runner's extensions appended, `app.service.js.ts`, `app.service.js/index.ts`, never the source: verify-red would reject every test a station wrote there that imports the code it tests ("resolves to no file — … misspelled"), the plan gate every skeleton importing its neighbour, and `aif project guide` resolved none of the tests' imports ("none resolved", LPC-back's committed guide). A specifier ending in `.js`, `.jsx`, `.mjs` or `.cjs` that names no file is tried as tsc tries it — `.ts`, `.tsx`, `.d.ts`; `.tsx`, `.ts`, `.d.ts`; `.mts`, `.d.mts`; `.cts`, `.d.cts` (tsc 6.0.3, docs/FINDINGS.md #53) — in the gates (sets/claude/gates/_lib.sh) and in the guide's twin (`_aif_guide_resolve_js`, lib/cmd_project.sh); one that names no file is still named. Scenario 103.
+- **23.2** The guide cited a runner fragment that is not there, and the worker would not run on it — probed (LPC-back's tree, in a clone: `aif project guide` wrote "the runner fragment the stations get before this guide: `.aif/stacks/vitest.md`", said "THESE DO NOT EXIST: .aif/stacks/vitest.md", and doctor's `test-guide` went false, "names paths that no longer exist"). The line asked `aif_stack_fragment` only whether there was a fragment — which answers with the project's own `.aif/stack.md` first — and then put a path together from the runner's name: every project `aif setup` set up on a runner aif ships nothing for was one `aif project guide` away from a refused run. The guide names the file the worker hands the stations, `.aif/stack.md` as the project's own and a shipped fragment by its path, and with neither says so, naming `aif init` and `aif setup`, and cites nothing (`_aif_guide_block`, lib/cmd_project.sh). Scenario 104.
+- **23.3** The guide found a project's tests by jest's or pytest's naming alone, never by its `test.files` — probed (the same clone: `test/app.e2e-spec.ts`, which LPC-back's `test.files` names as `*.e2e-spec.ts`, was the "1 other file(s)" under `test/`, and nothing it imports was in the guide). The guide's tests are the files `test.files` names when the project sets it, matched as the gates match it — save that a whole directory there, `tests/*`, makes its helpers the tests station's with the tests, so it names the tests only when nothing else does — and never a snapshot, named after its test; imports are read from JavaScript, TypeScript and Python files alone (`_aif_guide_test_patterns`, `_aif_guide_tests`, lib/cmd_project.sh). Scenario 104.
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

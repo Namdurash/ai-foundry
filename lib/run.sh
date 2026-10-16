@@ -47,26 +47,33 @@ aif_run_next() {
   printf 'done'
 }
 
-# aif_run_init <work> <ticket> <branch> <base> <worktree-rel> [set-version]
+# aif_run_init <work> <ticket> <branch> <base> <worktree-rel> [set-version] [opened-at]
 #
 # A fresh record at the first stage, bound to the ticket AS IT IS NOW — and to
 # the SET as it is now: the plan a run writes is shaped by the stations and
 # gates of the set that ran it, so a record carries the set version the way it
 # carries the ticket's hash. Called once per `aif work`, after the ticket has
 # been carried into the worktree.
+#
+# opened_at — when this run began, kept by every resume (started_at is the
+# invocation's, rewritten by each): the ledger holds every run of the ticket,
+# and the report reads this run's part of it from here (docs/DEFECTS.md 28.4).
+# The intake's start when it opens the record, so the ready gate it ran first
+# is this run's too; now, otherwise.
 aif_run_init() {
-  local work="$1" ticket="$2" branch="$3" base="$4" wt="$5" set_version="${6:-}" f
+  local work="$1" ticket="$2" branch="$3" base="$4" wt="$5" set_version="${6:-}" opened="${7:-}" f at
   f="$(aif_run_path "$work")"
+  at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   jq -n --argjson schema "$AIF_RUN_SCHEMA" --arg t "$ticket" \
     --arg sha "$(aif_sha256 "$work/ticket.md")" \
     --arg br "$branch" --arg base "$base" --arg wt "$wt" --arg sv "$set_version" \
-    --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg at "$at" --arg op "${opened:-$at}" \
     --arg stage "${AIF_RUN_STAGES%% *}" \
     '{ schema: $schema, ticket: $t, ticket_sha256: $sha, set_version: (if $sv == "" then null else $sv end),
        branch: $br, base: $base,
        worktree: $wt, stage: $stage, attempts: {}, dispatches: 0, spent_usd: 0,
        repairs: 0, replans: 0, regate: null,
-       started_at: $at, finished_at: null, status: "running", why: null }' \
+       opened_at: $op, started_at: $at, finished_at: null, status: "running", why: null }' \
     >"$f.tmp" && mv "$f.tmp" "$f"
 }
 

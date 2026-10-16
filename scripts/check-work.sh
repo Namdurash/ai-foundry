@@ -9017,6 +9017,8 @@ eq "the put-back committed: the first tests gone from it, the gate the checkout 
   "$([ -n "$replan108" ] && git ls-tree -r --name-only "$replan108" -- tests/t1.py | wc -l | tr -d ' '),$(git show "$replan108:.aif/gates/plan.sh" 2>/dev/null | tail -1)" \
   "0,# the set as the checkout has it now"
 eq "…and the branch is clean" "$(git status --porcelain | wc -l | tr -d ' ')" "0"
+eq "…and its report is the run's, the stopped invocation's verdicts in it: a resume is the same run" \
+  "$(grep -c '^- ready: pass' tasks/AIF-1080/report.md),$(grep -c '^- plan: pass' tasks/AIF-1080/report.md),$(grep -c '^- before this run' tasks/AIF-1080/report.md)" "2,2,0"
 cd "$SANDBOX" || exit 1
 
 # ====== 109. an import the gates cannot read, left to the project's compiler ===
@@ -9063,6 +9065,38 @@ rc=0
 FAKE_TESTS_IMPORT=1 "$AIF" work AIF-1090 --no-worktree >"$OUT/run109b.out" 2>&1 || rc=$?
 eq "one bound: built, verify-red naming the import it left to the compiler — on its line and in the report" \
   "$rc,$(jq -r '.status' tasks/AIF-1090/run.json),$(grep -c "^ *! imports this gate's own reading did not resolve, left to the red phase's compile" "$OUT/run109b.out"),$(grep -c "imports this gate's own reading did not resolve, left to the red phase's compile" tasks/AIF-1090/report.md)" "0,built,2,1"
+cd "$SANDBOX" || exit 1
+
+# ====== 110. a report is its run's; the ticket's earlier runs are a line =======
+# docs/DEFECTS.md 28.4. The report read every verdict in the ticket's ledger,
+# and the ledger holds every run of the ticket: BACK-1's built report listed
+# the plan, green and standing refusals of three stopped runs above its pass,
+# and its stations table summed six plans and six implementations — it read
+# as a fourth failure. The report is its run's now, from when the run opened
+# (run.json opened_at, which a resume keeps: scenario 108): the earlier runs
+# are a line under Gates, counted by gate, and one under the stations table.
+printf '\n110. a report is its run'"'"'s: the ticket'"'"'s earlier runs are a line, not their verdicts\n'
+fresh_project "$SANDBOX/p110"
+ticket_for AIF-1100
+git add -A && git commit -qm "ticket 110" >/dev/null
+FAKE_TESTS_IMPORT=1 "$AIF" work AIF-1100 --no-worktree >"$OUT/run110a.out" 2>&1
+eq "the first run stops, verify-red refusing the same import twice — its report says so" \
+  "$(jq -r '.status' tasks/AIF-1100/run.json),$(grep -c '^- verify-red: fail' tasks/AIF-1100/report.md)" "stopped,2"
+ticket_for AIF-1100 '[]' ',
+    { "id": "AC-002", "surface": "export",
+      "given": "the export ran", "when": "the output is read",
+      "then": "writes the manifest marker", "expect": "impl2" }'
+rm -f .aif/tmp/fake-*.count
+rc=0
+"$AIF" work AIF-1100 --no-worktree >"$OUT/run110.out" 2>&1 || rc=$?
+R=tasks/AIF-1100/report.md
+eq "the ticket changed: restarted and built, the report this run's verdicts and none of the first's refusals" \
+  "$rc,$(head -1 "$R"),$(grep -c '^- verify-red: fail' "$R"),$(grep -c '^- verify-red: pass' "$R"),$(grep -c '^- ready: pass' "$R")" "0,# AIF-1100 — built,0,1,1"
+# shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+eq "…the first run one line, its refusals counted by gate" \
+  "$(grep -c '^- before this run: 1 earlier run(s) of this ticket, [0-9]* verdict(s), 2 not a pass — verify-red 2; each is in the ledger, `.aif/state/ledgers/AIF-1100.json`$' "$R")" "1"
+eq "…and the stations table this run's, the first run's dispatches said under it" \
+  "$(grep -c '^| tests | 1 |' "$R"),$(grep -c "^_Before this run, the ticket's earlier runs: [0-9]* dispatch(es), " "$R")" "1,1"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

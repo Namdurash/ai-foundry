@@ -2055,10 +2055,13 @@ A dependency manifest and its lockfile change together: change dependencies thro
 # the ticket over — the machine's problem, not the ticket's.
 _aif_work_intake() {
   local root="$1" wt="$2" ticket="$3"
-  local work src base rc=0 out pull_err
+  local work src base rc=0 out pull_err opened
 
   work="$(aif_task_dir "$wt" "$ticket")"
   src="$(aif_task_dir "$root" "$ticket")"
+  # When this run begins, if it is a new one: before the ready gate below,
+  # whose verdict is the run's first (aif_run_init, docs/DEFECTS.md 28.4).
+  opened="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   # The board is canonical for the ticket's text until this moment: on a
   # trello board the card's description is pulled into THIS checkout and
@@ -2210,7 +2213,7 @@ _aif_work_intake() {
     fi
     aif_run_init "$work" "$ticket" \
       "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '?')" \
-      "$base" "${wt#"$root"/}" "$set_version"
+      "$base" "${wt#"$root"/}" "$set_version" "$opened"
   fi
 
   # Which ticket a metering hook's row belongs to. The worker meters from the
@@ -4104,6 +4107,10 @@ _aif_work_report() {
     '' | *[!0-9]*) waited_s=0 ;;
   esac
   [ "$waited_s" -eq 0 ] || waited_say=" · waited $(_aif_work_dur "$waited_s") on the runner"
+  # Where this run's part of the ledger begins; empty for a record from before
+  # the field, whose report reads the whole ledger as it always did.
+  local since
+  since="$(jq -r '.opened_at // empty' "$run" 2>/dev/null)" || since=""
 
   jq --arg st "$status" --arg why "$why" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.status = $st | .why = (if $why == "" then null else $why end) | .finished_at = $at' \
@@ -4127,8 +4134,8 @@ _aif_work_report() {
 
     printf '\n## Stations\n\n'
     printf '| station | attempts | turns | output tokens | cost |\n|---|---|---|---|---|\n'
-    jq -r '
-      [ .entries[] | select(.station != null) ] as $rows
+    jq -r --arg since "$since" '
+      [ .entries[] | select(.station != null) | select($since == "" or (.at // "") >= $since) ] as $rows
       | ( $rows | map(.station) | reduce .[] as $x ([]; if index($x) == null then . + [$x] else . end) ) as $names
       | $names[] as $n
       | ( $rows | map(select(.station == $n)) ) as $g
@@ -4138,6 +4145,17 @@ _aif_work_report() {
         + ( ($g | map(.cost_usd // empty) | add) as $c
             | if $c == null then "tokens only" else "$" + ($c | tostring) end ) + " |"
     ' "$ledger" 2>/dev/null
+    # What the ticket's earlier runs dispatched, spent too, said under the
+    # table rather than added into it (docs/DEFECTS.md 28.4).
+    [ -z "$since" ] || jq -r --arg since "$since" '
+      [ .entries[] | select(.station != null) | select((.at // "") < $since) ] as $old
+      | if ($old | length) == 0 then empty else
+          "\n_Before this run, the ticket'"'"'s earlier runs: " + ($old | length | tostring) + " dispatch(es), "
+          + ($old | map(.num_turns // 0) | add | tostring) + " turns, "
+          + ($old | map(.usage.output_tokens // 0) | add | tostring) + " output tokens"
+          + ( ($old | map(.cost_usd // empty) | add) as $c | if $c == null then "" else ", $" + ($c | tostring) end )
+          + " — in the ledger, not in this table._"
+        end' "$ledger" 2>/dev/null
     printf '\n_Costs come from `.aif/prices.json`; a model missing there prints "tokens only". Tokens are always recorded. Each station'"'"'s own account of what it did is kept in `stations/`._\n'
 
     # The numbers the stability figure is computed from (docs/REBUILD-4.md
@@ -4266,8 +4284,25 @@ _aif_work_report() {
     # A pass's notes under its line, as the gate printed them — what it let
     # through and what it warns of (docs/DEFECTS.md 16.8), in a block so the
     # gate's own indentation reads as it did.
+    #
+    # This run's verdicts, from when it opened (run.json opened_at): the
+    # ledger holds every run of the ticket, and BACK-1's built report listed
+    # the plan, green and standing refusals of three stopped runs above its
+    # pass, which read as one more failure (docs/DEFECTS.md 28.4). The earlier
+    # ones are a line, counted by gate; a record from before opened_at has
+    # them all, as it did.
     printf '\n## Gates\n\n'
-    jq -r '[ .entries[] | select(.gate != null) ] | if length == 0 then "- none ran" else
+    [ -z "$since" ] || jq -r --arg since "$since" --arg lp "$AIF_LEDGERS_DIR/$ticket.json" '
+      [ .entries[] | select(.gate != null) | select((.at // "") < $since) ] as $old
+      | if ($old | length) == 0 then empty else
+          ($old | map(select(.result != "pass"))) as $bad
+          | "- before this run: " + ($old | map(select(.gate == "ready")) | length | tostring) + " earlier run(s) of this ticket, "
+            + ($old | length | tostring) + " verdict(s)"
+            + (if ($bad | length) == 0 then "" else ", " + ($bad | length | tostring) + " not a pass — "
+                 + ($bad | group_by(.gate) | map(.[0].gate + " " + (length | tostring)) | join(", ")) end)
+            + "; each is in the ledger, `" + $lp + "`"
+        end' "$ledger" 2>/dev/null
+    jq -r --arg since "$since" '[ .entries[] | select(.gate != null) | select($since == "" or (.at // "") >= $since) ] | if length == 0 then "- none ran" else
       .[] | "- " + .gate + ": " + .result + (if (.reason // "") != "" then " — " + .reason else "" end)
         + (if (.notes // "") != "" then "\n\n  ```\n" + (.notes | split("\n") | map("  " + .) | join("\n")) + "\n  ```\n" else "" end) end' \
       "$ledger" 2>/dev/null

@@ -98,6 +98,65 @@ roots="$(jq -r '.test.roots[]?' "$project" 2>/dev/null)"
 aif_g_test_path "$ppath" "$roots" ||
   probe_fail "test.probe.path $ppath is not a test by this project's rules — under test.roots, or matched by test.files" \
     "the gates tell a ticket's tests from its code by that rule: put the probe where this project keeps its tests, or name the pattern in test.files"
+
+# A test root is a tree the gates read as the tests' own, every file in it:
+# verify-red freezes it whole, green holds it to that hash, scope refuses the
+# implementation any write there. LPC-back's named src/, where its unit tests
+# sit beside their sources, and the freeze took the code with the tests:
+# every file the plan told the implement station to write was "modified
+# after the tests were frozen", twice, and a stop after 35 minutes
+# (docs/DEFECTS.md 28.1). Such a root is told by its tests beside the file
+# each tests — x.spec.ts beside x.ts, x_test.go beside x.go, test_x.py beside
+# x.py, XTests.swift beside X.swift. A tree of tests has a pair like that now
+# and then, a helper and its own test, so a root is refused only when two or
+# more of its tests, and more than half, sit beside what they test.
+# probe_beside <root> — "<pairs> <tests> <the first pair>", from the files git
+# has there, tracked or not ignored.
+probe_beside() {
+  local f tests
+  tests="$(git -C "$root" -c core.quotePath=false ls-files --cached --others --exclude-standard -- "$1" 2>/dev/null |
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      ! aif_g_test_path "$f" "" || printf '%s\n' "$f"
+    done)"
+  [ -n "$tests" ] || {
+    printf '0\t0\t'
+    return 0
+  }
+  # Through the environment: macOS awk refuses a newline in a -v value.
+  git -C "$root" -c core.quotePath=false ls-files --cached --others --exclude-standard -- "$1" 2>/dev/null |
+    AIF_PROBE_TESTS="$tests" awk '
+      { have[$0] = 1 }
+      END {
+        n = split(ENVIRON["AIF_PROBE_TESTS"], t, "\n")
+        for (k = 1; k <= n; k++) {
+          f = t[k]; if (f == "") continue
+          c++
+          b = f; sub(/.*\//, "", b); d = substr(f, 1, length(f) - length(b))
+          i = match(b, /\.[^.]*$/); if (i <= 1) continue
+          ext = substr(b, i); stem = substr(b, 1, i - 1); s = ""
+          if (stem ~ /.[._](spec|test)$/) s = substr(stem, 1, length(stem) - 5) ext
+          else if (b ~ /^test_.+\.py$/) s = substr(b, 6)
+          else if (stem ~ /.Tests$/) s = substr(stem, 1, length(stem) - 5) ext
+          else if (stem ~ /.(Test|Spec)$/) s = substr(stem, 1, length(stem) - 4) ext
+          if (s != "" && ((d s) in have)) { p++; if (ex == "") ex = f " beside " d s }
+        }
+        printf "%d\t%d\t%s", p, c, ex
+      }'
+}
+tab="$(printf '\t')"
+while IFS= read -r r; do
+  r="${r%/}"
+  [ -n "$r" ] || continue
+  IFS="$tab" read -r pairs ntests first <<EOF2
+$(probe_beside "$r")
+EOF2
+  [ "${pairs:-0}" -ge 2 ] && [ $((pairs * 2)) -gt "${ntests:-0}" ] || continue
+  probe_fail "test.roots names $r/, which holds the code its tests test — $pairs of its $ntests test file(s) sit beside the file they test ($first): every gate reads a test root as the tests' own tree, so verify-red would freeze the code with them, and no implementation could be written there" \
+    "take $r out of test.roots in .aif/project.json — a test root holds tests and what only they use, helpers and fixtures; tests beside their sources are found by test.files, and when every test sits beside its source, test.roots is []"
+done <<EOF
+$roots
+EOF
 aif_g_have python3 ||
   aif_g_error "python3 is not on PATH (PATH=${PATH:0:200}) — the report cannot be read per test, and nothing can be proven"
 has_broken="$(jq -r 'if ((.test.probe.broken // "") | length) > 0 then 1 else 0 end' "$project" 2>/dev/null)"

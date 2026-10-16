@@ -253,6 +253,30 @@ the manifest names \"$p\", which no implementation may touch (the pipeline's own
 done <<EOF
 $(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []) + (.files.delete // []))[]? // empty' 2>/dev/null)
 EOF
+# And what is under a test root: scope refuses the implementation every write
+# there, and green holds it to the hash verify-red froze. A plan that orders
+# code there was found at green, after the tests station had been paid, and
+# twice: LPC-back's test.roots named src/, where its code lives, and every
+# skeleton the plan made in it was "modified after the tests were frozen"
+# (docs/DEFECTS.md 28.1). Found here now, both ways it happens said.
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  while IFS= read -r r; do
+    r="${r%/}"
+    [ -n "$r" ] || continue
+    case "$p" in
+      "$r"/*)
+        fs="$fs
+files.create or files.change names \"$p\", under the test root $r/ — scope refuses the implementation every write there, and green holds it to the hash verify-red froze: a helper or a fixture of the tests is the tests station's, in files.tests; if $r/ holds the project's code, $r/ is no test root, and test.roots in .aif/project.json is the project's to change, never the plan's"
+        break
+        ;;
+    esac
+  done <<EOF2
+$roots
+EOF2
+done <<EOF
+$(printf '%s' "$meta" | jq -r '((.files.create // []) + (.files.change // []))[]? // empty' 2>/dev/null)
+EOF
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   if printf '%s' "$p" | grep -qE "$AIF_G_DENYLIST|$AIF_G_PLANNED_ONLY"; then

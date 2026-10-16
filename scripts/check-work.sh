@@ -97,9 +97,12 @@
 #      the next card is taken
 #  41  on a terminal the loop draws its dashboard: a frame from a fixture
 #      keeps every line inside the terminal and every border where it belongs
-#      around Cyrillic titles, in colour or not, wide, compact or ASCII; live,
-#      on a pty, the keys select a worker and stop it, the card saying who,
-#      and the terminal is left as it was found, the summary on it
+#      around Cyrillic titles, in colour or not, wide, compact or ASCII, and
+#      no more lines than the terminal has rows — a short one gives up the
+#      legend, the older events, the blank lines and each worker's lines in
+#      turn, never the loop's line or the keys; live, on a pty, the keys
+#      select a worker and stop it, the card saying who, and the terminal is
+#      left as it was found, the summary on it
 #  46  the ledger never stops a run, a gate or a land, and is not in git: a
 #      lock whose writer is gone or never signed is taken over, one held by a
 #      live writer costs a row and a warning, a ledger that is not JSON is set
@@ -3611,9 +3614,15 @@ cat >"$SANDBOX/tui-fixture.sh" <<'FIX'
 AIF_TUI_COLS="${COLS:-100}" AIF_TUI_ROWS="${ROWS:-40}" AIF_TUI_COLOR="${COLOR:-0}" AIF_TUI_256=1
 AIF_TUI_UNICODE="${UNI:-1}" AIF_TUI_UTF8="$UTF8" AIF_TUI_NOW=1000 AIF_TUI_PARALLEL="${PAR:-4}" AIF_TUI_STARTED=0
 AIF_TUI_READY="OPES-56 OPES-57 OPES-58" AIF_TUI_BUILT=3 AIF_TUI_BLOCKED=1 AIF_TUI_STOPPED=0
-AIF_TUI_LOAD="6.2/14" AIF_TUI_DISK="41 GB free" AIF_TUI_SEL=1 AIF_TUI_BOTTOM=events
+AIF_TUI_LOAD="6.2/14" AIF_TUI_DISK="41 GB free" AIF_TUI_SEL="${SEL:-1}" AIF_TUI_BOTTOM="${BOTTOM:-events}"
 AIF_TUI_EVENTS="yellow|12:41|OPES-53 tests rejected (1/4): verify-red: 2 problems
 green|12:39|OPES-51 built → Review · 38 min"
+AIF_TUI_LOG="intake    OPES-52 is ready
+plan      admitted after 1 dispatch
+tests     4 tests, red as they should be
+implement dispatch 5/16
+green     rejected (1/3): 1 test still red
+implement dispatch 6/16"
 AIF_TUI_TYP_plan=600 AIF_TUI_TYP_tests=600 AIF_TUI_TYP_implement=900
 for i in 1 2 3 4; do AIF_LS_KIND[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0; done
 AIF_LS_ID[1]=OPES-52 AIF_LS_RESULT[1]=running AIF_LS_START[1]=-860
@@ -3624,6 +3633,13 @@ AIF_LS_ID[3]=OPES-54 AIF_LS_RESULT[3]=running AIF_LS_START[3]=940
 AIF_LS_LIVE[3]='{"title":"Push-сповіщення","phase":"worktree"}'
 AIF_LS_ID[4]=OPES-51 AIF_LS_RESULT[4]=built AIF_LS_START[4]=-1280 AIF_LS_END[4]=1000 AIF_LS_PCT[4]=97 AIF_LS_PSTAGE[4]=3
 AIF_LS_LIVE[4]='{"title":"Тема інтерфейсу","phase":"report","stage":"implement","attempt":1,"attempts_max":3,"model":"sonnet","model_id":"claude-sonnet-5","dispatches":7,"dispatches_max":16,"tokens":530000,"last":"implement admitted","last_tone":"ok"}'
+i=5
+while [ "$i" -le "${PAR:-4}" ]; do
+  AIF_LS_KIND[i]="" AIF_LS_END[i]="" AIF_LS_PCT[i]=0 AIF_LS_PSTAGE[i]=0
+  AIF_LS_ID[i]="OPES-6$i" AIF_LS_RESULT[i]=running AIF_LS_START[i]=500
+  AIF_LS_LIVE[i]='{"title":"Звіт '"$i"'","phase":"run","stage":"plan","attempt":1,"attempts_max":3,"model":"opus","model_id":"claude-opus-5-5","dispatches":1,"dispatches_max":16,"tokens":12000,"stage_started":900,"last":"","last_tone":""}'
+  i=$((i + 1))
+done
 FIX
 frame() { # [VAR=value …] — one frame of the fixture, as lib/tui.sh draws it
   # shellcheck disable=SC2016 # the inner bash expands them, not this one
@@ -3652,6 +3668,55 @@ eq "…colour moves nothing: the coloured frame, its colour taken out, is the sa
 eq "…a narrow terminal gets the list, an ASCII one no box drawing" \
   "$(frame COLS=80 | sed -n 1p | grep -c '^aif work --loop · '),$(frame COLS=80 | grep -c '▸1 OPES-52 Імпорт фото'),$(frame UNI=0 | grep -c '╭'),$(frame UNI=0 | grep -c '^+- >1 . OPES-52')" \
   "1,1,0,1"
+
+# A terminal shorter than the frame (docs/DEFECTS.md 25.1). The frame was held
+# to the terminal's width and never its rows: five workers on 80 by 24 drew 28
+# lines, the wide frame with a worker's log 41 on 37, and a frame taller than
+# the screen scrolled it at every redraw — the loop's own line and the first
+# worker were never on it. No size draws more lines than it has rows, the
+# loop's line on top and, from two rows, the keys; what gives way, in turn:
+# the legend, the blank line above the keys, the older events, the blank lines
+# between the workers, each worker's last line, the newest event, the bar's
+# line, then the workers past one line each, on a line of their own. Workers
+# 5 to 8 are the fixture's, running, where PAR asks for them.
+tall=""
+for size in 5:80:24 6:120:30 8:120:40 8:80:24 8:80:12 8:80:7 8:80:3 8:80:2 8:80:1 1:80:6 4:80:15 \
+  5:80:24:log 8:80:20:log 4:100:37:log 2:100:26:log; do
+  IFS=: read -r fp fc fr fb <<<"$size"
+  frame PAR="$fp" COLS="$fc" ROWS="$fr" BOTTOM="${fb:-events}" >"$OUT/frame41s.txt"
+  fn="$(wc -l <"$OUT/frame41s.txt" | tr -d ' ')"
+  if [ "$fn" -gt "$fr" ] || ! sed -n 1p "$OUT/frame41s.txt" | grep -qE '^(aif work --loop|╭)' ||
+    { [ "$fr" -ge 2 ] && ! grep -q '\[s\] stop it' "$OUT/frame41s.txt"; }; then
+    tall="$tall $size=$fn"
+  fi
+done
+eq "a terminal shorter than the frame: no size drawn taller than its rows, the loop's line on top and the keys kept" \
+  "${tall:- none}" " none"
+frame PAR=5 COLS=80 ROWS=24 >"$OUT/frame41-5.txt"
+eq "…five workers on 80 by 24: each on its three lines, the newest event, the keys on the last row — the legend, the blank above the keys and the older event given up" \
+  "$(wc -l <"$OUT/frame41-5.txt" | tr -d ' '),$(grep -c ' disp · ' "$OUT/frame41-5.txt"),$(grep -c 'green rejected (1/3)' "$OUT/frame41-5.txt"),$(grep -c '12:41 OPES-53' "$OUT/frame41-5.txt"),$(grep -c '12:39 OPES-51' "$OUT/frame41-5.txt"),$(grep -c 'line colour' "$OUT/frame41-5.txt"),$(sed -n 24p "$OUT/frame41-5.txt" | grep -c '\[s\] stop it')" \
+  "24,5,1,1,0,0,1"
+frame PAR=8 COLS=80 ROWS=24 >"$OUT/frame41-8.txt"
+eq "…eight on 80 by 24: two lines each, no blank between them, the verdict beside the bar in the dispatches' place" \
+  "$(grep -cE '^(▸| )[1-8] OPES-' "$OUT/frame41-8.txt"),$(grep -c '~81%  green rejected (1/3): 1 test still red' "$OUT/frame41-8.txt"),$(grep -c ' disp ' "$OUT/frame41-8.txt"),$(sed -n 2p "$OUT/frame41-8.txt" | grep -c '^▸1 OPES-52')" \
+  "8,1,0,1"
+frame PAR=8 COLS=80 ROWS=12 >"$OUT/frame41-8s.txt"
+eq "…on 80 by 12: one line each, and under them as many events as the rows have left" \
+  "$(wc -l <"$OUT/frame41-8s.txt" | tr -d ' '),$(grep -cE '^(▸| )[1-8] OPES-' "$OUT/frame41-8s.txt"),$(grep -c '░' "$OUT/frame41-8s.txt"),$(grep -c '12:41 OPES-53' "$OUT/frame41-8s.txt")" \
+  "12,8,0,1"
+frame PAR=8 COLS=80 ROWS=7 SEL=7 >"$OUT/frame41-8t.txt"
+eq "…on 7 rows: as many as fit, the selected one among them, and the rest on a line of their own" \
+  "$(wc -l <"$OUT/frame41-8t.txt" | tr -d ' '),$(grep -cE '^ [1-3] OPES-' "$OUT/frame41-8t.txt"),$(grep -c '^▸7 OPES-67' "$OUT/frame41-8t.txt"),$(grep -c '… and 4 more: 3 running · 1 built' "$OUT/frame41-8t.txt")" \
+  "7,3,1,1"
+eq "…on two rows, the loop's line and the keys; on one, the loop's line alone" \
+  "$(frame PAR=8 COLS=80 ROWS=2 | sed -n 2p | grep -c '\[s\] stop it'),$(frame PAR=8 COLS=80 ROWS=1 | grep -c '^aif work --loop')" "1,1"
+frame PAR=4 COLS=100 ROWS=37 BOTTOM=log >"$OUT/frame41-log.txt"
+eq "…a worker's log under the wide frame on 37 rows: its head and the newest lines the rows hold, the keys last" \
+  "$(wc -l <"$OUT/frame41-log.txt" | tr -d ' '),$(grep -c 'log of OPES-52' "$OUT/frame41-log.txt"),$(grep -c 'implement dispatch 6/16' "$OUT/frame41-log.txt"),$(grep -c 'tests     4 tests' "$OUT/frame41-log.txt"),$(grep -c 'plan      admitted' "$OUT/frame41-log.txt"),$(sed -n 37p "$OUT/frame41-log.txt" | grep -c '\[s\] stop it')" \
+  "37,1,1,1,0,1"
+frame PAR=4 COLS=80 ROWS=24 >"$OUT/frame41-4.txt"
+eq "…and a frame that fits is drawn whole, as it was: four on 80 by 24, every event and the legend" \
+  "$(wc -l <"$OUT/frame41-4.txt" | tr -d ' '),$(grep -c '12:39 OPES-51' "$OUT/frame41-4.txt"),$(grep -c 'line colour' "$OUT/frame41-4.txt")" "24,1,1"
 
 # Live, on a pty of 110 by 40: two held in their plan station, the second
 # selected and stopped from the keyboard, the third taking its slot.

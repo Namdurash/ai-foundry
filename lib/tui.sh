@@ -20,6 +20,14 @@
 # (docs/FINDINGS.md #25). The shift's countdown is measured the same way
 # (lib/cmd_start.sh, _aif_start_fit).
 #
+# And no frame has more lines than the terminal has rows: one taller than the
+# screen scrolled it at every redraw, and its first rows — the loop's own
+# line, the first worker — were never on it (docs/DEFECTS.md 25.1). The frame
+# around the loop is drawn where it fits with its events under it, the list
+# gives up what it shows in a fixed order as the rows run out
+# (aif_tui_compact), and under either the tail takes the rows left to it
+# (aif_tui_tail).
+#
 # What the caller sets, before aif_tui_init and aif_tui_frame:
 #
 #   AIF_TUI_COLS, AIF_TUI_ROWS    the terminal's size
@@ -475,28 +483,58 @@ aif_tui_center_lines() {
   AIF_TUI_CL[6]="$AIF_TUI_OUT"
 }
 
-# aif_tui_tail <cols> — the bottom of the frame: the last events (or the
-# selected worker's log), the keys, and what the colours mean; appended to
-# AIF_TUI_FRAME.
+# aif_tui_tail <cols> <rows> <spaced 0|1> — the bottom of the frame, in <rows>
+# rows at most: the last events (or the selected worker's log), the keys, and
+# what the colours mean; appended to AIF_TUI_FRAME. <spaced>: a blank line
+# above it, and one above the keys where a row is left for it. The keys come
+# first, then the events — three rows, the empty ones kept, so the keys do
+# not move as events come in — or the log's head and its newest lines, then
+# the blank line above the keys, then the legend: each as far as the rows go
+# (docs/DEFECTS.md 25.1).
 aif_tui_tail() {
-  local cols="$1" line tone at text n=0 sel_id
-  AIF_TUI_FRAME="$AIF_TUI_FRAME
-"
+  local cols="$1" rows="$2" spaced="$3" line tone at text n=0 k=0 kmax=3 head=0 left step sel_id
+  local -a logged
+  [ "$rows" -ge 1 ] || return 0
+  [ "$rows" -gt "$spaced" ] || spaced=0
   if [ "${AIF_TUI_BOTTOM:-events}" = log ]; then
-    sel_id="${AIF_LS_ID[${AIF_TUI_SEL:-1}]-}"
-    aif_tui_line "$((cols - 1))" blueb " log of ${sel_id:-?}" dim " (l: back to the events)"
-    AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
-"
+    head=1 kmax=0
     while IFS= read -r line; do
-      aif_tui_line "$((cols - 1))" dim " $line"
-      AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
-"
+      logged[kmax]="$line"
+      kmax=$((kmax + 1))
     done <<EOF
 ${AIF_TUI_LOG:-}
 EOF
+  fi
+  # How many events, or lines of the log, the rows hold: a row each, and the
+  # log's head beside its first.
+  left=$((rows - 1 - spaced))
+  while [ "$k" -lt "$kmax" ]; do
+    step=1
+    [ "$k" -gt 0 ] || step=$((1 + head))
+    [ "$step" -le "$left" ] || break
+    left=$((left - step))
+    k=$((k + 1))
+  done
+  [ "$spaced" = 0 ] || AIF_TUI_FRAME="$AIF_TUI_FRAME
+"
+  if [ "$head" = 1 ]; then
+    if [ "$k" -gt 0 ]; then
+      sel_id="${AIF_LS_ID[${AIF_TUI_SEL:-1}]-}"
+      aif_tui_line "$((cols - 1))" blueb " log of ${sel_id:-?}" dim " (l: back to the events)"
+      AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
+      n=$((kmax - k))
+      while [ "$n" -lt "$kmax" ]; do
+        aif_tui_line "$((cols - 1))" dim " ${logged[n]-}"
+        AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
+        n=$((n + 1))
+      done
+    fi
   else
     while IFS='|' read -r tone at text; do
       [ -n "$text" ] || continue
+      [ "$n" -lt "$k" ] || break
       n=$((n + 1))
       aif_tui_line "$((cols - 1))" dim " $at " "${tone:-fg}" "$text"
       AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
@@ -504,30 +542,38 @@ EOF
     done <<EOF
 ${AIF_TUI_EVENTS:-}
 EOF
-    while [ "$n" -lt 3 ]; do
+    while [ "$n" -lt "$k" ]; do
       n=$((n + 1))
       AIF_TUI_FRAME="$AIF_TUI_FRAME
 "
     done
   fi
+  if [ "$spaced" = 1 ] && [ "$left" -ge 1 ]; then
+    left=$((left - 1))
+    AIF_TUI_FRAME="$AIF_TUI_FRAME
+"
+  fi
   set -- blueb " [1-${AIF_TUI_PARALLEL:-1}]" dim " select  " blueb "[s]" dim " stop it  " blueb "[l]" dim " its log  " \
     blueb "[q]" dim " no new cards  " blueb "^C" dim " no new cards, again: stop all"
   aif_tui_line "$((cols - 1))" "$@"
-  AIF_TUI_FRAME="$AIF_TUI_FRAME
-$AIF_TUI_OUT
+  AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
 "
+  [ "$left" -ge 1 ] || return 0
   aif_tui_line "$((cols - 1))" orange " $AIF_TUI_G_run" dim " running  " orange "$AIF_TUI_G_prep" dim " getting ready  " \
     green "$AIF_TUI_G_ok" dim " Review  " red "$AIF_TUI_G_no" dim " Blocked  " dim "$AIF_TUI_G_halt stopped   line colour: the worker's state"
-  AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT"
+  AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
 }
 
-# aif_tui_wide — the frame drawn around the loop: workers 1 and 2 above it,
-# 3 and 4 below, each joined to it. For up to four workers on a terminal at
-# least 96 wide and tall enough to hold them.
+# aif_tui_wide <rows> — the frame drawn around the loop: workers 1 and 2 above
+# it, 3 and 4 below, each joined to it. For up to four workers on a terminal
+# at least 96 wide and tall enough to hold them; the tail in the rows left
+# under them, where the log takes more than the events (aif_tui_tail).
 aif_tui_wide() {
   # One column short of the terminal: a line that fills the last column leaves
   # the cursor waiting to wrap, and some terminals then wrap the next one.
-  local cols=$((${AIF_TUI_COLS:-100} - 1)) n="${AIF_TUI_PARALLEL:-1}" w=34 c=32 xc lx rx cl cr r gap
+  local rows="$1" cols=$((${AIF_TUI_COLS:-100} - 1)) n="${AIF_TUI_PARALLEL:-1}" w=34 c=32 xc lx rx cl cr r gap
+  local above=19
   local -a L R
   xc=$(((cols - c) / 2))
   lx=$((w - 9))
@@ -609,7 +655,10 @@ aif_tui_wide() {
       fi
     done
   fi
-  aif_tui_tail "$cols"
+  # Above the tail: a row of boxes, two rows of links and the loop's box —
+  # 19 rows — and with a third worker, links and a row of boxes again.
+  [ "$n" -lt 3 ] || above=30
+  aif_tui_tail "$cols" $((rows - above)) 1
 }
 
 # aif_tui_links_down / aif_tui_links_up <lx> <cl> <cr> <rx> <tone-l> <dash-l>
@@ -683,10 +732,78 @@ aif_tui_links_up() {
 "
 }
 
-# aif_tui_compact — the same, as a list: the loop on one line, each worker on
-# three. For a narrow or a short terminal, or more than four workers.
+# aif_tui_listed <i> <cols> <lines 1|2|3> — worker i as the list draws it,
+# appended to AIF_TUI_FRAME: its card, title and state; the bar, with its
+# dispatches and tokens; its last verdict. On two lines the verdict takes the
+# dispatches' place beside the bar; on one, the first line is all of it.
+aif_tui_listed() {
+  local i="$1" cols="$2" lines="$3" tone sel id state bar vtone
+  aif_tui_slot "$i"
+  id="${AIF_LS_ID[$i]-}"
+  tone=orangeb
+  sel=" "
+  if [ "${AIF_TUI_SEL:-0}" = "$i" ]; then
+    tone=sel
+    sel="$AIF_TUI_G_sel"
+  fi
+  case "${AIF_LS_RESULT[$i]-}" in
+    built) state="$AIF_TUI_G_ok built $AIF_TUI_G_to Review" ;;
+    blocked) state="$AIF_TUI_G_no Blocked${AIF_LS_KIND[$i]:+: ${AIF_LS_KIND[$i]}}" ;;
+    env) state="$AIF_TUI_G_no could not start" ;;
+    stopped) state="$AIF_TUI_G_halt stopped" ;;
+    held) state="$AIF_TUI_G_halt not taken over" ;;
+    running)
+      state="$AIF_TUI_G_run ${AIF_TUI_W_stage:-${AIF_TUI_W_phase:-starting}}"
+      [ -z "$AIF_TUI_W_attempt" ] || state="$state $AIF_TUI_W_attempt/${AIF_TUI_W_amax:-?}"
+      [ -z "$AIF_TUI_W_model" ] || state="$state $AIF_TUI_G_sep $AIF_TUI_W_model"
+      ;;
+    *) state="waiting for a card" ;;
+  esac
+  aif_tui_line "$((cols - 1))" "$tone" "$sel$i ${id:-$AIF_TUI_G_sep}" bold " ${AIF_TUI_W_title:-}" \
+    dim "  " "$AIF_TUI_W_link" "$state"
+  AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
+  [ "$lines" -ge 2 ] || return 0
+  case "$AIF_TUI_W_ltone" in
+    ok) vtone=green ;;
+    retry) vtone=yellow ;;
+    stop) vtone=red ;;
+    *) vtone=dim ;;
+  esac
+  aif_tui_rep $((AIF_TUI_W_pct * 20 / 100)) "$AIF_TUI_G_full"
+  bar="$AIF_TUI_OUT"
+  aif_tui_rep $((20 - AIF_TUI_W_pct * 20 / 100)) "$AIF_TUI_G_empty"
+  if [ "$lines" -ge 3 ]; then
+    aif_tui_line "$((cols - 1))" fg "   " "$AIF_TUI_W_link" "$bar" dim "$AIF_TUI_OUT" fg " ~$AIF_TUI_W_pct%" \
+      dim "  ${AIF_TUI_W_disp:-0}/${AIF_TUI_W_dmax:-?} disp $AIF_TUI_G_sep $(((${AIF_TUI_W_tokens:-0} + 500) / 1000))k out"
+    AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
+    aif_tui_line "$((cols - 1))" fg "   " "$vtone" "$AIF_TUI_W_last"
+  else
+    aif_tui_line "$((cols - 1))" fg "   " "$AIF_TUI_W_link" "$bar" dim "$AIF_TUI_OUT" fg " ~$AIF_TUI_W_pct%" \
+      "$vtone" "  $AIF_TUI_W_last"
+  fi
+  AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
+"
+}
+
+# aif_tui_compact <rows> — the same, as a list: the loop on one line, each
+# worker under it, the events and the keys at the bottom. For a narrow or a
+# short terminal, or more than four workers.
+#
+# No more lines than the terminal has rows, as no line is wider than it: a
+# frame taller than the screen scrolled it at every redraw, and its first
+# rows — the loop's own line, the first worker — were never on it
+# (docs/DEFECTS.md 25.1). As the rows run out, what gives way, first to
+# last: the legend, the blank line above the keys, the events but the newest
+# (the tail's own order, aif_tui_tail); the blank lines between the workers;
+# each worker's last line, its verdict moved up beside the bar; the newest
+# event; the bar's line, a worker on one; the workers past what the rows hold
+# at one line each, on a line of their own — the selected one kept in sight,
+# for the keys act on it; the keys — and never the loop's own line.
 aif_tui_compact() {
-  local cols="${AIF_TUI_COLS:-80}" i n="${AIF_TUI_PARALLEL:-1}" tone sel id state
+  local rows="$1" cols="${AIF_TUI_COLS:-80}" i n="${AIF_TUI_PARALLEL:-1}" least=1 per=1 spaced=0 show pick
+  local more=0 run=0 built=0 blocked=0 stopped=0 waiting=0 rest=""
   AIF_TUI_FRAME=""
   aif_tui_ago $((${AIF_TUI_NOW:-0} - ${AIF_TUI_STARTED:-0}))
   aif_tui_line "$((cols - 1))" blueb "aif work --loop" dim " $AIF_TUI_G_sep $AIF_TUI_OUT $AIF_TUI_G_sep " \
@@ -694,62 +811,82 @@ aif_tui_compact() {
     dim " $AIF_TUI_G_sep load ${AIF_TUI_LOAD:-?} $AIF_TUI_G_sep ${AIF_TUI_STATUS:-Ctrl-C: no new cards}"
   AIF_TUI_FRAME="$AIF_TUI_OUT
 "
-  for i in $(seq 1 "$n"); do
-    aif_tui_slot "$i"
-    id="${AIF_LS_ID[$i]-}"
-    tone=orangeb
-    sel=" "
-    if [ "${AIF_TUI_SEL:-0}" = "$i" ]; then
-      tone=sel
-      sel="$AIF_TUI_G_sel"
+  # Lines a worker: three after a blank line, then three, while the newest
+  # event keeps a row beside the keys (the log, its head and newest line:
+  # two); then two; then one; then the rows hold fewer workers than there are.
+  [ "${AIF_TUI_BOTTOM:-events}" != log ] || least=2
+  if [ "$rows" -ge $((4 * n + 3 + least)) ]; then
+    per=3 spaced=1
+  elif [ "$rows" -ge $((3 * n + 2 + least)) ]; then
+    per=3
+  elif [ "$rows" -ge $((2 * n + 2)) ]; then
+    per=2
+  elif [ "$rows" -lt $((n + 2)) ]; then
+    per=0
+  fi
+  if [ "$per" -gt 0 ]; then
+    for i in $(seq 1 "$n"); do
+      [ "$spaced" = 0 ] || AIF_TUI_FRAME="$AIF_TUI_FRAME
+"
+      aif_tui_listed "$i" "$cols" "$per"
+    done
+    aif_tui_tail "$cols" $((rows - 1 - (per + spaced) * n)) "$spaced"
+    return 0
+  fi
+
+  # Fewer rows than workers: as many as the rows hold, one line each — the
+  # first, and the selected one in the last place where it is further down —
+  # and the rest on one line, by how each stands.
+  if [ "$rows" -ge 3 ]; then
+    show=$((rows - 3))
+    pick="$show"
+    [ "$show" -eq 0 ] || [ "${AIF_TUI_SEL:-1}" -le "$show" ] || pick="${AIF_TUI_SEL:-1}"
+    for i in $(seq 1 "$n"); do
+      if [ "$i" -lt "$show" ] || [ "$i" -eq "$pick" ]; then
+        aif_tui_listed "$i" "$cols" 1
+        continue
+      fi
+      more=$((more + 1))
+      case "${AIF_LS_RESULT[$i]-}" in
+        running) run=$((run + 1)) ;;
+        built) built=$((built + 1)) ;;
+        blocked | env) blocked=$((blocked + 1)) ;;
+        stopped | held) stopped=$((stopped + 1)) ;;
+        *) waiting=$((waiting + 1)) ;;
+      esac
+    done
+    [ "$run" -eq 0 ] || rest="$rest $AIF_TUI_G_sep $run running"
+    [ "$built" -eq 0 ] || rest="$rest $AIF_TUI_G_sep $built built"
+    [ "$blocked" -eq 0 ] || rest="$rest $AIF_TUI_G_sep $blocked blocked"
+    [ "$stopped" -eq 0 ] || rest="$rest $AIF_TUI_G_sep $stopped stopped"
+    [ "$waiting" -eq 0 ] || rest="$rest $AIF_TUI_G_sep $waiting waiting"
+    if [ "$show" -gt 0 ]; then
+      aif_tui_line "$((cols - 1))" dim " $AIF_TUI_G_more and $more more:${rest# "$AIF_TUI_G_sep"}"
+    else
+      aif_tui_line "$((cols - 1))" dim " $more workers:${rest# "$AIF_TUI_G_sep"}"
     fi
-    case "${AIF_LS_RESULT[$i]-}" in
-      built) state="$AIF_TUI_G_ok built $AIF_TUI_G_to Review" ;;
-      blocked) state="$AIF_TUI_G_no Blocked${AIF_LS_KIND[$i]:+: ${AIF_LS_KIND[$i]}}" ;;
-      env) state="$AIF_TUI_G_no could not start" ;;
-      stopped) state="$AIF_TUI_G_halt stopped" ;;
-      held) state="$AIF_TUI_G_halt not taken over" ;;
-      running)
-        state="$AIF_TUI_G_run ${AIF_TUI_W_stage:-${AIF_TUI_W_phase:-starting}}"
-        [ -z "$AIF_TUI_W_attempt" ] || state="$state $AIF_TUI_W_attempt/${AIF_TUI_W_amax:-?}"
-        [ -z "$AIF_TUI_W_model" ] || state="$state $AIF_TUI_G_sep $AIF_TUI_W_model"
-        ;;
-      *) state="waiting for a card" ;;
-    esac
-    AIF_TUI_FRAME="$AIF_TUI_FRAME
-"
-    aif_tui_line "$((cols - 1))" "$tone" "$sel$i ${id:-$AIF_TUI_G_sep}" bold " ${AIF_TUI_W_title:-}" \
-      dim "  " "$AIF_TUI_W_link" "$state"
     AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
 "
-    aif_tui_rep $((AIF_TUI_W_pct * 20 / 100)) "$AIF_TUI_G_full"
-    local bar="$AIF_TUI_OUT"
-    aif_tui_rep $((20 - AIF_TUI_W_pct * 20 / 100)) "$AIF_TUI_G_empty"
-    aif_tui_line "$((cols - 1))" fg "   " "$AIF_TUI_W_link" "$bar" dim "$AIF_TUI_OUT" fg " ~$AIF_TUI_W_pct%" \
-      dim "  ${AIF_TUI_W_disp:-0}/${AIF_TUI_W_dmax:-?} disp $AIF_TUI_G_sep $(((${AIF_TUI_W_tokens:-0} + 500) / 1000))k out"
-    AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
-"
-    case "$AIF_TUI_W_ltone" in
-      ok) tone=green ;;
-      retry) tone=yellow ;;
-      stop) tone=red ;;
-      *) tone=dim ;;
-    esac
-    aif_tui_line "$((cols - 1))" fg "   " "$tone" "$AIF_TUI_W_last"
-    AIF_TUI_FRAME="$AIF_TUI_FRAME$AIF_TUI_OUT
-"
-  done
-  aif_tui_tail "$cols"
+  fi
+  # the keys under them, where there are two rows
+  aif_tui_tail "$cols" $((rows - 1 > 0 ? 1 : 0)) 0
 }
 
 # aif_tui_frame — the frame for this terminal, into AIF_TUI_FRAME: drawn around
-# the loop where it fits, as a list where it does not.
+# the loop where it fits with its events under it, as a list where it does
+# not, and either way in no more rows than the terminal has (AIF_TUI_ROWS;
+# one nobody knows, 24). Every line is drawn with its newline and the last
+# one loses it: a newline on the screen's last row scrolls it.
 aif_tui_frame() {
-  local need=26
+  local rows="${AIF_TUI_ROWS:-24}" need=26
+  case "$rows" in
+    '' | *[!0-9]* | 0) rows=24 ;;
+  esac
   [ "${AIF_TUI_PARALLEL:-1}" -le 2 ] || need=37
-  if [ "${AIF_TUI_PARALLEL:-1}" -le 4 ] && [ "${AIF_TUI_COLS:-80}" -ge 96 ] && [ "${AIF_TUI_ROWS:-24}" -ge "$need" ]; then
-    aif_tui_wide
+  if [ "${AIF_TUI_PARALLEL:-1}" -le 4 ] && [ "${AIF_TUI_COLS:-80}" -ge 96 ] && [ "$rows" -ge "$need" ]; then
+    aif_tui_wide "$rows"
   else
-    aif_tui_compact
+    aif_tui_compact "$rows"
   fi
+  AIF_TUI_FRAME="${AIF_TUI_FRAME%$'\n'}"
 }

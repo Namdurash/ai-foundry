@@ -4,13 +4,15 @@
 # time, with the board moved by fixed rules. Sourced by bin/aif; not meant to
 # be executed directly.
 #
-# The loop builds (`aif work --loop`, in this terminal or another); what is
-# left is everything a person did by hand between builds — read a report and
-# say yes, send a card back, cut the next slice, put a blocked card back in
-# Ready — and a shift is that, with the person present only at the control
-# point: one session (a review, the analyst, the owner) or one move at a time,
-# each on a key, the rest by rules a `case` can read off a card's first line
-# (docs/AUTOPILOT-RESEARCH.md §6, docs/AUTOPILOT-PHASE1.md).
+# The loop builds (`aif work --loop`), in a terminal of its own: the one the
+# shift starts it in whenever Ready holds a card (docs/DEFECTS.md 27.1), or a
+# person's second terminal; what is left is everything a person did by hand
+# between builds — read a report and say yes, send a card back, cut the next
+# slice, put a blocked card back in Ready — and a shift is that, with the
+# person present only at the control point: one session (a review, the
+# analyst, the owner) or one move at a time, each on a key, the rest by rules
+# a `case` can read off a card's first line (docs/AUTOPILOT-RESEARCH.md §6,
+# docs/AUTOPILOT-PHASE1.md). Neither half waits on the other.
 #
 # Every tick runs the same three steps, and only the last one acts:
 #
@@ -26,8 +28,8 @@
 #            control point, the lines it will not touch, a wait, or the end.
 #            Pure, so every row of the policy runs over a fixture with `jq -f`
 #            alone: no board, no model, no terminal.
-#   driver   makes the moves, offers the first unit, runs what the person
-#            chose, and ticks again.
+#   driver   makes the moves, starts the build, offers the first unit, runs
+#            what the person chose, and ticks again.
 #
 # The facts and the oracle are the first half of this file; the driver follows
 # them.
@@ -93,9 +95,12 @@ _aif_start_board() {
 #     fresh_margin_s (AIF_START_FRESH_MARGIN_SECS, 120: what a head's time is
 #                     allowed against the shift's start, another clock's),
 #     ready_gate_installed (the gate behind `aif _ready` is there),
-#     build: { mode: "here"|"elsewhere"|"none", parallel, hold: null|"<why>",
-#              loop: { live, pid, host, idle, parallel, logdir,
-#                      held: [ { ticket, why } ] }|null },
+#     build: { mode: "own"|"starting"|"elsewhere"|"none", parallel,
+#              hold: null|"<why>",
+#              loop: { live, pid, host, idle, parallel, logdir, until_empty,
+#                      by, ours, held: [ { ticket, why } ] }|null,
+#              own: { logdir, how, look, state }|null,
+#              terminal: "tmux"|"screen"|"background" },
 #     flags: { po, pjm, retry_runs }, hold_labels: [..], dirty: [ "<path>" ],
 #     cards: [ { ticket, title, column, pos, labels, moved_at, unread, unread_why,
 #                comments (the local board's count; null on Trello),
@@ -600,45 +605,72 @@ _aif_start_cards() {
 
 # _aif_start_build <root> — the facts' `build`: who builds on this checkout.
 #
-# A loop in another terminal holds the loop lock (lib/paths.sh
-# aif_loop_lock_dir), and its owner.json says its pid, host, how many at once,
-# whether it idles and where it logs (lib/cmd_work.sh _aif_work_loop_lock):
-# `elsewhere`, at the loop's parallel. Its liveness is matched on the command
-# that takes that lock, `aif work … --loop` — a pid reused by anything else is
-# a dead lock (docs/DEFECTS.md 14.5). No live loop: `none` under --no-build,
-# else `here` — this shift runs the loop itself, in the foreground (R12). A
-# dead lock is still described, `live: false`: the next loop takes it over.
+# A loop holds the loop lock (lib/paths.sh aif_loop_lock_dir), and its
+# owner.json says its pid, host, how many at once, whether it idles, where it
+# logs and who started it (lib/cmd_work.sh _aif_work_loop_lock): `elsewhere`,
+# at the loop's parallel — the loop this shift started in a terminal of its
+# own (`ours`: its log directory the one the shift named, or its `by` this
+# shift), or a person's in another terminal. Its liveness is matched on the
+# command that takes that lock, `aif work … --loop` — a pid reused by
+# anything else is a dead lock (docs/DEFECTS.md 14.5). No live loop:
+# `starting` while the loop the shift started has not taken its lock yet
+# (_aif_start_own_settle), `none` under --no-build, else `own` — the shift
+# starts one, beside its sessions, when Ready holds a card (R12;
+# docs/DEFECTS.md 27.1). A dead lock is still described, `live: false`: the
+# next loop takes it over.
 #
 # `held` is what the loop publishes of the cards it will not take again, each
 # with why (_aif_work_loop_held_publish): the oracle leaves them out of the
 # wait and names each, where it used to wait on them until the person
 # pressed q (docs/DEFECTS.md 15.3). A lock from before the field holds none.
+#
+# `own` is the loop this shift started last, as the driver keeps it — where
+# it runs, how a person looks at it, its state — and `terminal` where the
+# shift would start the next (_aif_start_terminal).
 _aif_start_build() {
-  local root="$1" lock live=false owner="" loopj=null mode=here par
+  local root="$1" lock live=false owner="" loopj=null mode=own par own=null odir=""
   par="$(_aif_start_parallel "$root")"
   lock="$(aif_loop_lock_dir "$root")"
+  [ -z "${AIF_START_OWN_DIR:-}" ] || odir="$(cd "$AIF_START_OWN_DIR" 2>/dev/null && pwd -P)" || odir="$AIF_START_OWN_DIR"
   if [ -d "$lock" ]; then
     ! _aif_work_lock_live_as "$lock" '*aif\ work*--loop*' || live=true
     owner="$(jq -c 'objects' "$lock/owner.json" 2>/dev/null)" || owner=""
     [ -n "$owner" ] || owner='{}'
     # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-    loopj="$(jq -cn --argjson o "$owner" --argjson live "$live" '
+    loopj="$(jq -cn --argjson o "$owner" --argjson live "$live" --arg odir "$odir" --arg by "aif start pid $$" '
       { live: $live, pid: ($o.pid // null), host: ($o.host // null), idle: (($o.idle // 0) == 1),
         parallel: ($o.parallel // null), logdir: ($o.logdir // null),
+        until_empty: (($o.until_empty // 0) == 1), by: ($o.by // null),
+        ours: (($odir != "" and ($o.logdir // "") == $odir) or ($o.by // "") == $by),
         held: [ ($o.held // [])[]? | select(type == "object" and (.ticket | type) == "string")
                 | { ticket, why: (if (.why | type) == "string" then .why else null end) } ] }')" || loopj=null
     [ "$live" = false ] || mode=elsewhere
   fi
-  if [ "$mode" != elsewhere ] && [ "${AIF_START_FLAG_NO_BUILD:-0}" = 1 ]; then
+  # Starting too: the build the shift started, running when this tick began
+  # (_aif_start_own_settle), whose lock is gone a moment later — it has just
+  # ended, and the next tick reads how. Read as no loop at all, its end was
+  # never read: the shift went on to its own end, or started nothing, a
+  # build held by a drain not held (docs/DEFECTS.md 27.1).
+  if [ "$mode" != elsewhere ] && { [ "${AIF_START_OWN_STATE:-}" = starting ] || [ "${AIF_START_OWN_STATE:-}" = live ]; }; then
+    mode=starting
+  elif [ "$mode" != elsewhere ] && [ "${AIF_START_FLAG_NO_BUILD:-0}" = 1 ]; then
     mode=none
   fi
+  if [ -n "${AIF_START_OWN_DIR:-}" ]; then
+    # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+    own="$(jq -cn --arg d "$AIF_START_OWN_DIR" --arg how "${AIF_START_OWN_HOW:-}" --arg look "${AIF_START_OWN_LOOK:-}" \
+      --arg state "${AIF_START_OWN_STATE:-}" '
+      { logdir: $d, how: (if $how == "" then null else $how end), look: (if $look == "" then null else $look end),
+        state: (if $state == "" then null else $state end) }')" || own=null
+  fi
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
-  jq -cn --arg mode "$mode" --argjson p "$par" --argjson loop "$loopj" --arg hold "${AIF_START_BUILD_HOLD:-}" '
+  jq -cn --arg mode "$mode" --argjson p "$par" --argjson loop "$loopj" --arg hold "${AIF_START_BUILD_HOLD:-}" \
+    --argjson own "$own" --arg term "$(_aif_start_terminal)" '
     { mode: $mode,
       parallel: (if $mode == "elsewhere" and ($loop.parallel | type) == "number" and $loop.parallel >= 1
                  then $loop.parallel else $p end),
       hold: (if $hold == "" then null else $hold end),
-      loop: $loop }'
+      loop: $loop, own: $own, terminal: $term }'
 }
 
 # _aif_start_ready_gates <root> <tmp> — the ready gate of each card the oracle
@@ -647,23 +679,19 @@ _aif_start_build() {
 # runs at intake, offline).
 #
 # A gate is a process per card, so only when a pull could be offered: the
-# build has a free slot (the oracle's own rule — in mode here, Ready holds at
-# least one card and fewer than a round; elsewhere, the loop's Ready and its
-# live builds short of its parallel) — and only for a candidate (Backlog, no
-# depends_on, no aif line, no hold label, a ticket file), in Backlog order,
-# until as many have passed as there are slots. The rest stay null.
-#
-# A candidate the shift has offered already (its `R14 <ID>` key done) is
-# still gated — its line in the summary needs the gate's answer — but does not
-# fill a slot: the oracle leaves it out, and counting it here stopped the
-# gates at the cards the person had just passed by, so no other card in
-# Backlog was ever offered or even listed, and the shift ended "nothing left"
-# beside an idle loop with cards it could pull.
+# build — running, starting, or the shift's to start (modes elsewhere,
+# starting, own) — has nothing in Ready to take, the cards a loop holds left
+# out (the oracle's own rule, R14) — and then for every candidate (Backlog,
+# no depends_on, no aif line, no hold label, a ticket file), in Backlog
+# order: the pull names them all at once (docs/DEFECTS.md 27.1). The rest
+# stay null. On a shift each answer is kept under its directory with the
+# ticket file's and project.json's digests, and the gate runs again only
+# when either changed: an idle shift ticks every POLL seconds, and Backlog
+# holds the same cards between two looks.
 _aif_start_ready_gates() {
-  local root="$1" tmp="$2" main list free id rc passed=0 n=0 nl tab
+  local root="$1" tmp="$2" main list id rc dig f cache key nl
   nl='
 '
-  tab="$(printf '\t')"
   main="$(aif_main_root "$root")"
   : >"$tmp/gates"
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
@@ -672,32 +700,39 @@ _aif_start_ready_gates() {
     ($x | map({ key: .ticket, value: . }) | from_entries) as $e
     | $b[0] as $b
     | [ $holds | splits("[[:space:]]+") | select(length > 0) ] as $hl
-    | ([ .[] | select(.column == "ready") ] | length) as $ready
-    | ([ .[] | select(.column == "in_progress") | select(($e[.ticket].local.class // "") == "live") ] | length) as $live
-    | (if $b.mode == "here" then (if $ready >= 1 and $ready < $b.parallel then $b.parallel - $ready else 0 end)
-       elif $b.mode == "elsewhere" then $b.parallel - ($ready + $live)
-       else 0 end) as $free
-    | if $free < 1 then "0"
-      else ("\($free)",
-            ([ .[] | select(.column == "backlog") | . as $c | ($e[$c.ticket] // {}) as $y
-               | select($y.unread != true and ($y.head.line // null) == null and $y.ticket_file == true)
-               | select((($y.meta.depends_on // []) | length) == 0)
-               | select(any(($c.labels // [])[]; . as $l | any($hl[]; . == $l)) | not) ]
-             | sort_by(.pos) | .[].ticket))
+    | [ ($b.loop.held // [])[]? | .ticket? | strings ] as $lh
+    | ([ .[] | select(.column == "ready") | select(.ticket as $t | ($b.mode == "elsewhere" and any($lh[]; . == $t)) | not) ]
+       | length) as $ready
+    | if ($b.mode != "own" and $b.mode != "starting" and $b.mode != "elsewhere") or $ready > 0 then empty
+      else [ .[] | select(.column == "backlog") | . as $c | ($e[$c.ticket] // {}) as $y
+             | select($y.unread != true and ($y.head.line // null) == null and $y.ticket_file == true)
+             | select((($y.meta.depends_on // []) | length) == 0)
+             | select(any(($c.labels // [])[]; . as $l | any($hl[]; . == $l)) | not) ]
+           | sort_by(.pos) | .[].ticket
       end' "$tmp/cards.json" 2>/dev/null)" || return 1
+  [ -n "$list" ] || return 0
+  dig="$(aif_sha256 "$(aif_project_config "$root")" 2>/dev/null)" || dig=""
   for id in $list; do
-    n=$((n + 1))
-    if [ "$n" -eq 1 ]; then
-      free="$id"
-      continue
-    fi
-    [ "$passed" -lt "$free" ] || break
-    rc=0
-    (cd "$main" && "$AIF_ROOT/bin/aif" _ready "$id") >/dev/null 2>&1 </dev/null || rc=$?
-    case "$nl${AIF_START_DONE:-}" in
-      *"${nl}R14 $id$tab"*) ;;
-      *) [ "$rc" -ne 0 ] || passed=$((passed + 1)) ;;
+    case "$id" in
+      *[!A-Za-z0-9._-]*) continue ;;
     esac
+    f="$main/$AIF_TASKS_DIR/$id/ticket.md"
+    cache=""
+    [ -z "${AIF_START_SHIFT_DIR:-}" ] || cache="$AIF_START_SHIFT_DIR/cards/$id.gate"
+    rc=""
+    key="$(aif_sha256 "$f" 2>/dev/null) $dig" || key=""
+    if [ -n "$cache" ] && [ -f "$cache" ] && [ "$(sed -n 1p "$cache" 2>/dev/null)" = "$key" ]; then
+      rc="$(sed -n 2p "$cache" 2>/dev/null)" || rc=""
+      case "$rc" in
+        '' | *[!0-9]*) rc="" ;;
+      esac
+    fi
+    if [ -z "$rc" ]; then
+      rc=0
+      (cd "$main" && "$AIF_ROOT/bin/aif" _ready "$id") >/dev/null 2>&1 </dev/null || rc=$?
+      # 3 is the environment, which the next look asks again.
+      [ -z "$cache" ] || [ "$rc" -eq 3 ] || { printf '%s%s%s\n' "$key" "$nl" "$rc" >"$cache"; } 2>/dev/null || true
+    fi
     jq -cn --arg t "$id" --argjson rc "$rc" '{ ticket: $t, rc: $rc }' >>"$tmp/gates" || return 1
   done
   return 0
@@ -771,12 +806,12 @@ _aif_start_oracle() {
 # One process, in the person's terminal, for hours. It is fenced the way the
 # loop is: every board call runs in `$(…)` or `( … )` (on Trello a failure is
 # aif_die, which would otherwise end the shift with 1); a child that gets the
-# terminal — a session, a land, the loop — runs between `set -m` and a `set
-# +m` on the very next line (docs/FINDINGS.md #24, #27, #28), its code read
-# with `|| rc=$?` under the errexit bin/aif sets; and what a child did is read
-# off the board on the next tick, never off its exit code alone — a session's
-# code says how claude was stopped, not what the person meant (#28: `/exit`,
-# two Ctrl-C and a closed window are all 0).
+# terminal — a session, a land, a look at the build — runs between `set -m`
+# and a `set +m` on the very next line (docs/FINDINGS.md #24, #27, #28), its
+# code read with `|| rc=$?` under the errexit bin/aif sets; and what a child
+# did is read off the board on the next tick, never off its exit code alone —
+# a session's code says how claude was stopped, not what the person meant
+# (#28: `/exit`, two Ctrl-C and a closed window are all 0).
 #
 # Its state between ticks is a handful of AIF_START_* globals — what the facts
 # read (_aif_start_facts lists them) and what the summary prints; globals,
@@ -786,47 +821,63 @@ _aif_start_usage() {
   cat <<EOF
 usage: aif start [options]
 
-  The shift: the human's half of the board, one session at a time, in this
-  terminal. Review first — each built card opened as /aif-review in claude —
-  then the analyst on what came back, then the owner; the board moved by
-  fixed rules on fixed first lines (wrong: back to the analyst, cancel: to
-  Done, a slice released once what it depends on has landed, a block by the
-  environment during the shift back to Ready), and what a worker on this
-  machine left half-done finished without a key (a built run's report and
-  its move to Review, a stopped run's blocked: and its move to Needs Human);
-  the rest listed with the command that would do it. Each unit waits at the
-  control point for a key, and after a countdown acts on its own where that
-  is safe — a review opens; a card whose worker died has what it left
-  running sent a TERM and goes to the top of Ready, unless any of it
-  outlives 30 s; a demo not as expected goes back to Backlog as rework: —
-  and leaves what is not: a land, a pull, a person's answer.
+  The shift: the person's half of the board, one session at a time, in this
+  terminal — and the machine's half beside it, in a terminal of its own.
+  Whenever Ready holds a card and no loop runs on this checkout, the shift
+  starts the build without a key — aif work --loop --until-empty, every card
+  in Ready, each on its own branch, until Ready, Backlog and In Progress are
+  empty — in a tmux window inside tmux, else a screen session, else in the
+  background, and goes on at once with what needs a person. Review first —
+  each built card opened as /aif-review in claude — then the analyst on what
+  came back, then the owner; the board moved by fixed rules on fixed first
+  lines (wrong: back to the analyst, cancel: to Done, a slice released once
+  what it depends on has landed, a block by the environment during the
+  shift back to Ready), and what a worker on this machine left half-done
+  finished without a key (a built run's report and its move to Review, a
+  stopped run's blocked: and its move to Needs Human); the rest listed with
+  the command that would do it. Each unit waits at the control point for a
+  key, and after a countdown acts on its own where that is safe — a review
+  opens; a card whose worker died has what it left running sent a TERM and
+  goes to the top of Ready, unless any of it outlives 30 s; a demo not as
+  expected goes back to Backlog as rework: — and leaves what is not: a land,
+  a pull, a person's answer.
 
+    aif start                   the sessions here; the build in a terminal of
+                                its own, started whenever Ready holds a card
     aif start --no-build        here: the reviews, the analyst, the owner —
-    aif work --loop --idle      …and in a second terminal: the builds; the
-                                shift waits for that loop while Ready holds
-                                cards, and leaves it running when it ends
-    aif start                   both in this terminal: when Ready holds cards
-                                the loop runs here, in the foreground
+    aif work --loop --idle      …and the builds in a second terminal of your
+                                own; the shift waits for that loop while Ready
+                                holds cards, and leaves it running when it ends
     aif start --dry-run         what the shift would do now; touches nothing
 
   At the control point: Enter does it · s skips it for the shift · p pauses
-  · q ends the shift; any other key pauses, and the countdown never acts
-  after a key. Keys typed on a Ukrainian or Russian layout are read as the
-  Latin keys in their place. Ctrl-Z does nothing inside a shift. A session
-  that changed nothing — on its card, the board's cards, requests/ or
-  tasks/ — pauses the shift instead of opening the next one. With nothing
-  left — on a new project, the first look — the shift offers two ways to
-  bring more and waits for one, no countdown: 1 the owner on one need, 2 a
-  plan first, the whole idea in plan mode, written to requests/plans/, which
-  the owner then maps into requests, in order; q ends it. The owner's map,
+  · q ends the shift · w shows the build — a screen session attached here,
+  Ctrl-A d back to the shift (screen -x <name> from any terminal); a tmux
+  window selected; the log of one in the background. Any other key pauses,
+  and the countdown never acts after a key. Keys typed on a Ukrainian or
+  Russian layout are read as the Latin keys in their place. Ctrl-Z does
+  nothing inside a shift. A session that changed nothing — on its card, the
+  board's cards, requests/ or tasks/ — pauses the shift instead of opening
+  the next one. When the build has nothing in Ready, the cards in Backlog
+  it could build — no depends_on, their ready gate passing — are named
+  together, ahead of the reviews: y takes them all to Ready. The build
+  notifies the desktop when it ends, and when Ready is empty and Backlog
+  holds such cards; a build that ended on anything but an empty board is
+  held — b, or Enter at "build again", starts it again. With nothing left —
+  on a new project, the first look — the shift offers two ways to bring
+  more and waits for one, no countdown: 1 the owner on one need, 2 a plan
+  first, the whole idea in plan mode, written to requests/plans/, which the
+  owner then maps into requests, in order; q ends it. The owner's map,
   requests/MAP.md, is offered entry by entry, in its order, while the
   build's queue is short. The end says what was done, what is left with the
-  command for each, and claude --resume <uuid> for every session it opened.
+  command for each — the build runs on until the board is empty, aif work
+  --loop --drain ends it sooner — and claude --resume <uuid> for every
+  session it opened.
 
-  --no-build         never run the loop here; a loop in another terminal builds
-  --parallel N       how many the loop here builds at once, and how far ahead
-                     the analyst cuts — three rounds (default 2; a loop in
-                     another terminal says its own)
+  --no-build         never start the build; a loop in another terminal builds
+  --parallel N       how many the build takes at once, and how far ahead the
+                     analyst cuts — three rounds (default 2; a loop already
+                     running says its own)
   --model M          every role's model: an alias the profile maps, or a full id
   --model-review M   the reviewer's (default: claude's own)
   --model-ba M       the analyst's (default opus)
@@ -846,13 +897,17 @@ usage: aif start [options]
 
 Defaults per developer go in .aif/start.local, KEY=VALUE, gitignored: MODEL,
 MODEL_REVIEW, MODEL_BA, MODEL_PO, MODEL_PJM, PARALLEL, WAIT (the control
-point's countdown, 10 s) and POLL (how often a waiting shift looks again,
-30 s). A flag beats the file; for a role, its own flag beats --model.
+point's countdown, 10 s), POLL (how often a waiting shift looks again,
+30 s) and TERMINAL (where the build runs: tmux, screen or background;
+by default tmux inside tmux, else screen where it is installed, else the
+background). A flag beats the file; for a role, its own flag beats --model.
+AIF_NOTIFY=0 in the environment keeps the build's notifications off.
 
 Exit: 0 nothing left and q, q or --max-units · 1 a session that failed, a bad flag
 · 3 the environment (the start, a board that did not answer twice, a card it
-could never read, a machine that fails its preflight again, a build that
-ended 3) · 129 the terminal closed · 130 Ctrl-C · 143 a TERM.
+could never read, a machine that fails its preflight again) · 129 the
+terminal closed · 130 Ctrl-C · 143 a TERM. The build is a process of its own
+and runs on through every one of them.
 EOF
 }
 
@@ -1028,11 +1083,11 @@ _aif_start_tty_restore() {
 # reads — as a countdown is redrawn, while a tick is worked out — went to a
 # terminal that echoed it, after the count (docs/DEFECTS.md 24.2); the key
 # was read all the same. `signal` as it hands the terminal to a child — a
-# session, a land, the loop — the modes as the shift found them: that
-# child's Ctrl-C is its own, claude's, the land's, the loop's dashboard's,
-# and its echo too. Only when the shift reads its keys from the terminal and
-# kept its modes to put back; never under the key seam, whose terminal, if
-# there is one, is the harness's.
+# session, a land, a look at the build — the modes as the shift found them:
+# that child's Ctrl-C is its own, claude's, the land's, the build's
+# dashboard's, and its echo too. Only when the shift reads its keys from the
+# terminal and kept its modes to put back; never under the key seam, whose
+# terminal, if there is one, is the harness's.
 _aif_start_ctrl_c() {
   [ -z "${AIF_START_KEYS+x}" ] && [ -n "${AIF_START_STTY:-}" ] || return 0
   if [ "$1" = key ]; then
@@ -1044,8 +1099,8 @@ _aif_start_ctrl_c() {
 }
 
 # _aif_start_watch_on / _aif_start_watch_off — around each child the shift
-# hands the terminal to (a session, a land, the loop): Ctrl-Z there does
-# nothing. A non-interactive bash under `set -m` never returns from a
+# hands the terminal to (a session, a land, a look at the build): Ctrl-Z
+# there does nothing. A non-interactive bash under `set -m` never returns from a
 # foreground wait whose child has stopped (probed on /bin/bash 3.2, a pty, as
 # the session leader and as a job of an interactive zsh: the shift S, the
 # child T+, the line after the call never ran) — and claude 2.1.226 maps
@@ -1087,7 +1142,7 @@ _aif_start_watch_on() {
           *" $g "*) continue ;;
         esac
         said="$said$g "
-        { printf '\r\n%s\r\n' "aif start: Ctrl-Z does nothing inside a shift — it goes on (/exit ends a session, Ctrl-C a land or the loop)" >/dev/tty; } 2>/dev/null
+        { printf '\r\n%s\r\n' "aif start: Ctrl-Z does nothing inside a shift — it goes on (/exit ends a session, Ctrl-C a land, Ctrl-A d a look at the build)" >/dev/tty; } 2>/dev/null
         _aif_start_log "a child of the shift stopped (Ctrl-Z, pid $g) — continued"
       done
     done
@@ -1289,7 +1344,7 @@ _aif_start_gone() {
 _aif_start_pause() {
   local why="$1"
   while :; do
-    _aif_start_key 0 "paused — $why" " — Enter: go on · q: end the shift$(_aif_start_b_hint)"
+    _aif_start_key 0 "paused — $why" " — Enter: go on · q: end the shift$(_aif_start_b_hint)$(_aif_start_w_hint)"
     case "$AIF_START_KEY" in
       enter) return 0 ;;
       q) _aif_start_finish 0 "ended at a pause (q)" ;;
@@ -1300,20 +1355,37 @@ _aif_start_pause() {
           return 0
         fi
         ;;
+      w) ! _aif_start_w_ok || _aif_start_look ;;
     esac
   done
 }
 
-# _aif_start_b_ok — rc 0 when `b` means something now: this shift builds
-# (mode here) and its build is held (R13).
+# _aif_start_b_ok — rc 0 when `b` means something now: no loop runs, and the
+# build is held (R13) — the shift starts it again.
 _aif_start_b_ok() {
   [ -n "${AIF_START_BUILD_HOLD:-}" ] || return 1
   [ -f "${AIF_START_FACTS:-}" ] || return 1
-  [ "$(jq -r '.build.mode // empty' "$AIF_START_FACTS" 2>/dev/null)" = here ]
+  [ "$(jq -r '.build.mode // empty' "$AIF_START_FACTS" 2>/dev/null)" = own ]
 }
 
 _aif_start_b_hint() {
   if _aif_start_b_ok; then printf ' · b: build again'; fi
+  return 0
+}
+
+# _aif_start_w_ok — rc 0 when `w` means something now: the build this shift
+# started is starting or running, in a terminal a person can look at — or,
+# in the background, with a log to show.
+_aif_start_w_ok() {
+  [ -n "${AIF_START_OWN_DIR:-}" ] && [ -n "${AIF_START_OWN_HOW:-}" ] || return 1
+  case "${AIF_START_OWN_STATE:-}" in
+    starting | live) return 0 ;;
+  esac
+  return 1
+}
+
+_aif_start_w_hint() {
+  if _aif_start_w_ok; then printf ' · w: the build'; fi
   return 0
 }
 
@@ -1332,7 +1404,7 @@ _aif_start_wait() {
     fi
     # The key seam's `*` lasts as long as the wait does (_aif_start_key).
     AIF_START_IN_WAIT=1
-    _aif_start_key "$left" "waiting — $why" " · p: pause · q: end the shift$(_aif_start_b_hint)" "next look in " "s"
+    _aif_start_key "$left" "waiting — $why" " · p: pause · q: end the shift$(_aif_start_b_hint)$(_aif_start_w_hint)" "next look in " "s"
     AIF_START_IN_WAIT=0
     case "$AIF_START_KEY" in
       none | enter) return 0 ;;
@@ -1345,6 +1417,12 @@ _aif_start_wait() {
       b)
         if _aif_start_b_ok; then
           _aif_start_build_now "$AIF_START_ROOT"
+          return 0
+        fi
+        ;;
+      w)
+        if _aif_start_w_ok; then
+          _aif_start_look
           return 0
         fi
         ;;
@@ -1856,7 +1934,9 @@ EOF
 # is to leave it (a land, a pull, a person's answer) is left, and a unit with
 # a warning pauses instead. s skips it for the shift, p pauses, q ends the
 # shift; a unit's own keys (l: land over a demo, r: back to Ready, y: pull);
-# b builds again when this shift's build is held. Any other key pauses, the
+# b builds again when this shift's build is held; w shows the build the
+# shift started, and the unit is offered again with its countdown whole.
+# Any other key pauses, the
 # pause naming the keys: a key the person pressed is never followed by the
 # default — ignored, the countdown ran on and acted on what the key was
 # pressed to stop (an `s` typed on another layout, a demo sent back as
@@ -1891,9 +1971,19 @@ _aif_start_offer() {
     if [ "$left" -le 0 ]; then
       AIF_START_KEY=none
     else
-      _aif_start_key "$left" "next: $text" " — Enter: $verb$own · s: skip · p: pause · q: end the shift$(_aif_start_b_hint)"
+      _aif_start_key "$left" "next: $text" " — Enter: $verb$own · s: skip · p: pause · q: end the shift$(_aif_start_b_hint)$(_aif_start_w_hint)"
     fi
     case "$AIF_START_KEY" in
+      # w: a look at the build, and the unit again, its countdown whole — a
+      # person who looked away is not followed by the default.
+      w)
+        if _aif_start_w_ok; then
+          _aif_start_look
+          deadline=$((SECONDS + AIF_START_WAIT_S))
+          continue
+        fi
+        act=unknown
+        ;;
       enter) act=run ;;
       none)
         if [ -n "$warn" ]; then
@@ -1963,7 +2053,8 @@ _aif_start_offer() {
         land) _aif_start_run_land "$root" "$u" ;;
         build) _aif_start_run_build "$root" "$u" ;;
         requeue) _aif_start_run_requeue "$root" "$u" ;;
-        demo | pull | answered) _aif_start_run_send "$root" "$u" ;;
+        pull) _aif_start_run_pull "$root" "$u" ;;
+        demo | answered) _aif_start_run_send "$root" "$u" ;;
         *)
           _aif_start_done "$key" "a unit the shift does not know how to run ($kind)"
           _aif_start_record "$u" "not run — unknown kind $kind"
@@ -2172,6 +2263,40 @@ _aif_start_run_send() {
   return 0
 }
 
+# _aif_start_run_pull <root> <unit> — R14: every card the unit names, each its
+# comment and then its move to the bottom of Ready, in the unit's order —
+# Backlog's — where the build takes them. A card the board did not take is
+# said, with the commands that finish it by hand, and the rest go on.
+_aif_start_run_pull() {
+  local root="$1" u="$2" key comment ids id moved="" failed="" byhand=""
+  key="$(printf '%s' "$u" | jq -r '.key')"
+  comment="$(printf '%s' "$u" | jq -r '.comment // empty')"
+  ids="$(printf '%s' "$u" | jq -r '(.tickets // [ .ticket ])[] | strings')"
+  for id in $ids; do
+    if _aif_start_comment_move "$root" "$id" "$comment" ready; then
+      moved="${moved:+$moved, }$id"
+    else
+      failed="${failed:+$failed, }$id"
+      byhand="${byhand:+$byhand; }$AIF_START_BYHAND"
+      AIF_START_FAILED_MOVE=1
+    fi
+  done
+  if [ -n "$moved" ]; then
+    _aif_start_out "moved $moved → ready — pulled from Backlog at the control point, for the build"
+    AIF_START_MOVES="${AIF_START_MOVES}R14 $moved → ready — pulled from Backlog at the control point
+"
+  fi
+  if [ -z "$failed" ]; then
+    _aif_start_done "$key" "pulled to Ready at the control point: $moved"
+    _aif_start_record "$u" "pulled to Ready: $moved" "" ready
+  else
+    _aif_start_done "$key" "pulled ${moved:-none} to Ready; the board did not take $failed${byhand:+ — by hand: $byhand}"
+    _aif_start_record "$u" "pulled ${moved:-none}; the board did not take $failed" "" backlog
+  fi
+  _aif_start_acted
+  return 0
+}
+
 # _aif_start_run_requeue <root> <unit> — R3b: a card whose worker died
 # outright goes back to the top of Ready, where a loop resumes it — but only
 # once nothing it left is still writing in its worktree: the next worker
@@ -2244,27 +2369,28 @@ EOF
   return 0
 }
 
-# _aif_start_run_build <root> <unit> — R12: the loop in this terminal, in the
-# foreground with its own dashboard, its logs and summary.json in the shift's
-# directory (AIF_WORK_LOOP_LOGDIR). Then R13, from that summary.json and never
-# from the exit code alone (docs/DEFECTS.md 14.3).
+# _aif_start_run_build <root> <unit> [auto] — R12, R13, b: the build started
+# in a terminal of its own, and the shift goes on (docs/DEFECTS.md 27.1). It
+# ran here, in the foreground, and the person had no session while it built,
+# and nothing was built while a session was open — the separation in time
+# the two-terminal shift existed for, given back by its default.
 #
-# No summary.json is a loop that never started: refused because a loop
-# already runs on this checkout (the next tick sees it, `elsewhere`), or dead
-# in its preflight — the build is held. A loop that ended on two runs in a
-# row that did not build, on a stop or a drain from another terminal, or with
-# 1 or 143, holds the build too: research R13, hold, not restart — no R12;
-# while Ready holds cards, the unit "build again" (default: leave it; Enter or
-# b builds). 3 is the environment, already checked again by the loop's own
-# preflight: the shift ends 3. 130 is the person's Ctrl-C: a pause. 129, the
-# terminal: the shift's own HUP trap has run by now, or the terminal is
-# checked here.
+# The loop's own preflight first, offline but for one board check, here,
+# where the person reads it (AIF_WORK_LOOP=1: the suite probe is the loop's,
+# not this checkout's twice): what would stop the loop at its start — no
+# stations, a guide not committed, a model the profile does not map — says so
+# in this terminal, and holds the build, instead of in a terminal of its own
+# nobody looks at. Then the loop, `aif work --loop --until-empty --notify`,
+# its logs and summary.json in the shift's directory (AIF_WORK_LOOP_LOGDIR),
+# where _aif_start_own_settle reads how it ended. With `auto` the start is the
+# plan's — no unit, no key — and is no unit acted on for --max-units.
 _aif_start_run_build() {
-  local root="$1" u="$2" key par logdir rc=0 why="" pf taken built hold="" note tail
+  local root="$1" u="$2" auto="${3:-}" key par logdir rc=0 why="" note main
   key="$(printf '%s' "$u" | jq -r '.key')"
-  # A build that runs lets the hold go, whichever way it was asked for — the
-  # held build's own unit (R13) or b at a pause — and only how this one ends
-  # holds the next (docs/DEFECTS.md 15.8).
+  main="$(aif_main_root "$root")"
+  # A build that starts lets the hold go, whichever way it was asked for —
+  # the held build's own unit (R13) or b at a pause — and only how this one
+  # ends holds the next (docs/DEFECTS.md 15.8).
   AIF_START_BUILD_HOLD=""
   par="$(jq -r '.build.parallel // 2' "$AIF_START_FACTS" 2>/dev/null)" || par=2
   case "$par" in
@@ -2272,69 +2398,369 @@ _aif_start_run_build() {
   esac
   AIF_START_LOOPS=$((AIF_START_LOOPS + 1))
   logdir="$AIF_START_SHIFT_DIR/loop-$AIF_START_LOOPS"
-  pf=()
-  [ -z "${AIF_START_PROFILE_ARG:-}" ] || pf=(--profile "$AIF_START_PROFILE_ARG")
-  _aif_start_say "build" "aif work --loop --parallel $par — in this terminal; its logs in ${logdir#"$(aif_main_root "$root")"/}"
-  _aif_start_ctrl_c signal
-  _aif_start_watch_on
-  set -m
-  AIF_WORK_LOOP_LOGDIR="$logdir" "$AIF_ROOT/bin/aif" work --loop --parallel "$par" ${pf[@]+"${pf[@]}"} || rc=$?
-  set +m
-  _aif_start_watch_off
-  # A loop killed -9 never ran its own trap: its dashboard's alternate screen
-  # and hidden cursor, and its key read's -icanon -echo, stay for the rest of
-  # the shift. The 137 reset covers both (\e[?25h\e[?1049l, the saved stty).
-  [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
-  _aif_start_ctrl_c key
-  if [ ! -f "$logdir/summary.json" ]; then
-    if [ "$rc" -eq 3 ] && [ -d "$(aif_loop_lock_dir "$root")" ] &&
-      _aif_work_lock_live_as "$(aif_loop_lock_dir "$root")" '*aif\ work*--loop*'; then
-      note="a loop already runs on this checkout — the shift waits for it"
-    elif [ "$rc" -eq 130 ]; then
-      note="the loop was stopped before it started (130)"
-    else
-      note="the loop did not start (rc $rc)"
-      if [ -f "$logdir/loop.log" ]; then
-        tail="$(tail -n 5 "$logdir/loop.log" 2>/dev/null)" || tail=""
-        [ -z "$tail" ] || _aif_start_out "$tail"
+  mkdir -p "$logdir" 2>/dev/null || true
+  (AIF_WORK_LOOP=1 _aif_work_preflight "$root" "$AIF_START_PROFILE") >"$logdir/preflight.log" 2>&1 </dev/null || rc=$?
+  if [ "$rc" -eq 0 ] && ! _aif_start_spawn "$root" "$logdir" "$par"; then
+    rc=1
+    why="$AIF_START_SPAWN_WHY"
+  elif [ "$rc" -ne 0 ]; then
+    why="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$logdir/preflight.log" 2>/dev/null | sed -n 's/^error: //p' | sed -n 1p)" || why=""
+    _aif_start_out "$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$logdir/preflight.log" 2>/dev/null | tail -n 5)"
+    why="its preflight failed (rc $rc)${why:+: $why}"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    note="the build did not start — $why"
+    AIF_START_BUILD_HOLD="$note"
+    _aif_start_done "$key" "$note"
+    _aif_start_record "$u" "$note" "$rc"
+    _aif_start_say "build" "$note"
+    _aif_start_say "build" "held — no new build on its own; build again is offered at the control point (Enter or b)"
+    [ -n "$auto" ] || _aif_start_acted
+    return 0
+  fi
+  AIF_START_OWN_KEY="$key"
+  AIF_START_OWN_UNIT="$u"
+  note="started $(_aif_start_where "$AIF_START_OWN_HOW") — $AIF_START_OWN_LOOK; it ends once Ready, Backlog and In Progress are empty"
+  _aif_start_done "$key" "$note"
+  _aif_start_record "$u" "$note"
+  _aif_start_say "build" "aif work --loop --until-empty --parallel $par, $(_aif_start_where "$AIF_START_OWN_HOW") — $AIF_START_OWN_LOOK$([ "$AIF_START_OWN_HOW" = background ] || printf ' (or w here)') · its logs in ${logdir#"$main"/}"
+  [ -n "$auto" ] || _aif_start_acted
+  return 0
+}
+
+# _aif_start_where <how> — the words for where the build runs.
+_aif_start_where() {
+  case "$1" in
+    tmux) printf 'in a tmux window of its own' ;;
+    screen) printf 'in a screen session of its own' ;;
+    background) printf 'in the background, with no terminal' ;;
+    *) printf 'in a terminal of its own' ;;
+  esac
+}
+
+# _aif_start_terminal — where the shift starts its build: AIF_START_TERMINAL,
+# else TERMINAL in .aif/start.local — tmux, screen or background, as the
+# start resolved it (AIF_START_TERMINAL_SET) — else tmux when the shift
+# itself runs inside tmux, screen where it is installed, and the background
+# otherwise. A choice this machine cannot make — tmux outside a tmux session,
+# a screen not installed — is the next one along.
+_aif_start_terminal() {
+  case "${AIF_START_TERMINAL_SET:-}" in
+    background)
+      printf 'background'
+      return 0
+      ;;
+    screen)
+      if aif_have screen; then
+        printf 'screen'
+        return 0
       fi
-      hold="$note"
+      ;;
+  esac
+  if [ "${AIF_START_TERMINAL_SET:-}" != screen ] && [ -n "${TMUX:-}" ] && aif_have tmux; then
+    printf 'tmux'
+  elif aif_have screen; then
+    printf 'screen'
+  else
+    printf 'background'
+  fi
+}
+
+# _aif_start_launcher <root> <logdir> <parallel> — the build's script, at
+# <logdir>/build.sh: the loop, and then its exit code into <logdir>/rc, where
+# the shift reads how it ended (_aif_start_own_settle). A file, not a command
+# line: tmux runs a command through its server's shell, and a path with a
+# space in it, or a profile's name, would be words there. PATH, the locale
+# and a claude configuration of the person's own are written out — a tmux
+# window has its server's environment, not the shift's; screen and the
+# background inherit the shift's whole — and never a secret, which the loop
+# reads from the store as every worker does (lib/secret.sh). A loop that
+# never started, in a terminal a person may attach to, keeps that terminal an
+# hour for what it said to be read; in the background its words are in
+# terminal.log beside it.
+_aif_start_launcher() {
+  local root="$1" dir="$2" par="$3" qd env="" prof=""
+  qd="$(aif_shq "$dir")"
+  [ -z "${LANG:-}" ] || env="${env}export LANG=$(aif_shq "$LANG")
+"
+  [ -z "${LC_ALL:-}" ] || env="${env}export LC_ALL=$(aif_shq "$LC_ALL")
+"
+  [ -z "${LC_CTYPE:-}" ] || env="${env}export LC_CTYPE=$(aif_shq "$LC_CTYPE")
+"
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || env="${env}export CLAUDE_CONFIG_DIR=$(aif_shq "$CLAUDE_CONFIG_DIR")
+"
+  [ -z "${AIF_START_PROFILE_ARG:-}" ] || prof=" --profile $(aif_shq "$AIF_START_PROFILE_ARG")"
+  cat >"$dir/build.sh" 2>/dev/null <<EOF || return 1
+#!/bin/bash
+# aif start's build, written by the shift (pid $$) on $(basename "$root"), and run once.
+printf '%s\n' "\$\$" >$qd/pid
+export PATH=$(aif_shq "$PATH")
+$env
+cd $(aif_shq "$root") || exit 70
+# Ctrl-Z at its dashboard, attached, would stop the loop with no shell to fg it.
+trap '' TSTP
+AIF_WORK_LOOP_LOGDIR=$qd AIF_WORK_LOOP_BY=$(aif_shq "aif start pid $$") $(aif_shq "$AIF_ROOT/bin/aif") work --loop --until-empty --notify --parallel $par$prof
+rc=\$?
+printf '%s\n' "\$rc" >$qd/rc.tmp && mv $qd/rc.tmp $qd/rc
+if [ ! -f $qd/summary.json ] && [ -t 1 ]; then
+  printf '\naif: the build did not start (exit %s) — what it said is above. Enter closes this terminal.\n' "\$rc"
+  read -r -t 3600 _ || true
+fi
+exit "\$rc"
+EOF
+}
+
+# _aif_start_spawn <root> <logdir> <parallel> — the build started where
+# _aif_start_terminal says, and nothing waited on: the shift goes on with the
+# person's units, and reads at every tick where the build got to
+# (_aif_start_own_settle). rc 0 started, AIF_START_OWN_* naming it · 1 not,
+# AIF_START_SPAWN_WHY saying why.
+#
+# tmux: a window of the shift's own session, not selected (-d), its id kept
+# for `w`. screen: a detached session named for the checkout, the hour and
+# the shift's count of builds, attached from any terminal with screen -x
+# <name> — Ctrl-A d leaves it running — and -U in a UTF-8 locale, for the
+# dashboard's box drawing. The background: a session of its own with no
+# terminal (perl's setsid — macOS ships no setsid(1)), its output in
+# terminal.log; with no perl, a process group of its own under `set -m`. Each
+# outlives the shift, its terminal and a Ctrl-C at its control point, which
+# is a key there and never a signal (docs/DEFECTS.md 16.16): the build is the
+# loop's, as it is in a second terminal a person opened (docs/FINDINGS.md
+# #23, #24, #28).
+_aif_start_spawn() {
+  local root="$1" dir="$2" par="$3" how name="" look out rc=0 enc=""
+  AIF_START_SPAWN_WHY=""
+  how="$(_aif_start_terminal)"
+  if ! _aif_start_launcher "$root" "$dir" "$par"; then
+    AIF_START_SPAWN_WHY="could not write $dir/build.sh"
+    return 1
+  fi
+  case "$how" in
+    tmux)
+      out="$(tmux new-window -d -P -F '#{window_id}' -n "aif build" "/bin/bash $(aif_shq "$dir/build.sh")" 2>&1 </dev/null)" || rc=$?
+      name="$(printf '%s\n' "$out" | sed -n 1p)"
+      if [ "$rc" -ne 0 ] || [ -z "$name" ]; then
+        AIF_START_SPAWN_WHY="tmux would not open its window (rc $rc)${name:+: $name}"
+        return 1
+      fi
+      look="tmux select-window -t $name"
+      ;;
+    screen)
+      name="aif-$(printf '%s' "$(basename "$root")" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-24)-$(date '+%H%M%S')-$AIF_START_LOOPS"
+      case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+        *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) enc=-U ;;
+      esac
+      out="$(screen ${enc:+"$enc"} -dmS "$name" /bin/bash "$dir/build.sh" 2>&1 </dev/null)" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        AIF_START_SPAWN_WHY="screen would not start its session (rc $rc)$(printf '%s' "$out" | sed -n '1s/^/: /p')"
+        return 1
+      fi
+      look="screen -x $name"
+      ;;
+    *)
+      how=background
+      if aif_have perl; then
+        perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' /bin/bash "$dir/build.sh" \
+          </dev/null >"$dir/terminal.log" 2>&1 &
+      else
+        set -m
+        /bin/bash "$dir/build.sh" </dev/null >"$dir/terminal.log" 2>&1 &
+        set +m
+      fi
+      name=$!
+      look="tail -f $(aif_shq "$dir/loop.log")"
+      ;;
+  esac
+  AIF_START_OWN_DIR="$dir"
+  AIF_START_OWN_HOW="$how"
+  AIF_START_OWN_NAME="$name"
+  AIF_START_OWN_LOOK="$look"
+  AIF_START_OWN_AT="$(date +%s)"
+  AIF_START_OWN_STATE=starting
+  AIF_START_OWN_PID=""
+  return 0
+}
+
+# _aif_start_own_alive — rc 0 while the terminal the build was started in is
+# still there: its tmux window, its screen session, its process in the
+# background. Read off what the listing says, never off its exit code, and
+# through no pipe: `screen -ls` exits 1 whatever it lists, and under pipefail
+# a pipe into `grep -q` is the lister's code — or a SIGPIPE's, grep gone at
+# its first match. Through one, a build in a screen session still before its
+# lock was a terminal gone, and held (docs/FINDINGS.md #54).
+_aif_start_own_alive() {
+  local out="" nl='
+'
+  case "${AIF_START_OWN_HOW:-}" in
+    tmux)
+      out="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null </dev/null)" || return 1
+      case "$nl$out$nl" in
+        *"$nl$AIF_START_OWN_NAME$nl"*) return 0 ;;
+      esac
+      ;;
+    screen)
+      out="$(screen -ls 2>/dev/null </dev/null)" || :
+      case "$out" in
+        *[0-9]."$AIF_START_OWN_NAME"[[:space:]]*) return 0 ;;
+      esac
+      ;;
+    background) _aif_work_pid_alive "$AIF_START_OWN_NAME" && return 0 ;;
+  esac
+  return 1
+}
+
+# _aif_start_own_settle <root> — at every tick, before its facts: where the
+# build this shift started has got to (docs/DEFECTS.md 27.1). Running: the
+# loop lock names its log directory, or — still in its preflight, before it
+# names one — says this shift started it. Ended: its exit code in its log
+# directory (the launcher's, _aif_start_launcher), its summary.json, or the
+# lock gone from under a loop that had taken it.
+#
+# An end is read once, from summary.json and never from the exit code alone
+# (docs/DEFECTS.md 14.3). Nothing left — Ready, Backlog and In Progress empty,
+# the end the build is for — lets the build go: the next card in Ready
+# starts another (R12). Every other end holds it — two runs in a row that did
+# not build, a stop or a drain, q or Ctrl-C at its dashboard, a closed
+# terminal, the environment — as R13, build again on a key, saying why; the
+# shift itself goes on, for the person's half does not need the build. A
+# loop that never started holds it with what it said: terminal.log in the
+# background, or its terminal, kept open for an hour. One refused because a
+# loop already runs here is no hold: the shift goes on beside that one. And
+# one whose terminal is gone before it took its lock, or that has not taken
+# it in AIF_START_LOOP_START_MIN (20) minutes, is lost, and holds it too.
+_aif_start_own_settle() {
+  local root="$1" dir="${AIF_START_OWN_DIR:-}" lock live=0 odir ldir by rc="" why="" taken built empty
+  local note hold="" mins tail other=""
+  [ -n "$dir" ] || return 0
+  case "${AIF_START_OWN_STATE:-}" in
+    starting | live) ;;
+    *) return 0 ;;
+  esac
+  lock="$(aif_loop_lock_dir "$root")" || return 0
+  odir="$(cd "$dir" 2>/dev/null && pwd -P)" || odir="$dir"
+  # Every read of the lock guarded: the loop removes it as it ends, between
+  # any two of them, and jq's 2 on a file gone would end the shift through
+  # errexit — after a drain it did, a time in a few.
+  if [ -d "$lock" ] && _aif_work_lock_live_as "$lock" '*aif\ work*--loop*'; then
+    ldir="$(jq -r '.logdir // empty' "$lock/owner.json" 2>/dev/null)" || ldir=""
+    by="$(jq -r '.by // empty' "$lock/owner.json" 2>/dev/null)" || by=""
+    if [ "$ldir" = "$odir" ] || { [ -z "$ldir" ] && [ "$by" = "aif start pid $$" ]; }; then
+      live=1
+    else
+      other="$(_aif_work_lock_pid "$lock")" || other=""
+    fi
+  fi
+  if [ "$live" -eq 1 ]; then
+    if [ "$AIF_START_OWN_STATE" != live ]; then
+      AIF_START_OWN_STATE=live
+      AIF_START_OWN_PID="$(_aif_work_lock_pid "$lock")" || AIF_START_OWN_PID=""
+      _aif_start_log "the build runs (pid $AIF_START_OWN_PID) — $AIF_START_OWN_LOOK"
+    fi
+    return 0
+  fi
+  [ ! -f "$dir/rc" ] || rc="$(sed -n 1p "$dir/rc" 2>/dev/null)" || rc=""
+  case "$rc" in
+    *[!0-9]*) rc="" ;;
+  esac
+  # Its summary written and its exit code a breath behind it: the launcher
+  # writes it as the loop exits. Read on the next look, while that launcher
+  # lives — a look later, the end with the code it ended with.
+  if [ -z "$rc" ] && [ -f "$dir/summary.json" ] && _aif_start_own_alive; then
+    return 0
+  fi
+  if [ -z "$rc" ] && [ ! -f "$dir/summary.json" ] && [ "$AIF_START_OWN_STATE" = starting ]; then
+    mins="$(_aif_start_number "${AIF_START_LOOP_START_MIN:-}" 20)"
+    if _aif_start_own_alive && [ $(($(date +%s) - ${AIF_START_OWN_AT:-0})) -lt $((mins * 60)) ]; then
+      return 0
+    fi
+    if _aif_start_own_alive; then
+      hold="the build did not take its lock in $mins min — $AIF_START_OWN_LOOK says why"
+    else
+      hold="the build's terminal ended before the loop took its lock ($AIF_START_OWN_HOW)"
+    fi
+    note="$hold"
+  elif [ ! -f "$dir/summary.json" ]; then
+    if [ "${rc:-}" = 3 ] && [ -n "$other" ]; then
+      note="a loop already runs on this checkout (pid $other) — the shift goes on beside it"
+    elif [ -z "$rc" ]; then
+      hold="the build ended without a word — its terminal is gone ($AIF_START_OWN_HOW), and it wrote no summary"
+      note="$hold"
+    else
+      if [ "$AIF_START_OWN_HOW" = background ] && [ -f "$dir/terminal.log" ]; then
+        tail="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$dir/terminal.log" 2>/dev/null | tail -n 5)" || tail=""
+        [ -z "$tail" ] || _aif_start_out "$tail"
+        why="$(printf '%s\n' "$tail" | sed -n 's/^error: //p' | tail -n 1)" || why=""
+        hold="the build did not start (rc $rc)${why:+: $why}"
+      else
+        hold="the build did not start (rc $rc) — what it said is in its terminal: $AIF_START_OWN_LOOK (Enter there closes it)"
+      fi
+      note="$hold"
     fi
   else
-    why="$(jq -r '.why // empty' "$logdir/summary.json" 2>/dev/null)" || why=""
-    taken="$(jq -r '.taken // 0' "$logdir/summary.json" 2>/dev/null)" || taken=0
-    built="$(jq -r '.built // 0' "$logdir/summary.json" 2>/dev/null)" || built=0
-    note="the loop ended rc $rc — taken $taken, built $built${why:+; $why}"
-    case "$why" in
-      "two runs in a row"* | "stopped by"* | "drained by"*) hold="$why" ;;
-    esac
-    if [ -z "$hold" ] && { [ "$rc" -eq 1 ] || [ "$rc" -eq 143 ]; }; then
-      hold="${why:-the loop ended rc $rc}"
-    fi
+    why="$(jq -r '.why // empty' "$dir/summary.json" 2>/dev/null)" || why=""
+    taken="$(jq -r '.taken // 0' "$dir/summary.json" 2>/dev/null)" || taken=0
+    built="$(jq -r '.built // 0' "$dir/summary.json" 2>/dev/null)" || built=0
+    empty="$(jq -r '.empty // false' "$dir/summary.json" 2>/dev/null)" || empty=false
+    note="the build ended${rc:+ rc $rc} — taken $taken, built $built${why:+; $why}"
+    [ "$empty" = true ] || hold="${why:-the build ended${rc:+ rc $rc}}"
   fi
-  _aif_start_done "$key" "$note"
-  _aif_start_record "$u" "$note" "$rc"
+  AIF_START_OWN_STATE=ended
+  _aif_start_done "${AIF_START_OWN_KEY:-R12}" "$note"
+  [ -z "${AIF_START_OWN_UNIT:-}" ] || _aif_start_record "$AIF_START_OWN_UNIT" "$note" "$rc"
   _aif_start_say "build" "$note"
-  if [ "$rc" -eq 3 ] && [ -f "$logdir/summary.json" ]; then
-    _aif_start_finish 3 "the build ended 3 — the environment${why:+: $why}"
-  fi
   if [ -n "$hold" ]; then
     AIF_START_BUILD_HOLD="$hold"
     _aif_start_say "build" "held — no new build on its own; build again is offered at the control point (Enter or b)"
   fi
-  _aif_start_acted
-  case "$rc" in
-    130) _aif_start_pause "the loop was stopped (130)" ;;
-    129)
-      _aif_start_tty_ok || _aif_start_gone
-      _aif_start_pause "the loop ended by a hang-up (129)"
+  return 0
+}
+
+# _aif_start_look — w: the build this shift started, shown. A screen session
+# attached in this terminal under `set -m`, as a session is opened — the
+# person's keys are its own, the dashboard's among them (q there takes no new
+# card), and Ctrl-A d detaches, back to the shift, the build going on; a tmux
+# window selected, the shift's own one key away (Ctrl-B l); in the
+# background, the last lines of its log and the command that follows it.
+# Under the session seam a harness has no terminal to hand screen, and keeps
+# its own descriptors, as the opener does (lib/runner_claude.sh).
+_aif_start_look() {
+  local rc=0 tty
+  case "${AIF_START_OWN_HOW:-}" in
+    screen)
+      _aif_start_say "build" "$AIF_START_OWN_LOOK — Ctrl-A d comes back to the shift; the build goes on"
+      tty="$(aif_tty_path)"
+      _aif_start_ctrl_c signal
+      _aif_start_watch_on
+      set -m
+      if [ -n "${AIF_START_SESSION_CMD:-}" ]; then
+        screen -x "$AIF_START_OWN_NAME" || rc=$?
+      else
+        # shellcheck disable=SC2094  # a terminal: read and written, as a session's is
+        screen -x "$AIF_START_OWN_NAME" <"$tty" >"$tty" 2>"$tty" || rc=$?
+      fi
+      set +m
+      _aif_start_watch_off
+      [ "$rc" -le 128 ] || _aif_start_tty_restore "$rc"
+      _aif_start_ctrl_c key
+      [ "$rc" -eq 0 ] || _aif_start_say "build" "$AIF_START_OWN_LOOK ended $rc — its session may be gone; the next look says how the build ended"
+      ;;
+    tmux)
+      if tmux select-window -t "$AIF_START_OWN_NAME" >/dev/null 2>&1 </dev/null; then
+        _aif_start_say "build" "its window is selected — Ctrl-B l comes back to the shift's"
+      else
+        _aif_start_say "build" "its tmux window ($AIF_START_OWN_NAME) is gone — the next look says how the build ended"
+      fi
+      ;;
+    *)
+      _aif_start_out "$(tail -n 12 "$AIF_START_OWN_DIR/loop.log" 2>/dev/null)"
+      _aif_start_say "build" "in the background, with no terminal — $AIF_START_OWN_LOOK follows it"
       ;;
   esac
   return 0
 }
 
 # _aif_start_build_now <root> — `b`: the build held by R13 is let go, and the
-# loop runs now on what Ready holds.
+# loop starts now on what Ready holds, in a terminal of its own.
 _aif_start_build_now() {
   local root="$1" ids keys u
   AIF_START_BUILD_HOLD=""
@@ -2372,6 +2798,7 @@ _aif_start_plan_text() {
     (pad("board") + (.counts | cfmt)),
     (if $dry == 1 then (.moves | to_entries[] | (if .key == 0 then pad("would move") else pad("") end)
        + (.value | "\(.ticket // "the sweep") → \(.to) — \(.text) (\(.rule))")) else empty end),
+    (if $dry == 1 and .start != null then pad("would start") + " " + .start.text + " (\(.start.rule))" else empty end),
     (.units | to_entries[] | (if .key == 0 then pad("units") else pad("") end) + "\(.key + 1) \(.value.text)"),
     (.lines | to_entries[] | (if .key == 0 then pad("left") else pad("") end) + (.value | lfmt)),
     (if $dry == 1 and .wait != null then pad("wait") + .wait.why else empty end),
@@ -2394,16 +2821,25 @@ _aif_start_print_plan() {
 # _aif_start_header <facts> — the shift in one line: where, which board and
 # profile, how many at once, each role's model, who builds.
 _aif_start_header() {
-  local f="$1" kind par mode pid idle build
+  local f="$1" kind par mode pid idle build ours term
   kind="$(jq -r '.board_kind // "local"' "$f")"
   par="$(jq -r '.build.parallel // 2' "$f")"
-  mode="$(jq -r '.build.mode // "here"' "$f")"
+  mode="$(jq -r '.build.mode // "own"' "$f")"
   pid="$(jq -r '.build.loop.pid // "?"' "$f")"
   idle="$(jq -r 'if .build.loop.idle == true then ", idle" else "" end' "$f")"
+  ours="$(jq -r '.build.loop.ours // false' "$f")"
+  term="$(jq -r '.build.terminal // empty' "$f")"
   case "$mode" in
-    elsewhere) build="the loop in another terminal (pid $pid$idle)" ;;
+    elsewhere)
+      if [ "$ours" = true ]; then
+        build="the build this shift started (pid $pid) — ${AIF_START_OWN_LOOK:-its own terminal}"
+      else
+        build="the loop in another terminal (pid $pid$idle)"
+      fi
+      ;;
+    starting) build="the build this shift started, starting — ${AIF_START_OWN_LOOK:-its own terminal}" ;;
     none) build="no loop — aif work --loop --idle in another terminal" ;;
-    *) build="here — the loop runs in this terminal when Ready holds cards" ;;
+    *) build="$(_aif_start_where "$term"), started whenever Ready holds cards" ;;
   esac
   printf 'shift · %s · %s · profile %s · parallel %s · models: review %s · ba %s · po %s · pjm %s · build: %s' \
     "$(basename "$AIF_START_ROOT")" "$kind" "$AIF_START_PROFILE" "$par" \
@@ -2491,6 +2927,9 @@ _aif_start_summary() {
   # Whatever a print to a terminal that is gone left in the buffer, out of
   # the way of the captures below (_aif_start_flush).
   _aif_start_flush
+  # The build this shift started, as it is now: one that ended since the
+  # last tick is said as ended, and not as running on (docs/DEFECTS.md 27.1).
+  _aif_start_own_settle "${AIF_START_ROOT:-.}" || true
   p="$(jq -c '.' "$dir/plan.json" 2>/dev/null)" || p=""
   [ -n "$p" ] || p='{}'
   b="$(jq -c '.build // {}' "$dir/facts.json" 2>/dev/null)" || b=""
@@ -2500,13 +2939,18 @@ _aif_start_summary() {
   # A session open when the shift ended (AIF_START_OPEN, _aif_start_run_session)
   # is one of its units, done: its record, and its `claude --resume <uuid>`.
   # A loop in another terminal is not the shift's to end: it runs on, and the
-  # summary says so with the command that ends it (docs/DEFECTS.md 11.1).
+  # summary says so with the command that ends it (docs/DEFECTS.md 11.1). Nor
+  # is the build the shift started: it runs on until the board has nothing
+  # left for it, said with where to look at it and what ends it sooner
+  # (docs/DEFECTS.md 27.1).
   # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
   json="$(jq -n --argjson rc "$rc" --arg why "$why" --argjson hup "${AIF_START_HUP:-0}" \
     --arg started "${AIF_START_STARTED_AT:-}" --arg ended "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --argjson minutes "$mins" --argjson before "${AIF_START_COUNTS0:-null}" --argjson p "$p" --argjson b "$b" \
     --arg units "${AIF_START_UNITS:-}" --arg open "${AIF_START_OPEN:-}" \
     --arg moves "${AIF_START_MOVES:-}" --arg donekeys "${AIF_START_DONE:-}" --arg kept "$kept" \
+    --arg own "${AIF_START_OWN_STATE:-}" --arg ownhow "${AIF_START_OWN_HOW:-}" --arg ownlook "${AIF_START_OWN_LOOK:-}" \
+    --arg ownpid "${AIF_START_OWN_PID:-}" --arg owndir "${AIF_START_OWN_DIR:-}" \
     --arg cfg "${CLAUDE_CONFIG_DIR:-}" --arg q "'" '
     ([ $kept | split("\n")[] | select(length > 0) | split("\t") | { key: .[0], value: .[1] } ] | from_entries) as $kf
     # A path quoted as aif_shq quotes it, so that the line pastes whole.
@@ -2514,11 +2958,13 @@ _aif_start_summary() {
       def ucmd: if .kind == "session" then "claude \($q)\(.prompt)\($q)"
               elif .kind == "land" then "aif land \(.ticket)"
               elif .kind == "demo" then "claude \($q)/aif-pjm \(.ticket)\($q)"
-              elif .kind == "build" then "aif work --loop"
+              elif .kind == "build" then "aif work --loop --until-empty"
+              elif .kind == "pull" then ([ (.tickets // [])[] | "aif board move \(.) ready" ] | join(" && "))
               elif .kind == "requeue" then "aif work --status \(.ticket)"
               elif .ticket != null and .to != null then "aif board move \(.ticket) \(.to)"
               else null end;
-    (($units + "\n" + $open) | split("\n") | map(select(length > 0) | fromjson)) as $u
+      ($own == "starting" or $own == "live") as $ownlive
+    | (($units + "\n" + $open) | split("\n") | map(select(length > 0) | fromjson)) as $u
     | ([ $donekeys | split("\n")[] | select(length > 0) | split("\t")[0] ]
        + [ $open | select(length > 0) | fromjson | .key ]) as $dk
     | def fresh: .key as $k | all($dk[]; . != $k);
@@ -2535,13 +2981,23 @@ _aif_start_summary() {
                                  elif $kf[.ticket] != null and .from == .to then "aif board comment \(.ticket) \($kf[.ticket] | shq)"
                                  elif $kf[.ticket] != null then "aif board comment \(.ticket) \($kf[.ticket] | shq) && aif board move \(.ticket) \(.to)"
                                  else "aif work --status \(.ticket)" end) } ]
+               + [ ($p.start // empty) | select(fresh) | { rule, ticket, file, column, text, command: ucmd } ]
                + [ ($p.units // [])[] | select(fresh) | { rule, ticket, file, column, text, command: ucmd } ]
-               + (if $b.mode == "elsewhere" and $b.loop.live == true
+               + (if $ownlive
+                  then [ { rule: "R12", ticket: null, file: null, column: null,
+                           text: ("the build this shift started" + (if $ownpid == "" then "" else " (pid \($ownpid))" end)
+                                  + (if $own == "starting" then ", still starting," else "" end)
+                                  + " runs on after the shift, until Ready, Backlog and In Progress are empty"
+                                  + (if $ownlook == "" then "" else " — \($ownlook) to look at it" end)),
+                           command: "aif work --loop --drain" } ]
+                  elif $b.mode == "elsewhere" and $b.loop.live == true and $b.loop.ours != true
                   then [ { rule: "R12", ticket: null, file: null, column: null,
                            text: ("the loop in another terminal" + (if $b.loop.pid == null then "" else " (pid \($b.loop.pid))" end)
                                   + " runs on after the shift"),
                            command: "aif work --loop --drain" } ]
                   else [] end)),
+        build: (if $owndir == "" then null
+                else { state: $own, how: $ownhow, look: (if $ownlook == "" then null else $ownlook end), logdir: $owndir } end),
         sessions: [ $u[] | select(.session_id != null)
                     | { name, session_id,
                         resume: ((if $cfg == "" then "" else "CLAUDE_CONFIG_DIR=\($cfg) " end) + "claude --resume \(.session_id)") } ],
@@ -2596,11 +3052,11 @@ _aif_start_finish() {
 # _aif_start_signal <EXIT|INT|TERM|HUP> — the shift's handler, armed once the
 # start has passed (_aif_start_early before it).
 #
-# INT and TERM arrive between units — inside a session, a land or the loop
-# the child has the terminal, and the person's Ctrl-C is the child's. Between
-# them a Ctrl-C is no signal but a key, which _aif_start_key hands here as INT
-# (_aif_start_ctrl_c); an INT that is a signal is a kill's. The
-# key's reader first, on every way here — it would read on for up to a
+# INT and TERM arrive between units — inside a session, a land or a look at
+# the build the child has the terminal, and the person's Ctrl-C is the
+# child's. Between them a Ctrl-C is no signal but a key, which _aif_start_key
+# hands here as INT (_aif_start_ctrl_c); an INT that is a signal is a kill's.
+# The key's reader first, on every way here — it would read on for up to a
 # second after the shift, and take a key typed at the prompt — then the
 # terminal: a reader stopped in the middle of its read leaves it -icanon
 # -echo (#28, aif_key_wait). Then the summary, the lock, 130 or 143. HUP:
@@ -2661,9 +3117,10 @@ _aif_start_signal() {
 # ---------------------------------------------------------------- the tick
 
 # _aif_start_shift <root> — tick after tick until the plan, a key or a signal
-# ends it: the facts, the plan; the moves, if any, and look again; else the
-# end, if the plan says so; else the first unit at the control point; else
-# the wait.
+# ends it: where the build it started got to; the facts, the plan; the moves,
+# if any, and look again; the build started, if the plan says so, and look
+# again; else the end, if the plan says so; else the first unit at the
+# control point; else the wait.
 _aif_start_shift() {
   local root="$1" dir="$AIF_START_SHIFT_DIR" rc first=1 why
   AIF_START_FACTS="$dir/facts.json"
@@ -2672,6 +3129,7 @@ _aif_start_shift() {
       AIF_START_FAILED_MOVE=0
       _aif_start_wait "a move did not go through — the board is looked at again"
     fi
+    _aif_start_own_settle "$root"
     rc=0
     _aif_start_facts "$root" >"$dir/facts.json.tmp" || rc=$?
     case "$rc" in
@@ -2712,6 +3170,12 @@ _aif_start_shift() {
     fi
     if [ "$(jq '.moves | length' "$dir/plan.json")" -gt 0 ]; then
       _aif_start_moves "$root" "$dir/plan.json"
+      continue
+    fi
+    # The build, without a key, in a terminal of its own (R12): the next
+    # tick goes on with the person's units beside it.
+    if jq -e '.start != null' "$dir/plan.json" >/dev/null 2>&1; then
+      _aif_start_run_build "$root" "$(jq -c '.start' "$dir/plan.json")" auto
       continue
     fi
     if jq -e '."end" != null' "$dir/plan.json" >/dev/null 2>&1; then
@@ -2931,6 +3395,27 @@ aif_cmd_start() {
   AIF_START_DIGEST=""
   AIF_START_FACTS=""
   AIF_START_IN_WAIT=0
+  # The build this shift started last (_aif_start_spawn, _aif_start_own_settle).
+  AIF_START_OWN_DIR=""
+  AIF_START_OWN_HOW=""
+  AIF_START_OWN_NAME=""
+  AIF_START_OWN_LOOK=""
+  AIF_START_OWN_AT=0
+  AIF_START_OWN_STATE=""
+  AIF_START_OWN_PID=""
+  AIF_START_OWN_KEY=""
+  AIF_START_OWN_UNIT=""
+  AIF_START_SPAWN_WHY=""
+  # Where it runs: the environment's word, else the file's, else chosen
+  # where the build starts (_aif_start_terminal).
+  AIF_START_TERMINAL_SET="${AIF_START_TERMINAL:-$(aif_meta_get "$cfg" TERMINAL "" | tr -d '[:space:]')}"
+  case "$AIF_START_TERMINAL_SET" in
+    '' | tmux | screen | background) ;;
+    *)
+      aif_warn "TERMINAL=$AIF_START_TERMINAL_SET is none of tmux, screen or background — the shift chooses where the build runs"
+      AIF_START_TERMINAL_SET=""
+      ;;
+  esac
   AIF_START_T0="$(date +%s)"
   AIF_START_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   AIF_START_WAIT_S="$(_aif_start_number "${AIF_START_WAIT:-$(aif_meta_get "$cfg" WAIT "" | tr -d '[:space:]')}" 10)"
@@ -2943,7 +3428,7 @@ aif_cmd_start() {
 
   # 5. The lock, and from here a handler that releases it on every way out.
   if [ "$dry" -eq 0 ]; then
-    if [ "$no_build" -eq 1 ]; then mdl=none; else mdl=here; fi
+    if [ "$no_build" -eq 1 ]; then mdl=none; else mdl=own; fi
     _aif_start_lock "$root" "$shiftdir" "$mdl" || exit 3
     aif_trap_arm _aif_start_early
   fi

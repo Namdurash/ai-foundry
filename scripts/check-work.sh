@@ -329,6 +329,10 @@
 #      loop's own child runs reaches no process and is answered at the next
 #      second; the second stops the run, 130, and the terminal has its Ctrl-C
 #      back
+#  106 --until-empty: an idle loop that ends, exit 0, once Ready, Backlog and
+#      In Progress hold no card (a parked one aside), its summary saying so;
+#      a card waiting on another keeps it; --notify tells the desktop the
+#      end, and once the Backlog cards it could build; a drain is a stop
 #
 # And at the end, over the whole run: every write a stub station made was
 # asked of the project's guard first, as a real station's Write is — none
@@ -8788,6 +8792,109 @@ eq "no stack notes and no fragment for the runner: said, both remedies named, no
   "$rc,$(grep -c '^- no runner fragment is installed for vitest (.aif/stacks/vitest.md), and the project has no .aif/stack.md of its own — aif init installs the fragments the set ships, aif setup writes the project.s own' $G),$(grep -c 'all exist' "$OUT/guide104.out")" "0,1,1"
 }
 setup_guide_scenario
+cd "$SANDBOX" || exit 1
+
+# ====== 106. a loop that ends once the board is empty, and tells the desktop =
+# docs/DEFECTS.md 27.1. `aif start` runs its build in a terminal of its own,
+# as `aif work --loop --until-empty --notify`: an idle loop — an empty Ready is
+# no end while the board may still bring it a card — that ends, exit 0, once
+# Ready, Backlog and In Progress hold no card, a parked one aside, and says so
+# on the desktop; that tells the desktop once, while Ready is empty, the
+# Backlog cards it could build, for the shift asks the person about them; and
+# that keeps waiting for a card in Backlog that waits on another, which a land
+# releases to Ready. A stop is no empty board, and is said as a stop.
+printf '\n106. --until-empty: the loop ends once the board is empty, and --notify tells the desktop\n'
+fresh_project "$SANDBOX/p106"
+cat >"$SANDBOX/notify106.sh" <<'NOTIFY'
+#!/bin/bash
+printf '%s | %s\n' "$1" "$2" >>"$NOTIFY_LOG"
+NOTIFY
+chmod +x "$SANDBOX/notify106.sh"
+export NOTIFY_LOG="$SANDBOX/notify106.log"
+: >"$NOTIFY_LOG"
+L106="$SANDBOX/p106-loop"
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L106" AIF_NOTIFY_CMD="$SANDBOX/notify106.sh" AIF_WORK_LOOP_BY="aif start pid 4242" \
+  launch "$OUT/run106a.out" --until-empty --notify --no-tui
+l106=$loop
+IDLE_PIDS="$IDLE_PIDS $l106"
+rc=0
+wait_exit "$l106" 30 || rc=$?
+eq "an empty board: the loop ends at its first look, exit 0, its summary saying why and that it was empty; the desktop told" \
+  "$rc,$(jq -r '[.taken, .empty, .why] | map(tostring) | join(",")' "$L106/summary.json" 2>/dev/null),$(grep -c '^aif · p106 | Nothing to build — Ready, Backlog and In Progress are empty\.$' "$NOTIFY_LOG")" \
+  "0,0,true,nothing left to build — Ready, Backlog and In Progress are empty,1"
+
+for t in AIF-150 AIF-151 AIF-152; do ticket_for "$t"; done
+ticket_for AIF-154 '[]' '' '["AIF-150"]'
+git add -A && git commit -qm "four for the loop that ends" >/dev/null
+"$AIF" board create tasks/AIF-150/ticket.md --column ready >/dev/null
+"$AIF" board create tasks/AIF-151/ticket.md --column backlog >/dev/null
+"$AIF" board create tasks/AIF-152/ticket.md --column backlog >/dev/null
+"$AIF" board label AIF-152 parked >/dev/null
+"$AIF" board create tasks/AIF-154/ticket.md --column backlog >/dev/null
+: >"$NOTIFY_LOG"
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L106" AIF_NOTIFY_CMD="$SANDBOX/notify106.sh" AIF_WORK_LOOP_BY="aif start pid 4242" \
+  launch "$OUT/run106b.out" --until-empty --notify --no-tui
+l106=$loop
+IDLE_PIDS="$IDLE_PIDS $l106"
+wait_col AIF-150 review 60
+wait_count "$L106/loop.log" 'aif start asks whether to take them' 1 30
+eq "…Ready built, Backlog holding cards: no end — the desktop told once which it could build: the card with no depends_on, not the parked one nor the one waiting on another; its lock says who started it and that it ends empty" \
+  "$(kill -0 "$l106" 2>/dev/null && echo alive),$(col AIF-150),$(grep -c '| Ready is empty — Backlog holds AIF-151, which could be built\. aif start asks you whether to take them\.$' "$NOTIFY_LOG"),$(jq -r '[.until_empty, .by] | map(tostring) | join(",")' .aif/state/loop/owner.json 2>/dev/null)" \
+  "alive,review,1,1,aif start pid 4242"
+"$AIF" board move AIF-151 ready >/dev/null
+wait_col AIF-151 review 60
+wait_count "$L106/loop.log" 'it ends once Ready, Backlog and In Progress are empty (now: backlog 1)' 1 30
+eq "…pulled to Ready, as the shift's y does: taken and built; the card waiting on another keeps it waiting, the parked one does not count, and nothing more to tell" \
+  "$(kill -0 "$l106" 2>/dev/null && echo alive),$(col AIF-151),$(grep -c 'could be built' "$NOTIFY_LOG")" "alive,review,1"
+"$AIF" board move AIF-154 ready >/dev/null
+rc=0
+wait_exit "$l106" 90 || rc=$?
+eq "…the waiting card released to Ready, as a land does: taken, built — only the parked card left, the end: exit 0, empty, the desktop told every ticket was built" \
+  "$rc,$(col AIF-154),$(jq -r '[.taken, .built, .empty] | map(tostring) | join(",")' "$L106/summary.json" 2>/dev/null),$(grep -c '| Every ticket is built — 3 went to Review; nothing is left to work on in Ready, Backlog or In Progress\.$' "$NOTIFY_LOG")" \
+  "0,review,3,3,true,1"
+
+ticket_for AIF-160 '[]' '' '["AIF-999"]'
+git add -A && git commit -qm "one waiting on a card that is not there" >/dev/null
+"$AIF" board create tasks/AIF-160/ticket.md --column backlog >/dev/null
+: >"$NOTIFY_LOG"
+L106c="$SANDBOX/p106-loop-c"
+AIF_WORK_LOOP_POLL=1 AIF_WORK_LOOP_LOGDIR="$L106c" AIF_NOTIFY_CMD="$SANDBOX/notify106.sh" \
+  launch "$OUT/run106c.out" --until-empty --notify --no-tui
+l106=$loop
+IDLE_PIDS="$IDLE_PIDS $l106"
+wait_count "$L106c/loop.log" 'it ends once Ready, Backlog and In Progress are empty (now: backlog 1)' 1 30
+"$AIF" work --loop --drain >"$OUT/run106c-drain.out" 2>&1
+rc=0
+wait_exit "$l106" 30 || rc=$?
+eq "a card waiting on one that never comes keeps it idle, said so; a drain ends it — not empty, and the desktop told it ended, and why" \
+  "$rc,$(jq -r '.empty' "$L106c/summary.json" 2>/dev/null),$(grep -c '| The build ended — drained by .* (aif work --loop --drain) — no new card taken (built 0 of 0)\.$' "$NOTIFY_LOG")" \
+  "0,false,1"
+
+rc=0
+"$AIF" work --until-empty >"$OUT/run106r.out" 2>&1 || rc=$?
+rc2=0
+"$AIF" work AIF-150 --notify >"$OUT/run106r2.out" 2>&1 || rc2=$?
+eq "--until-empty and --notify mean something with --loop only" \
+  "$rc,$(grep -c -- '--until-empty only means something with --loop' "$OUT/run106r.out"),$rc2,$(grep -c -- '--notify only means something with --loop' "$OUT/run106r2.out")" "1,1,1,1"
+
+# docs/DEFECTS.md 27.2. The loop's probe copies the checkout it starts in,
+# and the shift that started it ticks there: its facts.json.tmp renamed under
+# the copy stopped it — the probe failed, the build never started. A copy of
+# the tree, the gates' and the worker's, leaves aif's own run directories out
+# — a shift's, a loop's — and keeps .aif/tmp itself, and the gates' cache in it.
+mkdir -p .aif/tmp/shift-1/loop-1 .aif/tmp/loop-2 .aif/tmp/base
+printf 'x\n' >.aif/tmp/shift-1/facts.json.tmp
+printf 'x\n' >.aif/tmp/shift-1/loop-1/AIF-150.log
+printf 'x\n' >.aif/tmp/loop-2/AIF-151.log
+printf 'kept\n' >.aif/tmp/base/k106
+c106="$(/bin/bash -c '. .aif/gates/_lib.sh; aif_g_scratch_at "$PWD" ""' 2>"$OUT/c106.err")" || c106=""
+mkdir -p "$OUT/c106w"
+/bin/bash -c '. "$1/lib/common.sh"; . "$1/lib/paths.sh"; . "$1/lib/cmd_work.sh"; _aif_work_copy_at "$PWD" "$(git rev-parse HEAD)" "$2"' _ "$ROOT" "$OUT/c106w" >/dev/null 2>&1
+eq "a copy of the tree, the gates' and the worker's: the runs' directories of a shift and of a loop left out, .aif/tmp and the gates' cache in it kept" \
+  "$([ -n "$c106" ] && [ -d "$c106/.aif/tmp" ] && echo tmp),$({ [ -e "$c106/.aif/tmp/shift-1" ] || [ -e "$c106/.aif/tmp/loop-2" ]; } && echo runs || echo none),$(cat "$c106/.aif/tmp/base/k106" 2>/dev/null),$({ [ -e "$OUT/c106w/.aif/tmp/shift-1" ] || [ -e "$OUT/c106w/.aif/tmp/loop-2" ]; } && echo runs || echo none),$(cat "$OUT/c106w/.aif/tmp/base/k106" 2>/dev/null)" \
+  "tmp,none,kept,none,kept"
+[ -z "$c106" ] || rm -rf "${c106:?}"
+rm -rf "$OUT/c106w" .aif/tmp/shift-1 .aif/tmp/loop-2 .aif/tmp/base/k106
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

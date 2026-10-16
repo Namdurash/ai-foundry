@@ -900,12 +900,23 @@ _aif_g_link_modules() {
 # skipped — entered entry by entry, .aif/worktrees and each of <left> left
 # behind, everything else `cp -R`, once. rc 1 with the reason on stderr, the
 # copy cut short.
+#
+# And the directories of aif's own runs, .aif/tmp/shift-* and .aif/tmp/loop-*,
+# left behind too: a shift and a loop write and rename their files there every
+# second they run, and a copy made beside them — the loop's probe, started
+# by the shift, in the checkout the shift ticks in — met a file gone between
+# its list and its read, and stopped: `cp: …/facts.json.tmp: No such file or
+# directory`, the probe failed, the build never started (docs/DEFECTS.md 27.2).
+# Nothing a suite reads is there; .aif/tmp/base, the gates' own, is copied.
 _aif_g_copy_into() {
   local src="$1" dst="$2" rel="$3" links="$4" walk="$5" left="${6:-}" p r d err
   for p in "$src${rel:+/$rel}"/* "$src${rel:+/$rel}"/.[!.]* "$src${rel:+/$rel}"/..?*; do
     [ -e "$p" ] || [ -L "$p" ] || continue
     r="${p#"$src"/}"
     [ "$r" != ".aif/worktrees" ] || continue
+    case "$r" in
+      .aif/tmp/shift-* | .aif/tmp/loop-*) continue ;;
+    esac
     [ -z "$left" ] || ! _aif_g_listed "$r" "$left" || continue
     if _aif_g_listed "$r" "$links"; then
       if [ "${r##*/}" = node_modules ]; then
@@ -992,6 +1003,9 @@ aif_g_scratch_at() {
 $left"
   [ ! -d "$root/.aif/worktrees" ] || walk="$walk
 .aif/worktrees"
+  # .aif/tmp entered, for its runs' directories to be left (_aif_g_copy_into).
+  [ ! -d "$root/.aif/tmp" ] || walk="$walk
+.aif/tmp/shift-"
   if ! _aif_g_copy_into "$root" "$scratch" "" "$links" "$walk" "$left"; then
     [ "$made" -eq 0 ] || rm -rf "${scratch:?}"
     return 1

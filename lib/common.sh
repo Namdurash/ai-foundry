@@ -261,12 +261,13 @@ _aif_key_read() {
 
 # aif_key_layout <bytes> — AIF_KEY_LATIN: the key on the Latin layout that
 # types this Cyrillic letter on the Ukrainian and Russian ЙЦУКЕН layouts (й q,
-# і or ы s, з p, д l, к r, н y, и b), or `?` for any other — which the
+# ц w, і or ы s, з p, д l, к r, н y, и b), or `?` for any other — which the
 # control point takes as a key it does not know, and pauses on. Quoted
 # patterns, matched whole: the same in C and in a UTF-8 locale (probed).
 aif_key_layout() {
   case "$1" in
     $'\xd0\xb9') AIF_KEY_LATIN=q ;;
+    $'\xd1\x86') AIF_KEY_LATIN=w ;;
     $'\xd1\x96' | $'\xd1\x8b') AIF_KEY_LATIN=s ;;
     $'\xd0\xb7') AIF_KEY_LATIN=p ;;
     $'\xd0\xb4') AIF_KEY_LATIN=l ;;
@@ -328,6 +329,32 @@ aif_shq() {
 # aif_have <command> — true if the command is on PATH.
 aif_have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+# aif_notify <title> <text> — a notification on the person's desktop, for what
+# a process with no terminal anyone watches has to say: the build `aif start`
+# runs in a terminal of its own ended, or waits on a person's answer
+# (docs/DEFECTS.md 27.1). macOS through osascript's `display notification` —
+# the words handed over as arguments, never put into the script, so a quote
+# or a backslash in them is text and not AppleScript — Linux through
+# notify-send where there is one, nothing anywhere else. Best effort: a
+# notification that cannot be shown changes nothing, and is never an error.
+# AIF_NOTIFY=0 turns them off; AIF_NOTIFY_CMD is the harness's seam, a
+# command run with the same two arguments in place of the desktop's.
+aif_notify() {
+  [ "${AIF_NOTIFY:-1}" != 0 ] || return 0
+  if [ -n "${AIF_NOTIFY_CMD:-}" ]; then
+    "$AIF_NOTIFY_CMD" "$1" "$2" </dev/null >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    aif_have osascript || return 0
+    osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+      -e 'end run' "$1" "$2" </dev/null >/dev/null 2>&1 || true
+  elif aif_have notify-send; then
+    notify-send "$1" "$2" </dev/null >/dev/null 2>&1 || true
+  fi
+  return 0
 }
 
 # aif_git_own <dir> <git args…> — git in <dir>, run on aif's own behalf, with

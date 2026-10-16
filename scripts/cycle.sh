@@ -107,6 +107,10 @@ sets/claude/skills/aif-pjm/SKILL.md|`aif work` takes the top card|the worker con
 lib/cmd_work.sh|--loop|aif work --loop drains Ready
 lib/cmd_work.sh|--idle|aif work --loop --idle waits for Ready to fill instead of ending
 lib/cmd_start.sh|aif_runner_claude_session|aif start opens one interactive session per unit of work, in the foreground
+lib/start.jq|type: "start", rule: "R12"|aif start starts the build without a key whenever Ready holds a card, never behind a session
+lib/cmd_start.sh|work --loop --until-empty --notify|…as aif work --loop --until-empty, in a terminal of its own
+lib/cmd_start.sh|-dmS "$name" /bin/bash "$dir/build.sh"|…a tmux window, a detached screen session, or the background
+lib/cmd_work.sh|nothing left to build — Ready, Backlog and In Progress are empty|…which ends once Ready, Backlog and In Progress are empty
 lib/cmd_land.sh|aif_board_move "$root" "$ticket" "done"|aif land moves the landed card to Done
 lib/cmd_land.sh|_aif_land_release|aif land releases the tickets that were waiting on the landed one
 lib/release.sh|aif_release_sweep|aif board release moves the Backlog cards whose dependencies are Done and landed
@@ -304,7 +308,7 @@ $mermaid_stations    SYNC["sync — the branch brought onto the checkout's branc
 
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
-  READY -->|"the top card — one, or --loop until empty"| INTAKE
+  READY -->|"the top card — one, or --loop until empty;<br/>aif start's build in a terminal of its own, beside the sessions, until the board is empty"| INTAKE
   INTAKE -.->|"the card, with a taken: claim — host, pid, time"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN

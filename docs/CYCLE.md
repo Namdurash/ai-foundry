@@ -65,7 +65,7 @@ flowchart TB
 
   DOR -->|"the first slice"| READY
   DOR -->|"the other slices, in order"| BACKLOG
-  READY -->|"the top card — one, or --loop until empty"| INTAKE
+  READY -->|"the top card — one, or --loop until empty;<br/>aif start's build in a terminal of its own, beside the sessions, until the board is empty"| INTAKE
   INTAKE -.->|"the card, with a taken: claim — host, pid, time"| IN_PROGRESS
   G_READY -->|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   G_plan -->|"a criterion already true, unfalsifiable, in conflict, undecided:<br/>a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN

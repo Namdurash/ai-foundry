@@ -74,6 +74,8 @@ usage: aif work [<ticket>] [options]
     aif work OPES-52 --stop     stop the worker building it, from any terminal
     aif work --loop             every card in Ready, in the board's order, two at a time
     aif work --loop --idle      the same, then waits for Ready to fill instead of ending
+    aif work --loop --until-empty
+                                …and ends once Ready, Backlog and In Progress are empty
     aif work --loop --drain     the loop on this checkout takes no new card, from any terminal
     aif work --loop --stop      …and stops its runs in flight too, each card saying who
     aif work --status [OPES-52] what this machine knows of a run, read offline
@@ -145,6 +147,17 @@ usage: aif work [<ticket>] [options]
                      looks again every 30 s (AIF_WORK_LOOP_POLL) and takes what
                      comes, a card that came back included, until Ctrl-C, q,
                      aif work --loop --drain or --stop
+  --until-empty      with --loop: --idle, and one end more — once nothing is
+                     running and Ready, Backlog and In Progress hold no card
+                     (a card with a hold label aside), the loop ends, exit 0.
+                     A card in Backlog waiting on another keeps it waiting,
+                     until a land releases it to Ready. aif start runs its
+                     build this way, in a terminal of its own
+  --notify           with --loop: a notification on the desktop when the loop
+                     ends, saying why, and when Ready is empty while Backlog
+                     holds cards that could be built (no depends_on, their
+                     ready gate passes) — the shift asks whether to take them.
+                     macOS (osascript) or notify-send; AIF_NOTIFY=0 none
   --parallel N       with --loop: N tickets at once (default 2; 1 with
                      --no-worktree, which builds in this checkout)
   --no-tui           with --loop: lines, not the dashboard. On a terminal the
@@ -3123,6 +3136,9 @@ _aif_work_copy_at() {
 $left"
   [ ! -d "$wt/.aif/worktrees" ] || walk="$walk
 .aif/worktrees"
+  # .aif/tmp entered, for its runs' directories to be left (_aif_work_copy_into).
+  [ ! -d "$wt/.aif/tmp" ] || walk="$walk
+.aif/tmp/shift-"
   _aif_work_copy_into "$wt" "$copy" "" "$links" "$walk" "$left" || return 1
   changed="$({
     git -C "$wt" -c core.quotePath=false diff --no-renames --name-only "$base" 2>/dev/null
@@ -3328,6 +3344,11 @@ _aif_work_copy_into() {
     [ -e "$p" ] || [ -L "$p" ] || continue
     r="${p#"$src"/}"
     [ "$r" != ".aif/worktrees" ] || continue
+    # aif's own runs, written every second they run: left behind, as the
+    # gates' copy leaves them (_aif_g_copy_into; docs/DEFECTS.md 27.2).
+    case "$r" in
+      .aif/tmp/shift-* | .aif/tmp/loop-*) continue ;;
+    esac
     case "
 $left
 " in
@@ -4351,8 +4372,8 @@ _aif_work_report() {
 _aif_work_loop() {
   local root="$1" max="$2" profile="$3" budget="$4" budget_off="$5"
   local max_minutes="$6" use_worktree="$7" parallel="${8:-1}" tui="${9:-auto}"
-  local idle="${10:-0}" profile_name="${11:-}"
-  local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0
+  local idle="${10:-0}" profile_name="${11:-}" until_empty="${12:-0}" notify="${13:-0}"
+  local main logdir why="" env=0 taken_n=0 in_a_row=0 next_poll=0 kill_by=0 empty=0
   local now n list pick id pid rc entry left what kind mins results="" slot st i
   local poll idling=0 unread=0 read_ok env_in_a_row=0 rechecks=0 envhit rc2 started
   local who drained=0 abs log held_by why_now err rl unread_n=0 taken_on land_pid
@@ -4426,6 +4447,13 @@ _aif_work_loop() {
   AIF_WORK_LOOP_PAUSE_HELD=0  # 1 while the limit holds past what the loop waits
   AIF_WORK_LOOP_PAUSE_OVER=0  # 1 once, when a pause has just ended
   AIF_WORK_LOOP_HOLD_WHY=""   # what the loop says when it stops on a held limit
+  AIF_WORK_LOOP_UNTIL_EMPTY="$until_empty" # 1: ends once Ready, Backlog and In Progress are empty
+  AIF_WORK_LOOP_NOTIFY="$notify" # 1: a desktop notification at the end, and for the Backlog it could take
+  AIF_WORK_LOOP_NOTIFIED=0    # 1 once the end was notified
+  AIF_WORK_LOOP_LEFT=""       # what the board holds for the loop, idle: `empty`, the columns' counts, or unread
+  AIF_WORK_LOOP_ASK_KEY=""    # the Backlog its candidates were last judged on
+  AIF_WORK_LOOP_ASK=""        # the Backlog cards that could be built, as last judged
+  AIF_WORK_LOOP_ASKED=""      # …and as last notified
   AIF_WORK_LOOP_PAUSE_FILE="$(aif_pause_file "$root")"
   AIF_TUI_PARALLEL="$parallel" AIF_TUI_STARTED="$(date +%s)" AIF_TUI_NOW="$AIF_TUI_STARTED"
   # The clock and the run locks' directory, read once and then computed with
@@ -4831,13 +4859,29 @@ EOF
             why="$AIF_WORK_LOOP_IDLE_WHY"
             break
           fi
+          # --until-empty and --notify: what the rest of the board holds for
+          # the loop, one read — the end once it holds nothing, and the
+          # Backlog cards a person could let it take (docs/DEFECTS.md 27.1).
+          if [ "$until_empty" -eq 1 ] || [ "$notify" -eq 1 ]; then
+            _aif_work_loop_idle_board "$root"
+            if [ "$until_empty" -eq 1 ] && [ "$AIF_WORK_LOOP_LEFT" = empty ]; then
+              why="nothing left to build — Ready, Backlog and In Progress are empty"
+              empty=1
+              break
+            fi
+          fi
           # Idle: not the end — one line on the way in, then a look every
           # poll, until a card comes, a drain, a stop, Ctrl-C or q.
           if [ "$idling" -eq 0 ]; then
             idling=1
             AIF_WORK_LOOP_IDLE=1
-            _aif_work_loop_event dim "$AIF_WORK_LOOP_IDLE_WHY — idle, looking again every ${poll}s · Ctrl-C, q or aif work --loop --drain ends the loop${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}"
+            if [ "$until_empty" -eq 1 ]; then
+              _aif_work_loop_event dim "$AIF_WORK_LOOP_IDLE_WHY — idle, looking again every ${poll}s; it ends once Ready, Backlog and In Progress are empty${AIF_WORK_LOOP_LEFT:+ (now: $AIF_WORK_LOOP_LEFT)} · Ctrl-C, q or aif work --loop --drain ends it sooner${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}"
+            else
+              _aif_work_loop_event dim "$AIF_WORK_LOOP_IDLE_WHY — idle, looking again every ${poll}s · Ctrl-C, q or aif work --loop --drain ends the loop${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}"
+            fi
           fi
+          [ "$notify" -eq 0 ] || _aif_work_loop_ask_say
         fi
         # Nothing to take: look again in a while, not every second — on a
         # Trello board every look is a request.
@@ -4863,10 +4907,13 @@ $results
 EOF
   [ "$taken_n" -eq 0 ] || printf '  %slogs: %s/%s\n' "$AIF_C_DIM" "${logdir#"$main"/}" "$AIF_C_RESET" >&2
   _aif_work_loop_summary "$logdir/summary.json" "$taken_n" "$env" "$why" "$results" \
-    "$idle" "$rechecks" "$AIF_WORK_LOOP_HELD"
+    "$idle" "$rechecks" "$AIF_WORK_LOOP_HELD" "$empty"
   # The checkout is free for the next loop once the summary is there — `aif
   # work --loop --stop` reads it the moment the lock is gone.
   _aif_work_loop_unlock
+  # Said where the person is, whatever ended it: a loop in a terminal of its
+  # own is watched by nobody (docs/DEFECTS.md 27.1).
+  [ "$notify" -eq 0 ] || _aif_work_loop_notify_end "$taken_n" "$why" "$empty"
   # Disarmed only now: the summary is the last thing the loop owes whoever
   # started it, and while the handler is armed its EXIT branch writes the
   # summary should a print above end the loop first (docs/DEFECTS.md 14.3).
@@ -4933,9 +4980,13 @@ _aif_work_loop_starting() {
 # from cards that failed on their own — and `held`, the cards it left in
 # Ready on purpose. Each results row names its take's log, a file beside
 # this one: a card taken twice is two rows, and was one log written over
-# (docs/DEFECTS.md 15.7).
+# (docs/DEFECTS.md 15.7). `empty` is the end --until-empty is for: nothing
+# running, and Ready, Backlog and In Progress holding no card — the end a
+# shift that started the loop does not hold its build on (docs/DEFECTS.md
+# 27.1); every other end of such a loop is one it does.
 _aif_work_loop_summary() {
-  local file="$1" taken="$2" env="$3" why="$4" lines="$5" idle="${6:-0}" rechecks="${7:-0}" held="${8:-}" results
+  local file="$1" taken="$2" env="$3" why="$4" lines="$5" idle="${6:-0}" rechecks="${7:-0}" held="${8:-}"
+  local empty="${9:-0}" results
   results="$(printf '%s' "$lines" | jq -R -s '
     split("\n") | map(select(length > 0) | split("|")
       | { ticket: .[0], what: .[1], minutes: (.[2] | tonumber? // 0),
@@ -4948,10 +4999,12 @@ _aif_work_loop_summary() {
       --arg killed "$AIF_WORK_LOOP_KILLED" --argjson hup "${AIF_WORK_LOOP_HUP:-0}" \
       --arg why "$why" --argjson results "${results:-[]}" \
       --argjson idle "$idle" --argjson rechecks "$rechecks" --arg held "$held" \
+      --argjson empty "$empty" \
       '{ taken: $taken, built: $built, blocked: $blocked, stopped: $stopped, env: $env,
          ctrl_c: $ctrl_c, killed: (if $killed == "" then null else $killed end),
          hup: $hup, why: $why, results: $results,
-         idle: $idle, rechecks: $rechecks, held: ($held | split(" ") | map(select(length > 0))) }' >"$file.tmp" &&
+         idle: $idle, rechecks: $rechecks, held: ($held | split(" ") | map(select(length > 0))),
+         empty: ($empty == 1) }' >"$file.tmp" &&
       mv "$file.tmp" "$file"
   } 2>/dev/null; then
     return 0
@@ -5249,6 +5302,10 @@ _aif_work_loop_draw() {
     # The runner's limit: the workers wait, each box says until when (its
     # live.json's last), and no card is taken (docs/DEFECTS.md 13.7).
     AIF_TUI_STATUS="$AIF_WORK_LOOP_PAUSED · no new cards until then · q: end" AIF_TUI_STATUS_TONE=yellow
+  elif [ "${AIF_WORK_LOOP_IDLE:-0}" = 1 ] && [ "${AIF_WORK_LOOP_UNTIL_EMPTY:-0}" = 1 ]; then
+    # …and under --until-empty, what keeps it waiting, and the cards a person
+    # could let it take (docs/DEFECTS.md 27.1).
+    AIF_TUI_STATUS="idle — ${AIF_WORK_LOOP_IDLE_WHY:-Ready is empty}; ends once Ready, Backlog and In Progress are empty${AIF_WORK_LOOP_LEFT:+ (now: $AIF_WORK_LOOP_LEFT)}${AIF_WORK_LOOP_ASKED:+ · Backlog $AIF_WORK_LOOP_ASKED could be built — aif start asks} · q: end${AIF_WORK_LOOP_HELD:+ · held: $AIF_WORK_LOOP_HELD}" AIF_TUI_STATUS_TONE=dim
   elif [ "${AIF_WORK_LOOP_IDLE:-0}" = 1 ]; then
     # Idle is a state, not an end: said, with the cards it leaves in Ready —
     # and Ready not called empty while it holds them (docs/DEFECTS.md 15.3).
@@ -5365,9 +5422,12 @@ _aif_work_loop_signal() {
       [ -z "${AIF_WORK_LOOP_LOGDIR:-}" ] || [ -f "$AIF_WORK_LOOP_LOGDIR/summary.json" ] ||
         _aif_work_loop_summary "$AIF_WORK_LOOP_LOGDIR/summary.json" "${taken_n:-0}" "${env:-0}" \
           "${AIF_WORK_LOOP_STOP:-${why:-the loop ended on an error before it could say why — its loop.log says where}}" "${results:-}" \
-          "${idle:-0}" "${rechecks:-0}" "${AIF_WORK_LOOP_HELD:-}"
+          "${idle:-0}" "${rechecks:-0}" "${AIF_WORK_LOOP_HELD:-}" "${empty:-0}"
       # The checkout's loop lock goes with the loop, whatever ended it.
       _aif_work_loop_unlock || true
+      [ "${AIF_WORK_LOOP_NOTIFY:-0}" != 1 ] ||
+        _aif_work_loop_notify_end "${taken_n:-0}" \
+          "${AIF_WORK_LOOP_STOP:-${why:-the loop ended on an error before it could say why — its loop.log says where}}" "${empty:-0}" || true
       [ -z "${AIF_WORK_LOOP_RUNNING:-}" ] ||
         aif_warn "the loop ended with runs still in flight ($AIF_WORK_LOOP_RUNNING) — each settles its own card; aif work <ID> --stop ends one"
       ;;
@@ -5450,6 +5510,10 @@ _aif_work_loop_idle_why() {
       *) others=$((others + 1)) ;;
     esac
   done
+  # Whether anything in Ready is somebody's to take: a card a worker in
+  # another terminal holds is, and none the loop held — what a shift counts as
+  # the loop's Ready, and asks about Backlog only without (lib/start.jq R14).
+  AIF_WORK_LOOP_IDLE_OTHERS="$others"
   if [ "$n" -eq 0 ]; then
     AIF_WORK_LOOP_IDLE_WHY="Ready is empty"
   elif [ "$others" -eq 0 ]; then
@@ -5457,6 +5521,127 @@ _aif_work_loop_idle_why() {
   else
     AIF_WORK_LOOP_IDLE_WHY="Ready holds nothing this loop can take now"
   fi
+}
+
+# _aif_work_loop_idle_board <root> — an idle loop under --until-empty or
+# --notify: the rest of the board, one status read a poll (on Trello one
+# request), inside `$(…)`, where its aif_die ends the substitution only
+# (docs/DEFECTS.md 27.1).
+#
+# AIF_WORK_LOOP_LEFT is `empty` when Ready, Backlog and In Progress hold no
+# ticket's card — one with a hold label aside: a person put it down
+# (lib/release.sh, AIF_RELEASE_HOLD_LABELS) — else what they hold, as
+# `backlog 3 · in progress 1`; and empty, nothing decided, when the board did
+# not answer. A card in Backlog that waits on another keeps the loop: a land
+# releases it to Ready, and the loop takes it then. A card in In Progress
+# keeps it too — another checkout's, or a dead worker's the shift requeues.
+#
+# Under --notify, AIF_WORK_LOOP_ASK: the Backlog cards that could be built
+# now, as the shift judges a pull (lib/start.jq `pullable`, and R14's gate):
+# a ticket's card with no hold label, a ticket file here whose meta names no
+# depends_on, no aif line on the card, its ready gate passing (`aif _ready`,
+# offline). Judged again only when Backlog changed — its cards, their last
+# moves, comments and labels (AIF_WORK_LOOP_ASK_KEY) — so an idle loop does
+# not read every card's comments every poll: one head and one gate a
+# candidate when it did. A head that could not be read is no candidate this
+# time, and Backlog is judged again at the next poll.
+_aif_work_loop_idle_board() {
+  local root="$1" st re holds key cands id hrc rc meta f ask="" unread=0
+  AIF_WORK_LOOP_LEFT=""
+  st="$(aif_board_status_json "$root" 2>/dev/null)" || return 0
+  re="$(aif_board_ticket_re "$root" 2>/dev/null)" || re=""
+  [ -n "$re" ] || re='^[A-Z]{2,10}-[0-9]+$'
+  holds="${AIF_RELEASE_HOLD_LABELS:-parked retired-direction}"
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  AIF_WORK_LOOP_LEFT="$(printf '%s' "$st" | jq -r --arg re "$re" --arg holds "$holds" '
+    [ $holds | splits("[[:space:]]+") | select(length > 0) ] as $hl
+    | [ .[] | select((.ticket // "") | test($re))
+        | select(.column == "ready" or .column == "backlog" or .column == "in_progress")
+        | select(any((.labels // [])[]; . as $l | any($hl[]; . == $l)) | not) ] as $left
+    | if ($left | length) == 0 then "empty"
+      else [ ("ready", "backlog", "in_progress") as $k
+             | ([ $left[] | select(.column == $k) ] | length) as $n
+             | select($n > 0) | "\($k | sub("_"; " ")) \($n)" ] | join(" · ") end' 2>/dev/null)" || AIF_WORK_LOOP_LEFT=""
+  [ "${AIF_WORK_LOOP_NOTIFY:-0}" = 1 ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  key="$(printf '%s' "$st" | jq -c --arg re "$re" '
+    [ .[] | select((.ticket // "") | test($re)) | select(.column == "backlog")
+      | [ .ticket, (.moved_at // ""), (.comments // ""), (.labels // []) ] ]' 2>/dev/null)" || return 0
+  [ "$key" != "$AIF_WORK_LOOP_ASK_KEY" ] || return 0
+  # shellcheck disable=SC2016  # jq's variables, bound by the --arg flags
+  cands="$(printf '%s' "$st" | jq -r --arg re "$re" --arg holds "$holds" '
+    [ $holds | splits("[[:space:]]+") | select(length > 0) ] as $hl
+    | [ .[] | select((.ticket // "") | test($re)) | select(.column == "backlog")
+        | select(any((.labels // [])[]; . as $l | any($hl[]; . == $l)) | not) ]
+    | sort_by(.pos) | .[].ticket' 2>/dev/null)" || return 0
+  for id in $cands; do
+    case "$id" in
+      *[!A-Za-z0-9._-]*) continue ;;
+    esac
+    f="$AIF_WORK_LOOP_MAIN/$AIF_TASKS_DIR/$id/ticket.md"
+    [ -f "$f" ] || continue
+    # A meta that does not parse is no meta, as the shift's facts read it:
+    # no depends_on.
+    meta="$(aif_meta_json "$f" 2>/dev/null)" || meta=""
+    if [ -n "$meta" ] && ! printf '%s' "$meta" |
+      jq -e 'if type == "object" and (.depends_on | type) == "array" then (.depends_on | length) == 0 else true end' >/dev/null 2>&1; then
+      continue
+    fi
+    hrc=0
+    (aif_board_head_json "$root" "$id" >/dev/null 2>&1 </dev/null) || hrc=$?
+    if [ "$hrc" -ge 2 ]; then
+      unread=1
+      continue
+    fi
+    [ "$hrc" -eq 1 ] || continue
+    rc=0
+    (cd "$AIF_WORK_LOOP_MAIN" && "$AIF_ROOT/bin/aif" _ready "$id") >/dev/null 2>&1 </dev/null || rc=$?
+    [ "$rc" -eq 0 ] || continue
+    ask="${ask:+$ask }$id"
+  done
+  AIF_WORK_LOOP_ASK="$ask"
+  [ "$unread" -eq 1 ] || AIF_WORK_LOOP_ASK_KEY="$key"
+  return 0
+}
+
+# _aif_work_loop_ask_say — --notify, the loop idle with nothing in Ready for
+# it: the Backlog cards that could be built (_aif_work_loop_idle_board), said
+# once a set — an event, and a notification, for the person is most likely in
+# a session of the shift's: the shift asks at its next control point whether
+# to take them (lib/start.jq R14; docs/DEFECTS.md 27.1). A card in Ready that
+# a worker elsewhere holds is somebody's to take, and nothing is said.
+_aif_work_loop_ask_say() {
+  local list
+  if [ -z "$AIF_WORK_LOOP_ASK" ] || [ "${AIF_WORK_LOOP_IDLE_OTHERS:-0}" -gt 0 ]; then
+    [ -n "$AIF_WORK_LOOP_ASK" ] || AIF_WORK_LOOP_ASKED=""
+    return 0
+  fi
+  [ "$AIF_WORK_LOOP_ASK" != "$AIF_WORK_LOOP_ASKED" ] || return 0
+  AIF_WORK_LOOP_ASKED="$AIF_WORK_LOOP_ASK"
+  list="$(printf '%s' "$AIF_WORK_LOOP_ASK" | sed 's/ /, /g')"
+  _aif_work_loop_event yellow "Ready is empty — Backlog holds $list, which could be built (no depends_on, the ready gate passes); aif start asks whether to take them"
+  aif_notify "aif · $(basename "$AIF_WORK_LOOP_MAIN")" "Ready is empty — Backlog holds $list, which could be built. aif start asks you whether to take them."
+}
+
+# _aif_work_loop_notify_end <taken> <why> <empty 0|1> — --notify: how the loop
+# ended, on the desktop, once — whatever ended it, the end aif start's build
+# is for or any other: a loop in a terminal of its own is watched by nobody
+# (docs/DEFECTS.md 27.1).
+_aif_work_loop_notify_end() {
+  local text built="${AIF_TUI_BUILT:-0}"
+  [ "${AIF_WORK_LOOP_NOTIFIED:-0}" = 0 ] || return 0
+  AIF_WORK_LOOP_NOTIFIED=1
+  if [ "${3:-0}" = 1 ]; then
+    if [ "$built" -gt 0 ]; then
+      text="Every ticket is built — $built went to Review; nothing is left to work on in Ready, Backlog or In Progress."
+    else
+      text="Nothing to build — Ready, Backlog and In Progress are empty."
+    fi
+  else
+    text="The build ended — $2 (built $built of ${1:-0})."
+  fi
+  aif_notify "aif · $(basename "${AIF_WORK_LOOP_MAIN:-.}")" "$text"
+  return 0
 }
 
 # _aif_work_loop_pause — the shared pause (aif_pause_file), as the loop reads
@@ -5615,8 +5800,12 @@ _aif_work_loop_stop_runs() {
 # and summary.json are — null until the loop has named the directory, after
 # its preflight — and the cards it holds in Ready and will not take again,
 # each with why (`held`, rewritten as that changes: docs/DEFECTS.md 15.3).
+# And whether it ends once the board has nothing left for it (`until_empty`)
+# and who started it (`by`: AIF_WORK_LOOP_BY, `aif start pid <N>` for the
+# build a shift runs in a terminal of its own — docs/DEFECTS.md 27.1; empty
+# for a person's).
 _aif_work_loop_lock() {
-  local root="$1" parallel="$2" idle="$3" lock rc=0
+  local root="$1" parallel="$2" idle="$3" until_empty="${4:-0}" lock rc=0
   AIF_WORK_LOOP_LOCK=""
   lock="$(aif_loop_lock_dir "$root")"
   _aif_work_lock_take "$lock" '*aif\ work*--loop*' || rc=$?
@@ -5637,9 +5826,11 @@ _aif_work_loop_lock() {
   if ! {
     jq -n --argjson pid "$$" --arg host "$(aif_host_short)" \
       --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --argjson started "$(date +%s)" \
-      --argjson parallel "$parallel" --argjson idle "$idle" \
+      --argjson parallel "$parallel" --argjson idle "$idle" --argjson empty "$until_empty" \
+      --arg by "${AIF_WORK_LOOP_BY:-}" \
       '{ pid: $pid, host: $host, started_at: $at, started: $started,
-         parallel: $parallel, idle: $idle, logdir: null, held: [] }' >"$lock/owner.json.tmp" &&
+         parallel: $parallel, idle: $idle, until_empty: $empty,
+         by: (if $by == "" then null else $by end), logdir: null, held: [] }' >"$lock/owner.json.tmp" &&
       mv "$lock/owner.json.tmp" "$lock/owner.json"
   } 2>/dev/null; then
     # Unsigned, the lock would read as live for a minute and then be taken
@@ -5796,6 +5987,7 @@ _aif_work_loop_tell() {
 aif_cmd_work() {
   local ticket="" profile="" budget="" max_minutes="" use_worktree=1 clean=0
   local loop=0 max_tickets=0 stop=0 parallel="" profile_arg tui=auto idle=0 drain=0
+  local until_empty=0 notify=0
   # want_status, not status: the run's outcome below already has that name.
   local want_status=0 json=0
   # An empty budget means NO ceiling, here and everywhere below. budget_off
@@ -5839,6 +6031,8 @@ aif_cmd_work() {
       --no-tui) tui=off ;;
       --loop) loop=1 ;;
       --idle) idle=1 ;;
+      --until-empty) until_empty=1 ;;
+      --notify) notify=1 ;;
       --max-tickets)
         shift
         max_tickets="${1:-}"
@@ -5884,6 +6078,8 @@ aif_cmd_work() {
     [ "$loop" -eq 0 ] && [ "$clean" -eq 0 ] && [ "$stop" -eq 0 ] && [ "$drain" -eq 0 ] ||
       aif_die "--status reads what this machine knows of a run and changes nothing — not with --loop, --clean, --stop or --drain"
     [ "$idle" -eq 0 ] || aif_die "--idle only means something with --loop"
+    [ "$until_empty" -eq 0 ] || aif_die "--until-empty only means something with --loop"
+    [ "$notify" -eq 0 ] || aif_die "--notify only means something with --loop"
     # A path is built from the id: the characters a ticket id is made of.
     case "$ticket" in
       '') ;;
@@ -5914,6 +6110,12 @@ aif_cmd_work() {
     exit 1
   fi
   [ "$idle" -eq 0 ] || [ "$loop" -eq 1 ] || aif_die "--idle only means something with --loop"
+  [ "$until_empty" -eq 0 ] || [ "$loop" -eq 1 ] || aif_die "--until-empty only means something with --loop"
+  [ "$notify" -eq 0 ] || [ "$loop" -eq 1 ] || aif_die "--notify only means something with --loop"
+  # An end of its own on top of --idle's waiting: an empty Ready waited out
+  # while the board may still bring the loop a card, and the end once it
+  # cannot (_aif_work_loop_idle_board).
+  [ "$until_empty" -eq 0 ] || idle=1
 
   if [ "$stop" -eq 1 ]; then
     [ -n "$ticket" ] || aif_die "usage: aif work <ticket> --stop — the loop: aif work --loop --stop"
@@ -5961,11 +6163,11 @@ aif_cmd_work() {
     # Once, for every worker the loop starts (_aif_work_loop says why).
     # The checkout's loop lock first, then a handler that releases it on
     # every way out of the preflight (both above _aif_work_loop say why).
-    _aif_work_loop_lock "$root" "$parallel" "$idle" || exit 3
+    _aif_work_loop_lock "$root" "$parallel" "$idle" "$until_empty" || exit 3
     aif_trap_arm _aif_work_loop_early
     _aif_work_preflight "$root" "$profile"
     _aif_work_loop "$root" "$max_tickets" "$profile_arg" "$budget" "$budget_off" "$max_minutes" "$use_worktree" "$parallel" "$tui" \
-      "$idle" "$profile"
+      "$idle" "$profile" "$until_empty" "$notify"
   fi
   [ "$max_tickets" -eq 0 ] || aif_die "--max-tickets only means something with --loop"
   [ -z "$parallel" ] || aif_die "--parallel only means something with --loop"

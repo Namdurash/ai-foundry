@@ -121,7 +121,7 @@ flowchart TB
 
   DOR --&gt;|"the first slice"| READY
   DOR --&gt;|"the other slices, in order"| BACKLOG
-  READY --&gt;|"the top card — one, or --loop until empty"| INTAKE
+  READY --&gt;|"the top card — one, or --loop until empty;&lt;br/&gt;aif start's build in a terminal of its own, beside the sessions, until the board is empty"| INTAKE
   INTAKE -.-&gt;|"the card, with a taken: claim — host, pid, time"| IN_PROGRESS
   G_READY --&gt;|"not ready: the gate's questions, nothing spent"| NEEDS_HUMAN
   G_plan --&gt;|"a criterion already true, unfalsifiable, in conflict, undecided:&lt;br/&gt;a spec stop, one dispatch, nothing frozen"| NEEDS_HUMAN

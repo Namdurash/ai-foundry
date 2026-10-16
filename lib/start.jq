@@ -23,8 +23,10 @@
 #   { counts: { backlog, ready, in_progress, review, needs_human, done },
 #     moves:  [ { rule, key, ticket, column, kind, from, to, where, file,
 #                 comment, text } ],
-#     units:  [ { rule, key, kind, ticket, file, column, role, prompt, name,
-#                 default, keys, text, warn, kill, comment, to, top } ],
+#     start:  null | { rule, key, kind, column, text },
+#     units:  [ { rule, key, kind, ticket, tickets, file, column, role,
+#                 prompt, name, default, keys, text, warn, kill, comment, to,
+#                 top } ],
 #     lines:  [ { rule, ticket, file, column, text, command } ],
 #     wait:   null | { why },
 #     "end":  null | { rc, why },
@@ -32,15 +34,17 @@
 #
 # moves are bash's to make without asking (comment first, then move; where
 # says where a comment's body comes from: "branch" or "checkout" for the run's
-# report.md, "file" for a blocked: comment kept in `file`); units are offered
-# one per tick at the control point, in this order; lines are what the shift
-# will not touch, each with the command that would; wait is work in flight
-# elsewhere that the shift waits for; end ends it. Never an end beside a move:
-# the driver makes the moves and decides on the next tick. Read `end` as
-# ."end" — a keyword, which jq before 1.7 does not take as a bare key. ways
-# (R26) rides on the end that says nothing is left: the two ways to bring
-# more — one need to the owner, or a plan first — which the driver offers
-# with no countdown before it ends (docs/DEFECTS.md 22.3).
+# report.md, "file" for a blocked: comment kept in `file`); start is the build
+# bash starts without asking, in a terminal of its own beside the person's
+# sessions (R12; docs/DEFECTS.md 27.1); units are offered one per tick at the
+# control point, in this order; lines are what the shift will not touch, each
+# with the command that would; wait is work in flight elsewhere that the
+# shift waits for; end ends it. Never an end beside a move or a start: the
+# driver makes the moves, starts the build, and decides on the next tick.
+# Read `end` as ."end" — a keyword, which jq before 1.7 does not take as a
+# bare key. ways (R26) rides on the end that says nothing is left: the two
+# ways to bring more — one need to the owner, or a plan first — which the
+# driver offers with no countdown before it ends (docs/DEFECTS.md 22.3).
 #
 # Keys are the fact, not the card (research R24: once a shift, without
 # hiding what is new). A row keyed on a head carries that head's time, a row
@@ -71,7 +75,7 @@ def move($rule; $key; $c; $kind; $to; $text):
   { type: "move", rule: $rule, key: $key, ticket: $c.ticket, column: $c.column, kind: $kind,
     from: $c.column, to: $to, where: null, file: null, comment: null, text: $text };
 def unit($rule; $key; $kind; $text):
-  { type: "unit", rule: $rule, key: $key, kind: $kind, ticket: null, file: null, column: null,
+  { type: "unit", rule: $rule, key: $key, kind: $kind, ticket: null, tickets: null, file: null, column: null,
     role: null, prompt: null, name: null, default: "open", keys: {}, text: $text,
     warn: null, kill: null, comment: null, to: null, top: false };
 def session($rule; $key; $role; $prompt; $name; $text):
@@ -140,7 +144,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | ($f.memory.done // []) as $done
 | ($f.flags // {}) as $flags
 | ($f.build // {}) as $b
-| ($b.mode // "here") as $mode
+| ($b.mode // "own") as $mode
 | ($b.parallel // 2) as $par
 | ($f.cards // []) as $cards
 | ($f.requests // []) as $reqs
@@ -191,15 +195,20 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
   # a pull, an answer, a retry — and a person who moves it is that line: the
   # bare move, and the driver's note has the comment it kept, with the two
   # commands that finish it as the shift meant (_aif_start_comment_move).
+  #
+  # The note is the last one the driver recorded for the key: the build the
+  # shift started is recorded as it starts, and again with how it ended
+  # (_aif_start_own_settle), and the second is what is left to say.
   def as_line:
     .key as $k
-    | ((first($done[] | select(.key == $k) | .note) // "") | if . == "" then "offered once this shift" else . end) as $note
+    | ((last($done[] | select(.key == $k) | .note) // "") | if . == "" then "offered once this shift" else . end) as $note
     | { type: "line", rule: .rule, ticket: .ticket, file: .file, column: .column, text: $note,
         command: (if .kind == "session" then "claude '\(.prompt)'"
                   elif .kind == "land" then "aif land \(.ticket)"
                   elif .kind == "demo" then "claude '/aif-pjm \(.ticket)'"
                   elif .kind == "sweep" then "aif board release"
-                  elif .kind == "build" then "aif work --loop --parallel \($par)"
+                  elif .kind == "build" then "aif work --loop --until-empty --parallel \($par)"
+                  elif .kind == "pull" then ([ (.tickets // [])[] | "aif board move \(.) ready" ] | join(" && "))
                   elif .kind == "requeue" then "aif work --status \(.ticket)"
                   elif .kind == "rework" or .kind == "cancel" then "claude '/aif-pjm \(.ticket)'"
                   elif (.kind == "report" or .kind == "blocked") and (.comment != null or .where != null)
@@ -822,13 +831,34 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
 # ----------------------------------------------------------- build and pull
 #
-# R12: the loop in this terminal, when this shift builds (mode here), its build
-# not held, Ready not empty, and no Review unit ahead of it — and when Ready
-# holds fewer than one round, one BA session first. R14: pulls, only while the
-# BA list is empty, up to the build's free slots: in mode here Ready short of
-# a round; in mode elsewhere the loop's whole load, Ready and the cards it
-# builds — an idle loop keeps Ready at 0 exactly when it could take more
-# (critics operations-11).
+# The build is the machine's half of the shift, and it never waits on the
+# person's (docs/DEFECTS.md 27.1). It ran in this terminal, in the
+# foreground — while it built, no session; while a session was open, no
+# build — and behind every review, and, while Ready was short of a round,
+# behind the analyst's list: on a shift with one card in Ready, the card
+# every other slice depended on, and parallel 4, the analyst was offered the
+# next slice, then the next, then the owner each entry of the map, and the
+# card was built only once all of them were done or skipped.
+#
+# So, R12: when Ready holds a card and no loop runs on this checkout, the
+# shift starts one without a key — `aif work --loop --until-empty`, in a
+# terminal of its own (a tmux window inside tmux, else a screen session, else
+# in the background with none: lib/cmd_start.sh _aif_start_spawn) — and goes
+# on at once to the next unit for a person (`start`). The loop builds Ready
+# in its own branches and ends once Ready, Backlog and In Progress are
+# empty; when Ready holds cards again, the shift starts another.
+#
+# The modes (_aif_start_build): own — no loop runs, and the shift starts one
+# when Ready holds a card; starting — it has, and that loop has not taken its
+# lock yet; elsewhere — a loop holds the lock, the shift's own or a person's
+# in another terminal; none — --no-build, and no loop runs.
+#
+# R13, a build held — the shift's loop ended on anything but the board's
+# being empty, or never started — is a unit, "build again", ahead of the
+# reviews. R14: when the loop has nothing in Ready to take, ONE unit names
+# every Backlog card that could be built — no depends_on, no aif line, its
+# ready gate passing — and y takes them all to the bottom of Ready. Ahead of
+# the reviews and the analyst too: it is one key, and the build waits on it.
 
 | [ $ip[] | select(.type == "unit") ] as $u_ip
 | [ $rv[] | select(.type == "unit") ] as $u_rv
@@ -837,7 +867,7 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | $counts.ready as $ready
 | ([ col("ready")[] | .ticket ] | sort) as $readyids
 # R12 is keyed on each card's entry into Ready, not on the ids alone: the
-# commonest round trip of a shift in this terminal — built, `wrong:` at the
+# commonest round trip of a shift — built, `wrong:` at the
 # review, rework: to the analyst, back in Ready — rebuilds the same set of
 # ids, and a key of ids alone read the reworked card as the build already
 # done and ended the shift with it unbuilt. A card's moved_at moves on every
@@ -859,49 +889,68 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 | [ col("ready")[] | . as $c | first($loopheld[] | select(.ticket == $c.ticket)) as $h
     | { c: $c, why: ($h.why // "its run there ended with the card still in Ready") } ] as $heldready
 | ($ready - ($heldready | length)) as $ready_loop
-| (if $mode == "here" then (if $ready >= 1 and $ready < $par then $par - $ready else 0 end)
-   elif $mode == "elsewhere" then $par - ($ready_loop + $building)
-   else 0 end) as $free
-# R13, the build held (two runs in a row that did not build, a stop or a
-# drain, a loop that ended 1 or 143, or never started): never again on its
-# own — but a unit, "build again", its default to leave it and Enter or b to
-# build. It was a line, and with no unit, no move and nothing in flight the
-# shift ended, Ready still holding cards and the b its line named never
-# offered (docs/DEFECTS.md 15.8). Keyed as R12 is: passed by, it is a line
-# with aif work --loop and the shift may end; a Ready that changed offers it
-# again.
-| (if $mode == "here" and $ready >= 1 and ($rv_live | length) == 0 then
-     (if $b.hold == null then
-        [ unit("R12"; "R12 \($readykeys | join(" "))"; "build";
-               "build — Ready holds \($ready): \($readyids | join(", ")); the loop runs in this terminal, \($par) at once")
-          + { column: "ready", default: "go" } ]
-      else
-        [ unit("R13"; "R13 \($readykeys | join(" "))"; "build";
-               "build again — the build is held: \($b.hold); Ready holds \($ready): \($readyids | join(", "))")
-          + { column: "ready", default: "skip" } ]
-      end)
-   else [] end) as $u12
-| ($u12 | live_of) as $u12_live
-| (($u12_live | length) > 0 and $ready < $par and ($ba_live | length) > 0) as $ba_first
-| (if $free >= 1 and ($ba_live | length) == 0 then
-     [ col("backlog")[] | select(pullable) | select(.ready_gate == 0)
-       | unit("R14"; "R14 \(.ticket)"; "pull"; "pull \(.ticket) — no depends_on, and its ready gate passes; to the bottom of Ready")
-         + { ticket: .ticket, column: .column, default: "skip", keys: { y: "pull" }, to: "ready",
-             comment: "released by aif start: pulled from Backlog at the shift's control point — it has no depends_on and its ready gate passes" } ]
+# Whose loop the lock names: this shift's own — it named the loop's log
+# directory, or the loop says this shift started it — or a person's, in
+# another terminal. And where the shift's own runs, and how a person looks
+# at it (lib/cmd_start.sh _aif_start_spawn).
+| ($mode == "elsewhere" and ($b.loop.ours // false) == true) as $ours
+| (($b.own // {}).look // null) as $look
+| (($b.loop // {}).pid // null) as $lpid
+| (if $ours then "the build this shift started" + (if $lpid == null then "" else " (pid \($lpid))" end)
+                 + (if $look == null then "" else " — \($look)" end)
+   else "the loop in another terminal" + (if $lpid == null then "" else " (pid \($lpid))" end) end) as $whose
+| (if $b.terminal == "tmux" then "in a tmux window of its own"
+   elif $b.terminal == "screen" then "in a screen session of its own"
+   elif $b.terminal == "background" then "in the background, with no terminal"
+   else "in a terminal of its own" end) as $where
+# R12, keyed as it always was, on Ready's entries: the same Ready is never
+# started twice, and a card back in Ready since — built, reworked, cut again
+# — is a new key and a new loop. Under the runner's limit it is held back
+# (a line below): the loop's first station would meet it.
+| (if $mode == "own" and $ready >= 1 and $b.hold == null then
+     [ { type: "start", rule: "R12", key: "R12 \($readykeys | join(" "))", kind: "build", ticket: null, file: null,
+         column: "ready",
+         text: "build — Ready holds \($ready): \($readyids | join(", ")); the loop starts \($where), \($par) at once, and ends once Ready, Backlog and In Progress are empty" } ]
+   else [] end) as $s12
+| (if $pause == null then $s12 | live_of else [] end) as $s12_live
+# R13, the build held (the shift's loop ended on two runs in a row that did
+# not build, a stop or a drain, a signal, the environment, or never
+# started): never again on its own — but a unit, "build again", its default
+# to leave it and Enter or b to build. It was a line, and with no unit, no
+# move and nothing in flight the shift ended, Ready still holding cards and
+# the b its line named never offered (docs/DEFECTS.md 15.8). Keyed as R12
+# is: passed by, it is a line with the loop's command and the shift may end;
+# a Ready that changed offers it again.
+| (if $mode == "own" and $ready >= 1 and $b.hold != null then
+     [ unit("R13"; "R13 \($readykeys | join(" "))"; "build";
+            "build again — the build is held: \($b.hold); Ready holds \($ready): \($readyids | join(", "))")
+       + { column: "ready", default: "skip" } ]
+   else [] end) as $u13
+# R14, while the loop — running, starting, or about to — has nothing in
+# Ready to take: every Backlog card that could be built, at once, in
+# Backlog's order. Its default is to leave them; a new card among them is a
+# new key, and the whole list is asked again. One card a unit, each offered
+# while the analyst's list was empty and only up to the build's free slots,
+# asked the person a card at a time, behind every session (docs/DEFECTS.md
+# 27.1).
+| (if ($mode == "own" or $mode == "starting" or $mode == "elsewhere") and $ready_loop == 0 then
+     [ col("backlog")[] | select(pullable) | select(.ready_gate == 0) | .ticket ] as $pull
+     | ($pull | length) as $pn
+     | (if $pn == 0 then []
+        else [ unit("R14"; "R14 \($pull | sort | join(" "))"; "pull";
+                    "pull from Backlog — \($pull | join(", ")): no depends_on, and \(if $pn == 1 then "its ready gate passes" else "their ready gates pass" end); y takes \(if $pn == 1 then "it" else "them" end) to the bottom of Ready, for the build")
+               + { tickets: $pull, column: "backlog", default: "skip", keys: { y: "pull" }, to: "ready",
+                   comment: "released by aif start: pulled from Backlog at the shift's control point — it has no depends_on and its ready gate passes" } ] end)
    else [] end) as $u14
-| (if $free >= 1 then $u14 | live_of | .[0:$free] else [] end) as $u14_live
-# The held build is a line only while a review is offered ahead of it.
-| ((if $mode == "here" and $b.hold != null and $ready >= 1 and ($rv_live | length) > 0 then
-      [ { type: "line", rule: "R13", ticket: null, file: null, column: "ready",
-          text: "the build is held: \($b.hold) — b at the control point builds again", command: null } ]
-    elif $mode == "none" and $ready >= 1 then
+| ($u14 | live_of) as $u14_live
+| ((if $mode == "none" and $ready >= 1 then
       [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
           text: "Ready holds \($ready) — no loop runs on this checkout", command: "aif work --loop --idle" } ]
     else [] end)
-   + [ $heldready[] | line("R12"; .c; "the loop in another terminal will not take it again — \(.why); aif work \(.c.ticket), or restart the loop";
+   + [ $heldready[] | line("R12"; .c; "\(if $ours then "the build this shift started" else "the loop in another terminal" end) will not take it again — \(.why); aif work \(.c.ticket), or restart the loop";
                            "aif work \(.c.ticket)") ]
-   # The build the runner's limit holds back (below): said, with Ready.
-   + (if $pause != null and ($u12_live | length) > 0 then
+   # The build the runner's limit holds back (above): said, with Ready.
+   + (if $pause != null and ($s12 | live_of | length) > 0 then
         [ { type: "line", rule: "R12", ticket: null, file: null, column: "ready",
             text: "no build while \($pausesay) — Ready holds \($ready)", command: null } ]
       else [] end)) as $l12
@@ -910,15 +959,16 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 
 | ([ ($ip + $rv + $nh + $bl + $r10)[] | select(.type == "move") ]) as $moves_all
 | ($moves_all | live_of) as $moves
-| ((($u_ip | live_of) + $rv_live + ($u_nh | live_of)
-    + (if $ba_first then [ $ba_live[0] ] else [] end)
-    + $u14_live + $u12_live
-    + (if $ba_first then $ba_live[1:] else $ba_live end))
+| ($s12_live[0] // null) as $start
+# The units: a dead worker's card first (its requeue feeds the build), then
+# what the build waits on — the held build, the pulls — then the reviews,
+# the person's answers, and the analyst's and the owner's list.
+| ((($u_ip | live_of) + ($u13 | live_of) + $u14_live + $rv_live + ($u_nh | live_of) + $ba_live)
    # The runner's limit holds: no session, no build (above, $pause). Moves,
    # pulls, requeues and lands do not call the runner, and go on.
    | if $pause == null then . else [ .[] | select(.kind != "session" and .kind != "build") ] end) as $units0
-# Work in flight is waited for, never an end: a card built here now, a loop in
-# another terminal with Ready to take, a card not read yet (critics
+# Work in flight is waited for, never an end: a card being built now, a loop
+# with Ready to take or still starting, a card not read yet (critics
 # operations-1). R21 only when none of it is left. Under --no-build with no
 # loop yet, Ready is work in flight too: the person said the loop runs in
 # another terminal, and the usage starts the shift first — an end there said
@@ -926,10 +976,10 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # second terminal was open, and under --po opened the owner on that premise.
 # The shift waits, naming the command, and takes the loop up as `elsewhere`
 # once it starts.
-| (($moves | length) == 0 and ($units0 | length) == 0) as $idle
-# Ready the loop elsewhere would take — never the cards it holds (above).
-| ($building > 0 or (($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1) or $unread > 0
-   or $pstate == "paused") as $inflight
+| (($moves | length) == 0 and ($units0 | length) == 0 and $start == null) as $idle
+# Ready the loop would take — never the cards it holds (above).
+| ($building > 0 or (($mode == "elsewhere" or $mode == "starting" or $mode == "none") and $ready_loop >= 1)
+   or $mode == "starting" or $unread > 0 or $pstate == "paused") as $inflight
 | (if $idle and ($inflight | not) and $flags.po == true and $pause == null then
      [ session("R21"; "R21"; "po"; "/aif-po"; "aif po"; "owner — nothing left on the board; bring a need") ]
    else [] end) as $u21
@@ -945,22 +995,27 @@ def held($holds): first((.labels // [])[] as $l | $holds[] | select(. == $l)) //
 # for its key where its card is; then the rest.
 | ([ $ip[], $rv[], $nh[], $bl[] | if .type == "line" then . elif isdone then as_line else empty end ]
    + $loose_lines + $map_lines + $l12
-   + (($r10 + $u14 + $u12 + $ba + $u21) | done_lines)) as $lines
+   + (($r10 + $s12 + $u13 + $u14 + $ba + $u21) | done_lines)) as $lines
+| ([ (if $building > 0 then "\($building) being built" else empty end),
+     (if ($mode == "elsewhere" or $mode == "starting" or $mode == "none") and $ready_loop >= 1 then "\($ready_loop) in Ready" else empty end),
+     (if $unread > 0 then "\($unread) card\(if $unread == 1 then "" else "s" end) not read yet" else empty end),
+     (if $pstate == "paused" then "\($pausesay) — no session and no build until then" else empty end) ]
+   | join(", ")) as $waits
+| (if $mode == "elsewhere" then $whose
+   elif $mode == "starting"
+   then "the build this shift started, "
+        + (if (($b.own // {}).state // "") == "live" then "at its end" else "still starting" end)
+        + (if $look == null then "" else " — \($look)" end)
+   elif $mode == "none" and $ready_loop >= 1
+   then "no loop runs on this checkout yet: aif work --loop --idle in another terminal"
+   else "" end) as $by
 | { counts: $counts,
     moves: [ $moves[] | del(.type) ],
+    start: (if $start == null then null else ($start | del(.type)) end),
     units: [ $units[] | del(.type) ],
     lines: [ $lines[] | del(.type) ],
     wait: (if $idle and $inflight then
-             { why: (([ (if $building > 0 then "\($building) being built" else empty end),
-                        (if ($mode == "elsewhere" or $mode == "none") and $ready_loop >= 1 then "\($ready_loop) in Ready" else empty end),
-                        (if $unread > 0 then "\($unread) card\(if $unread == 1 then "" else "s" end) not read yet" else empty end),
-                        (if $pstate == "paused" then "\($pausesay) — no session and no build until then" else empty end) ]
-                      | join(", "))
-                     + (if $mode == "elsewhere"
-                        then " — the loop in another terminal" + (if $b.loop.pid == null then "" else " (pid \($b.loop.pid))" end)
-                        elif $mode == "none" and $ready_loop >= 1
-                        then " — no loop runs on this checkout yet: aif work --loop --idle in another terminal"
-                        else "" end)) }
+             { why: (if $waits == "" then $by elif $by == "" then $waits else "\($waits) — \($by)" end) }
            else null end),
     "end": $end,
     # R26: nothing is left, and the shift says so with the two ways to bring

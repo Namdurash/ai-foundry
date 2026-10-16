@@ -14,17 +14,18 @@
 # Every width is counted in characters, never bytes. bash's printf pads by
 # bytes, so a Cyrillic title — two bytes a letter — came out half as wide as
 # it was told to be, and every border after it moved; ${#s} and ${s:0:n} count
-# characters only under a UTF-8 locale. aif_tui_init is handed one in
+# characters only under a UTF-8 locale. aif_tui_locale finds one for
 # AIF_TUI_UTF8, and the measuring functions borrow it as a local LC_CTYPE —
 # bin/aif has already demoted LC_ALL, which would override it
-# (docs/FINDINGS.md #25).
+# (docs/FINDINGS.md #25). The shift's countdown is measured the same way
+# (lib/cmd_start.sh, _aif_start_fit).
 #
 # What the caller sets, before aif_tui_init and aif_tui_frame:
 #
 #   AIF_TUI_COLS, AIF_TUI_ROWS    the terminal's size
 #   AIF_TUI_COLOR, AIF_TUI_256    colour at all; 256 colours (orange is 208)
 #   AIF_TUI_UNICODE               box drawing, or ASCII where the locale is not UTF-8
-#   AIF_TUI_UTF8                  a UTF-8 locale to measure text in
+#   AIF_TUI_UTF8                  a UTF-8 locale to measure text in (both: aif_tui_locale)
 #   AIF_TUI_NOW                   the time the frame shows
 #   AIF_TUI_PARALLEL              how many workers at most
 #   AIF_TUI_STARTED               when the loop started
@@ -82,6 +83,26 @@ aif_tui_init() {
     AIF_TUI_G_run="*" AIF_TUI_G_prep="o" AIF_TUI_G_ok="v" AIF_TUI_G_no="x" AIF_TUI_G_halt="#"
     AIF_TUI_G_sel=">" AIF_TUI_G_to="->" AIF_TUI_G_sep="." AIF_TUI_G_more="~" AIF_TUI_G_next=">"
   fi
+}
+
+# aif_tui_locale — what text on this terminal is drawn and measured in, from
+# the person's locale: theirs, where it is UTF-8 (AIF_TUI_UNICODE 1, and
+# AIF_TUI_UTF8 that locale); else ASCII for the dashboard's glyphs
+# (AIF_TUI_UNICODE 0) and a UTF-8 locale this machine has to measure in — or
+# none, and text is measured in bytes, which only ever cuts it shorter.
+# shellcheck disable=SC2034  # read by the functions below and lib/cmd_start.sh
+aif_tui_locale() {
+  local cl="${LC_CTYPE:-${LANG:-}}"
+  case "$cl" in
+    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
+      AIF_TUI_UNICODE=1
+      AIF_TUI_UTF8="$cl"
+      ;;
+    *)
+      AIF_TUI_UNICODE=0
+      AIF_TUI_UTF8="$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.UTF-?8$' | sed -n 1p)" || AIF_TUI_UTF8=""
+      ;;
+  esac
 }
 
 # aif_tui_len <text> — its width in characters, into AIF_TUI_N.

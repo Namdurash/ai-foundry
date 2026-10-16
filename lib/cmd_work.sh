@@ -4992,7 +4992,6 @@ _aif_work_loop_event() {
 # The dashboard's state: read by lib/tui.sh, which a linter reading this file cannot see.
 # shellcheck disable=SC2034
 _aif_work_loop_tui_start() {
-  local cl
   AIF_WORK_LOOP_TUI=0
   [ "${1:-auto}" != off ] && [ "${AIF_NO_TUI:-}" != 1 ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] || return 0
   { : </dev/tty; } 2>/dev/null || return 0
@@ -5003,17 +5002,7 @@ _aif_work_loop_tui_start() {
   [ -z "${NO_COLOR:-}" ] || AIF_TUI_COLOR=0
   AIF_TUI_256=0
   [ "$(tput colors 2>/dev/null || printf 8)" -lt 256 ] 2>/dev/null || AIF_TUI_256=1
-  cl="${LC_CTYPE:-${LANG:-}}"
-  case "$cl" in
-    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
-      AIF_TUI_UNICODE=1
-      AIF_TUI_UTF8="$cl"
-      ;;
-    *)
-      AIF_TUI_UNICODE=0
-      AIF_TUI_UTF8="$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.UTF-?8$' | sed -n 1p)" || AIF_TUI_UTF8=""
-      ;;
-  esac
+  aif_tui_locale
   aif_tui_init
   _aif_work_loop_typical
   printf '\033[?1049h\033[?25l' >&2

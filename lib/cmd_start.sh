@@ -1005,7 +1005,8 @@ _aif_start_tty_alive() {
 # in the alternate screen with mouse, focus and paste reporting on, which no
 # stty undoes — so after a 137 those modes are reset too. A trap that exits
 # in the middle of the control point's read leaves it -icanon -echo, the
-# read's own mode (#28): every way out of the shift comes through here.
+# read's own mode (#28), and the shift holds it -echo itself
+# (_aif_start_ctrl_c): every way out of the shift comes through here.
 _aif_start_tty_restore() {
   if [ -n "${AIF_START_STTY:-}" ]; then
     { stty "$AIF_START_STTY" </dev/tty; } 2>/dev/null || true
@@ -1022,16 +1023,21 @@ _aif_start_tty_restore() {
 # there — a signal reached the shift wherever it was, and about one in a
 # hundred aborted /bin/bash 3.2 in libc (docs/DEFECTS.md 16.16;
 # docs/FINDINGS.md #45). Typed while the shift works out its tick, it waits on
-# the terminal for the next key the shift reads. `signal` as it hands the
-# terminal to a child — a session, a land, the loop — the modes as the shift
-# found them: that child's Ctrl-C is its own, claude's, the land's, the
-# loop's dashboard's. Only when the shift reads its keys from the terminal
-# and kept its modes to put back; never under the key seam, whose terminal,
-# if there is one, is the harness's.
+# the terminal for the next key the shift reads. And echo off: the reader's
+# `read -s` turns it off for its own read alone, and a key typed between two
+# reads — as a countdown is redrawn, while a tick is worked out — went to a
+# terminal that echoed it, after the count (docs/DEFECTS.md 24.2); the key
+# was read all the same. `signal` as it hands the terminal to a child — a
+# session, a land, the loop — the modes as the shift found them: that
+# child's Ctrl-C is its own, claude's, the land's, the loop's dashboard's,
+# and its echo too. Only when the shift reads its keys from the terminal and
+# kept its modes to put back; never under the key seam, whose terminal, if
+# there is one, is the harness's.
 _aif_start_ctrl_c() {
   [ -z "${AIF_START_KEYS+x}" ] && [ -n "${AIF_START_STTY:-}" ] || return 0
   if [ "$1" = key ]; then
     aif_key_intr_off
+    { stty -echo </dev/tty; } 2>/dev/null || true
   else
     { stty "$AIF_START_STTY" </dev/tty; } 2>/dev/null || true
   fi
@@ -1097,12 +1103,13 @@ _aif_start_watch_off() {
   wait "$w" 2>/dev/null || true
 }
 
-# _aif_start_key <secs> [<prefix> <suffix>] — the one reader of every key the
-# shift waits for: the control point's countdown, the wait, every pause.
-# Sets AIF_START_KEY to the key, `enter`, `none` (<secs> passed with no key)
-# or `gone` (the terminal is). <secs> 0 is no timeout — a pause. The line
-# <prefix><seconds left><suffix> is redrawn each second; with no timeout it
-# is printed once, <prefix><suffix>.
+# _aif_start_key <secs> [<what> <keys> [<before> <after>]] — the one reader of
+# every key the shift waits for: the control point's countdown, the wait,
+# every pause. Sets AIF_START_KEY to the key, `enter`, `none` (<secs> passed
+# with no key) or `gone` (the terminal is). <secs> 0 is no timeout — a pause.
+# The line <what><keys> (<before><seconds left><after>) is redrawn each
+# second, fitted to the terminal's width (_aif_start_fit); with no timeout it
+# is printed once, <what><keys>, whatever its length.
 #
 # One key or one second at a time, read by a child on a fresh open of
 # /dev/tty while the shift waits for it in the `wait` builtin (aif_key_wait,
@@ -1139,11 +1146,11 @@ _aif_start_watch_off() {
 # mid-wait (docs/DEFECTS.md 15.9). A wait that never ends holds a `*` for
 # good: the harness's own bound is what stops it then.
 _aif_start_key() {
-  local secs="$1" pre="${2:-}" suf="${3:-}" fast=0 left deadline c
+  local secs="$1" what="${2:-}" keys="${3:-}" before="${4:-}" after="${5:-}" fast=0 left deadline c size split=0
   AIF_START_KEY=""
   if [ -n "${AIF_START_KEYS+x}" ]; then
-    if [ -n "$pre$suf" ]; then
-      if [ "$secs" -gt 0 ]; then _aif_start_out "$pre$secs$suf"; else _aif_start_out "$pre$suf"; fi
+    if [ -n "$what$keys" ]; then
+      if [ "$secs" -gt 0 ]; then _aif_start_out "$what$keys ($before$secs$after)"; else _aif_start_out "$what$keys"; fi
     fi
     c="${AIF_START_KEYS:0:1}"
     while [ "$c" = '*' ]; do
@@ -1171,8 +1178,8 @@ _aif_start_key() {
     esac
     return 0
   fi
-  if [ "$secs" -eq 0 ] && [ -n "$pre$suf" ]; then
-    _aif_start_out "$pre$suf"
+  if [ "$secs" -eq 0 ] && [ -n "$what$keys" ]; then
+    _aif_start_out "$what$keys"
   fi
   deadline=$((SECONDS + secs))
   while :; do
@@ -1183,7 +1190,15 @@ _aif_start_key() {
         AIF_START_KEY=none
         return 0
       fi
-      printf '\r\033[K%s%s%s' "$pre" "$left" "$suf" >&2 2>/dev/null || _aif_start_flush
+      # The width each second: a window resized mid-countdown is fitted on
+      # the next one.
+      size="$({ stty size </dev/tty; } 2>/dev/null)" || size=""
+      _aif_start_fit "${size#* }" "$split" "$what" "$keys" "($before$left$after)" "($before$secs$after)"
+      if [ "$AIF_START_FIT_SPLIT" != "$split" ]; then
+        split=1
+        printf '\r\033[K%s\n' "$what$keys" >&2 2>/dev/null || _aif_start_flush
+      fi
+      printf '\r\033[K%s' "$AIF_START_FIT" >&2 2>/dev/null || _aif_start_flush
     fi
     # A trap's signal ends the wait with its handler run — INT, TERM and HUP
     # end the shift there — and the reader reads on: wait for it again.
@@ -1212,6 +1227,53 @@ _aif_start_key() {
   done
 }
 
+# _aif_start_fit <cols> <split 0|1> <what> <keys> <count> <widest> — one
+# second of a countdown on a terminal <cols> wide: what to draw over the line,
+# into AIF_START_FIT, and AIF_START_FIT_SPLIT — 0, one line, <what><keys>
+# <count> with <what> cut where it must be; 1, <count> alone, <what><keys>
+# printed once above it by the caller. Once split, split to the countdown's
+# end: what is above stays there.
+#
+# A line wider than the terminal wraps, and the redraw's \r goes back to the
+# start of its last row alone, \033[K clears that row alone: each second left
+# another copy of the rows above it on the screen (docs/DEFECTS.md 24.1 — 148
+# characters at 130 columns, "… p: pause · q:" once a second). So the line
+# stops one column short of the terminal, as the dashboard's do
+# (lib/tui.sh): <what> loses its end to an ellipsis — the unit's text is
+# whole in the plan's units above — and the keys and the count never do. A
+# cut that would leave less than 32 characters of <what> no longer says what
+# the unit is, and the line is split instead; a terminal too narrow for the
+# count alone gets the count cut. Counted in characters, under the locale
+# aif_tui_locale found — a character two columns wide (CJK, most emoji)
+# counts as one, as on the dashboard — and against <widest>, the count at its
+# first second, so that the cut does not move when the count loses a digit.
+# <cols> unknown — empty, 0, not a number: no terminal, or one nobody sized
+# (docs/FINDINGS.md #25) — draws the whole line, as before.
+_aif_start_fit() {
+  local LC_CTYPE="${AIF_TUI_UTF8:-${LC_CTYPE:-}}"
+  local cols="$1" what="$3" keys="$4" count="$5" widest="$6" room n
+  AIF_START_FIT_SPLIT="$2"
+  case "$cols" in
+    '' | *[!0-9]* | 0) cols=0 ;;
+  esac
+  room=$((cols - 1))
+  if [ "$AIF_START_FIT_SPLIT" = 0 ]; then
+    AIF_START_FIT="$what$keys $count"
+    [ "$cols" -gt 0 ] || return 0
+    n=$((room - ${#keys} - 1 - ${#widest}))
+    [ "${#what}" -gt "$n" ] || return 0
+    if [ "$n" -ge 32 ]; then
+      AIF_START_FIT="${what:0:$((n - 1))}…$keys $count"
+      return 0
+    fi
+    AIF_START_FIT_SPLIT=1
+  fi
+  AIF_START_FIT="$count"
+  [ "$cols" -gt 0 ] && [ "${#count}" -gt "$room" ] || return 0
+  AIF_START_FIT=""
+  [ "$room" -lt 1 ] || AIF_START_FIT="${count:0:$((room - 1))}…"
+}
+
 # _aif_start_gone — the terminal is gone and no hang-up said so (an emulator
 # that signals only the foreground group, a shell that does not pass HUP on):
 # the hang-up's way out all the same, exit 129.
@@ -1227,7 +1289,7 @@ _aif_start_gone() {
 _aif_start_pause() {
   local why="$1"
   while :; do
-    _aif_start_key 0 "paused — $why — Enter: go on · q: end the shift$(_aif_start_b_hint)" ""
+    _aif_start_key 0 "paused — $why" " — Enter: go on · q: end the shift$(_aif_start_b_hint)"
     case "$AIF_START_KEY" in
       enter) return 0 ;;
       q) _aif_start_finish 0 "ended at a pause (q)" ;;
@@ -1270,7 +1332,7 @@ _aif_start_wait() {
     fi
     # The key seam's `*` lasts as long as the wait does (_aif_start_key).
     AIF_START_IN_WAIT=1
-    _aif_start_key "$left" "waiting — $why · p: pause · q: end the shift$(_aif_start_b_hint) (next look in " "s)"
+    _aif_start_key "$left" "waiting — $why" " · p: pause · q: end the shift$(_aif_start_b_hint)" "next look in " "s"
     AIF_START_IN_WAIT=0
     case "$AIF_START_KEY" in
       none | enter) return 0 ;;
@@ -1829,7 +1891,7 @@ _aif_start_offer() {
     if [ "$left" -le 0 ]; then
       AIF_START_KEY=none
     else
-      _aif_start_key "$left" "next: $text — Enter: $verb$own · s: skip · p: pause · q: end the shift$(_aif_start_b_hint) (" ")"
+      _aif_start_key "$left" "next: $text" " — Enter: $verb$own · s: skip · p: pause · q: end the shift$(_aif_start_b_hint)"
     fi
     case "$AIF_START_KEY" in
       enter) act=run ;;
@@ -2991,6 +3053,8 @@ aif_cmd_start() {
   fi
   AIF_START_SHIFT_DIR="$shiftdir"
   AIF_START_STTY="$({ stty -g </dev/tty; } 2>/dev/null)" || AIF_START_STTY=""
+  # What the countdown's line is measured in (_aif_start_fit).
+  aif_tui_locale
   aif_trap_arm _aif_start_signal
   _aif_start_ctrl_c key
   cd "$root" || _aif_start_finish 3 "could not enter $root"

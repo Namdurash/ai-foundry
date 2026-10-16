@@ -119,7 +119,12 @@
 #      129 all the same, summary.json written and the lock gone — and a
 #      session that fails once its window closed under it is that 129, not
 #      claude failing (15.9); a session killed -9 at --max-units leaves no
-#      screen mode behind
+#      screen mode behind; the control point's line on a terminal narrower
+#      than it — what is drawn as a function of the width, then the screen
+#      of a pty 120 and 60 columns wide: one `next:` row, where each second
+#      left another copy, its Ukrainian head cut in characters, or the line
+#      once with the count alone under it (24.1); a key typed between two
+#      reads not echoed after the count (24.2)
 #
 # Run by `make check`. Requires git, jq and curl; skips without python3.
 
@@ -3135,6 +3140,35 @@ MOCK_PID=""
 # =================================== D ======================================
 printf '\nD. a real terminal — a pty, no key seam\n'
 
+# The control point's line on a terminal narrower than it (docs/DEFECTS.md
+# 24.1): it wrapped, and each second's redraw went back to the start of its
+# last row alone, leaving another copy of the rows above. What is drawn
+# instead is a function of the width and the text (_aif_start_fit), read here
+# with no terminal at all, as the dashboard's frame is (check-work 41); the
+# screen itself, below, on a pty. The head is Ukrainian, two bytes a letter:
+# counted in bytes, it is cut at another place. LC_ALL off, as bin/aif puts
+# it: it would overrule the locale the line is measured in.
+fit() {
+  # shellcheck disable=SC2016  # the script's own variables, for the bash it runs in
+  env -u LC_ALL AIF_ROOT="$ROOT" /bin/bash -c 'set -euo pipefail; . "$1/lib/common.sh"; . "$1/lib/tui.sh"; . "$1/lib/cmd_start.sh"; shift
+    aif_tui_locale; _aif_start_fit "$@"; printf "%s|%s" "$AIF_START_FIT_SPLIT" "$AIF_START_FIT"' _ "$ROOT" "$@"
+}
+FW="next: analyst AIF-1 — blocked: ticket — не готовий: питання до ready gate нижче, для аналітика"
+FK=" — Enter: open · s: skip · p: pause · q: end the shift"
+eq "the countdown's line where the width is not known — empty, 0 0, not a number: the whole line, as before" \
+  "$(fit "" 0 "$FW" "$FK" "(60)" "(60)") / $(fit 0 0 "$FW" "$FK" "(60)" "(60)") / $(fit x 0 "$FW" "$FK" "(60)" "(60)")" \
+  "0|$FW$FK (60) / 0|$FW$FK (60) / 0|$FW$FK (60)"
+eq "…on a terminal wide enough: the whole line" "$(fit 200 0 "$FW" "$FK" "(60)" "(60)")" "0|$FW$FK (60)"
+eq "…on one narrower than it: one column short of the terminal, counted in characters — the head cut with an ellipsis, the keys and the count whole" \
+  "$(fit 120 0 "$FW" "$FK" "(60)" "(60)")" "0|next: analyst AIF-1 — blocked: ticket — не готовий: питання…$FK (60)"
+eq "…the count a digit shorter: the cut where it was" \
+  "$(fit 120 0 "$FW" "$FK" "(9)" "(60)")" "0|next: analyst AIF-1 — blocked: ticket — не готовий: питання…$FK (9)"
+eq "…too narrow to keep 32 characters of the head: split — the count alone, under the line its caller prints once" \
+  "$(fit 80 0 "$FW" "$FK" "(60)" "(60)")" "1|(60)"
+eq "…split once, split to the countdown's end, the terminal widened since or not" \
+  "$(fit 200 1 "$FW" "$FK" "(59)" "(60)")" "1|(59)"
+eq "…narrower than the count alone: the count cut to it" "$(fit 4 0 "$FW" "$FK" "(60)" "(60)")" "1|(6…"
+
 # The shift on a pty, keys typed: AIF_START_KEYS unset, the session still the
 # fake, a countdown of a minute so that a key or a close lands in it by
 # construction — each only once the `next:` line is on the screen. Modes:
@@ -3183,17 +3217,79 @@ printf '\nD. a real terminal — a pty, no key seam\n'
 #                 in the foreground: Enter (a held session opens), the master
 #                 closed; the kernel hangs up on the foreground group, the
 #                 session's, and the shift is nobody's child to wait for
-# Prints `exit N`, `signal N` or `timeout`; the screen, colour taken off, to
-# <out>, and as it came to <out>.raw; the terminal's interrupt character as
-# the `next:` line found it, `^C` or `undef`, to <out>.intr.
+#   narrow        the same wrapper: the countdown left to redraw itself two
+#                 seconds more, then q typed as the next redraw arrives —
+#                 between two of the key reader's reads
+# The pty is 40 rows by $D_COLS columns, 160 unless set. Prints `exit N`,
+# `signal N` or `timeout`; the screen, colour taken off, to <out>, and as it
+# came to <out>.raw; the terminal's interrupt character as the `next:` line
+# found it, `^C` or `undef`, to <out>.intr. In mode narrow, the screen as a
+# terminal that wide draws it, to <out>.screen: every row, those scrolled off
+# the top first, a real space kept and an empty cell nothing.
 cat >"$SANDBOX/terminal.py" <<'PY3'
 import fcntl, os, pty, re, select, signal, struct, sys, termios, time
 mode, out, opened = sys.argv[1:4]
 argv = sys.argv[4:]
+cols = int(os.environ.get("D_COLS", "160"))
 env = dict(os.environ)
 env.pop("AIF_START_KEYS", None)
 env["TERM"] = "xterm-256color"
 env["AIF_START_WAIT"] = "60"
+def screen(data, rows=40):
+    # What the shift writes, drawn as a terminal draws it: a character in the
+    # last column leaves the cursor waiting to wrap, a carriage return or a
+    # line feed ends the wait; erase in line and below; every other escape
+    # sequence (colour) draws nothing.
+    text = data.decode("utf-8", "replace")
+    grid = [[""] * cols for _ in range(rows)]
+    gone = []
+    r = c = 0
+    wrap = False
+    def down():
+        nonlocal r
+        if r == rows - 1:
+            gone.append(grid.pop(0))
+            grid.append([""] * cols)
+        else:
+            r += 1
+    i = 0
+    while i < len(text):
+        m = re.match(r"\x1b(\[[0-9;?]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|.)", text[i:], re.S)
+        if m:
+            i += m.end()
+            s = m.group(1)
+            if s[-1:] in ("K", "J") and s[0] == "[":
+                wrap = False
+                n = s[1:-1]
+                if n in ("", "0"):
+                    grid[r][c:] = [""] * (cols - c)
+                    if s[-1] == "J":
+                        for k in range(r + 1, rows):
+                            grid[k] = [""] * cols
+                elif n == "2" and s[-1] == "K":
+                    grid[r] = [""] * cols
+            continue
+        ch = text[i]
+        i += 1
+        if ch == "\r":
+            c = 0
+            wrap = False
+        elif ch == "\n":
+            down()
+            wrap = False
+        elif ch == "\t":
+            c = min(cols - 1, (c // 8 + 1) * 8)
+        elif ch >= " ":
+            if wrap:
+                c = 0
+                down()
+                wrap = False
+            grid[r][c] = ch
+            if c == cols - 1:
+                wrap = True
+            else:
+                c += 1
+    return ["".join(row) for row in gone + grid]
 pid, fd = pty.fork()
 if pid == 0:
     if mode in ("close", "pauseclose", "tstpclose"):
@@ -3222,7 +3318,7 @@ if pid == 0:
         os._exit(0)
     wrap = '"$0" "$@" </dev/null' if mode == "stdinnull" else '"$0" "$@"'
     os.execve("/bin/bash", ["/bin/bash", "-c", wrap + '; echo "RC=$?"; stty -a'] + argv, env)
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, cols, 0, 0))
 buf = b""
 live = True
 def pump(secs, until=None, since=0):
@@ -3314,6 +3410,10 @@ elif mode == "tstp":
     send(b"q")
 elif mode == "k9":
     send(b"\r")
+elif mode == "narrow":
+    pump(2)
+    pump(3, rb"\(\d+\)", len(buf))
+    send(b"q")
 elif mode in ("pauseclose",):
     send(b"\r")
     pump(10, rb"paused")
@@ -3345,6 +3445,8 @@ if live:
 open(out + ".raw", "wb").write(buf)
 text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.decode(errors="replace")).replace("\r", "")
 open(out, "w").write(text)
+if mode == "narrow":
+    open(out + ".screen", "w", encoding="utf-8").write("\n".join(screen(buf)) + "\n")
 if status is None:
     try:
         os.killpg(pid, signal.SIGKILL)
@@ -3360,6 +3462,16 @@ PY3
 # words <file> — the output's words one a line, for the terminal's modes as
 # `stty -a` prints them (icanon, -icanon, …).
 words() { awk -F'[ ;\t]+' '{ for (i = 1; i <= NF; i++) if ($i != "") print $i }' "$1"; }
+# rows <screen> <regex> — the rows of a drawn screen (terminal.py's
+# <out>.screen) that match, each as <width in characters>|<row>. joined
+# <screen> — its rows run together: a line the terminal wrapped reads whole.
+rows() {
+  python3 -I -c 'import re, sys
+for r in open(sys.argv[1], encoding="utf-8").read().split("\n"):
+    if re.search(sys.argv[2], r):
+        print("%d|%s" % (len(r), r))' "$1" "$2"
+}
+joined() { python3 -I -c 'import sys; print(open(sys.argv[1], encoding="utf-8").read().replace("\n", ""))' "$1"; }
 cd "$PB" || exit 1
 rm -f "$SANDBOX/session.pid"
 
@@ -3592,6 +3704,26 @@ r="$(FAKE_SESSION_KILL9=1 python3 "$SANDBOX/terminal.py" k9 "$OUT/d-k9.out" "$SA
 eq "a session killed -9 in claude's screen modes, the unit that reaches --max-units: the alternate screen and paste reporting reset — exit 0" \
   "$r,$(grep -c '^RC=0$' "$OUT/d-k9.out"),$(LC_ALL=C grep -qF "$(printf '\033[?1049l')" "$OUT/d-k9.out.raw" && echo 1049l),$(LC_ALL=C grep -qF "$(printf '\033[?2004l')" "$OUT/d-k9.out.raw" && echo 2004l),$(lock_gone)" \
   "exit 0,1,1049l,2004l,gone"
+rm -f "$SANDBOX/session.pid"
+
+# The control point's line on the screen of a terminal narrower than it
+# (docs/DEFECTS.md 24.1), drawn back from what the shift wrote over three
+# seconds of its countdown. It wrapped, and each second left another copy
+# of its first row — "… p: pause · q:" ten times at 130 columns. One `next:`
+# row now: at 120 columns the head cut to one column short of the terminal,
+# counted in characters (the head above, in Ukrainian); at 60, too narrow to
+# keep enough of it, the line once, whole, and the count alone under it. The
+# q is typed as a redraw arrives, before the next read has turned echo off
+# for itself: it was echoed after the count, `(57)q` (24.2).
+say AIF-1 "aif work" "${FW#next: analyst AIF-1 — }"
+r="$(D_COLS=120 python3 "$SANDBOX/terminal.py" narrow "$OUT/d-narrow.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+eq "the countdown on a terminal of 120 columns, its line 153 characters: one next: row, 119 wide, the head cut and the keys and the count whole — the q typed as it was redrawn not echoed after it; 0" \
+  "$r,$(grep -c '^RC=0$' "$OUT/d-narrow.out"),$(rows "$OUT/d-narrow.out.screen" 'next: ' | sed -E 's/\([0-9]+\)$/(N)/'),$(lock_gone)" \
+  "exit 0,1,119|next: analyst AIF-1 — blocked: ticket — не готовий: питання…$FK (N),gone"
+r="$(D_COLS=60 python3 "$SANDBOX/terminal.py" narrow "$OUT/d-split.out" "$SANDBOX/session.pid" "$AIF" start --no-build)"
+eq "…on a terminal of 60: one next: row, the line whole on the rows the terminal wrapped it into, and under it one row, the count alone — no q after it; 0" \
+  "$r,$(grep -c '^RC=0$' "$OUT/d-split.out"),$(rows "$OUT/d-split.out.screen" 'next: ' | wc -l | tr -d ' '),$(rows "$OUT/d-split.out.screen" '^\([0-9]+\)$' | wc -l | tr -d ' '),$(joined "$OUT/d-split.out.screen" | sed -E 's/shift\([0-9]+\)/shift(N)/' | grep -cF "$FW$FK(N)"),$(lock_gone)" \
+  "exit 0,1,1,1,1,gone"
 rm -f "$SANDBOX/session.pid"
 
 # ----------------------------------------------------------------------------

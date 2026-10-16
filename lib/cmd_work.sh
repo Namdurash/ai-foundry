@@ -3612,10 +3612,26 @@ $reason"
   fi
   replans=$((replans + 1))
   _aif_work_say "replan" "$replans/$max — the plan station, with the implementer's declaration"
-  _aif_work_restore_since "$wt" "$plan_base" "^$AIF_TASKS_DIR/$ticket/(ledger\.json|run\.json|stations/)"
+  # The ticket's work goes back, and only that: aif's own files — the set the
+  # branch was brought up to, .aif/project.json, the guide — are the
+  # checkout's, as the resumed plan and the start-over in _aif_work_intake
+  # keep them. The replan put them back too, to the plan baseline's, which a
+  # resumed run took hours before: LPC-back's BACK-1 met the morning's gates
+  # again, the .js imports they misread (23.1) and src/ among its test roots
+  # (28.1), and its new plan was rejected twice for them (docs/DEFECTS.md 28.2).
+  _aif_work_restore_since "$wt" "$plan_base" "^(\.aif/|\.claude/|$AIF_TASKS_DIR/$ticket/(ledger\.json|run\.json|stations/))"
   rm -f "$work/implement.note.json" "$work/tests.note.json" "$work/tests.lock.json" "$work/plan-amendments.json"
   # shellcheck disable=SC2016  # jq's variables, bound by --argjson/--arg
   aif_run_update "$work" '.replans = $r | .stage = "plan" | .regate = null | .tests_base = null' --argjson r "$replans"
+  # And committed, so the branch says what the record does: a replanned plan
+  # that stopped left the tree put back and the branch holding the old
+  # contract and its tests, which a resume at plan restores as the repository
+  # (_aif_work_intake puts the tree back to HEAD). As `aif _commit` commits a
+  # station, without the project's hooks.
+  aif_git_own "$wt" add -A >/dev/null 2>&1 || true
+  git -C "$wt" diff --cached --quiet 2>/dev/null ||
+    aif_git_own "$wt" -c user.email="aif@local" -c user.name="aif" \
+      commit -q -m "aif: replan $ticket — the ticket's work put back to the tree the first plan saw" >/dev/null 2>&1 || true
   AIF_WORK_REPLAN_COMPLAINT="REPLAN — the implement station declares that the contract this plan wrote cannot hold the behaviour the criteria ask for. Its words, verbatim:
 $reason
 Write the plan again, and the skeleton with it, so that the contract can. Everything since the first plan is gone from the tree; the ticket is unchanged."

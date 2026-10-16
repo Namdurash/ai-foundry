@@ -179,11 +179,30 @@ $create_files
 EOF
 
 # --- every relative import resolves --------------------------------------------
+# Unless the project's compiler is bound to `red`: its required checks of
+# that phase run over these tests below, and read an import the way the
+# project builds — this gate's reading is a guess beside it, wrong once on
+# every ESM TypeScript project (23.1). With one bound, what this gate cannot
+# resolve is said on the pass line, and the compiler decides
+# (docs/DEFECTS.md 28.3).
+red_compiler="$(jq -r '[ .checks[]? | select((.phase // []) | index("red")) | select(.required != false) | .name ] | join(", ")' \
+  "$project" 2>/dev/null)" || red_compiler=""
+imports_left=""
+imports_say() {
+  [ -n "$imports_left" ] || return 0
+  printf "  ! imports this gate's own reading did not resolve, left to the red phase's %s — the compiler has the last word on an import:\n" "$red_compiler"
+  printf '%s' "$imports_left" | sed '/^$/d; s/^/    - /'
+}
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -f "$root/$f" ] || continue
   while IFS= read -r spec_unres; do
     [ -n "$spec_unres" ] || continue
+    if [ -n "$red_compiler" ]; then
+      imports_left="$imports_left$f imports '$spec_unres'
+"
+      continue
+    fi
     viol="$viol
 $f imports '$spec_unres', which resolves to no file — the contract is on disk, so a path that is not there is misspelled, or the plan created nothing at it"
   done <<EOF2
@@ -906,6 +925,7 @@ if [ "$dry" = "1" ]; then
     [ -z "$standing_why" ] || printf '  ! the older tests in the declared files are read as yours: whether they were there before this ticket could not be measured (%s)\n' "$standing_why"
     [ -z "$uncollected" ] || printf '  ! the runner collected no test from: %s\n' "$uncollected"
   fi
+  imports_say
   printf '  nothing frozen — this was aif _verify; the worker runs the gate for real when you finish\n'
   # The checks record is the real run's to write and `aif _gate`'s to fold; a
   # dry run's would be folded as if the gate had run.
@@ -1207,3 +1227,4 @@ else
     printf '  ! the runner collected no test from: %s — counted toward no criterion (a support file needs none; a test there never runs)\n' "$uncollected"
   fi
 fi
+imports_say

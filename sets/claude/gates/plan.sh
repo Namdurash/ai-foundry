@@ -434,6 +434,16 @@ EOF
 # it must not exist yet.
 no_skeleton="$(printf '%s' "$meta" | jq -r '.no_skeleton[]? // empty')"
 skeletons=0
+# The project's compiler, when one is bound to `contract`: required checks of
+# that phase, which run over this same tree below. It reads an import the way
+# the project builds, and this gate's reading of one is a guess beside it — a
+# guess that was wrong twice on LPC-back, a skeleton's `./x.js` for x.ts
+# (23.1), and both times a stop. With one bound, what this gate cannot
+# resolve is said on the pass line, and the compiler decides
+# (docs/DEFECTS.md 28.3).
+compiler="$(jq -r '[ .checks[]? | select((.phase // []) | index("contract")) | select(.required != false) | .name ] | join(", ")' \
+  "$project" 2>/dev/null)" || compiler=""
+imports_left=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   if printf '%s\n' "$no_skeleton" | grep -qxF -- "$p"; then
@@ -457,6 +467,11 @@ files.create names \"$p\", and the skeleton there is empty — it has to carry t
     # for an untyped stack, an import of each skeleton).
     while IFS= read -r spec_unres; do
       [ -n "$spec_unres" ] || continue
+      if [ -n "$compiler" ]; then
+        imports_left="$imports_left$p imports '$spec_unres'
+"
+        continue
+      fi
       fs="$fs
 the skeleton $p imports '$spec_unres', which resolves to no file — a skeleton that does not load makes every test of it uncollectable, and that complaint would reach the tests station, which may not touch it"
     done <<EOF2
@@ -526,6 +541,10 @@ printf '\n'
 if [ -n "$planned_only" ]; then
   printf '  CI AND IGNORE RULES, named by this plan — scope lets these change and no others:\n'
   printf '%s' "$planned_only" | sed '/^$/d; s/^/    - /'
+fi
+if [ -n "$imports_left" ]; then
+  printf '  imports this gate could not resolve in the skeleton, left to the contract'"'"'s %s — the compiler has the last word on an import:\n' "$compiler"
+  printf '%s' "$imports_left" | sed '/^$/d; s/^/    - /'
 fi
 uncovered="$(printf '%s' "$meta" | jq -r '.uncovered[]? // empty')"
 if [ -n "$uncovered" ]; then

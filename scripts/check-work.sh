@@ -922,6 +922,10 @@ PLAN
         if [ "${FAKE_TESTS_NONAME_FIRST:-0}" = 1 ] && [ "$retry" = 0 ]; then marker="AC-00$i"; fi
         [ "$seqword" != NONAME ] || marker="AC-00$i"
         printf '# %s asserts %s — expects %s%s\n' "$marker" "$word" "$exp" "$suffix" >"$wt/tests/t$i.py"
+        # FAKE_TESTS_IMPORT: the first test imports a module that is not
+        # there, which the gates' own reading of an import refuses unless a
+        # compiler is bound to red (docs/DEFECTS.md 28.3).
+        [ "${FAKE_TESTS_IMPORT:-0}" != 1 ] || [ "$i" != 1 ] || printf 'from .nowhere import x\n' >>"$wt/tests/t$i.py"
       fi
     done
     # The older ticket's tests in a declared file, for a rule this ticket
@@ -8979,6 +8983,86 @@ eq "…and green passes, naming what it no longer holds" \
 rc=0
 pg >"$OUT/plan107.out" || rc=$?
 eq "…and the plan gate admits the plan" "$rc" "0"
+cd "$SANDBOX" || exit 1
+
+# ====== 108. a replan puts back the ticket's work, and nothing of aif's ========
+# docs/DEFECTS.md 28.2. A replan put the tree back to what the plan station
+# first saw, aif's own files with it. LPC-back's BACK-1 was resumed after its
+# set had been brought forward and src/ taken out of its test roots; the
+# replan put back the gates and the project.json of its first run, hours
+# older, and the old plan gate misread the new plan's .js imports and refused
+# it twice. The ticket's work goes back now, and what aif and the project
+# moved to stays; the put-back is committed, so a resume at plan reads the
+# tree the replan meant, not the old contract.
+printf '\n108. a replan puts back the ticket'"'"'s work, and keeps the set and the config the checkout moved to\n'
+fresh_project "$SANDBOX/p108"
+ticket_for AIF-1080
+t="$(mktemp)"
+jq '.limits.run_dispatches_max = 2' .aif/project.json >"$t" && mv "$t" .aif/project.json
+git add -A && git commit -qm "ticket 108, a cap of two" >/dev/null
+"$AIF" work AIF-1080 --no-worktree >"$OUT/run108a.out" 2>&1
+eq "a cap of two: the plan and the tests, and a stop short of the implementation" \
+  "$(jq -r '.status + "/" + .stage' tasks/AIF-1080/run.json)" "stopped/implement"
+t="$(mktemp)"
+jq '.limits.run_dispatches_max = 16' .aif/project.json >"$t" && mv "$t" .aif/project.json
+printf '# the set as the checkout has it now\n' >>.aif/gates/plan.sh
+git add -A && git commit -qm "the set brought forward, the cap back at 16" >/dev/null
+rc=0
+FAKE_REPLAN_FIRST=1 "$AIF" work AIF-1080 --no-worktree >"$OUT/run108.out" 2>&1 || rc=$?
+eq "resumed, replanned, built — the set's gate and the cap still what the checkout moved to" \
+  "$rc,$(jq -r '.status + "/" + (.replans | tostring)' tasks/AIF-1080/run.json),$(tail -1 .aif/gates/plan.sh),$(jq -r '.limits.run_dispatches_max' .aif/project.json)" \
+  "0,built/1,# the set as the checkout has it now,16"
+replan108="$(git log --format='%H %s' | awk '/aif: replan AIF-1080/ { print $1; exit }')"
+eq "the put-back committed: the first tests gone from it, the gate the checkout moved to in it" \
+  "$([ -n "$replan108" ] && git ls-tree -r --name-only "$replan108" -- tests/t1.py | wc -l | tr -d ' '),$(git show "$replan108:.aif/gates/plan.sh" 2>/dev/null | tail -1)" \
+  "0,# the set as the checkout has it now"
+eq "…and the branch is clean" "$(git status --porcelain | wc -l | tr -d ' ')" "0"
+cd "$SANDBOX" || exit 1
+
+# ====== 109. an import the gates cannot read, left to the project's compiler ===
+# docs/DEFECTS.md 28.3. The plan gate refused a skeleton whose relative import
+# it could not resolve, and verify-red a test. On LPC-back that reading was
+# wrong twice — a skeleton's ./x.js for x.ts (23.1), each time a stop — beside
+# a typecheck bound to the same phase that compiled the same files. With a
+# compiler bound to the phase, the gate says what it could not resolve, and
+# the compiler decides; with none, the gate refuses as before.
+printf '\n109. an import the gate cannot resolve: refused with no compiler bound, named and left to one that is\n'
+mkdir -p "$SANDBOX/p109"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p109/" 2>/dev/null || true
+cd "$SANDBOX/p109" || exit 1
+printf 'from .nowhere import x\n\n\ndef feat():\n    raise NotImplementedError("aif: not implemented: feat")\n' >src/feat.py
+meta="$(sed -n '/^<!-- aif:meta$/,/^-->$/p' tasks/AIF-1/plan.md | sed '1d;$d' | jq -c '.files.create = ["src/feat.py"] | .uncovered = ["src/feat.py"]')"
+printf '<!-- aif:meta\n%s\n-->\n# AIF-1 — plan\n' "$meta" >tasks/AIF-1/plan.md
+checks109() { # <checks json> — the project's checks
+  local t
+  t="$(mktemp)"
+  jq --argjson c "$1" '.checks = $c' .aif/project.json >"$t" && mv "$t" .aif/project.json
+}
+eq "no compiler bound to contract: a skeleton's import the gate cannot resolve is refused" \
+  "$(pg | grep -c "the skeleton src/feat.py imports '.nowhere', which resolves to no file")" "1"
+checks109 '[{ "name": "compile", "command": "true", "phase": ["contract"], "required": true }]'
+rc=0
+pg >"$OUT/plan109.out" || rc=$?
+eq "one bound: admitted, the import named and left to it" \
+  "$rc,$(grep -c "imports this gate could not resolve in the skeleton, left to the contract's compile" "$OUT/plan109.out"),$(grep -c "^    - src/feat.py imports '.nowhere'$" "$OUT/plan109.out")" "0,1,1"
+checks109 '[{ "name": "compile", "command": "test ! -f src/feat.py", "phase": ["contract"], "required": true }]'
+eq "…and the compiler's word is the one that refuses" \
+  "$(pg | grep -c 'check "compile" failed')" "1"
+fresh_project "$SANDBOX/p109b"
+ticket_for AIF-1090
+git add -A && git commit -qm "ticket 109" >/dev/null
+rc=0
+FAKE_TESTS_IMPORT=1 "$AIF" work AIF-1090 --no-worktree >"$OUT/run109a.out" 2>&1 || rc=$?
+eq "no compiler bound to red: a test's import verify-red cannot resolve is refused, the same twice, a stop" \
+  "$rc,$(jq -r '.status' tasks/AIF-1090/run.json),$(grep -c "tests/t1.py imports '.nowhere', which resolves to no file" .aif/tmp/fake-prompt-tests-2 2>/dev/null)" "1,stopped,1"
+fresh_project "$SANDBOX/p109c"
+checks109 '[{ "name": "compile", "command": "true", "phase": ["red"], "required": true }]'
+ticket_for AIF-1090
+git add -A && git commit -qm "ticket 109, a compiler bound to red" >/dev/null
+rc=0
+FAKE_TESTS_IMPORT=1 "$AIF" work AIF-1090 --no-worktree >"$OUT/run109b.out" 2>&1 || rc=$?
+eq "one bound: built, verify-red naming the import it left to the compiler — on its line and in the report" \
+  "$rc,$(jq -r '.status' tasks/AIF-1090/run.json),$(grep -c "^ *! imports this gate's own reading did not resolve, left to the red phase's compile" "$OUT/run109b.out"),$(grep -c "imports this gate's own reading did not resolve, left to the red phase's compile" tasks/AIF-1090/report.md)" "0,built,2,1"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

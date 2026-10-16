@@ -4,7 +4,8 @@ Every defect found in aif, from the review of 0.5.0 to building the autopilot
 mode's shift after 0.16.0, checking its fixes, a project on a runner aif
 had no template for, which model built a ticket, a startup's first
 plan, an ESM TypeScript project's imports and guide, a shift in a
-narrow terminal, and the loop's dashboard in a short one. One file, two
+narrow terminal, the loop's dashboard in a short one, and a test root
+that held the code. One file, two
 halves: an **open** defect is written in
 full — how it was established (probed, read, observed or reported), the
 observation quoted, what a fix has to decide — because an open entry is a
@@ -371,6 +372,15 @@ nothing held it to its rows. Probed from scenario 41's fixture; not yet seen
 on a project.
 
 - **25.1** The loop's dashboard drew more lines than the terminal has rows — probed (scenario 41's fixture, workers 5 and on added running: four workers on 80 by 24 drew 24 lines, the screen exactly; five on 80 by 24, 28; six on 120 by 30, 32; eight on 80 by 24, 40; one on 80 by 6, 12; and the frame around the loop with a worker's log, 41 on 37). `aif_tui_frame` drew the frame around the loop only on a terminal tall enough for it with three events, and everything else as the list, which no height held: a line for the loop, four a worker — a blank one and three — and seven for the events, the keys and the legend; the log took up to four rows more than the events under either. `_aif_work_loop_draw` writes the frame from the top of the alternate screen, and a frame taller than the screen scrolled it at every redraw: its first rows — the loop's own line, which asks `stop OPES-52? y: yes` before a worker is stopped, and the first worker — were never on it (two redraws, as it writes them, drawn back through a model of the terminal: five workers on 80 by 24 scrolled four rows a redraw, and the screen's top row was the first worker's verdict). A frame has no more lines than the terminal has rows now (`AIF_TUI_ROWS`; one nobody knows, 24), every line drawn with its newline and the last one's taken off (`aif_tui_frame`). The list gives up, in turn, the legend, the blank line above the keys, the events but the newest (the tail's own order, which the frame around the loop keeps in the rows under it: four lines of a log on 37 — `aif_tui_tail`), the blank lines between the workers, each worker's last line (its verdict beside the bar, in place of the dispatches and tokens), the newest event, the bar's line, and then the workers past one line each, on a line of their own — `… and 4 more: 3 running · 1 built` — the selected one kept in sight, for the keys act on it; then the keys; never the loop's line (`aif_tui_compact`, `aif_tui_listed`, lib/tui.sh). A frame that fit is drawn as it was, byte for byte. Scenario 41.
+
+### Log 28 — after 0.19.0, a test root that held the code (2026-10-16)
+
+`LPC-back`'s BACK-1 went to Needs Human twice: at the plan station, on the
+`.js` imports 23.1 fixed and the project's gates did not have yet, and then,
+the gates brought forward, at green — after three plans, the tests and two
+implementations, 35 minutes.
+
+- **28.1** A test root that held the code froze the implementation with the tests — observed (LPC-back, BACK-1 on aif/BACK-1: `REJECT test tree: 8 problem(s)`, `src/ingest/ingest.service.ts was modified after the tests were frozen` and seven more — every one a file the plan made a skeleton of or changed — twice, and a stop; its tests.lock.json held 69 paths, 37 of them the project's code under `src/`). `aif setup` had written `test.roots` as `["src", "test"]` — the unit tests sit beside their sources there, and the skill called a root "where the tests live" — and every gate reads a root as the tests' own tree: verify-red froze it whole, green held each file to that hash, scope refuses the implementation any write there, and nothing said so before the tests station was paid. The probe refuses a test root whose tests sit beside the code they test — two or more, and more than half: `x.spec.ts` beside `x.ts`, `x_test.go`, `test_x.py`, `XTests.swift` — before anything runs, a pair and the fix named, so `aif setup`, doctor and the worker's preflight meet it (`probe_beside`, sets/claude/gates/probe.sh); the plan gate rejects a `files.create` or `files.change` path under a test root, a helper being the tests station's and a root the project's to move (sets/claude/gates/plan.sh); `test.roots` may be `[]`, for a project whose every test sits beside its source (lib/project.sh); the skill says what a root is (sets/claude/skills/aif-setup). And green holds a frozen path while it is a test by the project's rules as they stand — under a root, by `test.files`, or one of the plan's — so a ticket frozen under the old root goes on from where it stopped once the project takes the root back, what green no longer holds named on its pass line (sets/claude/gates/green.sh). Scenarios 101, 107.
 
 ### Log 10 — 0.11.0, the first `aif work --loop` after the upgrade (2026-10-02)
 

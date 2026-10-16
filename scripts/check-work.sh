@@ -8603,6 +8603,39 @@ eq "a file that cannot load read as a red: verify-red would freeze it" \
   "$(p101 '.failure_classes.broken = [] | .failure_classes.legitimate += ["SyntaxError"]' | grep -c '✗ a test that cannot load reads as a legitimate red')" "1"
 eq "a probe file that is no test by the project's rules: said before anything runs" \
   "$(p101 '.test.probe.path = "src/probe.py"' | grep -c '✗ test.probe.path src/probe.py is not a test by this project.s rules')" "1"
+# A test root that holds the code its tests test (docs/DEFECTS.md 28.1):
+# every gate reads a root as the tests' own tree, and verify-red would freeze
+# the code with them — refused before anything runs, the fix said. A tree of
+# tests with one helper tested beside it is a tree of tests still; with no
+# tree of tests at all the roots are [], and the tests are test.files's.
+printf 'def b():\n    return 1\n' >src/b.py
+printf '# app\n' >src/app_test.py
+printf '# b\n' >src/b_test.py
+out="$(p101 '.test.roots += ["src"] | .test.files += ["*_test.py"]')"
+eq "a test root whose tests sit beside the code they test: refused, the fix said" \
+  "$(printf '%s\n' "$out" | grep -c '✗ test.roots names src/, which holds the code its tests test — 2 of its 2 test file(s) sit beside the file they test (src/app_test.py beside src/app.py)'),$(printf '%s\n' "$out" | grep -c '^  fix: take src out of test.roots in .aif/project.json')" "1,1"
+rm -f src/b.py src/app_test.py src/b_test.py
+printf 'def h():\n    return 1\n' >tests/helper.py
+printf '# helper\n' >tests/helper_test.py
+cp .aif/project.json "$OUT/p101.json"
+jq '.test.files += ["*_test.py"]' "$OUT/p101.json" >.aif/project.json
+out="$(probe101 --proven)"
+eq "…a tree of tests with one helper tested beside it: past the check, to the proof it has not had" \
+  "$(printf '%s\n' "$out" | grep -c 'holds the code'),$(printf '%s\n' "$out" | grep -c '^probe: not proven since')" "0,1"
+rm -f tests/helper.py tests/helper_test.py
+# Proven in full, and its proof taken back: the scenario counts the proofs
+# the worker keeps below.
+stamps101="$(find .aif/tmp/probe -name '*.ok' 2>/dev/null | sort)"
+jq '.test.roots = []' "$OUT/p101.json" >.aif/project.json
+rc=0
+"$AIF" project check >"$OUT/check101.out" 2>&1 || rc=$?
+out="$(probe101)"
+cp "$OUT/p101.json" .aif/project.json
+find .aif/tmp/probe -name '*.ok' 2>/dev/null | sort | while IFS= read -r f; do
+  printf '%s\n' "$stamps101" | grep -qxF -- "$f" || rm -f "$f"
+done
+eq "…and test.roots [], no tree of tests: valid, and the probe proves it by test.files" \
+  "$rc,$(grep -c 'project.json is valid' "$OUT/check101.out"),$(printf '%s\n' "$out" | grep -c 'the test contract holds')" "0,1,1"
 
 # Proven once; proven again only when what it stands on moves.
 eq "--proven: proven, the suite not run" "$(probe101 --proven >/dev/null; echo $?)" "0"
@@ -8788,6 +8821,57 @@ eq "no stack notes and no fragment for the runner: said, both remedies named, no
   "$rc,$(grep -c '^- no runner fragment is installed for vitest (.aif/stacks/vitest.md), and the project has no .aif/stack.md of its own — aif init installs the fragments the set ships, aif setup writes the project.s own' $G),$(grep -c 'all exist' "$OUT/guide104.out")" "0,1,1"
 }
 setup_guide_scenario
+cd "$SANDBOX" || exit 1
+
+# ====== 107. a test root that holds the code ==================================
+# docs/DEFECTS.md 28.1. `aif setup` wrote LPC-back's test.roots as ["src",
+# "test"] — its unit tests sit beside their sources in src/ — and every gate
+# reads a root as the tests' own tree: verify-red froze the code with the
+# tests, and green rejected the implement station for each file the plan told
+# it to write, "modified after the tests were frozen", twice — a stop after 35
+# minutes. The plan gate finds code ordered under a test root now, before the
+# tests station is paid. And once the project takes the root back, green
+# holds what the freeze took there while it is a test by the project's rules,
+# and no longer: the ticket goes on from where it stopped, its tests frozen
+# still. (The probe refuses such a root first: scenario 101.)
+printf '\n107. a test root that holds the code: the plan gate finds it; the root taken back, green holds the tests alone\n'
+mkdir -p "$SANDBOX/p107"
+cp -R "$SANDBOX/p1/." "$SANDBOX/p107/" 2>/dev/null || true
+cd "$SANDBOX/p107" || exit 1
+roots107() { # <json array> — test.roots, as the project writes them
+  local t
+  t="$(mktemp)"
+  jq --argjson r "$1" '.test.roots = $r' .aif/project.json >"$t" && mv "$t" .aif/project.json
+}
+froze107() { # <path> — the lock holds it, at a hash it no longer has: a skeleton frozen under the root
+  local t
+  t="$(mktemp)"
+  jq --arg p "$1" '.tests[$p] = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    tasks/AIF-1/tests.lock.json >"$t" && mv "$t" tasks/AIF-1/tests.lock.json
+}
+gr() { /bin/bash .aif/gates/green.sh "$PWD/tasks/AIF-1" 2>&1; }
+roots107 '["tests", "src"]'
+froze107 src/app.py
+eq "frozen under a root that holds the code, the code the plan ordered reads as the oracle moving: green rejects it" \
+  "$(gr | grep -c '^  - src/app.py was modified after the tests were frozen$')" "1"
+eq "the plan gate finds it first: the code it orders is under a test root, both readings said" \
+  "$(pg | grep -c '"src/app.py", under the test root src/ — scope refuses .* if src/ holds the project.s code, src/ is no test root')" "1"
+roots107 '["tests"]'
+printf '# app\n' >src/app_test.py
+froze107 src/app_test.py
+out="$(gr)"
+eq "the root taken back: a test the freeze took there is held still, the code is not" \
+  "$(printf '%s\n' "$out" | grep -c '^  - src/app_test.py was modified after the tests were frozen$'),$(printf '%s\n' "$out" | grep -c 'src/app.py was modified')" "1,0"
+rm -f src/app_test.py
+t="$(mktemp)"
+jq 'del(.tests["src/app_test.py"])' tasks/AIF-1/tests.lock.json >"$t" && mv "$t" tasks/AIF-1/tests.lock.json
+rc=0
+gr >"$OUT/green107.out" || rc=$?
+eq "…and green passes, naming what it no longer holds" \
+  "$rc,$(grep -c '^green: suite passes.* — not held: 1 frozen under a test root the project has since taken back, no test by its rules: src/app.py$' "$OUT/green107.out")" "0,1"
+rc=0
+pg >"$OUT/plan107.out" || rc=$?
+eq "…and the plan gate admits the plan" "$rc" "0"
 cd "$SANDBOX" || exit 1
 
 # ====== the guard, over every station of the whole run =======================

@@ -117,7 +117,11 @@ aif_explain_enabled() {
 # paid for it: roots is the SMUGGLING NET over the project's shared test tree —
 # the tree green re-hashes so that logic cannot be hidden in a fixture no plan
 # lists. It is NOT the source of truth for one ticket's tests; that is the
-# plan's files.tests, and verify-red freezes the union of the two.
+# plan's files.tests, and verify-red freezes the union of the two. And it is
+# never the tree the code lives in: a project paid for that too, its unit
+# tests beside their sources and src/ among its roots (docs/DEFECTS.md 28.1).
+# A project whose every test sits beside its source has no such tree, and its
+# roots are [] — its tests are test.files's.
 aif_project_validate() {
   local file="$1"
 
@@ -141,8 +145,8 @@ aif_project_validate() {
       # field the setup has still to write (docs/DEFECTS.md 20.1).
       (if (.test.command | type) != "string" then "test.command must be a string"
        elif .test.command == "" then "test.command is empty — the test contract is not set up yet: aif setup writes it (the command, the roots, the report, the probe)"
-       elif (.test.roots | type) != "array" or (.test.roots | length) < 1
-         then "test.roots must be a non-empty array"
+       elif (.test.roots | type) != "array"
+         then "test.roots must be an array — the trees that hold only tests, their helpers and fixtures; [] when every test sits beside its source"
        else empty end),
       # test.kind — optional: the runner, as `aif project init` detected it
       # (jest, pytest). What chooses the stack fragment the stations read; a

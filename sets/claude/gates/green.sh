@@ -100,6 +100,34 @@ if [ -n "$(printf '%s' "${missing_frozen# }" | grep -v '^$' || true)" ]; then
   exit "$AIF_G_ERROR"
 fi
 
+# --- what the freeze holds, under the contract as it stands ------------------
+# The lock holds what verify-red froze: every file under the test roots then,
+# and the plan's test files. A project whose test.roots named the tree its
+# code lives in — src/, its unit tests beside their sources — froze the code
+# with the tests, and every file the plan told the implement station to write
+# was then "modified after the tests were frozen" (docs/DEFECTS.md 28.1). Once
+# the project takes that root back, a path the lock holds is the oracle's
+# while it still is one by the project's rules — under a test root, a test by
+# test.files, or a test file of the plan's — and the rest is the
+# implementation's again, said on the pass line. Only the project moves
+# test.roots: .aif/project.json is off-limits to every station.
+roots_now="$(jq -r '.test.roots[]?' "$project")"
+declared_tests="$(aif_g_meta "$plan" | jq -r '.files.tests[]? // empty' 2>/dev/null)"
+held_frozen=""
+unheld=""
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  if aif_g_test_path "$rel" "$roots_now" || printf '%s\n' "$declared_tests" | grep -qxF -- "$rel"; then
+    held_frozen="$held_frozen$rel
+"
+  else
+    unheld="$unheld$rel
+"
+  fi
+done <<EOF
+$(jq -r '.tests | keys[]' "$lock")
+EOF
+
 # --- the test tree is frozen -----------------------------------------------
 # Additions first: walk the live tree under test.roots and flag anything the
 # lock does not hold. The whole tree, so a fixture cannot be the hiding place.
@@ -117,7 +145,7 @@ $rel was added under the test tree after the tests were frozen"
 $(find "$root/$rootdir" -type f 2>/dev/null)
 EOF
 done <<EOF
-$(jq -r '.test.roots[]?' "$project")
+$roots_now
 EOF
 
 # Then modifications and deletions, driven by the LOCK rather than by the tree.
@@ -135,7 +163,7 @@ $rel was deleted after the tests were frozen"
 $rel was modified after the tests were frozen"
   fi
 done <<EOF
-$(jq -r '.tests | keys[]' "$lock")
+$held_frozen
 EOF
 
 aif_g_report "${drift# }" "test tree"
@@ -794,7 +822,7 @@ if [ -n "$check_viol" ]; then
   if [ -f "$gtmp/checks/failed.tsv" ] && [ -e "$root/.git" ]; then
     held=""
     tb=""
-    jq -r '.tests | keys[]' "$lock" >"$gtmp/checks/frozen.txt"
+    printf '%s' "$held_frozen" >"$gtmp/checks/frozen.txt"
     while IFS="$tab" read -r idx name; do
       [ -n "$idx" ] || continue
       crc="$(jq -r --arg n "$name" '[ .[]? | select(.name == $n) | .exit ] | .[0] // "?"' "$root/.aif/tmp/checks-green.json" 2>/dev/null)"
@@ -1006,4 +1034,9 @@ say_ids() {
 [ -z "$let_flaky" ] || let_parts="$let_parts; $(printf '%s\n' "$let_flaky" | grep -c .) flaky — failed once, passed on a re-run: $(say_ids "$let_flaky")"
 [ -z "$checks_at_base" ] || let_parts="$let_parts; $(aif_g_checks_let "$root/.aif/tmp/checks-green.json")"
 [ -z "$let_parts" ] || printf ' — let through, %s' "${let_parts#; }"
+# And what the freeze took that the contract no longer calls a test: the
+# implementation's again, held to nothing (docs/DEFECTS.md 28.1).
+[ -z "$unheld" ] ||
+  printf ' — not held: %s frozen under a test root the project has since taken back, no test by its rules: %s' \
+    "$(printf '%s' "$unheld" | grep -c .)" "$(say_ids "$unheld")"
 printf '\n'

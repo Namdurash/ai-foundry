@@ -91,7 +91,14 @@ Work it out in this order, and say what you find as you go:
    - `test.command` — the whole suite, headless, writing JUnit to `test.report.path`
      even when tests fail (the exit code does not matter; the report does). From the
      repository root, no interactive prompts, no watch mode.
-   - `test.roots` — where the tests live (green re-hashes these trees).
+   - `test.roots` — the trees that hold only tests and what only they use: helpers,
+     fixtures, setup (`test/`, `tests/`, `__tests__/`). Every file under a root is
+     the tests' to the gates — verify-red freezes it, green re-hashes it, scope keeps
+     the implementation out of it — so a tree that holds the code is never one, even
+     when its unit tests sit beside their sources there: `src/` with `x.spec.ts`
+     beside `x.ts` is no root, and those tests are found by `test.files`. With no
+     tree of tests at all, `[]`. The probe refuses a root whose tests sit beside the
+     code they test.
    - `test.files` — what makes a file a test here by its name or place: globs, against
      the path when one holds a `/`, against the file name when not — `*/Tests/*`,
      `*Tests.swift`, `*Spec.cpp`, `*.test.ts`. The defaults are the jest and pytest
